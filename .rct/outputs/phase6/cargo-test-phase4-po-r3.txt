@@ -1,9 +1,0 @@
-
-running 4 tests
-test rpc_001_invalid_requests_return_jsonrpc_errors ... ok
-test rpc_002_module_proxy_and_unloaded_module_error_shape ... ok
-test rpc_001_notifications_apply_runtime_mutations_without_response ... ok
-test rpc_001_builtins_status_capabilities_events_reconcile_and_spawn_member ... ok
-
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
-

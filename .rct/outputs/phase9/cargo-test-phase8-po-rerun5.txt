@@ -1,8 +1,0 @@
-
-running 3 tests
-test phase8_console_002_auth_protected_access_remains_enforced ... ok
-test phase8_console_001_capability_driven_rendering_contract ... ok
-test phase8_req_003_choke_104_unified_activity_feed_contract_over_events ... ok
-
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
-
