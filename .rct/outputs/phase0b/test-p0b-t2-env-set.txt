@@ -1,0 +1,26 @@
+
+running 1 test
+PROJECT_SELECTED:king-dnn-training-dev
+Dataset 'king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8' successfully created.
+DATASET_CREATED:king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8
+Table 'king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8.sessions' successfully created.
+TABLE_CREATED:king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8.sessions
+Table 'king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8.sessions_stream_probe' successfully created.
+STREAM_PROBE_COUNT:1
+Number of affected rows: 1
+
+Number of affected rows: 1
+
+Number of affected rows: 1
+
+DEDUP_ROW:s1,true
+DEDUP_ROW:s2,false
+TOMBSTONE_COUNT:1
+POST_TRUNCATE_COUNT:0
+CLEANUP_BEGIN:king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8.sessions,sessions_stream_probe
+CLEANUP_END:king-dnn-training-dev:mobkit_p0b_77b47b83383e4e8f912a052cab50a7e8
+
+test p0b_t2_bigquery_real_boundary_on_king_dnn_training_dev ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 35.69s
+

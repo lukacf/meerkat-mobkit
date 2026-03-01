@@ -1,0 +1,28 @@
+docs/rct/traceability.md:65:| CHOKE-104 | 6     | choke_104_event_bus_to_sse_bridge_target_defined_red | GREEN |
+docs/rct/traceability.md:74:| E2E-601   | 6     | e2e_601_sse_experience_target_defined_red         | GREEN |
+docs/rct/traceability.md:114:  - `choke_104_event_bus_to_sse_bridge_target_defined_red` now validates concrete `mobkit/events/subscribe` event-envelope semantics and SSE id/event/data mapping.
+docs/rct/traceability.md:115:  - `e2e_601_sse_experience_target_defined_red` now validates subscribe snapshot ordering and reconnect backfill from a checkpoint event id after a live spawn.
+crates/meerkat-mobkit-core/src/rpc.rs:148:                    "mobkit/events/subscribe"
+crates/meerkat-mobkit-core/src/rpc.rs:229:        "mobkit/events/subscribe" => JsonRpcResponse {
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:35:        .expect("mobkit/events/subscribe should return result.events[]")
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:251:        r#"{"jsonrpc":"2.0","id":"choke-104","method":"mobkit/events/subscribe","params":{}}"#,
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:278:        "CHOKE-104: event bus->SSE bridge exposes deterministic event envelope for SSE id/event/data mapping"
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:297:        "CHOKE-104: bridge result can be rendered as an SSE frame with id/event/data"
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:613:        r#"{"jsonrpc":"2.0","id":"e2e-601-first","method":"mobkit/events/subscribe","params":{}}"#,
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:623:        r#"{"jsonrpc":"2.0","id":"e2e-601-second","method":"mobkit/events/subscribe","params":{}}"#,
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:649:    let router_checkpoint = first_ids
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:653:    let checkpoint_index = second_ids
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:655:        .position(|id| *id == router_checkpoint)
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:656:        .expect("second subscribe should contain reconnect checkpoint id");
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:657:    let reconnect_backfill = second_ids[(checkpoint_index + 1)..].to_vec();
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:664:            "reconnect_backfill": reconnect_backfill
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:677:            "reconnect_backfill": ["evt-delivery"]
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:679:        "E2E-601: subscribe snapshot + checkpoint replay model covers SSE reconnect/backfill semantics with deterministic ordering"
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:838:        r#"{"jsonrpc":"2.0","id":"e2e-1401-events","method":"mobkit/events/subscribe","params":{}}"#,
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:459:                self.wfile.write(b": keep-alive\n\n")
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:462:                self.wfile.write(b"data: {\"kind\":\"backfill\",\"from\":\"2\"}\n\n")
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:496:KEEPALIVE_COUNT="$(printf '%s\n' "$SECOND" | awk '/^: keep-alive$/ {c++} END {print c+0}')"
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:508:    assert!(output.contains("data: {\"kind\":\"backfill\",\"from\":\"2\"}"));
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:659:        .any(|method| method == "mobkit/events/subscribe"));
+crates/meerkat-mobkit-core/tests/phase4.rs:80:        r#"{"jsonrpc":"2.0","id":"3","method":"mobkit/events/subscribe","params":{}}"#,
+crates/meerkat-mobkit-core/tests/phase4.rs:107:        r#"{"jsonrpc":"2.0","id":"6","method":"mobkit/events/subscribe","params":{}}"#,

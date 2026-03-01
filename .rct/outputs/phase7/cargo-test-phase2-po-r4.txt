@@ -1,0 +1,12 @@
+
+running 7 tests
+test dec_002_auth_provider_mismatch_branch ... ok
+test dec_002_auth_provider_mismatch_and_bypass_branches ... ok
+test dec_006_reject_slo_enforcement_in_v01 ... ok
+test dec_001_dec_003_dec_005_dec_006_dec_007_runtime_decision_state_wiring ... ok
+test dec_004_console_rest_route_uses_auth_middleware_policy ... ok
+test dec_004_console_route_bypass_when_app_auth_disabled ... ok
+test dec_007_invalid_metadata_branches ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

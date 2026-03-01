@@ -1,0 +1,8 @@
+
+running 3 tests
+test phase7_auth_001_provider_support_model_and_dec_002_default_behavior ... ok
+test phase7_auth_002_allowlist_and_service_identity_path ... ok
+test phase7_auth_003_local_jwt_validation_without_ipc ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

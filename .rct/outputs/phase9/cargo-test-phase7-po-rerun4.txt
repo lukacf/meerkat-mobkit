@@ -1,0 +1,15 @@
+
+running 10 tests
+test phase7_auth_001_provider_support_model_and_dec_002_default_behavior ... ok
+test phase7_auth_002_generic_oidc_allow_path_when_configured_default ... ok
+test phase7_auth_002_allowlist_and_service_identity_path ... ok
+test phase7_oidc_discovery_and_jwks_contract_parse_and_selection ... ok
+test phase7_auth_003_local_jwt_validation_without_ipc ... ok
+test phase7_ic_001_caller_supplied_jwks_is_ignored ... ok
+test phase7_non_test_ingress_caller_routes_console_auth ... ok
+test phase7_sc_001_key_rotation_new_key_passes_stale_key_fails ... ok
+test phase7_config_flow_trusted_oidc_values_control_auth_outcome ... ok
+test phase7_runtime_token_auth_middleware_flow ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,11 @@
+
+running 6 tests
+test phase13_r3_conflict_blocks_pending_creation ... ok
+test phase13_r2_gating_is_blocked_by_memory_conflict_with_audit_reason ... ok
+test phase13_r2_and_r3_missing_context_cannot_bypass_memory_conflicts ... ok
+test phase13_memory_rpc_index_query_and_store_counts_are_wired ... ok
+test phase13_elephant_memory_backend_persists_across_runtime_restart ... ok
+test phase13_elephant_memory_backend_endpoint_failure_maps_to_typed_rpc_error ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+

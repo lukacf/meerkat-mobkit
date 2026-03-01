@@ -1,0 +1,18 @@
+warning: Patch `meerkat-mcp v0.4.1 (/Users/luka/src/raik/meerkat-mcp)` was not used in the crate graph.
+Patch `meerkat-rest v0.4.1 (/Users/luka/src/raik/meerkat-rest)` was not used in the crate graph.
+Patch `meerkat-rpc v0.4.1 (/Users/luka/src/raik/meerkat-rpc)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running tests/phase5.rs (target/debug/deps/phase5-6dd7d0d9da5a7a6c)
+
+running 4 tests
+test phase5_json_store_blocks_on_fresh_lock ... ok
+test phase5_json_store_does_not_evict_aged_lock_with_live_owner ... ok
+test phase5_json_store_recovers_stale_lock_and_persists_rows ... ok
+test phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+

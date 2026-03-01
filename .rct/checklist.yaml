@@ -1,0 +1,338 @@
+project: meerkat-mobkit
+program_scope: full-master-plan
+phase_status:
+  - phase: 0
+    status: completed
+    checks:
+      - id: G0-1
+        text: Real subprocess boundary tests exist and pass.
+        status: completed
+      - id: G0-2
+        text: Timeout and malformed-output adversarial checks pass.
+        status: completed
+      - id: G0-3
+        text: Normalization runtime path has behavioral proof.
+        status: completed
+      - id: G0-4
+        text: Meerkat prerequisite baseline verification passes.
+        status: completed
+      - id: G0-5
+        text: RPC capabilities contract_version check passes.
+        status: completed
+      - id: G0-6
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G0-7
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 1
+    status: completed
+    checks:
+      - id: G1-1
+        text: Startup ordering and graceful shutdown proven.
+        status: completed
+      - id: G1-2
+        text: Supervisor health transitions and restart behavior proven.
+        status: completed
+      - id: G1-3
+        text: Merged stream attribution and ordering proven.
+        status: completed
+      - id: G1-4
+        text: Module router behavior proven in library and RPC boundaries.
+        status: completed
+      - id: G1-5
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G1-6
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 2
+    status: completed
+    checks:
+      - id: G2-1
+        text: DEC-001 and DEC-003 validated by config/runtime tests.
+        status: completed
+      - id: G2-2
+        text: DEC-002 and DEC-004 validated by integration tests.
+        status: completed
+      - id: G2-3
+        text: DEC-005, DEC-006, DEC-007 validated by docs/config tests.
+        status: completed
+      - id: G2-4
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G2-5
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 3
+    status: completed
+    checks:
+      - id: G3-1
+        text: Typed-but-unwired list is empty for foundation scope.
+        status: completed
+      - id: G3-2
+        text: Foundation traceability has no MISSING/DEFERRED/STUBBED rows.
+        status: completed
+      - id: G3-3
+        text: Foundation full test suite executed with direct evidence.
+        status: completed
+      - id: G3-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 0b
+    status: completed
+    checks:
+      - id: G0B-1
+        text: Real RPC probes confirm current method/notification/error-shape assumptions and fail on mismatch.
+        status: completed
+      - id: G0B-2
+        text: Real BigQuery preflight confirms streaming/dedup/tombstone/truncate assumptions and fails on mismatch.
+        status: completed
+        evidence_expectation:
+          - "Project selected for preflight: king-dnn-training-dev."
+          - "If gcloud discovery is run, it must confirm project visibility, not choose another project."
+          - "Disposable dataset/table creation and cleanup logs attached."
+      - id: G0B-3
+        text: Real JSON session-store process-lock/recovery assumptions are confirmed and non-deterministic results fail the gate.
+        status: completed
+      - id: G0B-4
+        text: Real SSE event-id/reconnect/backfill/keep-alive assumptions are confirmed and divergence fails the gate.
+        status: completed
+      - id: G0B-5
+        text: Real OIDC discovery and JWKS key-availability boundary assumptions are confirmed and discovery/JWKS mismatch fails the gate.
+        status: completed
+      - id: G0B-6
+        text: Real module-process assumptions (discovery plus process-level health and representative tool-call viability) are confirmed across all module families.
+        status: completed
+      - id: G0B-7
+        text: Real locally-runnable SDK toolchain + runtime RPC/console assumption-level contract checks are confirmed and incompatibility fails the gate.
+        status: completed
+      - id: G0B-8
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G0B-9
+        text: Independent reviewer gate evidence package is complete for this cycle (spec, integration, quality).
+        status: completed
+
+  - phase: 3c
+    status: completed
+    checks:
+      - id: G3C-1
+        text: Roadmap CHOKE-* tests are fully wired and red only at assertion level.
+        status: completed
+      - id: G3C-2
+        text: Roadmap E2E-* tests are fully wired and red only at assertion level.
+        status: completed
+      - id: G3C-3
+        text: Product Owner direct red-first execution evidence recorded.
+        status: completed
+      - id: G3C-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 4
+    status: completed
+    checks:
+      - id: G4-1
+        text: Phase 4 CHOKE/E2E tests turn green for built-ins, notifications, and runtime mutations.
+        status: completed
+      - id: G4-2
+        text: Phase 4 CHOKE/E2E tests turn green for module proxying and unloaded-module parity.
+        status: completed
+      - id: G4-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G4-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 5
+    status: completed
+    checks:
+      - id: G5-1
+        text: Phase 5 CHOKE/E2E tests turn green for session persistence semantics across stores.
+        status: completed
+      - id: G5-2
+        text: Store-specific integration tests pass without reopening Phase 5 CHOKE/E2E reds.
+        status: completed
+      - id: G5-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G5-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 6
+    status: completed
+    checks:
+      - id: G6-1
+        text: Phase 6 CHOKE/E2E tests turn green for interaction/agent/mob SSE stream behavior.
+        status: completed
+      - id: G6-2
+        text: Phase 6 CHOKE/E2E tests turn green for reconnect/backfill/keep-alive semantics.
+        status: completed
+      - id: G6-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G6-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 7
+    status: completed
+    checks:
+      - id: G7-1
+        text: Phase 7 CHOKE/E2E tests turn green for OAuth/OIDC/JWKS login and validation flows.
+        status: completed
+      - id: G7-2
+        text: Phase 7 CHOKE/E2E tests turn green for allowlist and S2S enforcement.
+        status: completed
+      - id: G7-3
+        text: Phase 7 CHOKE/E2E tests turn green for RPC-mode local SDK JWT validation.
+        status: completed
+      - id: G7-4
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G7-5
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 8
+    status: completed
+    checks:
+      - id: G8-1
+        text: Phase 8 CHOKE/E2E tests turn green for capability-driven console API contracts.
+        status: completed
+      - id: G8-2
+        text: Phase 8 CHOKE/E2E tests turn green for unified activity feed consumption.
+        status: completed
+      - id: G8-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G8-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 9
+    status: completed
+    checks:
+      - id: G9-1
+        text: Phase 9 CHOKE/E2E tests turn green for scheduling cron/timezone/jitter/catch-up.
+        status: completed
+      - id: G9-2
+        text: Phase 9 CHOKE/E2E tests turn green for scheduling supervision and dispatch lifecycle.
+        status: completed
+      - id: G9-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G9-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 10
+    status: completed
+    checks:
+      - id: G10-1
+        text: Phase 10 CHOKE/E2E tests turn green for routing resolution and route-to-delivery handoff.
+        status: completed
+      - id: G10-2
+        text: Phase 10 CHOKE/E2E tests turn green for delivery retries/rate-limit/history behavior.
+        status: completed
+      - id: G10-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G10-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 11
+    status: completed
+    checks:
+      - id: G11-1
+        text: Phase 11 CHOKE/E2E tests turn green for TypeScript SDK contract parity.
+        status: completed
+      - id: G11-2
+        text: Phase 11 CHOKE/E2E tests turn green for Python SDK contract parity.
+        status: completed
+      - id: G11-3
+        text: Phase 11 CHOKE/E2E tests turn green for cross-SDK behavior and error-shape parity.
+        status: completed
+      - id: G11-4
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G11-5
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 12
+    status: completed
+    checks:
+      - id: G12-1
+        text: Phase 12 CHOKE/E2E tests turn green for gating R0-R3 policy and audit behavior.
+        status: completed
+      - id: G12-2
+        text: Phase 12 CHOKE/E2E tests turn green for human approval delivery-path behavior.
+        status: completed
+      - id: G12-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G12-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 13
+    status: completed
+    checks:
+      - id: G13-1
+        text: Phase 13 CHOKE/E2E tests turn green for memory store/tool behavior.
+        status: completed
+      - id: G13-2
+        text: Phase 13 CHOKE/E2E tests turn green for memory-gating conflict integration.
+        status: completed
+      - id: G13-3
+        text: Product Owner direct test execution evidence recorded.
+        status: completed
+      - id: G13-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+  - phase: 14
+    status: completed
+    checks:
+      - id: G14-1
+        text: Program-wide typed-but-unwired list is empty (including CHOKE/E2E artifacts).
+        status: completed
+      - id: G14-2
+        text: Program-wide traceability has no MISSING/DEFERRED/STUBBED rows.
+        status: completed
+      - id: G14-3
+        text: Full program suite executed with direct evidence and all CHOKE/E2E tests green.
+        status: completed
+      - id: G14-4
+        text: Independent reviewer gates pass (spec, integration, quality).
+        status: completed
+
+traceability_policy:
+  statuses: [MISSING, TYPED, WIRED, DEFERRED, STUBBED]
+  rules:
+    - Every ID in spec.meerkat_prerequisites, spec.requirements, and spec.decisions must have a traceability row.
+    - WIRED requires runtime caller plus behavioral test evidence.
+    - Any MISSING/DEFERRED/STUBBED row blocks phase completion.
+    - Typed-but-unwired carry-forward list is mandatory and must be empty at final gate.
+  enforcement:
+    block_on_statuses: [MISSING, DEFERRED, STUBBED]
+    require_direct_test_execution_proof: true
+    require_independent_reviewers: 3
+
+evidence:
+  completed_foundation_direct_execution:
+    - cargo check --workspace
+    - cargo clippy --workspace --all-targets --all-features -- -D warnings
+    - cargo test --workspace
+    - cargo test --workspace -- --ignored
+  foundation_traceability_doc: docs/rct/traceability.md
+  release_metadata: docs/rct/release-targets.json

@@ -1,0 +1,253 @@
+warning: Patch `meerkat-mcp v0.4.1 (/Users/luka/src/raik/meerkat-mcp)` was not used in the crate graph.
+Patch `meerkat-rest v0.4.1 (/Users/luka/src/raik/meerkat-rest)` was not used in the crate graph.
+Patch `meerkat-rpc v0.4.1 (/Users/luka/src/raik/meerkat-rpc)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+   Compiling meerkat-mobkit-core v0.1.0 (/Users/luka/src/meerkat-mobkit/crates/meerkat-mobkit-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+     Running unittests src/lib.rs (target/debug/deps/meerkat_mobkit_core-4bcf1b38f4e4b7c1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/phase0b_rpc_gateway.rs (target/debug/deps/phase0b_rpc_gateway-f53020e3f5ee5fd1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase0.rs (target/debug/deps/phase0-41ae10a42fd9bebd)
+
+running 12 tests
+test type_003_runtime_config_resolution_is_typed ... ok
+test contract_001_schema_invalid_response_rejected ... ok
+test contract_005_rpc_capabilities_requires_contract_version ... ok
+test adversarial_fail_then_succeed_mock_behavior ... ok
+test contract_001_unexpected_type_payload_rejected ... ok
+test contract_002_malformed_event_lines_rejected_with_typed_errors ... ok
+test contract_001_valid_event_line_parses ... ok
+test type_002_module_config_and_restart_policy_round_trip ... ok
+test type_003_bootstrap_and_discovery_round_trip ... ok
+test choke_001_mixed_agent_and_module_lines_normalize_through_shared_runtime_path ... ok
+test type_001_event_envelope_and_events_round_trip ... ok
+test adversarial_never_responds_mock_behavior_timeout_driven ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase0_external.rs (target/debug/deps/phase0_external-681434d822e370e4)
+
+running 8 tests
+test external_invalid_schema_from_subprocess_rejected ... ignored, external boundary subprocess check
+test external_meerkat_baseline_missing_symbols_has_typed_diagnostics ... ignored, external boundary subprocess check
+test external_meerkat_baseline_symbols_check_against_repo_path ... ignored, external boundary subprocess check
+test external_normalization_path_over_mixed_subprocess_outputs ... ignored, external boundary subprocess check
+test external_rpc_capabilities_requires_contract_version_from_process_response ... ignored, external boundary subprocess check
+test external_timeout_on_never_responding_subprocess ... ignored, external boundary subprocess check
+test external_unexpected_payload_from_subprocess_is_rejected ... ignored, external boundary subprocess check
+test external_valid_json_line_from_subprocess_parses ... ignored, external boundary subprocess check
+
+test result: ok. 0 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase0b_external.rs (target/debug/deps/phase0b_external-42e2d74958013239)
+
+running 7 tests
+test p0b_t1_rpc_method_matrix_boundary_preflight ... ignored, external roadmap preflight check (phase 0b)
+test p0b_t2_bigquery_real_boundary_on_king_dnn_training_dev ... ignored, external roadmap preflight check (phase 0b)
+test p0b_t3_json_store_filesystem_lock_preflight ... ignored, external roadmap preflight check (phase 0b)
+test p0b_t4_sse_stream_and_reconnect_preflight ... ignored, external roadmap preflight check (phase 0b)
+test p0b_t5_auth_oidc_jwks_endpoint_preflight ... ignored, external roadmap preflight check (phase 0b)
+test p0b_t6_module_family_process_preflight ... ignored, external roadmap preflight check (phase 0b)
+test p0b_t7_sdk_console_toolchain_and_payload_preflight ... ignored, external roadmap preflight check (phase 0b)
+
+test result: ok. 0 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase1.rs (target/debug/deps/phase1-d283aa00f7a64fe6)
+
+running 6 tests
+test req_001_config_error_when_discovery_references_unknown_module ... ok
+test req_003_attribution_integrity_rejects_source_event_mismatch ... ok
+sh: line 0: kill: (92042) - No such process
+test req_001_startup_ordering_and_graceful_shutdown_kills_tracked_children ... ok
+test req_003_event_bus_merges_agent_and_module_events_with_deterministic_order ... ok
+test req_004_and_req_005_router_parity_library_and_rpc_with_typed_unloaded_error ... ok
+test req_002_supervisor_transitions_and_restart_policy_enforced_with_budgets ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/phase10.rs (target/debug/deps/phase10-e354fe9cd24a4ad6)
+
+running 17 tests
+test phase10_rpc_invalid_params_for_routing_and_delivery_are_typed ... ok
+test phase10_retry_max_and_rate_limit_validation_values_are_rejected ... ok
+test phase10_retry_max_above_cap_is_rejected ... ok
+test phase10_routing_resolved_timestamp_never_regresses_merged_timeline ... ok
+test phase10_forged_delivery_send_resolution_is_rejected ... ok
+test phase10_choke_107_routing_resolve_hands_off_to_delivery_send ... ok
+test phase10_retry_max_greater_than_one_is_honored_deterministically ... ok
+test phase10_delivery_final_attempt_preserves_monotonic_event_timestamps ... ok
+test phase10_routing_and_delivery_paths_consume_module_boundary_outputs ... ok
+test phase10_e2e_1001_routing_delivery_flow_history_and_rate_limit ... ok
+test phase10_runtime_route_update_surface_changes_resolve_behavior ... ok
+test phase10_rejected_rate_limited_calls_do_not_advance_delivery_clock ... ok
+test phase10_rate_limit_cannot_be_bypassed_via_artificial_delivery_clock_advancement ... ok
+test phase10_rate_limit_is_isolated_per_route_scope ... ok
+test phase10_rate_window_counts_remain_single_window_for_rapid_sends ... ok
+test phase10_idempotency_payload_mismatch_and_post_eviction_replay_are_correct ... ok
+test phase10_idempotent_replay_survives_routing_resolution_cache_eviction ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.43s
+
+     Running tests/phase11.rs (target/debug/deps/phase11-7ac2c0721e0a85c4)
+
+running 1 test
+test phase11_sdk_001_sdk_002_choke_110_and_e2e_1101_parity_contracts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.99s
+
+     Running tests/phase12.rs (target/debug/deps/phase12-ca9ba03e753f4751)
+
+running 4 tests
+test phase12_r3_notification_records_error_when_modules_unavailable ... ok
+test phase12_risk_tiers_and_timeout_fallback_are_wired_with_audit ... ok
+test phase12_r3_notification_records_error_when_delivery_status_not_sent ... ok
+test phase12_r3_approval_flow_enforces_approver_constraints_and_audits ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/phase13.rs (target/debug/deps/phase13-747210ae3e649c5c)
+
+running 6 tests
+test phase13_r2_and_r3_missing_context_cannot_bypass_memory_conflicts ... ok
+test phase13_r2_gating_is_blocked_by_memory_conflict_with_audit_reason ... ok
+test phase13_r3_conflict_blocks_pending_creation ... ok
+test phase13_memory_rpc_index_query_and_store_counts_are_wired ... ok
+test phase13_elephant_memory_backend_persists_across_runtime_restart ... ok
+test phase13_elephant_memory_backend_endpoint_failure_maps_to_typed_rpc_error ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/phase2.rs (target/debug/deps/phase2-7dc1361b696528dc)
+
+running 7 tests
+test dec_002_auth_provider_mismatch_and_bypass_branches ... ok
+test dec_002_auth_provider_mismatch_branch ... ok
+test dec_006_reject_slo_enforcement_in_v01 ... ok
+test dec_001_dec_003_dec_005_dec_006_dec_007_runtime_decision_state_wiring ... ok
+test dec_004_console_route_bypass_when_app_auth_disabled ... ok
+test dec_004_console_rest_route_uses_auth_middleware_policy ... ok
+test dec_007_invalid_metadata_branches ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase3c_targets.rs (target/debug/deps/phase3c_targets-a84a83b8a2e8da51)
+
+running 21 tests
+test choke_105_auth_to_console_route_target_defined_red ... ok
+test choke_103_session_store_handoff_target_defined_red ... ok
+test e2e_1401_program_smoke_target_defined_red ... ok
+test choke_109_memory_to_gating_conflict_target_defined_red ... ok
+test choke_110_sdk_contract_mapping_target_defined_red ... ok
+test e2e_1301_memory_gating_flow_target_defined_red ... ok
+test e2e_1101_sdk_parity_flow_target_defined_red ... ok
+test e2e_801_console_experience_target_defined_red ... ok
+test choke_101_rpc_ingress_target_defined_red ... ok
+test choke_104_event_bus_to_sse_bridge_target_defined_red ... ok
+test e2e_701_auth_flow_target_defined_red ... ok
+test choke_106_scheduling_dispatch_handoff_target_defined_red ... ok
+test choke_102_module_router_handoff_target_defined_red ... ok
+test e2e_901_scheduled_action_flow_target_defined_red ... ok
+test e2e_601_sse_experience_target_defined_red ... ok
+test e2e_401_rpc_surface_target_defined_red ... ok
+test choke_107_routing_to_delivery_handoff_target_defined_red ... ok
+test e2e_1001_routing_delivery_flow_target_defined_red ... ok
+test choke_108_gating_to_approval_flow_target_defined_red ... ok
+test e2e_1201_gating_flow_target_defined_red ... ok
+test e2e_501_session_persistence_target_defined_red ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests/phase4.rs (target/debug/deps/phase4-7b31f5ba4c82b5ff)
+
+running 4 tests
+test rpc_001_invalid_requests_return_jsonrpc_errors ... ok
+test rpc_001_notifications_apply_runtime_mutations_without_response ... ok
+test rpc_002_module_proxy_and_unloaded_module_error_shape ... ok
+test rpc_001_builtins_status_capabilities_events_reconcile_and_spawn_member ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/phase5.rs (target/debug/deps/phase5-e3ade039ca15d630)
+
+running 4 tests
+test phase5_json_store_blocks_on_fresh_lock ... ok
+test phase5_json_store_does_not_evict_aged_lock_with_live_owner ... ok
+test phase5_json_store_recovers_stale_lock_and_persists_rows ... ok
+test phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/phase7.rs (target/debug/deps/phase7-9c49a86b08107e2b)
+
+running 10 tests
+test phase7_auth_001_provider_support_model_and_dec_002_default_behavior ... ok
+test phase7_auth_002_generic_oidc_allow_path_when_configured_default ... ok
+test phase7_auth_002_allowlist_and_service_identity_path ... ok
+test phase7_oidc_discovery_and_jwks_contract_parse_and_selection ... ok
+test phase7_auth_003_local_jwt_validation_without_ipc ... ok
+test phase7_ic_001_caller_supplied_jwks_is_ignored ... ok
+test phase7_non_test_ingress_caller_routes_console_auth ... ok
+test phase7_sc_001_key_rotation_new_key_passes_stale_key_fails ... ok
+test phase7_runtime_token_auth_middleware_flow ... ok
+test phase7_config_flow_trusted_oidc_values_control_auth_outcome ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/phase8.rs (target/debug/deps/phase8-e0c670c3757db1f7)
+
+running 3 tests
+test phase8_console_002_auth_protected_access_remains_enforced ... ok
+test phase8_console_001_capability_driven_rendering_contract ... ok
+test phase8_req_003_choke_104_unified_activity_feed_contract_over_events ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/phase9.rs (target/debug/deps/phase9-ed532c991ec16108)
+
+running 25 tests
+test phase9_schedule_001_timezone_and_interval_evaluation_is_deterministic ... ok
+test phase9_schedule_011b_cron_dow_step_wildcard_equivalent_preserves_dom_wildcard_semantics ... ok
+test phase9_schedule_011_cron_dow_range_ending_with_7_is_valid ... ok
+test phase9_schedule_008_cron_and_iana_timezones_are_supported_with_dst_awareness ... ok
+test phase9_schedule_005_runtime_apis_reject_invalid_schedules_without_silent_drop ... ok
+test phase9_schedule_009_pruning_runs_even_when_dispatch_early_exits ... ok
+test phase9_schedule_003_rpc_rejects_invalid_interval_timezone_and_duplicate_schedule_id ... ok
+test phase9_schedule_013_marker_intervals_with_iana_zone_are_dst_correct ... ok
+test phase9_schedule_007_runtime_and_rpc_reject_empty_schedule_id ... ok
+test phase9_schedule_006_last_due_ticks_are_pruned_like_claims ... ok
+test phase9_schedule_012_rpc_rejects_unsupported_tick_ms_for_evaluate_and_dispatch ... ok
+test phase9_schedule_002_dispatch_claims_are_idempotent_per_tick ... ok
+test phase9_schedule_007b_runtime_and_rpc_reject_empty_timezone ... ok
+test phase9_schedule_003b_rejects_overflowing_interval_marker ... ok
+test phase9_schedule_016_dispatch_event_append_preserves_merged_event_order ... ok
+test phase9_req_002_choke_106_supervisor_restart_signal_is_wired_into_dispatch ... ok
+test phase9_schedule_019_runtime_rejects_semantically_impossible_cron_interval ... ok
+test phase9_schedule_015_supervisor_restart_event_emitted_once_per_dispatch_tick ... ok
+test phase9_schedule_014_schedule_id_is_trimmed_for_duplicate_checks_and_identity ... ok
+test phase9_schedule_020_rpc_rejects_semantically_impossible_cron_interval ... ok
+test phase9_schedule_003c_rpc_rejects_oversized_schedules_request ... ok
+test phase9_schedule_010_jitter_without_catch_up_dispatches_under_coarse_polling ... ok
+test phase9_schedule_004_claims_are_pruned_and_jitter_catch_up_are_deterministic ... ok
+test phase9_schedule_018_sparse_cron_same_tick_retry_is_idempotent ... ok
+test phase9_schedule_017_leap_day_cron_dispatches_under_multi_year_coarse_polling ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+   Doc-tests meerkat_mobkit_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

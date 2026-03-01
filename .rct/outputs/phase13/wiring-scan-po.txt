@@ -1,0 +1,37 @@
+crates/meerkat-mobkit-core/src/lib.rs:44:    ConsoleRestJsonResponse, DecisionRuntimeError, ElephantMemoryBackendConfig,
+crates/meerkat-mobkit-core/src/lib.rs:49:    MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
+crates/meerkat-mobkit-core/src/rpc.rs:1028:            MemoryParamsError::Index(MemoryIndexError::BackendPersistFailed(reason)) => {
+crates/meerkat-mobkit-core/src/runtime.rs:192:pub struct ElephantMemoryBackendConfig {
+crates/meerkat-mobkit-core/src/runtime.rs:193:    pub endpoint: String,
+crates/meerkat-mobkit-core/src/runtime.rs:194:    pub state_path: String,
+crates/meerkat-mobkit-core/src/runtime.rs:199:pub enum MemoryBackendConfig {
+crates/meerkat-mobkit-core/src/runtime.rs:200:    Elephant(ElephantMemoryBackendConfig),
+crates/meerkat-mobkit-core/src/runtime.rs:205:    endpoint: String,
+crates/meerkat-mobkit-core/src/runtime.rs:206:    state_path: PathBuf,
+crates/meerkat-mobkit-core/src/runtime.rs:231:    pub memory_backend: Option<MemoryBackendConfig>,
+crates/meerkat-mobkit-core/src/runtime.rs:239:            memory_backend: None,
+crates/meerkat-mobkit-core/src/runtime.rs:512:    BackendPersistFailed(String),
+crates/meerkat-mobkit-core/src/runtime.rs:706:    memory_backend: Option<ElephantMemoryStoreAdapter>,
+crates/meerkat-mobkit-core/src/runtime.rs:1462:    fn from_config(config: &ElephantMemoryBackendConfig) -> Result<Self, ElephantMemoryStoreError> {
+crates/meerkat-mobkit-core/src/runtime.rs:1463:        let endpoint = config.endpoint.trim();
+crates/meerkat-mobkit-core/src/runtime.rs:1464:        if endpoint.is_empty() {
+crates/meerkat-mobkit-core/src/runtime.rs:1466:                "memory backend endpoint must not be empty".to_string(),
+crates/meerkat-mobkit-core/src/runtime.rs:1469:        let state_path = config.state_path.trim();
+crates/meerkat-mobkit-core/src/runtime.rs:1470:        if state_path.is_empty() {
+crates/meerkat-mobkit-core/src/runtime.rs:1472:                "memory backend state_path must not be empty".to_string(),
+crates/meerkat-mobkit-core/src/runtime.rs:1476:            endpoint: endpoint.to_string(),
+crates/meerkat-mobkit-core/src/runtime.rs:1477:            state_path: PathBuf::from(state_path),
+crates/meerkat-mobkit-core/src/runtime.rs:1481:    fn endpoint(&self) -> &str {
+crates/meerkat-mobkit-core/src/runtime.rs:1482:        self.endpoint.as_str()
+crates/meerkat-mobkit-core/src/runtime.rs:1486:        if !self.state_path.exists() {
+crates/meerkat-mobkit-core/src/runtime.rs:1489:        let bytes = fs::read(&self.state_path)
+crates/meerkat-mobkit-core/src/runtime.rs:1496:        if let Some(parent) = self.state_path.parent() {
+crates/meerkat-mobkit-core/src/runtime.rs:1500:        let tmp_path = self.state_path.with_extension("tmp");
+crates/meerkat-mobkit-core/src/runtime.rs:1504:        fs::rename(&tmp_path, &self.state_path)
+crates/meerkat-mobkit-core/src/runtime.rs:1582:    let memory_backend = match options.memory_backend.as_ref() {
+crates/meerkat-mobkit-core/src/runtime.rs:1583:        Some(MemoryBackendConfig::Elephant(config)) => Some(
+crates/meerkat-mobkit-core/src/runtime.rs:1589:    let persisted_memory = match memory_backend.as_ref() {
+crates/meerkat-mobkit-core/src/runtime.rs:1691:        memory_backend,
+crates/meerkat-mobkit-core/src/runtime.rs:2184:        let Some(backend) = self.memory_backend.as_ref() else {
+crates/meerkat-mobkit-core/src/runtime.rs:2192:            MemoryIndexError::BackendPersistFailed(format!(
+crates/meerkat-mobkit-core/src/runtime.rs:2194:                backend.endpoint()

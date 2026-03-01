@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: meerkat-mobkit-sdk
+Version: 0.1.0
+Summary: Minimal Meerkat MobKit Python SDK artifacts for parity tests
+Requires-Python: >=3.10

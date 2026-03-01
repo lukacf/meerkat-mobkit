@@ -1,0 +1,169 @@
+$ cargo test -p meerkat-mobkit-core --test phase3c_targets -- --nocapture
+warning: Patch `meerkat-mcp v0.4.1 (/Users/luka/src/raik/meerkat-mcp)` was not used in the crate graph.
+Patch `meerkat-rest v0.4.1 (/Users/luka/src/raik/meerkat-rest)` was not used in the crate graph.
+Patch `meerkat-rpc v0.4.1 (/Users/luka/src/raik/meerkat-rpc)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+   Compiling meerkat-mobkit-core v0.1.0 (/Users/luka/src/meerkat-mobkit/crates/meerkat-mobkit-core)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.51s
+     Running tests/phase3c_targets.rs (target/debug/deps/phase3c_targets-faa3375723077d59)
+
+running 21 tests
+
+thread 'choke_103_session_store_handoff_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:138:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-103: session persistence handoff (BQ/JSON latest-row+tombstone) placeholder target
+  left: "phase3c_dataset"
+ right: "phase3c_store_semantics_green"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'choke_105_auth_to_console_route_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:178:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-105: auth middleware->console authorization placeholder target
+  left: Object {"modules": Array [String("router"), String("delivery")]}
+ right: Object {"authz": String("green"), "target": String("CHOKE-105")}
+
+thread 'choke_108_gating_to_approval_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:241:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-108: gating decision->approval routing risk-tier/approver constraint placeholder target
+  left: 401
+ right: 299
+
+thread 'e2e_1201_gating_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:461:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-1201: end-to-end R2/R3 gating approval/timeout/audit placeholder target
+  left: Object {"error": String("unauthorized")}
+ right: Object {"gating": String("green"), "target": String("E2E-1201")}
+test choke_103_session_store_handoff_target_defined_red ... FAILED
+test choke_108_gating_to_approval_flow_target_defined_red ... FAILED
+
+thread 'e2e_501_session_persistence_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:321:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-501: end-to-end session persistence write/read/dedup/tombstone placeholder target
+  left: ["crates.io", "npm", "pypi", "github-releases"]
+ right: ["phase3c-store-green"]
+test choke_105_auth_to_console_route_target_defined_red ... FAILED
+test e2e_1201_gating_flow_target_defined_red ... FAILED
+test e2e_501_session_persistence_target_defined_red ... FAILED
+
+thread 'e2e_801_console_experience_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:380:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-801: end-to-end console capability/module-panel data flow placeholder target
+  left: Object {"modules": Array [String("router"), String("delivery")]}
+ right: Object {"panels": String("green"), "target": String("E2E-801")}
+test e2e_801_console_experience_target_defined_red ... FAILED
+
+thread 'e2e_701_auth_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:361:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-701: end-to-end OAuth/OIDC/JWT/protected-console placeholder target
+  left: 200
+ right: 299
+test e2e_701_auth_flow_target_defined_red ... FAILED
+
+thread 'choke_107_routing_to_delivery_handoff_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:219:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-107: routing resolver->delivery sink payload intent placeholder target
+  left: "evt-delivery-route"
+ right: "choke-107-green"
+
+thread 'choke_104_event_bus_to_sse_bridge_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:156:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-104: event bus->SSE ordering/reconnect-backfill placeholder target
+  left: Object {"id": String("choke-104"), "jsonrpc": String("2.0"), "result": Object {"events": Array [Object {"event": Object {"event_type": String("response"), "kind": String("module"), "module": String("router"), "payload": Object {"ok": Bool(true), "via": String("router")}}, "event_id": String("evt-router"), "source": String("module"), "timestamp_ms": Number(10)}]}}
+ right: Object {"stream": String("sse-bridge-green"), "target": String("CHOKE-104")}
+
+thread 'choke_109_memory_to_gating_conflict_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:264:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-109: memory assertions->gating conflict propagation placeholder target
+  left: "module"
+ right: "agent"
+
+thread 'choke_101_rpc_ingress_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:104:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-101: JSON-RPC ingress/method-id-params semantics placeholder target
+  left: Object {"id": String("choke-101"), "jsonrpc": String("2.0"), "result": Object {"contract_version": String("0.1.0"), "loaded_modules": Array [String("router")], "running": Bool(true)}}
+ right: Object {"status": String("GREEN_PLACEHOLDER"), "target": String("CHOKE-101")}
+
+thread 'e2e_1401_program_smoke_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:506:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-1401: program-level startup/auth/rpc/module/events/shutdown placeholder target
+  left: Object {"events": Object {"id": String("e2e-1401-events"), "jsonrpc": String("2.0"), "result": Object {"events": Array [Object {"event": Object {"event_type": String("response"), "kind": String("module"), "module": String("router"), "payload": Object {"ok": Bool(true), "via": String("router")}}, "event_id": String("evt-router"), "source": String("module"), "timestamp_ms": Number(10)}]}}, "shutdown": Object {"orphan_processes": Number(0), "terminated_modules": Array [String("router")]}, "status": Object {"id": String("e2e-1401-status"), "jsonrpc": String("2.0"), "result": Object {"contract_version": String("0.1.0"), "loaded_modules": Array [String("router")], "running": Bool(true)}}}
+ right: Object {"smoke": String("green"), "target": String("E2E-1401")}
+test choke_107_routing_to_delivery_handoff_target_defined_red ... FAILED
+test choke_104_event_bus_to_sse_bridge_target_defined_red ... FAILED
+test choke_109_memory_to_gating_conflict_target_defined_red ... FAILED
+test choke_101_rpc_ingress_target_defined_red ... FAILED
+test e2e_1401_program_smoke_target_defined_red ... FAILED
+
+thread 'choke_110_sdk_contract_mapping_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:282:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-110: SDK request/response mapping error-shape placeholder target
+  left: Object {"error": Object {"code": Number(-32601), "message": String("Module 'unknown' not loaded")}, "id": String("choke-110"), "jsonrpc": String("2.0")}
+ right: Object {"error_shape": String("sdk-green"), "target": String("CHOKE-110")}
+test choke_110_sdk_contract_mapping_target_defined_red ... FAILED
+thread 'e2e_601_sse_experience_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs
+:339:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-601: end-to-end SSE subscribe/keep-alive/reconnect/backfill placeholder target
+  left: Object {"id": String("e2e-601"), "jsonrpc": String("2.0"), "result": Object {"events": Array [Object {"event": Object {"event_type": String("response"), "kind": String("module"), "module": String("router"), "payload": Object {"ok": Bool(true), "via": String("router")}}, "event_id": String("evt-router"), "source": String("module"), "timestamp_ms": Number(10)}]}}
+ right: Object {"stream": String("green"), "target": String("E2E-601")}
+
+thread 'e2e_1301_memory_gating_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:484:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-1301: end-to-end memory/gating conflict-blocking placeholder target
+  left: 31
+ right: 0
+test e2e_601_sse_experience_target_defined_red ... FAILED
+
+thread 'e2e_1101_sdk_parity_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:439:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-1101: end-to-end TS/Python SDK parity and error-shape compatibility placeholder target
+  left: Object {"id": String("e2e-1101"), "jsonrpc": String("2.0"), "result": Object {"contract_version": String("0.1.0"), "loaded_modules": Array [String("router")], "methods": Array [String("mobkit/status"), String("mobkit/capabilities"), String("mobkit/reconcile"), String("mobkit/spawn_member"), String("mobkit/events/subscribe")]}}
+ right: Object {"sdk_parity": String("green"), "target": String("E2E-1101")}
+test e2e_1301_memory_gating_flow_target_defined_red ... FAILED
+test e2e_1101_sdk_parity_flow_target_defined_red ... FAILED
+
+thread 'choke_106_scheduling_dispatch_handoff_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:196:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-106: scheduling output->runtime dispatch idempotency placeholder target
+  left: Object {"id": String("choke-106"), "jsonrpc": String("2.0"), "result": Object {"accepted": Bool(true), "added": Number(1), "reconciled_modules": Array [String("router"), String("delivery")]}}
+ right: Object {"idempotency": String("green"), "target": String("CHOKE-106")}
+test choke_106_scheduling_dispatch_handoff_target_defined_red ... FAILED
+
+thread 'e2e_1001_routing_delivery_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:421:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-1001: end-to-end route resolution->sink delivery with retries/history placeholder target
+  left: Object {"ok": Bool(true), "via": String("router")}
+ right: Object {"delivery": String("green"), "target": String("E2E-1001")}
+
+thread 'choke_102_module_router_handoff_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:127:5:
+assertion `left == right` failed: RED_TARGET_DEFINED CHOKE-102: router->module typed error/result contract placeholder target
+  left: Object {"ok": Bool(true), "via": String("router")}
+ right: Object {"target": String("CHOKE-102"), "typed_contract": String("green")}
+test e2e_1001_routing_delivery_flow_target_defined_red ... FAILED
+test choke_102_module_router_handoff_target_defined_red ... FAILED
+
+thread 'e2e_901_scheduled_action_flow_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:398:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-901: end-to-end cron->dispatch->idempotent execution placeholder target
+  left: Object {"id": String("e2e-901"), "jsonrpc": String("2.0"), "result": Object {"accepted": Bool(true), "module_id": String("delivery")}}
+ right: Object {"schedule_dispatch": String("green"), "target": String("E2E-901")}
+test e2e_901_scheduled_action_flow_target_defined_red ... FAILED
+
+thread 'e2e_401_rpc_surface_target_defined_red' panicked at crates/meerkat-mobkit-core/tests/phase3c_targets.rs:310:5:
+assertion `left == right` failed: RED_TARGET_DEFINED E2E-401: end-to-end RPC interaction placeholder target
+  left: Object {"proxy": Object {"id": String("e2e-401-proxy"), "jsonrpc": String("2.0"), "result": Object {"method": String("router/echo"), "module_id": String("router"), "payload": Object {"ok": Bool(true), "via": String("router")}}}, "reconcile": Object {"id": String("e2e-401-reconcile"), "jsonrpc": String("2.0"), "result": Object {"accepted": Bool(true), "added": Number(1), "reconciled_modules": Array [String("router"), String("delivery")]}}, "status": Object {"id": String("e2e-401-status"), "jsonrpc": String("2.0"), "result": Object {"contract_version": String("0.1.0"), "loaded_modules": Array [String("router")], "running": Bool(true)}}}
+ right: Object {"status": String("green"), "target": String("E2E-401")}
+test e2e_401_rpc_surface_target_defined_red ... FAILED
+
+failures:
+
+failures:
+    choke_101_rpc_ingress_target_defined_red
+    choke_102_module_router_handoff_target_defined_red
+    choke_103_session_store_handoff_target_defined_red
+    choke_104_event_bus_to_sse_bridge_target_defined_red
+    choke_105_auth_to_console_route_target_defined_red
+    choke_106_scheduling_dispatch_handoff_target_defined_red
+    choke_107_routing_to_delivery_handoff_target_defined_red
+    choke_108_gating_to_approval_flow_target_defined_red
+    choke_109_memory_to_gating_conflict_target_defined_red
+    choke_110_sdk_contract_mapping_target_defined_red
+    e2e_1001_routing_delivery_flow_target_defined_red
+    e2e_1101_sdk_parity_flow_target_defined_red
+    e2e_1201_gating_flow_target_defined_red
+    e2e_1301_memory_gating_flow_target_defined_red
+    e2e_1401_program_smoke_target_defined_red
+    e2e_401_rpc_surface_target_defined_red
+    e2e_501_session_persistence_target_defined_red
+    e2e_601_sse_experience_target_defined_red
+    e2e_701_auth_flow_target_defined_red
+    e2e_801_console_experience_target_defined_red
+    e2e_901_scheduled_action_flow_target_defined_red
+
+test result: FAILED. 0 passed; 21 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p meerkat-mobkit-core --test phase3c_targets`

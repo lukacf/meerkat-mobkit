@@ -1,0 +1,9 @@
+warning: Patch `meerkat-mcp v0.4.1 (/Users/luka/src/raik/meerkat-mcp)` was not used in the crate graph.
+Patch `meerkat-rest v0.4.1 (/Users/luka/src/raik/meerkat-rest)` was not used in the crate graph.
+Patch `meerkat-rpc v0.4.1 (/Users/luka/src/raik/meerkat-rpc)` was not used in the crate graph.
+Check that the patched package version and available features are compatible
+with the dependency requirements. If the patch has a different version from
+what is locked in the Cargo.lock file, run `cargo update` to use the new
+version. This may also occur with an optional dependency that is not enabled.
+    Checking meerkat-mobkit-core v0.1.0 (/Users/luka/src/meerkat-mobkit/crates/meerkat-mobkit-core)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.35s

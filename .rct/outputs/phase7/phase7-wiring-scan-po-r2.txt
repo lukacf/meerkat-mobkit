@@ -1,0 +1,137 @@
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:83:fn sign_hs256(payload: Value, secret: &str, kid: &str) -> String {
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:84:    let header = json!({"alg":"HS256","typ":"JWT","kid":kid});
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:127:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:488:                provider: AuthProvider::ServiceIdentity,
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1057:    let discovery_b64 = b64_json(json!({
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1059:        "jwks_uri":"https://issuer.example/.well-known/jwks.json"
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1061:    let jwks_b64 = b64_json(json!({
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1064:                "kid":"kid-1",
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1081:        "kid-1",
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1089:            "provider":"generic_oidc",
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1093:        "kid-1",
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1100:                "/console/modules?auth_token={}&oidc_discovery_b64={}&jwks_b64={}&audience=meerkat-console",
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1101:                user_token, discovery_b64, jwks_b64
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1111:                "/console/modules?auth_token={}&oidc_discovery_b64={}&jwks_b64={}&audience=meerkat-console",
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1112:                service_token, discovery_b64, jwks_b64
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1134:                provider: AuthProvider::ServiceIdentity,
+crates/meerkat-mobkit-core/tests/phase3c_targets.rs:1157:        "E2E-701: token-based protected-console auth validates OIDC/JWKS JWTs and enforces user/service identity allowlist constraints"
+crates/meerkat-mobkit-core/src/auth.rs:48:    kid: Option<String>,
+crates/meerkat-mobkit-core/src/auth.rs:54:    pub jwks_uri: String,
+crates/meerkat-mobkit-core/src/auth.rs:58:pub struct JwksDocument {
+crates/meerkat-mobkit-core/src/auth.rs:59:    pub keys: Vec<Jwk>,
+crates/meerkat-mobkit-core/src/auth.rs:63:pub struct Jwk {
+crates/meerkat-mobkit-core/src/auth.rs:64:    pub kid: Option<String>,
+crates/meerkat-mobkit-core/src/auth.rs:76:    MissingJwksUri,
+crates/meerkat-mobkit-core/src/auth.rs:88:    pub kid: Option<String>,
+crates/meerkat-mobkit-core/src/auth.rs:91:pub fn validate_jwt_locally(
+crates/meerkat-mobkit-core/src/auth.rs:196:        kid: header.kid,
+crates/meerkat-mobkit-core/src/auth.rs:200:pub fn parse_oidc_discovery_json(json_text: &str) -> Result<OidcDiscoveryDocument, OidcContractError> {
+crates/meerkat-mobkit-core/src/auth.rs:206:    if doc.jwks_uri.trim().is_empty() {
+crates/meerkat-mobkit-core/src/auth.rs:207:        return Err(OidcContractError::MissingJwksUri);
+crates/meerkat-mobkit-core/src/auth.rs:212:pub fn parse_jwks_json(json_text: &str) -> Result<JwksDocument, OidcContractError> {
+crates/meerkat-mobkit-core/src/auth.rs:213:    let doc: JwksDocument =
+crates/meerkat-mobkit-core/src/auth.rs:222:    jwks: &'a JwksDocument,
+crates/meerkat-mobkit-core/src/auth.rs:223:    kid: Option<&str>,
+crates/meerkat-mobkit-core/src/auth.rs:225:) -> Result<&'a Jwk, OidcContractError> {
+crates/meerkat-mobkit-core/src/auth.rs:226:    if let Some(kid) = kid {
+crates/meerkat-mobkit-core/src/auth.rs:227:        return jwks
+crates/meerkat-mobkit-core/src/auth.rs:231:                key.kid.as_deref() == Some(kid)
+crates/meerkat-mobkit-core/src/auth.rs:237:    jwks.keys
+crates/meerkat-mobkit-core/src/auth.rs:243:pub fn extract_hs256_shared_secret(key: &Jwk) -> Result<String, OidcContractError> {
+crates/meerkat-mobkit-core/src/lib.rs:12:    extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
+crates/meerkat-mobkit-core/src/lib.rs:13:    select_jwk_for_token, validate_jwt_locally, Jwk, JwksDocument, JwtHeaderView,
+crates/meerkat-mobkit-core/tests/phase7.rs:6:    parse_jwks_json, parse_oidc_discovery_json, select_jwk_for_token, validate_jwt_locally,
+crates/meerkat-mobkit-core/tests/phase7.rs:60:fn sign_hs256(payload: Value, secret: &str, kid: &str) -> String {
+crates/meerkat-mobkit-core/tests/phase7.rs:61:    let header = json!({"alg":"HS256","typ":"JWT","kid":kid});
+crates/meerkat-mobkit-core/tests/phase7.rs:102:    let oidc_mismatch = enforce_console_route_access(
+crates/meerkat-mobkit-core/tests/phase7.rs:124:    assert_eq!(oidc_mismatch, Err(DecisionPolicyError::AuthProviderMismatch));
+crates/meerkat-mobkit-core/tests/phase7.rs:164:            provider: AuthProvider::ServiceIdentity,
+crates/meerkat-mobkit-core/tests/phase7.rs:172:            provider: AuthProvider::ServiceIdentity,
+crates/meerkat-mobkit-core/tests/phase7.rs:180:            provider: AuthProvider::ServiceIdentity,
+crates/meerkat-mobkit-core/tests/phase7.rs:190:        Err(DecisionPolicyError::InvalidServiceIdentity)
+crates/meerkat-mobkit-core/tests/phase7.rs:194:        Err(DecisionPolicyError::ServiceIdentityNotAllowlisted)
+crates/meerkat-mobkit-core/tests/phase7.rs:212:        "kid-a",
+crates/meerkat-mobkit-core/tests/phase7.rs:222:    let validated = validate_jwt_locally(&token, &config).expect("token should validate");
+crates/meerkat-mobkit-core/tests/phase7.rs:232:        validate_jwt_locally(&token, &wrong_secret),
+crates/meerkat-mobkit-core/tests/phase7.rs:238:fn phase7_oidc_discovery_and_jwks_contract_parse_and_selection() {
+crates/meerkat-mobkit-core/tests/phase7.rs:239:    let discovery = parse_oidc_discovery_json(
+crates/meerkat-mobkit-core/tests/phase7.rs:240:        r#"{"issuer":"https://issuer.example","jwks_uri":"https://issuer.example/keys"}"#,
+crates/meerkat-mobkit-core/tests/phase7.rs:242:    .expect("discovery should parse");
+crates/meerkat-mobkit-core/tests/phase7.rs:243:    let jwks = parse_jwks_json(
+crates/meerkat-mobkit-core/tests/phase7.rs:245:            {"kid":"k1","kty":"oct","alg":"HS256","k":"czNjcjN0"},
+crates/meerkat-mobkit-core/tests/phase7.rs:246:            {"kid":"k2","kty":"oct","alg":"HS256","k":"b3RoZXI"}
+crates/meerkat-mobkit-core/tests/phase7.rs:249:    .expect("jwks should parse");
+crates/meerkat-mobkit-core/tests/phase7.rs:250:    let selected = select_jwk_for_token(&jwks, Some("k2"), "HS256").expect("kid should resolve");
+crates/meerkat-mobkit-core/tests/phase7.rs:252:    assert_eq!(discovery.issuer, "https://issuer.example");
+crates/meerkat-mobkit-core/tests/phase7.rs:253:    assert_eq!(selected.kid.as_deref(), Some("k2"));
+crates/meerkat-mobkit-core/tests/phase7.rs:260:    let discovery_b64 = b64_json(json!({
+crates/meerkat-mobkit-core/tests/phase7.rs:262:        "jwks_uri":"https://issuer.example/.well-known/jwks.json"
+crates/meerkat-mobkit-core/tests/phase7.rs:264:    let jwks_b64 = b64_json(json!({
+crates/meerkat-mobkit-core/tests/phase7.rs:267:                "kid":"runtime-kid",
+crates/meerkat-mobkit-core/tests/phase7.rs:279:            "provider":"generic_oidc",
+crates/meerkat-mobkit-core/tests/phase7.rs:285:        "runtime-kid",
+crates/meerkat-mobkit-core/tests/phase7.rs:292:                "/console/modules?auth_token={service_token}&oidc_discovery_b64={discovery_b64}&jwks_b64={jwks_b64}&audience=meerkat-console"
+crates/meerkat-mobkit-core/tests/phase7.rs:302:            "provider":"generic_oidc",
+crates/meerkat-mobkit-core/tests/phase7.rs:308:        "runtime-kid",
+crates/meerkat-mobkit-core/tests/phase7.rs:315:                "/console/modules?auth_token={bad_token}&oidc_discovery_b64={discovery_b64}&jwks_b64={jwks_b64}&audience=meerkat-console"
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:75:    let discovery_modules = module_ids
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:89:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:91:            modules: discovery_modules,
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:144:    let mut discovery_modules = Vec::new();
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:191:        discovery_modules.push((*module_id).to_string());
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:201:            discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:203:                modules: discovery_modules,
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:513:fn p0b_t5_auth_oidc_jwks_endpoint_preflight() {
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:520:JWKS="$(CONF_JSON="$CONF" python3 -c 'import json,os; print(json.loads(os.environ["CONF_JSON"])["jwks_uri"])')"
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:530:discovered = json.loads(os.environ["CONF_JSON"])["jwks_uri"]
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:545:    let jwks_uri = lines
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:566:    assert!(jwks_uri.starts_with("https://"));
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:567:    let count: usize = key_count.parse().expect("jwks key count");
+crates/meerkat-mobkit-core/tests/phase0b_external.rs:568:    assert!(count > 0, "jwks must have at least one key");
+crates/meerkat-mobkit-core/src/decisions.rs:20:    InvalidServiceIdentity,
+crates/meerkat-mobkit-core/src/decisions.rs:21:    ServiceIdentityNotAllowlisted,
+crates/meerkat-mobkit-core/src/decisions.rs:55:    ServiceIdentity,
+crates/meerkat-mobkit-core/src/decisions.rs:176:    if request.provider == AuthProvider::ServiceIdentity {
+crates/meerkat-mobkit-core/src/decisions.rs:178:            return Err(DecisionPolicyError::InvalidServiceIdentity);
+crates/meerkat-mobkit-core/src/decisions.rs:185:            return Err(DecisionPolicyError::ServiceIdentityNotAllowlisted);
+crates/meerkat-mobkit-core/tests/phase4.rs:35:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase4.rs:124:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase4.rs:174:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase4.rs:215:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/src/bin/phase0b_rpc_gateway.rs:26:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase0.rs:80:fn type_003_bootstrap_and_discovery_round_trip() {
+crates/meerkat-mobkit-core/tests/phase0.rs:88:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase0.rs:234:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase1.rs:34:        discovery: meerkat_mobkit_core::DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase1.rs:120:        discovery: meerkat_mobkit_core::DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase1.rs:212:        discovery: meerkat_mobkit_core::DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase1.rs:299:        discovery: meerkat_mobkit_core::DiscoverySpec {
+crates/meerkat-mobkit-core/tests/phase1.rs:405:fn req_001_config_error_when_discovery_references_unknown_module() {
+crates/meerkat-mobkit-core/tests/phase1.rs:408:        discovery: meerkat_mobkit_core::DiscoverySpec {
+crates/meerkat-mobkit-core/src/types.rs:60:    pub discovery: DiscoverySpec,
+crates/meerkat-mobkit-core/tests/phase0_external.rs:36:        discovery: DiscoverySpec {
+crates/meerkat-mobkit-core/src/runtime.rs:17:    extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
+crates/meerkat-mobkit-core/src/runtime.rs:18:    select_jwk_for_token, validate_jwt_locally, JwtValidationConfig,
+crates/meerkat-mobkit-core/src/runtime.rs:423:    if !config.discovery.modules.iter().any(|id| id == module_id) {
+crates/meerkat-mobkit-core/src/runtime.rs:846:    for module_id in &config.discovery.modules {
+crates/meerkat-mobkit-core/src/runtime.rs:1044:    match query_params.get("auth_token") {
+crates/meerkat-mobkit-core/src/runtime.rs:1055:    let discovery_b64 = query_params
+crates/meerkat-mobkit-core/src/runtime.rs:1056:        .get("oidc_discovery_b64")
+crates/meerkat-mobkit-core/src/runtime.rs:1057:        .ok_or("missing_oidc_discovery")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1058:    let jwks_b64 = query_params.get("jwks_b64").ok_or("missing_jwks")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1064:    let discovery_json = decode_query_b64_json(discovery_b64).ok_or("invalid_oidc_discovery_b64")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1065:    let jwks_json = decode_query_b64_json(jwks_b64).ok_or("invalid_jwks_b64")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1067:    let discovery = parse_oidc_discovery_json(&discovery_json).map_err(|_| "invalid_oidc_discovery")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1068:    let jwks = parse_jwks_json(&jwks_json).map_err(|_| "invalid_jwks")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1070:    let key = select_jwk_for_token(&jwks, header.kid.as_deref(), &header.alg)
+crates/meerkat-mobkit-core/src/runtime.rs:1071:        .map_err(|_| "jwks_key_not_found")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1072:    let shared_secret = extract_hs256_shared_secret(key).map_err(|_| "invalid_jwks_key_material")?;
+crates/meerkat-mobkit-core/src/runtime.rs:1078:    let claims = validate_jwt_locally(
+crates/meerkat-mobkit-core/src/runtime.rs:1082:            issuer: Some(discovery.issuer),
+crates/meerkat-mobkit-core/src/runtime.rs:1096:        AuthProvider::ServiceIdentity
+crates/meerkat-mobkit-core/src/runtime.rs:1101:            Some("generic_oidc") => AuthProvider::GenericOidc,
+crates/meerkat-mobkit-core/src/runtime.rs:1122:        DecisionPolicyError::InvalidServiceIdentity => "invalid_service_identity",
+crates/meerkat-mobkit-core/src/runtime.rs:1123:        DecisionPolicyError::ServiceIdentityNotAllowlisted => "service_identity_not_allowlisted",
+crates/meerkat-mobkit-core/src/runtime.rs:1256:        self.config.discovery.modules = modules.clone();
+crates/meerkat-mobkit-core/src/runtime.rs:1295:            .discovery
+crates/meerkat-mobkit-core/src/runtime.rs:1300:            self.config.discovery.modules.push(module_id.to_string());

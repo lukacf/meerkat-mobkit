@@ -1,0 +1,24 @@
+[workspace]
+members = ["crates/meerkat-mobkit-core"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[patch.crates-io]
+meerkat = { path = "/Users/luka/src/raik/meerkat" }
+meerkat-core = { path = "/Users/luka/src/raik/meerkat-core" }
+meerkat-client = { path = "/Users/luka/src/raik/meerkat-client" }
+meerkat-store = { path = "/Users/luka/src/raik/meerkat-store" }
+meerkat-tools = { path = "/Users/luka/src/raik/meerkat-tools" }
+meerkat-session = { path = "/Users/luka/src/raik/meerkat-session" }
+meerkat-comms = { path = "/Users/luka/src/raik/meerkat-comms" }
+meerkat-mob = { path = "/Users/luka/src/raik/meerkat-mob" }
+meerkat-rpc = { path = "/Users/luka/src/raik/meerkat-rpc" }
+meerkat-rest = { path = "/Users/luka/src/raik/meerkat-rest" }
+meerkat-mcp = { path = "/Users/luka/src/raik/meerkat-mcp" }

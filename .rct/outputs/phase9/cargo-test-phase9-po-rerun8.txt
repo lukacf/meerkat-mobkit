@@ -1,0 +1,25 @@
+
+running 20 tests
+test phase9_schedule_001_timezone_and_interval_evaluation_is_deterministic ... ok
+test phase9_schedule_011_cron_dow_range_ending_with_7_is_valid ... ok
+test phase9_schedule_008_cron_and_iana_timezones_are_supported_with_dst_awareness ... ok
+test phase9_schedule_002_dispatch_claims_are_idempotent_per_tick ... ok
+test phase9_schedule_007_runtime_and_rpc_reject_empty_schedule_id ... ok
+test phase9_schedule_009_pruning_runs_even_when_dispatch_early_exits ... ok
+test phase9_schedule_012_rpc_rejects_unsupported_tick_ms_for_evaluate_and_dispatch ... ok
+test phase9_schedule_003_rpc_rejects_invalid_interval_timezone_and_duplicate_schedule_id ... ok
+test phase9_schedule_006_last_due_ticks_are_pruned_like_claims ... ok
+test phase9_schedule_016_dispatch_event_append_preserves_merged_event_order ... ok
+test phase9_schedule_005_runtime_apis_reject_invalid_schedules_without_silent_drop ... ok
+test phase9_schedule_003b_rejects_overflowing_interval_marker ... ok
+test phase9_schedule_013_marker_intervals_with_iana_zone_are_dst_correct ... ok
+test phase9_schedule_015_supervisor_restart_event_emitted_once_per_dispatch_tick ... ok
+test phase9_schedule_014_schedule_id_is_trimmed_for_duplicate_checks_and_identity ... ok
+test phase9_req_002_choke_106_supervisor_restart_signal_is_wired_into_dispatch ... ok
+test phase9_schedule_010_jitter_without_catch_up_dispatches_under_coarse_polling ... ok
+test phase9_schedule_004_claims_are_pruned_and_jitter_catch_up_are_deterministic ... ok
+test phase9_schedule_017_leap_day_cron_dispatches_under_multi_year_coarse_polling ... ok
+test phase9_schedule_018_sparse_cron_same_tick_retry_is_idempotent ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
