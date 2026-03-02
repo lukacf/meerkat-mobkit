@@ -159,6 +159,66 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         .await
         .expect("health response");
     assert_eq!(health_response.status(), StatusCode::OK);
+
+    let console_entry_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console")
+                .body(Body::empty())
+                .expect("console entry request"),
+        )
+        .await
+        .expect("console entry response");
+    let console_entry_status = console_entry_response.status();
+    let console_entry_content_type = console_entry_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let console_entry_body = to_bytes(console_entry_response.into_body(), 1024 * 1024)
+        .await
+        .expect("console entry body");
+    let console_entry_text = String::from_utf8(console_entry_body.to_vec()).expect("console html");
+    assert_eq!(console_entry_status, StatusCode::OK);
+    assert!(
+        console_entry_content_type.starts_with("text/html"),
+        "expected text/html content-type, got: {console_entry_content_type}"
+    );
+    assert!(console_entry_text.contains("<div id=\"root\"></div>"));
+    assert!(console_entry_text.contains("/console/assets/console-app.js"));
+
+    let console_asset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/assets/console-app.js")
+                .body(Body::empty())
+                .expect("console asset request"),
+        )
+        .await
+        .expect("console asset response");
+    let console_asset_status = console_asset_response.status();
+    let console_asset_content_type = console_asset_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let console_asset_body = to_bytes(console_asset_response.into_body(), 1024 * 1024)
+        .await
+        .expect("console asset body");
+    let console_asset_text = String::from_utf8(console_asset_body.to_vec()).expect("console js");
+    assert_eq!(console_asset_status, StatusCode::OK);
+    assert!(
+        console_asset_content_type.starts_with("application/javascript"),
+        "expected application/javascript content-type, got: {console_asset_content_type}"
+    );
+    assert!(console_asset_text.contains("createConsoleApp"));
+
     let console_json = get_console_experience(&app).await;
     assert_eq!(
         console_json["agent_sidebar"]["panel_id"],

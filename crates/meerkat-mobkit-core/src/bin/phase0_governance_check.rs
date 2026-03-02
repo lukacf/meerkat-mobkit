@@ -1,9 +1,32 @@
-use std::{fs, path::PathBuf, process};
+use std::{
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    process,
+};
 
 use meerkat_mobkit_core::validate_phase0_governance_contracts;
 
 fn read_required(path: &PathBuf) -> Result<String, String> {
     fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))
+}
+
+fn read_traceability(root: &Path) -> Result<String, String> {
+    let primary = root.join(".rct/traceability.md");
+    match fs::read_to_string(&primary) {
+        Ok(contents) => Ok(contents),
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            let fallback = root.join("docs/rct/traceability.md");
+            fs::read_to_string(&fallback).map_err(|fallback_err| {
+                format!(
+                    "failed to read {} (missing) and {}: {fallback_err}",
+                    primary.display(),
+                    fallback.display(),
+                )
+            })
+        }
+        Err(err) => Err(format!("failed to read {}: {err}", primary.display())),
+    }
 }
 
 fn project_root() -> PathBuf {
@@ -18,7 +41,6 @@ fn main() {
     let spec_path = root.join(".rct/spec.yaml");
     let plan_path = root.join(".rct/plan.yaml");
     let checklist_path = root.join(".rct/checklist.yaml");
-    let traceability_path = root.join("docs/rct/traceability.md");
 
     let spec = match read_required(&spec_path) {
         Ok(value) => value,
@@ -41,7 +63,7 @@ fn main() {
             process::exit(1);
         }
     };
-    let traceability = match read_required(&traceability_path) {
+    let traceability = match read_traceability(&root) {
         Ok(value) => value,
         Err(err) => {
             eprintln!("{err}");

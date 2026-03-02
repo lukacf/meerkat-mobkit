@@ -1,29 +1,108 @@
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::body::{to_bytes, Body};
+use axum::http::{Request, StatusCode};
+use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat_client::TestClient;
+use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, enforce_console_route_access, handle_console_rest_json_route,
-    AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
-    ConsoleRestJsonRequest, DecisionPolicyError, DecisionRuntimeError, RuntimeDecisionInputs,
-    RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state, AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, RestartPolicy,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeRouteMutationError, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
+    UnifiedRuntimeReconcileError,
 };
+use serde_json::json;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::oneshot;
+use tower::ServiceExt;
 
-fn trusted_toml() -> String {
+fn shell_module(id: &str, script: &str) -> ModuleConfig {
+    ModuleConfig {
+        id: id.to_string(),
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script.to_string()],
+        restart_policy: RestartPolicy::Never,
+    }
+}
+
+fn spawn_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
+    SpawnMemberSpec::from_wire(
+        profile.to_string(),
+        member_id.to_string(),
+        Some(format!("You are {member_id}. Keep responses concise.")),
+        None,
+        None,
+    )
+}
+
+fn build_phase2_mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "phase2-unified-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse mob definition");
+
+    MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service).with_options(
+        MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        },
+    )
+}
+
+fn decision_state() -> meerkat_mobkit_core::RuntimeDecisionState {
+    build_runtime_decision_state(RuntimeDecisionInputs {
+        bigquery: BigQueryNaming {
+            dataset: "phase2_reference_dataset".to_string(),
+            table: "phase2_reference_table".to_string(),
+        },
+        trusted_mobkit_toml: trusted_modules_toml(),
+        auth: AuthPolicy::default(),
+        trusted_oidc: trusted_oidc(),
+        console: ConsolePolicy {
+            require_app_auth: false,
+        },
+        ops: RuntimeOpsPolicy::default(),
+        release_metadata_json: include_str!("../../../docs/rct/release-targets.json").to_string(),
+    })
+    .expect("build decision state")
+}
+
+fn trusted_modules_toml() -> String {
     r#"
-[[modules]]
-id = "scheduler"
-command = "scheduler-bin"
-args = ["--poll-ms", "250"]
-restart_policy = "on_failure"
-
 [[modules]]
 id = "router"
 command = "router-bin"
 args = ["--mode", "fast"]
 restart_policy = "always"
+
+[[modules]]
+id = "delivery"
+command = "delivery-bin"
+args = ["--sink", "memory"]
+restart_policy = "on_failure"
 "#
     .to_string()
-}
-
-fn release_json() -> String {
-    include_str!("../../../docs/rct/release-targets.json").to_string()
 }
 
 fn trusted_oidc() -> TrustedOidcRuntimeConfig {
@@ -31,256 +110,508 @@ fn trusted_oidc() -> TrustedOidcRuntimeConfig {
         discovery_json:
             r#"{"issuer":"https://trusted.mobkit.local","jwks_uri":"https://trusted.mobkit.local/.well-known/jwks.json"}"#
                 .to_string(),
-        jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"},{"kid":"kid-next","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtbmV4dC1zZWNyZXQ"}]}"#.to_string(),
+        jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"}]}"#
+            .to_string(),
         audience: "meerkat-console".to_string(),
     }
 }
 
-#[test]
-fn dec_001_dec_003_dec_005_dec_006_dec_007_runtime_decision_state_wiring() {
-    let state = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "custom_dataset_v1".to_string(),
-            table: "events_2026".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy {
-            default_provider: AuthProvider::GoogleOAuth,
-            email_allowlist: vec!["alice@example.com".to_string()],
-        },
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy::default(),
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: release_json(),
-    })
-    .expect("runtime decision wiring should validate");
-
-    assert_eq!(state.bigquery.dataset, "custom_dataset_v1");
-    assert_eq!(state.modules.len(), 2);
-    assert_eq!(state.ops.replica_count, 1);
-    assert!(!state.ops.metrics.enforce_slo_targets);
-    assert_eq!(state.release_metadata.support_matrix, "same-as-meerkat");
-}
-
-#[test]
-fn dec_004_console_rest_route_uses_auth_middleware_policy() {
-    let state = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "ds".to_string(),
-            table: "tb".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy {
-            default_provider: AuthProvider::GoogleOAuth,
-            email_allowlist: vec!["alice@example.com".to_string()],
-        },
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy {
-            require_app_auth: true,
-        },
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: release_json(),
-    })
-    .expect("state build");
-
-    let authorized = handle_console_rest_json_route(
-        &state,
-        &ConsoleRestJsonRequest {
-            method: "GET".to_string(),
-            path: "/console/modules".to_string(),
-            auth: Some(ConsoleAccessRequest {
-                provider: AuthProvider::GoogleOAuth,
-                email: "alice@example.com".to_string(),
-            }),
-        },
-    );
-    assert_eq!(authorized.status, 200);
-    assert_eq!(
-        authorized.body["modules"].as_array().map(|v| v.len()),
-        Some(2)
-    );
-
-    let unauthorized = handle_console_rest_json_route(
-        &state,
-        &ConsoleRestJsonRequest {
-            method: "GET".to_string(),
-            path: "/console/modules".to_string(),
-            auth: Some(ConsoleAccessRequest {
-                provider: AuthProvider::GoogleOAuth,
-                email: "mallory@example.com".to_string(),
-            }),
-        },
-    );
-    assert_eq!(unauthorized.status, 401);
-}
-
-#[test]
-fn dec_002_auth_provider_mismatch_and_bypass_branches() {
-    let auth = AuthPolicy {
-        default_provider: AuthProvider::GoogleOAuth,
-        email_allowlist: vec!["alice@example.com".to_string()],
+async fn post_interactions_stream_raw(
+    address: SocketAddr,
+    request_body: &str,
+    timeout: Duration,
+) -> String {
+    let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match TcpStream::connect(address).await {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < connect_deadline,
+                    "failed to connect to unified runtime at {address}: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
     };
 
-    let mismatch = enforce_console_route_access(
-        &auth,
-        &ConsolePolicy::default(),
-        &ConsoleAccessRequest {
-            provider: AuthProvider::TestProvider,
-            email: "alice@example.com".to_string(),
-        },
-    )
-    .expect_err("provider mismatch should reject");
-    assert_eq!(mismatch, DecisionPolicyError::AuthProviderMismatch);
-
-    let bypass = enforce_console_route_access(
-        &auth,
-        &ConsolePolicy {
-            require_app_auth: false,
-        },
-        &ConsoleAccessRequest {
-            provider: AuthProvider::GoogleOAuth,
-            email: "nobody@example.com".to_string(),
-        },
+    let request = format!(
+        "POST /interactions/stream HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{request_body}",
+        request_body.len()
     );
-    assert!(bypass.is_ok());
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    stream.flush().await.expect("flush request");
+
+    let mut bytes = Vec::new();
+    let start = tokio::time::Instant::now();
+    while start.elapsed() < timeout {
+        let mut chunk = [0_u8; 4096];
+        let remaining = timeout.saturating_sub(start.elapsed());
+        match tokio::time::timeout(remaining, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(read)) => {
+                bytes.extend_from_slice(&chunk[..read]);
+                let body = String::from_utf8_lossy(&bytes);
+                if body.contains("event: interaction_started")
+                    && body.matches("event: ").count() >= 2
+                {
+                    break;
+                }
+            }
+            Ok(Err(error)) => panic!("read response failed: {error}"),
+            Err(_) => break,
+        }
+    }
+
+    String::from_utf8(bytes).expect("utf8 response")
 }
 
-#[test]
-fn dec_004_console_route_bypass_when_app_auth_disabled() {
-    let state = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "ds".to_string(),
-            table: "tb".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy::default(),
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy {
-            require_app_auth: false,
-        },
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: release_json(),
-    })
-    .expect("state build");
+async fn get_raw(address: SocketAddr, path: &str, timeout: Duration) -> String {
+    let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        match TcpStream::connect(address).await {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < connect_deadline,
+                    "failed to connect to unified runtime at {address}: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        }
+    };
 
-    let response = handle_console_rest_json_route(
-        &state,
-        &ConsoleRestJsonRequest {
-            method: "GET".to_string(),
-            path: "/console/modules".to_string(),
-            auth: None,
-        },
-    );
-    assert_eq!(response.status, 200);
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    stream.flush().await.expect("flush request");
+
+    let mut bytes = Vec::new();
+    let start = tokio::time::Instant::now();
+    while start.elapsed() < timeout {
+        let mut chunk = [0_u8; 4096];
+        let remaining = timeout.saturating_sub(start.elapsed());
+        match tokio::time::timeout(remaining, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(read)) => bytes.extend_from_slice(&chunk[..read]),
+            Ok(Err(error)) => panic!("read response failed: {error}"),
+            Err(_) => break,
+        }
+    }
+
+    String::from_utf8(bytes).expect("utf8 response")
 }
 
-#[test]
-fn dec_002_auth_provider_mismatch_branch() {
-    let mismatch = enforce_console_route_access(
-        &AuthPolicy {
-            default_provider: AuthProvider::GoogleOAuth,
-            email_allowlist: vec![],
-        },
-        &ConsolePolicy::default(),
-        &ConsoleAccessRequest {
-            provider: AuthProvider::GoogleOAuth,
-            email: "unknown@example.com".to_string(),
-        },
-    )
-    .expect_err("allowlist branch should reject");
-    assert_eq!(mismatch, DecisionPolicyError::EmailNotAllowlisted);
-}
-
-#[test]
-fn dec_006_reject_slo_enforcement_in_v01() {
-    let err = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "ds".to_string(),
-            table: "tb".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy::default(),
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy::default(),
-        ops: RuntimeOpsPolicy {
-            replica_count: 1,
-            metrics: meerkat_mobkit_core::MetricsPolicy {
-                enforce_slo_targets: true,
+#[tokio::test]
+async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_only() {
+    let missing_mob_spec = match UnifiedRuntime::builder()
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "phase2-builder-missing-mob".to_string(),
+                modules: vec![],
             },
-        },
-        release_metadata_json: release_json(),
-    })
-    .expect_err("slo enforcement should be rejected in v0.1");
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(1))
+        .build()
+        .await
+    {
+        Ok(_) => panic!("missing mob_spec should return a typed builder error"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        missing_mob_spec,
+        UnifiedRuntimeBuilderError::MissingRequiredField(UnifiedRuntimeBuilderField::MobSpec)
+    ));
 
-    assert_eq!(
-        err,
-        DecisionRuntimeError::Policy(DecisionPolicyError::SloTargetsNotSupportedV01)
-    );
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let missing_module_config = match UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .timeout(Duration::from_secs(1))
+        .build()
+        .await
+    {
+        Ok(_) => panic!("missing module_config should return a typed builder error"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        missing_module_config,
+        UnifiedRuntimeBuilderError::MissingRequiredField(UnifiedRuntimeBuilderField::ModuleConfig)
+    ));
+
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "phase2-builder-success".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(1))
+        .build()
+        .await
+        .expect("builder should return unified runtime");
+    assert_eq!(runtime.status(), MobState::Running);
+    assert!(runtime.module_is_running());
+
+    let example_source = include_str!("../examples/library_mode_reference.rs");
+    assert!(example_source.contains("UnifiedRuntime::builder()"));
+    assert!(example_source.contains(".reconcile("));
+    assert!(example_source.contains(".build_console_json_router("));
+    assert!(example_source.contains(".build_interaction_sse_router("));
+    assert!(example_source.contains(".serve(listener, decisions)"));
+    assert!(example_source.contains(".run(listener, decisions"));
+    assert!(!example_source.contains("axum::serve("));
+    assert!(!example_source.contains("build_reference_app_router("));
+
+    let shutdown = runtime.shutdown().await;
+    assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
+    shutdown.mob_stop.expect("mob runtime should stop cleanly");
 }
 
 #[test]
-fn dec_007_invalid_metadata_branches() {
-    let duplicate = r#"{"targets":["crates.io","crates.io","npm","pypi","github-releases"],"support_matrix":"same-as-meerkat"}"#;
-    let err = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "ds".to_string(),
-            table: "tb".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy::default(),
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy::default(),
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: duplicate.to_string(),
+fn sc_001_reference_app_router_proves_unified_owned_stream_ingress_path() {
+    let unified_runtime_source = include_str!("../src/unified_runtime.rs");
+    assert!(unified_runtime_source.contains(".merge(self.build_console_frontend_router())"));
+    assert!(unified_runtime_source.contains(".merge(self.build_interaction_sse_router())"));
+    assert!(unified_runtime_source.contains("interaction_sse_router_with_injector"));
+    assert!(!unified_runtime_source.contains("interaction_sse_router(self.mob_runtime.clone())"));
+}
+
+#[tokio::test]
+async fn req_002_router_builders_prove_console_and_sse_behavior() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "phase2-router-builder-proof".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(1))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("lead", "router"))
+        .await
+        .expect("spawn router member");
+
+    let console_router = runtime.build_console_json_router(decision_state());
+    let console_response = console_router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/modules")
+                .body(Body::empty())
+                .expect("console request"),
+        )
+        .await
+        .expect("console response");
+    assert_eq!(console_response.status(), StatusCode::OK);
+    let console_body = to_bytes(console_response.into_body(), 1024 * 1024)
+        .await
+        .expect("console body");
+    let console_body_text = String::from_utf8(console_body.to_vec()).expect("utf8 console body");
+    assert!(console_body_text.contains("\"modules\":[\"router\",\"delivery\"]"));
+
+    let frontend_router = runtime.build_console_frontend_router();
+    let frontend_response = frontend_router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console")
+                .body(Body::empty())
+                .expect("frontend request"),
+        )
+        .await
+        .expect("frontend response");
+    assert_eq!(frontend_response.status(), StatusCode::OK);
+    assert!(frontend_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/html")));
+    let frontend_body = to_bytes(frontend_response.into_body(), 1024 * 1024)
+        .await
+        .expect("frontend body");
+    let frontend_body_text = String::from_utf8(frontend_body.to_vec()).expect("utf8 frontend body");
+    assert!(frontend_body_text.contains("/console/assets/console-app.js"));
+
+    let sse_router = runtime.build_interaction_sse_router();
+    let request_body = json!({
+        "member_id": "router",
+        "message": "hello from router builder test"
     })
-    .expect_err("duplicate should fail");
-    assert_eq!(
-        err,
-        DecisionRuntimeError::Policy(DecisionPolicyError::DuplicateReleaseTarget(
-            "crates.io".to_string()
-        ))
+    .to_string();
+    let sse_response = sse_router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/interactions/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(request_body))
+                .expect("sse request"),
+        )
+        .await
+        .expect("sse response");
+    assert_eq!(sse_response.status(), StatusCode::OK);
+    assert!(sse_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream")));
+
+    let sse_body = tokio::time::timeout(
+        Duration::from_secs(20),
+        to_bytes(sse_response.into_body(), 2 * 1024 * 1024),
+    )
+    .await
+    .expect("sse stream completed within timeout")
+    .expect("sse body");
+    let sse_body_text = String::from_utf8(sse_body.to_vec()).expect("utf8 sse body");
+    assert!(sse_body_text.contains("event: interaction_started"));
+    assert!(sse_body_text.matches("event: ").count() >= 2);
+
+    let shutdown = runtime.shutdown().await;
+    assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
+    shutdown.mob_stop.expect("mob runtime should stop cleanly");
+}
+
+#[tokio::test]
+async fn req_002_serve_proves_reference_console_route_behavior() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "phase2-serve-proof".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(1))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let address = listener.local_addr().expect("listener address");
+    let decisions = decision_state();
+
+    let response = {
+        let serve = runtime.serve(listener, decisions);
+        tokio::pin!(serve);
+        tokio::select! {
+            serve_result = &mut serve => panic!("serve returned unexpectedly: {serve_result:?}"),
+            response = get_raw(address, "/console/experience", Duration::from_secs(10)) => response,
+        }
+    };
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected HTTP 200 response, got: {response}"
+    );
+    assert!(response.contains("\"contract_version\":\"0.1.0\""));
+    assert!(response.contains("\"stream_route\":\"/interactions/stream\""));
+
+    let shutdown = runtime.shutdown().await;
+    assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
+    shutdown.mob_stop.expect("mob runtime should stop cleanly");
+}
+
+#[tokio::test]
+async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "phase2-e2e-sse".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(1))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("lead", "router"))
+        .await
+        .expect("spawn router member");
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind listener");
+    let address = listener.local_addr().expect("listener address");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let decisions = decision_state();
+
+    let server = tokio::spawn(async move {
+        runtime
+            .run(listener, decisions, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+    });
+
+    let console_response = get_raw(address, "/console/modules", Duration::from_secs(10)).await;
+    assert!(
+        console_response.starts_with("HTTP/1.1 200"),
+        "expected HTTP 200 response from /console/modules, got: {console_response}"
+    );
+    assert!(console_response.contains("\"modules\":[\"router\",\"delivery\"]"));
+
+    let request_body = json!({
+        "member_id": "router",
+        "message": "hello from phase2 e2e"
+    })
+    .to_string();
+    let response =
+        post_interactions_stream_raw(address, &request_body, Duration::from_secs(20)).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected HTTP 200 response, got: {response}"
+    );
+    assert!(
+        response.contains("Content-Type: text/event-stream")
+            || response.contains("content-type: text/event-stream"),
+        "expected SSE content type, got: {response}"
+    );
+    assert!(response.contains("event: interaction_started"));
+    assert!(response.matches("event: ").count() >= 2);
+
+    shutdown_tx.send(()).expect("signal runtime shutdown");
+    let run_report = server.await.expect("server join");
+    assert!(
+        run_report.serve_result.is_ok(),
+        "serve failed: {:?}",
+        run_report.serve_result
+    );
+    assert_eq!(run_report.shutdown.module_shutdown.orphan_processes, 0);
+    run_report
+        .shutdown
+        .mob_stop
+        .expect("mob runtime should stop cleanly");
+}
+
+#[tokio::test]
+async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .module_config(MobKitConfig {
+            modules: vec![shell_module(
+                "router",
+                r#"printf '%s\n' '{"event_id":"evt-router-ready","source":"module","timestamp_ms":10,"event":{"kind":"module","module":"router","event_type":"ready","payload":{"ok":true}}}'; exec sleep 30"#,
+            )],
+            discovery: DiscoverySpec {
+                namespace: "phase2-reconcile-routing".to_string(),
+                modules: vec!["router".to_string()],
+            },
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    assert!(
+        runtime
+            .loaded_modules()
+            .iter()
+            .any(|module_id| module_id == "router"),
+        "router should be loaded for reconcile routing test; got {:?}",
+        runtime.loaded_modules()
     );
 
-    let missing = r#"{"targets":["crates.io","npm","pypi"],"support_matrix":"same-as-meerkat"}"#;
-    let err = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "ds".to_string(),
-            table: "tb".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy::default(),
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy::default(),
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: missing.to_string(),
-    })
-    .expect_err("missing should fail");
+    let first_reconcile = runtime
+        .reconcile(vec![
+            spawn_spec("lead", "router"),
+            spawn_spec("lead", "delivery"),
+        ])
+        .await
+        .expect("first reconcile succeeds");
+    assert!(first_reconcile.routing.router_module_loaded);
     assert_eq!(
-        err,
-        DecisionRuntimeError::Policy(DecisionPolicyError::MissingReleaseTarget(
-            "github-releases".to_string()
-        ))
+        first_reconcile.routing.active_members,
+        vec!["delivery", "router"]
+    );
+    assert_eq!(
+        first_reconcile.routing.added_route_keys,
+        vec!["mob.member.delivery", "mob.member.router"]
+    );
+    assert!(first_reconcile.routing.removed_route_keys.is_empty());
+
+    let second_reconcile = runtime
+        .reconcile(vec![spawn_spec("lead", "router")])
+        .await
+        .expect("second reconcile succeeds");
+    assert_eq!(second_reconcile.mob.retired, vec!["delivery"]);
+    assert_eq!(
+        second_reconcile.routing.active_members,
+        vec!["router".to_string()]
+    );
+    assert!(second_reconcile.routing.added_route_keys.is_empty());
+    assert_eq!(
+        second_reconcile.routing.removed_route_keys,
+        vec!["mob.member.delivery".to_string()]
     );
 
-    let invalid_matrix =
-        r#"{"targets":["crates.io","npm","pypi","github-releases"],"support_matrix":"custom"}"#;
-    let err = build_runtime_decision_state(RuntimeDecisionInputs {
-        bigquery: BigQueryNaming {
-            dataset: "ds".to_string(),
-            table: "tb".to_string(),
-        },
-        trusted_mobkit_toml: trusted_toml(),
-        auth: AuthPolicy::default(),
-        trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy::default(),
-        ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: invalid_matrix.to_string(),
-    })
-    .expect_err("invalid matrix should fail");
-    assert_eq!(
-        err,
-        DecisionRuntimeError::Policy(DecisionPolicyError::InvalidSupportMatrix(
-            "custom".to_string()
-        ))
-    );
+    let shutdown = runtime.shutdown().await;
+    assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
+    shutdown.mob_stop.expect("mob runtime should stop cleanly");
+}
+
+#[tokio::test]
+async fn req_008_reconcile_route_mutation_failure_is_typed() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase2_mob_spec(&temp_dir))
+        .module_config(MobKitConfig {
+            modules: vec![shell_module(
+                "router",
+                r#"printf '%s\n' '{"event_id":"evt-router-ready","source":"module","timestamp_ms":10,"event":{"kind":"module","module":"router","event_type":"ready","payload":{"ok":true}}}'; exec sleep 30"#,
+            )],
+            discovery: DiscoverySpec {
+                namespace: "phase2-reconcile-route-mutation".to_string(),
+                modules: vec!["router".to_string()],
+            },
+            pre_spawn: vec![],
+        })
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    let reconcile_error = runtime
+        .reconcile(vec![spawn_spec("lead", "   ")])
+        .await
+        .expect_err("blank member id should fail with route mutation");
+    assert!(matches!(
+        reconcile_error,
+        UnifiedRuntimeReconcileError::RouteMutation(RuntimeRouteMutationError::EmptyRecipient)
+    ));
+
+    let shutdown = runtime.shutdown().await;
+    assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
+    shutdown.mob_stop.expect("mob runtime should stop cleanly");
 }

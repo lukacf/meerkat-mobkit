@@ -1,23 +1,76 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::{future::Future, pin::Pin};
 
 use axum::body::{to_bytes, Body};
 use axum::http::{Request, StatusCode};
 use axum::Router;
 use meerkat::{build_ephemeral_service, AgentFactory, Config};
-use meerkat_client::TestClient;
+use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
+use meerkat_core::StopReason;
 use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
+use meerkat_mobkit_core::http_sse::interaction_sse_router_with_keep_alive_interval;
 use meerkat_mobkit_core::{
     interaction_sse_router, MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime,
 };
 use serde_json::json;
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 use tower::ServiceExt;
 
 struct RuntimeFixture {
     _temp_dir: TempDir,
     runtime: RealMobRuntime,
+}
+
+struct DelayedTestClient {
+    delay: Duration,
+}
+
+impl DelayedTestClient {
+    fn new(delay: Duration) -> Self {
+        Self { delay }
+    }
+}
+
+impl LlmClient for DelayedTestClient {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a LlmRequest,
+    ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        let delay = self.delay;
+        Box::pin(async_stream::stream! {
+            tokio::time::sleep(delay).await;
+            yield Ok(LlmEvent::TextDelta {
+                delta: "ok".to_string(),
+                meta: None,
+            });
+            tokio::time::sleep(delay).await;
+            yield Ok(LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success {
+                    stop_reason: StopReason::EndTurn,
+                },
+            });
+        })
+    }
+
+    fn provider(&self) -> &'static str {
+        "delayed-test"
+    }
+
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 fn spawn_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
@@ -31,6 +84,12 @@ fn spawn_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
 }
 
 async fn build_runtime_fixture() -> RuntimeFixture {
+    build_runtime_fixture_with_client(Arc::new(TestClient::default())).await
+}
+
+async fn build_runtime_fixture_with_client(
+    default_llm_client: Arc<dyn LlmClient>,
+) -> RuntimeFixture {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let session_path = temp_dir.path().join("sessions");
     std::fs::create_dir_all(&session_path).expect("session path");
@@ -65,7 +124,7 @@ comms = true
             MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
-                default_llm_client: Some(Arc::new(TestClient::default())),
+                default_llm_client: Some(default_llm_client),
             },
         ),
     )
@@ -102,6 +161,71 @@ async fn send_interaction_request(
         .expect("response body");
     let parsed = serde_json::from_slice::<Value>(&body).expect("json error payload");
     (status, parsed)
+}
+
+async fn start_http_server(
+    app: Router,
+) -> (std::net::SocketAddr, oneshot::Sender<()>, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral listener");
+    let address = listener.local_addr().expect("listener address");
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("serve interactions stream endpoint");
+    });
+    (address, shutdown_tx, server)
+}
+
+async fn post_interactions_stream_raw(
+    address: std::net::SocketAddr,
+    request_body: &str,
+    timeout: Duration,
+) -> String {
+    let mut stream = TcpStream::connect(address)
+        .await
+        .expect("connect stream endpoint");
+    let request = format!(
+        "POST /interactions/stream HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{request_body}",
+        request_body.len()
+    );
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("write request");
+    stream.flush().await.expect("flush request");
+
+    let mut bytes = Vec::new();
+    let keep_alive_marker = b": keep-alive";
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let mut chunk = [0_u8; 4096];
+        match tokio::time::timeout(remaining, stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(read)) => {
+                bytes.extend_from_slice(&chunk[..read]);
+                if bytes
+                    .windows(keep_alive_marker.len())
+                    .any(|window| window == keep_alive_marker)
+                {
+                    break;
+                }
+            }
+            Ok(Err(err)) => panic!("read response failed: {err}"),
+            Err(_) => break,
+        }
+    }
+
+    String::from_utf8(bytes).expect("utf8 response")
 }
 
 #[tokio::test]
@@ -303,4 +427,58 @@ async fn phase_a_http_004_internal_runtime_error_returns_500_sanitized_payload()
             "error": "internal_server_error"
         })
     );
+}
+
+#[tokio::test]
+async fn phase_a_http_005_keep_alive() {
+    let fixture = build_runtime_fixture_with_client(Arc::new(DelayedTestClient::new(
+        Duration::from_millis(150),
+    )))
+    .await;
+    fixture
+        .runtime
+        .spawn(spawn_spec("lead", "lead-1"))
+        .await
+        .expect("spawn lead");
+
+    let app = interaction_sse_router_with_keep_alive_interval(
+        fixture.runtime.clone(),
+        Duration::from_millis(10),
+    );
+    let (address, shutdown_tx, server_handle) = start_http_server(app).await;
+
+    let request_body = json!({
+        "member_id": "lead-1",
+        "message": "Reply in one sentence."
+    })
+    .to_string();
+    let response =
+        post_interactions_stream_raw(address, &request_body, Duration::from_secs(5)).await;
+
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "expected HTTP 200 response, got: {response}"
+    );
+    let normalized = response.to_ascii_lowercase();
+    assert!(
+        normalized.contains("content-type: text/event-stream"),
+        "expected SSE content-type header, got: {response}"
+    );
+    assert!(
+        response.contains(": keep-alive"),
+        "expected keep-alive marker in SSE stream, got: {response}"
+    );
+
+    let _ = shutdown_tx.send(());
+    tokio::time::timeout(Duration::from_secs(2), server_handle)
+        .await
+        .expect("server should shut down")
+        .expect("server task should complete");
+
+    fixture
+        .runtime
+        .handle()
+        .retire_all()
+        .await
+        .expect("retire all");
 }

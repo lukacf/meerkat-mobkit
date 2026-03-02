@@ -1,5 +1,5 @@
 use std::io::{BufRead, BufReader};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -42,11 +42,14 @@ pub fn run_process_json_line(
 
     match rx.recv_timeout(timeout) {
         Ok((Ok(0), _)) => {
-            let _ = child.wait();
+            wait_with_context(&mut child, "failed to wait for process after empty output")?;
             Err(ProcessBoundaryError::EmptyOutput)
         }
         Ok((Ok(_), mut line)) => {
-            let _ = child.wait();
+            wait_with_context(
+                &mut child,
+                "failed to wait for process after reading output",
+            )?;
             if line.ends_with('\n') {
                 line.pop();
                 if line.ends_with('\r') {
@@ -59,15 +62,144 @@ pub fn run_process_json_line(
             Ok(line)
         }
         Ok((Err(err), _)) => {
-            let _ = child.wait();
+            wait_with_context(
+                &mut child,
+                "failed to wait for process after stdout read failure",
+            )?;
             Err(ProcessBoundaryError::Io(err))
         }
         Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            Err(ProcessBoundaryError::Timeout {
-                timeout_ms: timeout.as_millis() as u64,
-            })
+            let timeout_ms = timeout.as_millis() as u64;
+            cleanup_timeout_with_process(&mut child, timeout_ms)?;
+            Err(ProcessBoundaryError::Timeout { timeout_ms })
         }
+    }
+}
+
+fn wait_with_context(child: &mut Child, context: &str) -> Result<(), ProcessBoundaryError> {
+    child
+        .wait()
+        .map(|_| ())
+        .map_err(|err| ProcessBoundaryError::Io(format!("{context}: {err}")))
+}
+
+fn cleanup_timeout_with_process(
+    child: &mut Child,
+    timeout_ms: u64,
+) -> Result<(), ProcessBoundaryError> {
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => {
+            return Err(ProcessBoundaryError::Io(format!(
+                "failed to probe process status after timeout({timeout_ms}ms): {error}"
+            )));
+        }
+    }
+
+    if let Err(kill_error) = child.kill() {
+        return match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err(ProcessBoundaryError::Io(format!(
+                "failed to kill process after timeout({timeout_ms}ms): {kill_error}"
+            ))),
+            Err(probe_error) => Err(ProcessBoundaryError::Io(format!(
+                "failed to kill process after timeout({timeout_ms}ms): {kill_error}; failed to probe process status: {probe_error}"
+            ))),
+        };
+    }
+
+    child.wait().map(|_| ()).map_err(|error| {
+        ProcessBoundaryError::Io(format!(
+            "failed to wait for process after timeout kill({timeout_ms}ms): {error}"
+        ))
+    })
+}
+
+#[cfg(test)]
+fn cleanup_timeout_with_ops<FTryWait, FKill, FWait>(
+    timeout_ms: u64,
+    mut try_wait: FTryWait,
+    mut kill: FKill,
+    mut wait: FWait,
+) -> Result<(), ProcessBoundaryError>
+where
+    FTryWait: FnMut() -> std::io::Result<Option<()>>,
+    FKill: FnMut() -> std::io::Result<()>,
+    FWait: FnMut() -> std::io::Result<()>,
+{
+    match try_wait() {
+        Ok(Some(())) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => {
+            return Err(ProcessBoundaryError::Io(format!(
+                "failed to probe process status after timeout({timeout_ms}ms): {error}"
+            )));
+        }
+    }
+
+    if let Err(kill_error) = kill() {
+        return match try_wait() {
+            Ok(Some(())) => Ok(()),
+            Ok(None) => Err(ProcessBoundaryError::Io(format!(
+                "failed to kill process after timeout({timeout_ms}ms): {kill_error}"
+            ))),
+            Err(probe_error) => Err(ProcessBoundaryError::Io(format!(
+                "failed to kill process after timeout({timeout_ms}ms): {kill_error}; failed to probe process status: {probe_error}"
+            ))),
+        };
+    }
+
+    wait().map_err(|error| {
+        ProcessBoundaryError::Io(format!(
+            "failed to wait for process after timeout kill({timeout_ms}ms): {error}"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::{cleanup_timeout_with_ops, ProcessBoundaryError};
+
+    #[test]
+    fn timeout_cleanup_handles_kill_race_without_type_drift() {
+        let mut try_wait_results = vec![Ok(None), Ok(Some(()))].into_iter();
+        let mut kill_attempts = 0;
+        let result = cleanup_timeout_with_ops(
+            25,
+            || try_wait_results.next().expect("try_wait result"),
+            || {
+                kill_attempts += 1;
+                Err(io::Error::new(io::ErrorKind::NotFound, "already exited"))
+            },
+            || panic!("wait must not run when process already exited"),
+        );
+
+        assert_eq!(kill_attempts, 1);
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn timeout_cleanup_returns_io_on_fatal_kill_failure() {
+        let mut try_wait_results = vec![Ok(None), Ok(None)].into_iter();
+        let result = cleanup_timeout_with_ops(
+            25,
+            || try_wait_results.next().expect("try_wait result"),
+            || {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "permission denied",
+                ))
+            },
+            || Ok(()),
+        );
+
+        assert!(matches!(
+            result,
+            Err(ProcessBoundaryError::Io(message))
+                if message.contains("failed to kill process after timeout(25ms)")
+        ));
     }
 }

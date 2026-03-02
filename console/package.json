@@ -5,10 +5,14 @@
   "type": "commonjs",
   "main": "index.cjs",
   "scripts": {
-    "smoke": "npm install --silent --no-fund --no-audit && node smoke.cjs"
+    "build": "npm install --silent --no-fund --no-audit && node build.cjs",
+    "smoke": "npm run build --silent && node smoke.cjs",
+    "e2e:browser": "npm run build --silent && node browser-e2e.cjs"
   },
   "dependencies": {
+    "esbuild": "0.25.10",
     "jsdom": "24.1.0",
+    "playwright": "1.55.0",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   }

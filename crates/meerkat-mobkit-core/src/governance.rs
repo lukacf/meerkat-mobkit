@@ -1,6 +1,14 @@
 use std::fmt;
 
-pub const STRICT_TRACEABILITY_STATUSES: &[&str] = &["MISSING", "TYPED_ONLY", "WIRED"];
+pub const STRICT_TRACEABILITY_STATUSES: &[&str] = &[
+    "TYPED",
+    "WIRED",
+    "VALIDATED",
+    "PROVISIONAL",
+    "MISSING",
+    "DEFERRED",
+    "STUBBED",
+];
 const REQUIRED_GOVERNANCE_STATE: &str = "realignment_in_progress";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -9,6 +17,7 @@ pub enum GovernanceValidationError {
     InvalidGovernanceState { file: String, found: String },
     NoTraceabilityRows,
     InvalidTraceabilityStatus { line: usize, status: String },
+    MissingTraceabilityEvidence { line: usize },
     InvalidTraceabilityRow { line: usize },
 }
 
@@ -27,6 +36,9 @@ impl fmt::Display for GovernanceValidationError {
                 f,
                 "invalid traceability status at line {line}: {status}"
             ),
+            Self::MissingTraceabilityEvidence { line } => {
+                write!(f, "missing traceability evidence/link at line {line}")
+            }
             Self::InvalidTraceabilityRow { line } => {
                 write!(f, "invalid traceability row format at line {line}")
             }
@@ -65,27 +77,60 @@ pub fn validate_governance_state(
 
 pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceValidationError> {
     let mut seen_rows = false;
+    let mut status_column = None;
+    let mut evidence_or_link_column = None;
+    let mut header_line = None;
 
     for (idx, line) in markdown.lines().enumerate() {
         let trimmed = line.trim();
-        if !trimmed.starts_with("| TR-") {
+        if !trimmed.starts_with('|') {
             continue;
         }
 
-        seen_rows = true;
         let columns = trimmed
+            .trim_start_matches('|')
+            .trim_end_matches('|')
             .split('|')
             .map(|part| part.trim())
             .collect::<Vec<_>>();
 
-        // Rows are expected as:
-        // | Trace-ID | Requirement ID | Phase | Evidence Log | Status |
-        // With leading/trailing separators split() yields 7 entries.
-        if columns.len() < 7 {
+        if columns.is_empty()
+            || columns
+                .iter()
+                .all(|column| !column.is_empty() && column.chars().all(|ch| ch == '-' || ch == ':'))
+        {
+            continue;
+        }
+
+        if status_column.is_none() {
+            header_line = Some(idx + 1);
+            status_column = columns
+                .iter()
+                .position(|column| column.eq_ignore_ascii_case("Status"));
+            evidence_or_link_column = columns
+                .iter()
+                .position(|column| is_evidence_or_link_column(column));
+            continue;
+        }
+
+        let Some(status_column) = status_column else {
+            continue;
+        };
+        let Some(evidence_or_link_column) = evidence_or_link_column else {
+            return Err(GovernanceValidationError::InvalidTraceabilityRow {
+                line: header_line.unwrap_or(idx + 1),
+            });
+        };
+        if columns.len() <= status_column || columns.len() <= evidence_or_link_column {
             return Err(GovernanceValidationError::InvalidTraceabilityRow { line: idx + 1 });
         }
 
-        let status = columns[5];
+        seen_rows = true;
+        let evidence = columns[evidence_or_link_column].trim_matches('`').trim();
+        if is_missing_evidence(evidence) {
+            return Err(GovernanceValidationError::MissingTraceabilityEvidence { line: idx + 1 });
+        }
+        let status = columns[status_column].trim_matches('`');
         if !STRICT_TRACEABILITY_STATUSES.contains(&status) {
             return Err(GovernanceValidationError::InvalidTraceabilityStatus {
                 line: idx + 1,
@@ -99,6 +144,27 @@ pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceVa
     }
 
     Ok(())
+}
+
+fn is_evidence_or_link_column(column: &str) -> bool {
+    let normalized = column
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    normalized.contains("evidence") || normalized.contains("link")
+}
+
+fn is_missing_evidence(value: &str) -> bool {
+    if value.is_empty() {
+        return true;
+    }
+
+    let normalized = value.to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "-" | "--" | "n/a" | "na" | "none" | "null" | "todo" | "tbd" | "placeholder"
+    )
 }
 
 pub fn validate_phase0_governance_contracts(
