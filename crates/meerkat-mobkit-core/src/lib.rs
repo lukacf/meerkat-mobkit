@@ -1,6 +1,10 @@
 pub mod auth;
 pub mod baseline;
 pub mod decisions;
+pub mod governance;
+pub mod http_console;
+pub mod http_sse;
+pub mod mob_handle_runtime;
 pub mod mocks;
 pub mod process;
 pub mod protocol;
@@ -25,6 +29,21 @@ pub use decisions::{
     ConsolePolicy, DecisionPolicyError, MetricsPolicy, ReleaseMetadata, RuntimeOpsPolicy,
     REQUIRED_RELEASE_TARGETS,
 };
+pub use governance::{
+    validate_governance_state, validate_phase0_governance_contracts,
+    validate_traceability_statuses, GovernanceValidationError, STRICT_TRACEABILITY_STATUSES,
+};
+pub use http_console::{
+    build_reference_app_router, console_json_handler, console_json_router,
+    console_json_router_with_runtime, ConsoleJsonState,
+};
+pub use http_sse::{
+    agent_event_sse, interaction_sse_handler, interaction_sse_router, InjectSseRequest,
+};
+pub use mob_handle_runtime::{
+    MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot, MobReconcileOptions,
+    MobReconcileReport, MobRuntimeError, RealInteractionSubscription, RealMobRuntime,
+};
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{run_process_json_line, ProcessBoundaryError};
 pub use protocol::{parse_module_event_line, parse_unified_event_line, ProtocolParseError};
@@ -35,27 +54,28 @@ pub use rpc::{
 pub use rpc::{parse_rpc_capabilities, RpcCapabilities, RpcCapabilitiesError};
 pub use runtime::{
     build_runtime_decision_state, evaluate_schedules_at_tick, handle_console_rest_json_route,
-    materialize_latest_session_rows, materialize_live_session_rows, normalize_event_line,
-    route_module_call, route_module_call_rpc_json, route_module_call_rpc_subprocess,
-    run_discovered_module_once, run_meerkat_baseline_verification_once, run_module_boundary_once,
+    handle_console_rest_json_route_with_snapshot, materialize_latest_session_rows,
+    materialize_live_session_rows, normalize_event_line, route_module_call,
+    route_module_call_rpc_json, route_module_call_rpc_subprocess, run_discovered_module_once,
+    run_meerkat_baseline_verification_once, run_module_boundary_once,
     run_rpc_capabilities_boundary_once, session_store_contracts, start_mobkit_runtime,
     start_mobkit_runtime_with_options, BaselineRuntimeError, BigQuerySessionStoreAdapter,
-    BigQuerySessionStoreError, ConfigResolutionError, ConsoleRestJsonRequest,
+    BigQuerySessionStoreError, ConfigResolutionError, ConsoleLiveSnapshot, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DecisionRuntimeError, ElephantMemoryBackendConfig,
     ElephantMemoryStoreError, GatingAuditEntry, GatingDecideError, GatingDecideRequest,
     GatingDecision, GatingDecisionResult, GatingEvaluateRequest, GatingEvaluateResult,
     GatingOutcome, GatingPendingEntry, GatingRiskTier, JsonFileSessionStore,
     JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent, LifecycleStage,
-    MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
+    McpBoundaryError, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
     MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult, MemoryStoreInfo,
     MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState, ModuleHealthTransition,
     ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse, NormalizationError, RpcRouteError,
     RpcRuntimeError, RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState,
     RuntimeFromConfigError, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
     RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
-    ScheduleDispatchReport, ScheduleEvaluation, ScheduleTrigger, SchedulingSupervisorSignal,
-    SessionPersistenceRow, SessionStoreContract, SessionStoreKind, SupervisorReport,
-    TrustedOidcRuntimeConfig,
+    ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
+    SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
+    SupervisorReport, TrustedOidcRuntimeConfig,
 };
 pub use types::{
     DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent, PreSpawnData,

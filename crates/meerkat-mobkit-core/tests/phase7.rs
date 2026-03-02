@@ -62,7 +62,7 @@ fn decision_state() -> meerkat_mobkit_core::RuntimeDecisionState {
 fn trusted_oidc() -> TrustedOidcRuntimeConfig {
     TrustedOidcRuntimeConfig {
         discovery_json:
-            r#"{"issuer":"https://trusted.mobkit.local","jwks_uri":"https://trusted.mobkit.local/.well-known/jwks.json"}"#
+            r#"{"issuer":"https://trusted.mobkit.localhost","jwks_uri":"https://trusted.mobkit.localhost/.well-known/jwks.json"}"#
                 .to_string(),
         jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"},{"kid":"kid-next","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtbmV4dC1zZWNyZXQ"}]}"#.to_string(),
         audience: "meerkat-console".to_string(),
@@ -306,7 +306,7 @@ fn phase7_runtime_token_auth_middleware_flow() {
             "sub":"svc:delivery-bot",
             "actor_type":"service",
             "provider":"generic_oidc",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "exp":4_000_000_000_u64
         }),
@@ -327,7 +327,7 @@ fn phase7_runtime_token_auth_middleware_flow() {
             "sub":"svc:delivery-bot",
             "actor_type":"service",
             "provider":"generic_oidc",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"wrong-aud",
             "exp":4_000_000_000_u64
         }),
@@ -396,7 +396,7 @@ fn phase7_sc_001_key_rotation_new_key_passes_stale_key_fails() {
             "sub":"user-rot",
             "email":"alice@example.com",
             "provider":"google_oauth",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "exp":4_000_000_000_u64
         }),
@@ -408,7 +408,7 @@ fn phase7_sc_001_key_rotation_new_key_passes_stale_key_fails() {
             "sub":"user-rot",
             "email":"alice@example.com",
             "provider":"google_oauth",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "exp":4_000_000_000_u64
         }),
@@ -445,7 +445,7 @@ fn phase7_config_flow_trusted_oidc_values_control_auth_outcome() {
     let mut strict = decision_state();
     strict.trusted_oidc = TrustedOidcRuntimeConfig {
         discovery_json:
-            r#"{"issuer":"https://strict.issuer.local","jwks_uri":"https://strict.issuer.local/jwks"}"#
+            r#"{"issuer":"https://strict.issuer.localhost","jwks_uri":"https://strict.issuer.localhost/jwks"}"#
                 .to_string(),
         jwks_json: r#"{"keys":[{"kid":"strict-kid","kty":"oct","alg":"HS256","k":"c3RyaWN0LXNlY3JldA"}]}"#.to_string(),
         audience: "strict-aud".to_string(),
@@ -455,7 +455,7 @@ fn phase7_config_flow_trusted_oidc_values_control_auth_outcome() {
             "sub":"u1",
             "email":"alice@example.com",
             "provider":"google_oauth",
-            "iss":"https://strict.issuer.local",
+            "iss":"https://strict.issuer.localhost",
             "aud":"strict-aud",
             "exp":4_000_000_000_u64
         }),
@@ -496,7 +496,7 @@ fn phase7_non_test_ingress_caller_routes_console_auth() {
             "sub":"ingress-user",
             "email":"alice@example.com",
             "provider":"google_oauth",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "exp":4_000_000_000_u64
         }),

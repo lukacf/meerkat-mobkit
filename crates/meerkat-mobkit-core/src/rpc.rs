@@ -5,15 +5,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::runtime::{
-    handle_console_rest_json_route, route_module_call, validate_schedules, ConsoleRestJsonRequest,
+    handle_console_rest_json_route, route_module_call, validate_schedules,
+    BigQuerySessionStoreAdapter, BigQuerySessionStoreError, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
     ElephantMemoryStoreError, GatingDecideError, GatingDecideRequest, GatingDecision,
     GatingEvaluateRequest, GatingRiskTier, MemoryIndexError, MemoryIndexRequest,
-    MemoryQueryRequest, MobkitRuntimeHandle,
-    ModuleRouteError, ModuleRouteRequest, RoutingResolveError, RoutingResolveRequest,
-    RuntimeDecisionState, RuntimeRoute, RuntimeRouteMutationError, ScheduleDefinition,
-    ScheduleValidationError, SubscribeError, SubscribeRequest, SubscribeScope,
-    ROUTING_RETRY_MAX_CAP,
+    MemoryQueryRequest, MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest,
+    RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState, RuntimeRoute,
+    RuntimeRouteMutationError, ScheduleDefinition, ScheduleValidationError, SessionPersistenceRow,
+    SubscribeError, SubscribeRequest, SubscribeScope, ROUTING_RETRY_MAX_CAP,
 };
 
 pub const MOBKIT_CONTRACT_VERSION: &str = "0.1.0";
@@ -80,6 +80,26 @@ pub struct JsonRpcResponse {
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<JsonRpcError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BigQuerySessionStoreOperation {
+    StreamInsert,
+    ReadAll,
+    ReadLatest,
+    ReadLive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BigQuerySessionStoreRequest {
+    operation: BigQuerySessionStoreOperation,
+    dataset: String,
+    table: String,
+    project_id: Option<String>,
+    access_token: Option<String>,
+    api_base_url: Option<String>,
+    timeout_ms: Option<u64>,
+    rows: Vec<SessionPersistenceRow>,
 }
 
 pub fn handle_mobkit_rpc_json(
@@ -173,6 +193,7 @@ pub fn handle_mobkit_rpc_json(
                     "mobkit/memory/stores",
                     "mobkit/memory/index",
                     "mobkit/memory/query",
+                    "mobkit/session_store/bigquery",
                     "mobkit/gating/evaluate",
                     "mobkit/gating/pending",
                     "mobkit/gating/decide",
@@ -490,39 +511,25 @@ pub fn handle_mobkit_rpc_json(
                 }),
             },
         },
-        "mobkit/memory/index" => {
-            match parse_memory_index_params(&request.params) {
-                Ok(index_request) => match runtime.memory_index(index_request) {
-                    Ok(indexed) => JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: response_id.clone(),
-                        result: Some(serde_json::to_value(indexed).unwrap_or(Value::Null)),
-                        error: None,
-                    },
-                    Err(MemoryIndexError::BackendPersistFailed(error)) => JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: response_id.clone(),
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32010,
-                            message: format!(
-                                "Memory backend unavailable: {}",
-                                MemoryParamsError::backend_message(&error)
-                            ),
-                        }),
-                    },
-                    Err(err) => JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
-                        id: response_id.clone(),
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: -32602,
-                            message: format!(
-                                "Invalid params: {}",
-                                MemoryParamsError::Index(err).message()
-                            ),
-                        }),
-                    },
+        "mobkit/memory/index" => match parse_memory_index_params(&request.params) {
+            Ok(index_request) => match runtime.memory_index(index_request) {
+                Ok(indexed) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::to_value(indexed).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Err(MemoryIndexError::BackendPersistFailed(error)) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32010,
+                        message: format!(
+                            "Memory backend unavailable: {}",
+                            MemoryParamsError::backend_message(&error)
+                        ),
+                    }),
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: "2.0".to_string(),
@@ -530,11 +537,23 @@ pub fn handle_mobkit_rpc_json(
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
-                        message: format!("Invalid params: {}", err.message()),
+                        message: format!(
+                            "Invalid params: {}",
+                            MemoryParamsError::Index(err).message()
+                        ),
                     }),
                 },
-            }
-        }
+            },
+            Err(err) => JsonRpcResponse {
+                jsonrpc: "2.0".to_string(),
+                id: response_id.clone(),
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Invalid params: {}", err.message()),
+                }),
+            },
+        },
         "mobkit/memory/query" => match parse_memory_query_params(&request.params) {
             Ok(query_request) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
@@ -555,6 +574,39 @@ pub fn handle_mobkit_rpc_json(
                 }),
             },
         },
+        "mobkit/session_store/bigquery" => {
+            match parse_bigquery_session_store_params(&request.params)
+                .and_then(run_bigquery_session_store_request)
+            {
+                Ok(result) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: response_id.clone(),
+                    result: Some(result),
+                    error: None,
+                },
+                Err(BigQuerySessionStoreRpcError::Params(message)) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {message}"),
+                    }),
+                },
+                Err(BigQuerySessionStoreRpcError::Store(error)) => JsonRpcResponse {
+                    jsonrpc: "2.0".to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32011,
+                        message: format!(
+                            "BigQuery session store request failed: {}",
+                            format_bigquery_store_error(&error)
+                        ),
+                    }),
+                },
+            }
+        }
         "mobkit/gating/evaluate" => match parse_gating_evaluate_params(&request.params) {
             Ok(gating_request) => JsonRpcResponse {
                 jsonrpc: "2.0".to_string(),
@@ -791,6 +843,12 @@ enum MemoryParamsError {
     EntityMustBeString,
     TopicMustBeString,
     Index(MemoryIndexError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BigQuerySessionStoreRpcError {
+    Params(String),
+    Store(BigQuerySessionStoreError),
 }
 
 impl RoutingDeliveryParamsError {
@@ -1094,6 +1152,207 @@ impl SubscribeParamsError {
             SubscribeParamsError::Runtime(SubscribeError::InvalidAgentId) => {
                 "agent_id cannot be empty when scope is 'agent'".to_string()
             }
+        }
+    }
+}
+
+fn parse_bigquery_session_store_params(
+    params: &Value,
+) -> Result<BigQuerySessionStoreRequest, BigQuerySessionStoreRpcError> {
+    let object = params.as_object().ok_or_else(|| {
+        BigQuerySessionStoreRpcError::Params("params must be a JSON object".to_string())
+    })?;
+
+    let operation_raw = object
+        .get("operation")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            BigQuerySessionStoreRpcError::Params(
+                "operation must be one of: stream_insert_rows, read_rows, read_latest_rows, read_live_rows"
+                    .to_string(),
+            )
+        })?;
+    let operation = match operation_raw {
+        "stream_insert_rows" | "stream_insert" => BigQuerySessionStoreOperation::StreamInsert,
+        "read_rows" => BigQuerySessionStoreOperation::ReadAll,
+        "read_latest_rows" | "read_latest" => BigQuerySessionStoreOperation::ReadLatest,
+        "read_live_rows" | "read_live" => BigQuerySessionStoreOperation::ReadLive,
+        _ => {
+            return Err(BigQuerySessionStoreRpcError::Params(format!(
+                "unsupported operation '{operation_raw}'"
+            )));
+        }
+    };
+
+    let dataset = object
+        .get("dataset")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            BigQuerySessionStoreRpcError::Params("dataset must be a non-empty string".to_string())
+        })?
+        .to_string();
+    let table = object
+        .get("table")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            BigQuerySessionStoreRpcError::Params("table must be a non-empty string".to_string())
+        })?
+        .to_string();
+
+    let project_id = parse_optional_bigquery_string_field(object, "project_id")?;
+    let access_token = parse_optional_bigquery_string_field(object, "access_token")?;
+    let api_base_url = parse_optional_bigquery_string_field(object, "api_base_url")?;
+    let timeout_ms = match object.get("timeout_ms") {
+        None => None,
+        Some(value) => {
+            let timeout_ms = value.as_u64().ok_or_else(|| {
+                BigQuerySessionStoreRpcError::Params(
+                    "timeout_ms must be a positive integer when provided".to_string(),
+                )
+            })?;
+            if timeout_ms == 0 {
+                return Err(BigQuerySessionStoreRpcError::Params(
+                    "timeout_ms must be greater than 0".to_string(),
+                ));
+            }
+            Some(timeout_ms)
+        }
+    };
+
+    let rows = match operation {
+        BigQuerySessionStoreOperation::StreamInsert => {
+            let rows_value = object.get("rows").ok_or_else(|| {
+                BigQuerySessionStoreRpcError::Params(
+                    "rows must be provided for stream_insert_rows".to_string(),
+                )
+            })?;
+            serde_json::from_value::<Vec<SessionPersistenceRow>>(rows_value.clone()).map_err(
+                |_| {
+                    BigQuerySessionStoreRpcError::Params(
+                        "rows must be an array of session persistence rows".to_string(),
+                    )
+                },
+            )?
+        }
+        _ => {
+            if object.contains_key("rows") {
+                return Err(BigQuerySessionStoreRpcError::Params(
+                    "rows is only valid for stream_insert_rows".to_string(),
+                ));
+            }
+            Vec::new()
+        }
+    };
+
+    Ok(BigQuerySessionStoreRequest {
+        operation,
+        dataset,
+        table,
+        project_id,
+        access_token,
+        api_base_url,
+        timeout_ms,
+        rows,
+    })
+}
+
+fn parse_optional_bigquery_string_field(
+    object: &serde_json::Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, BigQuerySessionStoreRpcError> {
+    match object.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let parsed = value.as_str().ok_or_else(|| {
+                BigQuerySessionStoreRpcError::Params(format!(
+                    "{field} must be a non-empty string when provided"
+                ))
+            })?;
+            let trimmed = parsed.trim();
+            if trimmed.is_empty() {
+                return Err(BigQuerySessionStoreRpcError::Params(format!(
+                    "{field} must be a non-empty string when provided"
+                )));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+}
+
+fn run_bigquery_session_store_request(
+    request: BigQuerySessionStoreRequest,
+) -> Result<Value, BigQuerySessionStoreRpcError> {
+    let mut store = BigQuerySessionStoreAdapter::new_native(request.dataset, request.table);
+    if let Some(project_id) = request.project_id {
+        store = store.with_project_id(project_id);
+    }
+    if let Some(access_token) = request.access_token {
+        store = store.with_access_token(access_token);
+    }
+    if let Some(api_base_url) = request.api_base_url {
+        store = store.with_api_base_url(api_base_url);
+    }
+    if let Some(timeout_ms) = request.timeout_ms {
+        store = store.with_http_timeout(Duration::from_millis(timeout_ms));
+    }
+
+    match request.operation {
+        BigQuerySessionStoreOperation::StreamInsert => {
+            store
+                .stream_insert_rows(&request.rows)
+                .map_err(BigQuerySessionStoreRpcError::Store)?;
+            Ok(serde_json::json!({
+                "operation": "stream_insert_rows",
+                "accepted": true,
+                "inserted_rows": request.rows.len(),
+            }))
+        }
+        BigQuerySessionStoreOperation::ReadAll => {
+            let rows = store
+                .read_rows()
+                .map_err(BigQuerySessionStoreRpcError::Store)?;
+            Ok(serde_json::json!({
+                "operation": "read_rows",
+                "rows": rows,
+            }))
+        }
+        BigQuerySessionStoreOperation::ReadLatest => {
+            let rows = store
+                .read_latest_rows()
+                .map_err(BigQuerySessionStoreRpcError::Store)?;
+            Ok(serde_json::json!({
+                "operation": "read_latest_rows",
+                "rows": rows,
+            }))
+        }
+        BigQuerySessionStoreOperation::ReadLive => {
+            let rows = store
+                .read_live_rows()
+                .map_err(BigQuerySessionStoreRpcError::Store)?;
+            Ok(serde_json::json!({
+                "operation": "read_live_rows",
+                "rows": rows,
+            }))
+        }
+    }
+}
+
+fn format_bigquery_store_error(error: &BigQuerySessionStoreError) -> String {
+    match error {
+        BigQuerySessionStoreError::Io(reason)
+        | BigQuerySessionStoreError::Serialize(reason)
+        | BigQuerySessionStoreError::Configuration(reason)
+        | BigQuerySessionStoreError::Http(reason)
+        | BigQuerySessionStoreError::Api(reason)
+        | BigQuerySessionStoreError::InvalidQueryResponse(reason) => reason.clone(),
+        BigQuerySessionStoreError::ProcessFailed { command, stderr } => {
+            format!("command '{command}' failed: {stderr}")
         }
     }
 }

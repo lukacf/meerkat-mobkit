@@ -88,7 +88,10 @@ impl HealthEndpointServer {
         listener
             .set_nonblocking(true)
             .expect("set nonblocking listener");
-        let endpoint = format!("http://{}", listener.local_addr().expect("listener address"));
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("listener address")
+        );
         let hit_count = Arc::new(AtomicUsize::new(0));
         let paths = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
@@ -102,7 +105,8 @@ impl HealthEndpointServer {
                         let mut buffer = [0_u8; 4096];
                         let bytes_read = stream.read(&mut buffer).unwrap_or(0);
                         if bytes_read > 0 {
-                            let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                            let request =
+                                String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
                             let request_path = request
                                 .lines()
                                 .next()
@@ -437,12 +441,10 @@ fn phase13_elephant_memory_backend_persists_across_runtime_restart() {
         )
     );
     assert!(endpoint_server.hit_count() >= 3);
-    assert!(
-        endpoint_server
-            .paths()
-            .iter()
-            .all(|path| path == "/v1/health")
-    );
+    assert!(endpoint_server
+        .paths()
+        .iter()
+        .all(|path| path == "/v1/health"));
 }
 
 #[test]
@@ -498,12 +500,10 @@ fn phase13_elephant_memory_backend_endpoint_failure_maps_to_typed_rpc_error() {
     runtime.shutdown();
 
     assert_eq!(indexed["error"]["code"], json!(-32010));
-    assert!(
-        indexed["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("Memory backend unavailable:")
-    );
+    assert!(indexed["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("Memory backend unavailable:"));
     assert_eq!(
         (
             queried["result"]["assertions"].clone(),

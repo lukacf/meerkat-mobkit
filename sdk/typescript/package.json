@@ -10,7 +10,8 @@
     "typecheck": "npx --yes -p typescript@5.9.2 tsc --pretty false --strict --target ES2020 --module commonjs --moduleResolution node --noEmit src/index.ts",
     "build:check": "tmp_dir=$(mktemp -d) && npx --yes -p typescript@5.9.2 tsc --pretty false --target ES2020 --module commonjs --moduleResolution node --outDir \"$tmp_dir\" src/index.ts && diff -u dist/index.js \"$tmp_dir/index.js\" && rm -rf \"$tmp_dir\"",
     "validate": "npm run --silent typecheck && npm run --silent build:check",
-    "parity": "node scripts/parity.js"
+    "parity": "node scripts/parity.js",
+    "productization": "node scripts/productization.js"
   },
   "engines": {
     "node": ">=18"

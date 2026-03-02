@@ -1,5 +1,4 @@
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use meerkat_mobkit_core::{
@@ -9,53 +8,16 @@ use meerkat_mobkit_core::{
 use serde_json::json;
 use tempfile::tempdir;
 
+#[path = "support/bigquery_http_mock.rs"]
+mod bigquery_http_mock;
+
+use bigquery_http_mock::{MockHttpResponse, MockHttpServer};
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
-}
-
-fn build_fake_bq_script(
-    script_path: &std::path::Path,
-    insert_log: &std::path::Path,
-    insert_args_log: &std::path::Path,
-    query_result: &std::path::Path,
-    query_args_log: &std::path::Path,
-) {
-    let script = format!(
-        r#"#!/bin/sh
-set -eu
-cmd="$1"
-shift
-case "$cmd" in
-  insert)
-    table="$1"
-    shift
-    printf 'insert %s %s\n' "$table" "$*" > "{insert_args_log}"
-    cat >> "{insert_log}"
-    ;;
-  query)
-    printf 'query %s\n' "$*" > "{query_args_log}"
-    cat "{query_result}"
-    ;;
-  *)
-    echo "unsupported command: $cmd" >&2
-    exit 2
-    ;;
-esac
-"#,
-        insert_args_log = insert_args_log.display(),
-        insert_log = insert_log.display(),
-        query_args_log = query_args_log.display(),
-        query_result = query_result.display()
-    );
-    fs::write(script_path, script).expect("fake bq script should be created");
-    let mut perms = fs::metadata(script_path)
-        .expect("fake bq script metadata")
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(script_path, perms).expect("fake bq script should be executable");
 }
 
 #[test]
@@ -167,20 +129,6 @@ fn phase5_json_store_does_not_evict_aged_lock_with_live_owner() {
 
 #[test]
 fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
-    let temp = tempdir().expect("tempdir");
-    let script = temp.path().join("fake-bq.sh");
-    let insert_log = temp.path().join("insert.log");
-    let insert_args_log = temp.path().join("insert-args.log");
-    let query_result = temp.path().join("query-result.json");
-    let query_args_log = temp.path().join("query-args.log");
-    build_fake_bq_script(
-        &script,
-        &insert_log,
-        &insert_args_log,
-        &query_result,
-        &query_args_log,
-    );
-
     let writes = vec![
         SessionPersistenceRow {
             session_id: "s1".to_string(),
@@ -207,28 +155,55 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
             payload: json!({"step":"update","version":2}),
         },
     ];
-    fs::write(
-        &query_result,
-        serde_json::to_string(&writes).expect("serialize query rows"),
-    )
-    .expect("write query rows");
+    let query_rows = serde_json::json!({
+        "jobComplete": true,
+        "rows": [
+            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
+    let mock_server = MockHttpServer::start(vec![
+        MockHttpResponse::json(serde_json::json!({})),
+        MockHttpResponse::json(query_rows.clone()),
+        MockHttpResponse::json(query_rows),
+    ]);
 
-    let store = BigQuerySessionStoreAdapter::new(&script, "phase5_dataset", "phase5_table")
-        .with_project_id("phase5-project");
+    let store = BigQuerySessionStoreAdapter::new_native("phase5_dataset", "phase5_table")
+        .with_project_id("phase5-project")
+        .with_access_token("phase5-test-token")
+        .with_api_base_url(format!("{}/bigquery/v2", mock_server.base_url()));
 
     store
         .stream_insert_rows(&writes)
-        .expect("fake bq insert command should succeed");
+        .expect("insertAll should succeed");
     let latest = store.read_latest_rows().expect("query latest rows");
     let live = store.read_live_rows().expect("query live rows");
-
-    let insert_args = fs::read_to_string(&insert_args_log).expect("read insert args");
-    let insert_payload = fs::read_to_string(&insert_log).expect("read insert payload");
-    let query_args = fs::read_to_string(&query_args_log).expect("read query args");
-    assert!(insert_args.contains("insert phase5_dataset.phase5_table"));
-    assert!(insert_args.contains("--project_id=phase5-project"));
-    assert!(insert_payload.contains("\"session_id\":\"s1\""));
-    assert!(query_args.contains("SELECT session_id, updated_at_ms, deleted, payload"));
+    let requests = mock_server.captured_requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(
+        requests[0].path,
+        "/bigquery/v2/projects/phase5-project/datasets/phase5_dataset/tables/phase5_table/insertAll"
+    );
+    let first_body: serde_json::Value =
+        serde_json::from_str(&requests[0].body).expect("parse insert request");
+    let insert_rows = first_body["rows"]
+        .as_array()
+        .expect("insert request rows array");
+    assert_eq!(insert_rows.len(), writes.len());
+    assert_eq!(requests[1].method, "POST");
+    assert_eq!(
+        requests[1].path,
+        "/bigquery/v2/projects/phase5-project/queries"
+    );
+    let query_body: serde_json::Value =
+        serde_json::from_str(&requests[1].body).expect("parse query request");
+    assert!(query_body["query"]
+        .as_str()
+        .expect("query text")
+        .contains("SELECT session_id, updated_at_ms, deleted, payload"));
 
     assert_eq!(
         latest,

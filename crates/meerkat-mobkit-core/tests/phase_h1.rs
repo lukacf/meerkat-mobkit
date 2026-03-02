@@ -1,0 +1,436 @@
+use std::sync::Arc;
+
+use axum::body::to_bytes;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::Router;
+use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat_client::TestClient;
+use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
+use meerkat_mobkit_core::{
+    build_reference_app_router, build_runtime_decision_state, console_json_router,
+    handle_console_rest_json_route, AuthPolicy, BigQueryNaming, ConsolePolicy,
+    ConsoleRestJsonRequest, MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+};
+use serde_json::{json, Value};
+use tempfile::TempDir;
+use tower::ServiceExt;
+
+struct RuntimeFixture {
+    _temp_dir: TempDir,
+    runtime: RealMobRuntime,
+}
+
+fn trusted_toml() -> String {
+    r#"
+[[modules]]
+id = "router"
+command = "router-bin"
+args = ["--mode", "fast"]
+restart_policy = "always"
+
+[[modules]]
+id = "delivery"
+command = "delivery-bin"
+args = ["--sink", "test"]
+restart_policy = "on_failure"
+"#
+    .to_string()
+}
+
+fn release_json() -> String {
+    include_str!("../../../docs/rct/release-targets.json").to_string()
+}
+
+fn trusted_oidc() -> TrustedOidcRuntimeConfig {
+    TrustedOidcRuntimeConfig {
+        discovery_json:
+            r#"{"issuer":"https://trusted.mobkit.local","jwks_uri":"https://trusted.mobkit.local/.well-known/jwks.json"}"#
+                .to_string(),
+        jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"}]}"#
+            .to_string(),
+        audience: "meerkat-console".to_string(),
+    }
+}
+
+fn decision_state(require_app_auth: bool) -> meerkat_mobkit_core::RuntimeDecisionState {
+    build_runtime_decision_state(RuntimeDecisionInputs {
+        bigquery: BigQueryNaming {
+            dataset: "phase_h1_dataset".to_string(),
+            table: "phase_h1_table".to_string(),
+        },
+        trusted_mobkit_toml: trusted_toml(),
+        auth: AuthPolicy {
+            default_provider: meerkat_mobkit_core::AuthProvider::GoogleOAuth,
+            email_allowlist: vec![
+                "alice@example.com".to_string(),
+                "svc:deploy-bot".to_string(),
+            ],
+        },
+        trusted_oidc: trusted_oidc(),
+        console: ConsolePolicy { require_app_auth },
+        ops: RuntimeOpsPolicy::default(),
+        release_metadata_json: release_json(),
+    })
+    .expect("decision state builds")
+}
+
+async fn build_runtime_fixture() -> RuntimeFixture {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+
+    let mut definition = Prefab::CodingSwarm.definition();
+    for profile in definition.profiles.values_mut() {
+        profile.model = "gpt-5.2".to_string();
+    }
+
+    let runtime = RealMobRuntime::bootstrap(
+        MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service).with_options(
+            MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: Some(Arc::new(TestClient::default())),
+            },
+        ),
+    )
+    .await
+    .expect("bootstrap runtime");
+
+    RuntimeFixture {
+        _temp_dir: temp_dir,
+        runtime,
+    }
+}
+
+async fn spawn_console_members(runtime: &RealMobRuntime) {
+    for member_id in ["router", "delivery"] {
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "lead".to_string(),
+                MeerkatId::from(member_id).to_string(),
+                Some(format!("You are {member_id}. Keep responses concise.")),
+                None,
+                None,
+            ))
+            .await
+            .expect("spawn console member");
+    }
+}
+
+async fn get_console_experience(app: &Router) -> Value {
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/experience")
+                .body(Body::empty())
+                .expect("console request"),
+        )
+        .await
+        .expect("console response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("console body");
+    serde_json::from_slice(&body).expect("console json")
+}
+
+#[tokio::test]
+async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
+    let fixture = build_runtime_fixture().await;
+    spawn_console_members(&fixture.runtime).await;
+
+    let app = build_reference_app_router(decision_state(false), fixture.runtime.clone());
+    let health_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/healthz")
+                .body(Body::empty())
+                .expect("health request"),
+        )
+        .await
+        .expect("health response");
+    assert_eq!(health_response.status(), StatusCode::OK);
+    let console_json = get_console_experience(&app).await;
+    assert_eq!(
+        console_json["agent_sidebar"]["panel_id"],
+        json!("console.agent_sidebar")
+    );
+    assert_eq!(
+        console_json["chat_inspector"]["panel_id"],
+        json!("console.chat_inspector")
+    );
+    assert_eq!(
+        console_json["topology"]["panel_id"],
+        json!("console.topology")
+    );
+    assert_eq!(
+        console_json["health_overview"]["panel_id"],
+        json!("console.health_overview")
+    );
+    assert_eq!(
+        console_json["agent_sidebar"]["live_snapshot"]["agents"],
+        json!([
+            {
+                "agent_id": "delivery",
+                "member_id": "delivery",
+                "label": "delivery",
+                "kind": "module_agent"
+            },
+            {
+                "agent_id": "router",
+                "member_id": "router",
+                "label": "router",
+                "kind": "module_agent"
+            }
+        ])
+    );
+
+    let sse_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/interactions/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "member_id": "router",
+                        "message": "hello from phase h1"
+                    })
+                    .to_string(),
+                ))
+                .expect("sse request"),
+        )
+        .await
+        .expect("sse response");
+    assert_eq!(sse_response.status(), StatusCode::OK);
+    assert!(sse_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream")));
+
+    fixture
+        .runtime
+        .handle()
+        .retire_all()
+        .await
+        .expect("retire all");
+}
+
+#[tokio::test]
+async fn phase_h1_live_snapshot_tracks_runtime_drift() {
+    let fixture = build_runtime_fixture().await;
+    spawn_console_members(&fixture.runtime).await;
+
+    let app = build_reference_app_router(decision_state(false), fixture.runtime.clone());
+    let initial = get_console_experience(&app).await;
+
+    assert_eq!(
+        initial["health_overview"]["live_snapshot"]["running"],
+        json!(true)
+    );
+    assert_eq!(
+        initial["health_overview"]["live_snapshot"]["loaded_modules"],
+        json!(["delivery", "router"])
+    );
+
+    fixture
+        .runtime
+        .handle()
+        .retire(MeerkatId::from("delivery"))
+        .await
+        .expect("retire delivery");
+
+    let after_retire = get_console_experience(&app).await;
+    assert_eq!(
+        after_retire["topology"]["live_snapshot"]["nodes"],
+        json!(["router"])
+    );
+    assert_eq!(
+        after_retire["topology"]["live_snapshot"]["node_count"],
+        json!(1)
+    );
+    assert_eq!(
+        after_retire["health_overview"]["live_snapshot"]["loaded_modules"],
+        json!(["router"])
+    );
+    assert_eq!(
+        after_retire["health_overview"]["live_snapshot"]["loaded_module_count"],
+        json!(1)
+    );
+
+    fixture.runtime.stop().await.expect("stop runtime");
+    let after_stop = get_console_experience(&app).await;
+    assert_eq!(
+        after_stop["health_overview"]["live_snapshot"]["running"],
+        json!(false)
+    );
+
+    fixture
+        .runtime
+        .handle()
+        .retire_all()
+        .await
+        .expect("retire all");
+}
+
+#[tokio::test]
+async fn phase_h1_console_modules_route_honors_auth_mode() {
+    let open_state = decision_state(false);
+    let direct_open = handle_console_rest_json_route(
+        &open_state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/modules".to_string(),
+            auth: None,
+        },
+    );
+    let open_app = console_json_router(open_state);
+    let open_response = open_app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/modules")
+                .body(Body::empty())
+                .expect("open request"),
+        )
+        .await
+        .expect("open response");
+    let open_status = open_response.status();
+    let open_body = to_bytes(open_response.into_body(), 1024 * 1024)
+        .await
+        .expect("open body");
+    let open_json: Value = serde_json::from_slice(&open_body).expect("open json");
+
+    assert_eq!(open_status, StatusCode::OK);
+    assert_eq!(direct_open.status, 200);
+    assert_eq!(open_json, direct_open.body);
+    assert_eq!(open_json["modules"], json!(["router", "delivery"]));
+
+    let state = decision_state(true);
+    let direct = handle_console_rest_json_route(
+        &state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/modules".to_string(),
+            auth: None,
+        },
+    );
+    let app = console_json_router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/modules")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+    let response_status = response.status();
+    let body = to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("body");
+    let json_body: Value = serde_json::from_slice(&body).expect("json body");
+
+    assert_eq!(response_status, StatusCode::UNAUTHORIZED);
+    assert_eq!(direct.status, 401);
+    assert_eq!(
+        StatusCode::from_u16(direct.status).expect("status code"),
+        response_status
+    );
+    assert_eq!(
+        direct.body,
+        json!({"error":"unauthorized","reason":"missing_credentials"})
+    );
+    assert_eq!(json_body, direct.body);
+}
+
+#[tokio::test]
+async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected() {
+    let fixture = build_runtime_fixture().await;
+    spawn_console_members(&fixture.runtime).await;
+
+    let app = build_reference_app_router(decision_state(false), fixture.runtime.clone());
+    let console_json = get_console_experience(&app).await;
+
+    let selected_agent_id = console_json["agent_sidebar"]["live_snapshot"]["agents"]
+        .as_array()
+        .expect("agents array")
+        .first()
+        .and_then(|agent| agent.get("agent_id"))
+        .and_then(Value::as_str)
+        .expect("selected agent_id");
+    assert_eq!(
+        console_json["agent_sidebar"]["live_snapshot"]["agents"][0]["member_id"],
+        json!(selected_agent_id)
+    );
+
+    let success_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/interactions/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "member_id": selected_agent_id,
+                        "message": "cross-panel hello"
+                    })
+                    .to_string(),
+                ))
+                .expect("success request"),
+        )
+        .await
+        .expect("success response");
+    assert_eq!(success_response.status(), StatusCode::OK);
+    assert!(success_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream")));
+
+    let unknown_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/interactions/stream")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "member_id": "unknown-member-id",
+                        "message": "should fail"
+                    })
+                    .to_string(),
+                ))
+                .expect("unknown request"),
+        )
+        .await
+        .expect("unknown response");
+    let unknown_status = unknown_response.status();
+    let unknown_body = to_bytes(unknown_response.into_body(), 1024 * 1024)
+        .await
+        .expect("unknown body");
+    let unknown_json: Value = serde_json::from_slice(&unknown_body).expect("unknown json");
+
+    assert_eq!(unknown_status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown_json, json!({ "error": "member_not_found" }));
+
+    fixture
+        .runtime
+        .handle()
+        .retire_all()
+        .await
+        .expect("retire all");
+}

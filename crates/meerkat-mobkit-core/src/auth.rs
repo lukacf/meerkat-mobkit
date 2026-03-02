@@ -1,6 +1,7 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
+use ring::signature::{self, RsaPublicKeyComponents, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
@@ -14,6 +15,21 @@ pub struct JwtValidationConfig {
     pub audience: Option<String>,
     pub now_epoch_seconds: u64,
     pub leeway_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JwtClaimsValidationConfig {
+    pub issuer: Option<String>,
+    pub audience: Option<String>,
+    pub now_epoch_seconds: u64,
+    pub leeway_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JwtVerificationKey {
+    Hs256(Vec<u8>),
+    Rs256 { modulus: Vec<u8>, exponent: Vec<u8> },
+    Es256P256 { public_key: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +83,16 @@ pub struct Jwk {
     pub alg: Option<String>,
     #[serde(default)]
     pub k: Option<String>,
+    #[serde(default)]
+    pub n: Option<String>,
+    #[serde(default)]
+    pub e: Option<String>,
+    #[serde(default)]
+    pub crv: Option<String>,
+    #[serde(default)]
+    pub x: Option<String>,
+    #[serde(default)]
+    pub y: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,9 +103,15 @@ pub enum OidcContractError {
     MissingKeys,
     NoMatchingKey,
     UnsupportedKeyType(String),
+    UnsupportedJwtAlgorithm(String),
     MissingSymmetricKeyMaterial,
+    MissingRsaKeyMaterial,
+    MissingEcKeyMaterial,
     InvalidKeyEncoding,
     InvalidSymmetricKeyMaterial,
+    InvalidRsaKeyMaterial,
+    InvalidEcKeyMaterial,
+    UnsupportedEllipticCurve(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +124,131 @@ pub fn validate_jwt_locally(
     token: &str,
     config: &JwtValidationConfig,
 ) -> Result<ValidatedJwt, JwtValidationError> {
+    let claims_config = JwtClaimsValidationConfig {
+        issuer: config.issuer.clone(),
+        audience: config.audience.clone(),
+        now_epoch_seconds: config.now_epoch_seconds,
+        leeway_seconds: config.leeway_seconds,
+    };
+    let key = JwtVerificationKey::Hs256(config.shared_secret.as_bytes().to_vec());
+    validate_jwt_with_verification_key(token, &key, &claims_config)
+}
+
+pub fn validate_jwt_with_verification_key(
+    token: &str,
+    verification_key: &JwtVerificationKey,
+    config: &JwtClaimsValidationConfig,
+) -> Result<ValidatedJwt, JwtValidationError> {
+    let parsed = parse_jwt(token)?;
+    if !key_supports_algorithm(verification_key, parsed.header.alg.as_str()) {
+        return Err(JwtValidationError::UnsupportedAlgorithm(parsed.header.alg));
+    }
+    verify_signature(
+        verification_key,
+        parsed.header.alg.as_str(),
+        parsed.signing_input.as_bytes(),
+        &parsed.signature,
+    )?;
+    validate_claims(&parsed.claims, config)
+}
+
+pub fn build_jwt_verification_key(
+    key: &Jwk,
+    alg: &str,
+) -> Result<JwtVerificationKey, OidcContractError> {
+    match alg {
+        "HS256" => build_hs256_key(key),
+        "RS256" => build_rs256_key(key),
+        "ES256" => build_es256_key(key),
+        unsupported => Err(OidcContractError::UnsupportedJwtAlgorithm(
+            unsupported.to_string(),
+        )),
+    }
+}
+
+fn build_hs256_key(key: &Jwk) -> Result<JwtVerificationKey, OidcContractError> {
+    if key.kty != "oct" {
+        return Err(OidcContractError::UnsupportedKeyType(key.kty.clone()));
+    }
+    let encoded = key
+        .k
+        .as_deref()
+        .ok_or(OidcContractError::MissingSymmetricKeyMaterial)?;
+    let bytes = URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| OidcContractError::InvalidKeyEncoding)?;
+    Ok(JwtVerificationKey::Hs256(bytes))
+}
+
+fn build_rs256_key(key: &Jwk) -> Result<JwtVerificationKey, OidcContractError> {
+    if key.kty != "RSA" {
+        return Err(OidcContractError::UnsupportedKeyType(key.kty.clone()));
+    }
+    let modulus = key
+        .n
+        .as_deref()
+        .ok_or(OidcContractError::MissingRsaKeyMaterial)
+        .and_then(decode_key_component)?;
+    let exponent = key
+        .e
+        .as_deref()
+        .ok_or(OidcContractError::MissingRsaKeyMaterial)
+        .and_then(decode_key_component)?;
+    if modulus.is_empty() || exponent.is_empty() {
+        return Err(OidcContractError::InvalidRsaKeyMaterial);
+    }
+    Ok(JwtVerificationKey::Rs256 { modulus, exponent })
+}
+
+fn build_es256_key(key: &Jwk) -> Result<JwtVerificationKey, OidcContractError> {
+    if key.kty != "EC" {
+        return Err(OidcContractError::UnsupportedKeyType(key.kty.clone()));
+    }
+    let curve = key
+        .crv
+        .as_deref()
+        .ok_or(OidcContractError::MissingEcKeyMaterial)?;
+    if curve != "P-256" {
+        return Err(OidcContractError::UnsupportedEllipticCurve(
+            curve.to_string(),
+        ));
+    }
+
+    let x = key
+        .x
+        .as_deref()
+        .ok_or(OidcContractError::MissingEcKeyMaterial)
+        .and_then(decode_key_component)?;
+    let y = key
+        .y
+        .as_deref()
+        .ok_or(OidcContractError::MissingEcKeyMaterial)
+        .and_then(decode_key_component)?;
+    if x.len() != 32 || y.len() != 32 {
+        return Err(OidcContractError::InvalidEcKeyMaterial);
+    }
+
+    let mut public_key = Vec::with_capacity(65);
+    public_key.push(0x04);
+    public_key.extend_from_slice(&x);
+    public_key.extend_from_slice(&y);
+    Ok(JwtVerificationKey::Es256P256 { public_key })
+}
+
+fn decode_key_component(encoded: &str) -> Result<Vec<u8>, OidcContractError> {
+    URL_SAFE_NO_PAD
+        .decode(encoded)
+        .map_err(|_| OidcContractError::InvalidKeyEncoding)
+}
+
+struct ParsedJwt {
+    header: JwtHeader,
+    claims: Value,
+    signing_input: String,
+    signature: Vec<u8>,
+}
+
+fn parse_jwt(token: &str) -> Result<ParsedJwt, JwtValidationError> {
     let parts: Vec<&str> = token.split('.').collect();
     if parts.len() != 3 {
         return Err(JwtValidationError::InvalidFormat);
@@ -109,29 +266,84 @@ pub fn validate_jwt_locally(
 
     let header: JwtHeader =
         serde_json::from_slice(&header_bytes).map_err(|_| JwtValidationError::InvalidJson)?;
-    if header.alg != "HS256" {
-        return Err(JwtValidationError::UnsupportedAlgorithm(header.alg));
-    }
-
-    let signing_input = format!("{}.{}", parts[0], parts[1]);
-    let mut mac = HmacSha256::new_from_slice(config.shared_secret.as_bytes())
-        .map_err(|_| JwtValidationError::InvalidSignature)?;
-    mac.update(signing_input.as_bytes());
-    let expected = mac.finalize().into_bytes();
-    if expected.as_slice() != signature.as_slice() {
-        return Err(JwtValidationError::InvalidSignature);
-    }
-
     let claims: Value =
         serde_json::from_slice(&payload_bytes).map_err(|_| JwtValidationError::InvalidJson)?;
+    let signing_input = format!("{}.{}", parts[0], parts[1]);
 
+    Ok(ParsedJwt {
+        header,
+        claims,
+        signing_input,
+        signature,
+    })
+}
+
+fn key_supports_algorithm(key: &JwtVerificationKey, alg: &str) -> bool {
+    matches!(
+        (key, alg),
+        (JwtVerificationKey::Hs256(_), "HS256")
+            | (JwtVerificationKey::Rs256 { .. }, "RS256")
+            | (JwtVerificationKey::Es256P256 { .. }, "ES256")
+    )
+}
+
+fn verify_signature(
+    verification_key: &JwtVerificationKey,
+    alg: &str,
+    signing_input: &[u8],
+    signature: &[u8],
+) -> Result<(), JwtValidationError> {
+    match (verification_key, alg) {
+        (JwtVerificationKey::Hs256(secret), "HS256") => {
+            let mut mac = HmacSha256::new_from_slice(secret)
+                .map_err(|_| JwtValidationError::InvalidSignature)?;
+            mac.update(signing_input);
+            let expected = mac.finalize().into_bytes();
+            if expected.len() != signature.len()
+                || expected
+                    .iter()
+                    .zip(signature.iter())
+                    .any(|(left, right)| left != right)
+            {
+                return Err(JwtValidationError::InvalidSignature);
+            }
+            Ok(())
+        }
+        (JwtVerificationKey::Rs256 { modulus, exponent }, "RS256") => {
+            let components = RsaPublicKeyComponents {
+                n: modulus.as_slice(),
+                e: exponent.as_slice(),
+            };
+            components
+                .verify(
+                    &signature::RSA_PKCS1_2048_8192_SHA256,
+                    signing_input,
+                    signature,
+                )
+                .map_err(|_| JwtValidationError::InvalidSignature)
+        }
+        (JwtVerificationKey::Es256P256 { public_key }, "ES256") => {
+            UnparsedPublicKey::new(&signature::ECDSA_P256_SHA256_FIXED, public_key.as_slice())
+                .verify(signing_input, signature)
+                .map_err(|_| JwtValidationError::InvalidSignature)
+        }
+        (_, unsupported) => Err(JwtValidationError::UnsupportedAlgorithm(
+            unsupported.to_string(),
+        )),
+    }
+}
+
+fn validate_claims(
+    claims: &Value,
+    config: &JwtClaimsValidationConfig,
+) -> Result<ValidatedJwt, JwtValidationError> {
     let exp = claims.get("exp").and_then(Value::as_u64);
     let nbf = claims.get("nbf").and_then(Value::as_u64);
     let iss = claims
         .get("iss")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    let aud = extract_audiences(&claims);
+    let aud = extract_audiences(claims);
 
     if let Some(exp) = exp {
         let threshold = config
@@ -247,16 +459,10 @@ pub fn select_jwk_for_token<'a>(
 }
 
 pub fn extract_hs256_shared_secret(key: &Jwk) -> Result<String, OidcContractError> {
-    if key.kty != "oct" {
-        return Err(OidcContractError::UnsupportedKeyType(key.kty.clone()));
-    }
-    let encoded = key
-        .k
-        .as_ref()
-        .ok_or(OidcContractError::MissingSymmetricKeyMaterial)?;
-    let bytes = URL_SAFE_NO_PAD
-        .decode(encoded)
-        .map_err(|_| OidcContractError::InvalidKeyEncoding)?;
+    let bytes = match build_hs256_key(key)? {
+        JwtVerificationKey::Hs256(bytes) => bytes,
+        _ => return Err(OidcContractError::InvalidSymmetricKeyMaterial),
+    };
     String::from_utf8(bytes).map_err(|_| OidcContractError::InvalidSymmetricKeyMaterial)
 }
 

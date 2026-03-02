@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
@@ -6,23 +8,76 @@ use meerkat_mobkit_core::{
 };
 use serde_json::{json, Value};
 
-fn shell_module(id: &str, script: &str) -> ModuleConfig {
+const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
+const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";
+
+fn fixture_binary_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_phase_c_mcp_fixture") {
+        return PathBuf::from(path);
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("workspace root");
+    let binary_path = workspace_root
+        .join("target")
+        .join("debug")
+        .join("phase_c_mcp_fixture");
+    if binary_path.exists() {
+        return binary_path;
+    }
+
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "meerkat-mobkit-core",
+            "--bin",
+            "phase_c_mcp_fixture",
+        ])
+        .current_dir(workspace_root)
+        .status()
+        .expect("build phase_c_mcp_fixture");
+    assert!(
+        status.success(),
+        "building phase_c_mcp_fixture must succeed"
+    );
+    binary_path
+}
+
+fn fixture_module(id: &str, fixture_binary: &std::path::Path) -> ModuleConfig {
     ModuleConfig {
         id: id.to_string(),
-        command: "sh".to_string(),
-        args: vec!["-c".to_string(), script.to_string()],
+        command: fixture_binary.display().to_string(),
+        args: vec!["--module".to_string(), id.to_string()],
         restart_policy: RestartPolicy::Never,
     }
 }
 
-fn routing_delivery_runtime_with_scripts(
-    router_script: &str,
-    delivery_script: &str,
+fn mcp_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut env = vec![(
+        BOUNDARY_ENV_KEY.to_string(),
+        BOUNDARY_ENV_VALUE_MCP.to_string(),
+    )];
+    env.extend(
+        extra
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+    );
+    env
+}
+
+fn routing_delivery_runtime_with_env(
+    router_extra_env: &[(&str, &str)],
+    delivery_extra_env: &[(&str, &str)],
 ) -> meerkat_mobkit_core::MobkitRuntimeHandle {
+    let fixture_binary = fixture_binary_path();
     let config = MobKitConfig {
         modules: vec![
-            shell_module("router", router_script),
-            shell_module("delivery", delivery_script),
+            fixture_module("router", &fixture_binary),
+            fixture_module("delivery", &fixture_binary),
         ],
         discovery: DiscoverySpec {
             namespace: "phase10".to_string(),
@@ -31,23 +86,20 @@ fn routing_delivery_runtime_with_scripts(
         pre_spawn: vec![
             PreSpawnData {
                 module_id: "router".to_string(),
-                env: vec![],
+                env: mcp_env(router_extra_env),
             },
             PreSpawnData {
                 module_id: "delivery".to_string(),
-                env: vec![],
+                env: mcp_env(delivery_extra_env),
             },
         ],
     };
 
-    start_mobkit_runtime(config, vec![], Duration::from_secs(1)).expect("runtime starts")
+    start_mobkit_runtime(config, vec![], Duration::from_secs(2)).expect("runtime starts")
 }
 
 fn routing_delivery_runtime() -> meerkat_mobkit_core::MobkitRuntimeHandle {
-    routing_delivery_runtime_with_scripts(
-        r#"printf '%s\n' '{"event_id":"evt-router","source":"module","timestamp_ms":10,"event":{"kind":"module","module":"router","event_type":"ready","payload":{"router":true}}}'"#,
-        r#"printf '%s\n' '{"event_id":"evt-delivery","source":"module","timestamp_ms":20,"event":{"kind":"module","module":"delivery","event_type":"ready","payload":{"delivery":true}}}'"#,
-    )
+    routing_delivery_runtime_with_env(&[], &[])
 }
 
 fn parse_response(raw: &str) -> Value {
@@ -992,9 +1044,9 @@ fn phase10_idempotent_replay_survives_routing_resolution_cache_eviction() {
 
 #[test]
 fn phase10_routing_and_delivery_paths_consume_module_boundary_outputs() {
-    let mut runtime = routing_delivery_runtime_with_scripts(
-        r#"sink="email"; case "$MOBKIT_ROUTING_RESOLVE_REQUEST" in *"boundary@example.com"*) sink="webhook";; esac; printf '%s\n' "{\"event_id\":\"evt-router-boundary\",\"source\":\"module\",\"timestamp_ms\":11,\"event\":{\"kind\":\"module\",\"module\":\"router\",\"event_type\":\"resolved\",\"payload\":{\"sink\":\"$sink\"}}}""#,
-        r#"force=false; case "$MOBKIT_DELIVERY_SEND_REQUEST" in *"force_adapter_fail\":true"*) force=true;; esac; printf '%s\n' "{\"event_id\":\"evt-delivery-boundary\",\"source\":\"module\",\"timestamp_ms\":21,\"event\":{\"kind\":\"module\",\"module\":\"delivery\",\"event_type\":\"send\",\"payload\":{\"adapter\":\"smtp-mock\",\"force_fail\":$force}}}""#,
+    let mut runtime = routing_delivery_runtime_with_env(
+        &[("MOBKIT_PHASE_C_ROUTER_SINK", "webhook")],
+        &[("MOBKIT_PHASE_C_DELIVERY_ADAPTER", "smtp-mock")],
     );
 
     let resolved = parse_response(&handle_mobkit_rpc_json(

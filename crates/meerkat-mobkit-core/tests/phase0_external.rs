@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{process::Command, time::Duration};
 
 use meerkat_mobkit_core::{
     parse_module_event_line, run_discovered_module_once, run_meerkat_baseline_verification_once,
@@ -213,4 +213,23 @@ fn external_unexpected_payload_from_subprocess_is_rejected() {
     let err = parse_module_event_line::<ReadyPayload>(&envelope, "ready")
         .expect_err("typed payload mismatch should fail");
     assert_eq!(err, ProtocolParseError::UnexpectedPayloadType);
+}
+
+#[test]
+#[ignore = "external baseline subprocess check"]
+fn external_phase0_baseline_check_binary_runs() {
+    let output = Command::new(env!("CARGO_BIN_EXE_phase0_baseline_check"))
+        .env("MEERKAT_REPO", "/Users/luka/src/raik")
+        .output()
+        .expect("phase0 baseline binary should run");
+
+    assert!(
+        output.status.success(),
+        "phase0_baseline_check failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("missing_symbols="));
 }

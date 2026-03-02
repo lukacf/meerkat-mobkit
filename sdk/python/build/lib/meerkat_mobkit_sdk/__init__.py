@@ -1,8 +1,45 @@
-from .client import MobkitTypedClient
-from .helpers import build_console_modules_route, define_module_spec
+from .client import (
+    MobkitAsyncTypedClient,
+    MobkitRpcError,
+    MobkitTypedClient,
+    create_gateway_async_transport,
+    create_gateway_sync_transport,
+    create_http_transport,
+)
+from .helpers import (
+    ModuleDefinition,
+    ModuleSpec,
+    ModuleTool,
+    build_console_experience_route,
+    build_console_modules_route,
+    build_console_route,
+    build_console_routes,
+    build_module_spec,
+    decorate_module_spec,
+    decorate_module_tool,
+    define_module,
+    define_module_spec,
+    define_module_tool,
+)
 
 __all__ = [
+    "MobkitAsyncTypedClient",
+    "MobkitRpcError",
     "MobkitTypedClient",
+    "create_gateway_async_transport",
+    "create_gateway_sync_transport",
+    "create_http_transport",
+    "ModuleDefinition",
+    "ModuleSpec",
+    "ModuleTool",
+    "build_console_experience_route",
     "build_console_modules_route",
+    "build_console_route",
+    "build_console_routes",
+    "build_module_spec",
+    "decorate_module_spec",
+    "decorate_module_tool",
+    "define_module",
     "define_module_spec",
+    "define_module_tool",
 ]

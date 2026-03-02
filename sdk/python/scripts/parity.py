@@ -5,13 +5,22 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any, Callable
 
-from meerkat_mobkit_sdk import (
-    MobkitTypedClient,
-    build_console_modules_route,
-    define_module_spec,
-)
+try:
+    from meerkat_mobkit_sdk import (
+        MobkitTypedClient,
+        build_console_modules_route,
+        define_module_spec,
+    )
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from meerkat_mobkit_sdk import (  # type: ignore[no-redef]
+        MobkitTypedClient,
+        build_console_modules_route,
+        define_module_spec,
+    )
 
 
 def main() -> int:

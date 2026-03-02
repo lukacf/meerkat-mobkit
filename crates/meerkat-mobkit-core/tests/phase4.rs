@@ -118,15 +118,15 @@ fn rpc_001_builtins_status_capabilities_events_reconcile_and_spawn_member() {
 fn rpc_002_module_proxy_and_unloaded_module_error_shape() {
     let config = MobKitConfig {
         modules: vec![shell_module(
-            "router",
-            r#"printf '%s\n' '{"event_id":"evt-router","source":"module","timestamp_ms":42,"event":{"kind":"module","module":"router","event_type":"response","payload":{"via":"router"}}}'"#,
+            "analytics",
+            r#"printf '%s\n' '{"event_id":"evt-analytics","source":"module","timestamp_ms":42,"event":{"kind":"module","module":"analytics","event_type":"response","payload":{"via":"analytics"}}}'"#,
         )],
         discovery: DiscoverySpec {
             namespace: "phase4".to_string(),
-            modules: vec!["router".to_string()],
+            modules: vec!["analytics".to_string()],
         },
         pre_spawn: vec![PreSpawnData {
-            module_id: "router".to_string(),
+            module_id: "analytics".to_string(),
             env: vec![],
         }],
     };
@@ -136,12 +136,12 @@ fn rpc_002_module_proxy_and_unloaded_module_error_shape() {
 
     let routed = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"10","method":"router/echo","params":{"msg":"ok"}}"#,
+        r#"{"jsonrpc":"2.0","id":"10","method":"analytics/echo","params":{"msg":"ok"}}"#,
         Duration::from_secs(1),
     ));
-    assert_eq!(routed["result"]["module_id"], "router");
-    assert_eq!(routed["result"]["method"], "router/echo");
-    assert_eq!(routed["result"]["payload"], json!({"via":"router"}));
+    assert_eq!(routed["result"]["module_id"], "analytics");
+    assert_eq!(routed["result"]["method"], "analytics/echo");
+    assert_eq!(routed["result"]["payload"], json!({"via":"analytics"}));
 
     let unloaded = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,

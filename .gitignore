@@ -1,2 +1,8 @@
 /target/
 .rct/
+/console/node_modules/
+/.rct-legacy/
+/.rct-legacy-*/
+docs/rct/traceability.legacy-*.md
+**/__pycache__/
+*.pyc

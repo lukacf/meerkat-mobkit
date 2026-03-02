@@ -1,5 +1,5 @@
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -18,7 +18,73 @@ use serde_json::{json, Value};
 use sha2::Sha256;
 use tempfile::tempdir;
 
+#[path = "support/bigquery_http_mock.rs"]
+mod bigquery_http_mock;
+
+use bigquery_http_mock::{MockHttpResponse, MockHttpServer};
+
 type HmacSha256 = Hmac<Sha256>;
+
+const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
+const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";
+
+fn fixture_binary_path() -> PathBuf {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_phase_c_mcp_fixture") {
+        return PathBuf::from(path);
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("workspace root");
+    let binary_path = workspace_root
+        .join("target")
+        .join("debug")
+        .join("phase_c_mcp_fixture");
+    if binary_path.exists() {
+        return binary_path;
+    }
+
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "meerkat-mobkit-core",
+            "--bin",
+            "phase_c_mcp_fixture",
+        ])
+        .current_dir(workspace_root)
+        .status()
+        .expect("build phase_c_mcp_fixture");
+    assert!(
+        status.success(),
+        "building phase_c_mcp_fixture must succeed"
+    );
+    binary_path
+}
+
+fn fixture_module(id: &str, fixture_binary: &std::path::Path) -> ModuleConfig {
+    ModuleConfig {
+        id: id.to_string(),
+        command: fixture_binary.display().to_string(),
+        args: vec!["--module".to_string(), id.to_string()],
+        restart_policy: RestartPolicy::Never,
+    }
+}
+
+fn mcp_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut env = vec![(
+        BOUNDARY_ENV_KEY.to_string(),
+        BOUNDARY_ENV_VALUE_MCP.to_string(),
+    )];
+    env.extend(
+        extra
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+    );
+    env
+}
 
 fn shell_module(id: &str, script: &str) -> ModuleConfig {
     ModuleConfig {
@@ -194,7 +260,7 @@ fn trusted_token(payload: Value, kid: &str, secret: &str) -> String {
 fn trusted_oidc() -> TrustedOidcRuntimeConfig {
     TrustedOidcRuntimeConfig {
         discovery_json:
-            r#"{"issuer":"https://trusted.mobkit.local","jwks_uri":"https://trusted.mobkit.local/.well-known/jwks.json"}"#
+            r#"{"issuer":"https://trusted.mobkit.localhost","jwks_uri":"https://trusted.mobkit.localhost/.well-known/jwks.json"}"#
                 .to_string(),
         jwks_json: r#"{"keys":[{"kid":"kid-current","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtY3VycmVudC1zZWNyZXQ"},{"kid":"kid-next","kty":"oct","alg":"HS256","k":"cGhhc2U3LXRydXN0ZWQtbmV4dC1zZWNyZXQ"}]}"#.to_string(),
         audience: "meerkat-console".to_string(),
@@ -247,6 +313,32 @@ fn runtime_with_router_and_delivery() -> meerkat_mobkit_core::MobkitRuntimeHandl
     };
 
     start_mobkit_runtime(config, vec![], Duration::from_secs(1)).expect("runtime starts")
+}
+
+fn runtime_with_router_and_delivery_mcp() -> meerkat_mobkit_core::MobkitRuntimeHandle {
+    let fixture_binary = fixture_binary_path();
+    let config = MobKitConfig {
+        modules: vec![
+            fixture_module("router", &fixture_binary),
+            fixture_module("delivery", &fixture_binary),
+        ],
+        discovery: DiscoverySpec {
+            namespace: "phase3c".to_string(),
+            modules: vec!["router".to_string()],
+        },
+        pre_spawn: vec![
+            PreSpawnData {
+                module_id: "router".to_string(),
+                env: mcp_env(&[]),
+            },
+            PreSpawnData {
+                module_id: "delivery".to_string(),
+                env: mcp_env(&[]),
+            },
+        ],
+    };
+
+    start_mobkit_runtime(config, vec![], Duration::from_secs(2)).expect("runtime starts")
 }
 
 fn runtime_with_phase6_agent_events() -> meerkat_mobkit_core::MobkitRuntimeHandle {
@@ -316,48 +408,6 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit_core::MobkitRuntimeHandl
     runtime
 }
 
-fn build_fake_bq_script(
-    script_path: &std::path::Path,
-    insert_log: &std::path::Path,
-    insert_args_log: &std::path::Path,
-    query_result: &std::path::Path,
-    query_args_log: &std::path::Path,
-) {
-    let script = format!(
-        r#"#!/bin/sh
-set -eu
-cmd="$1"
-shift
-case "$cmd" in
-  insert)
-    table="$1"
-    shift
-    printf 'insert %s %s\n' "$table" "$*" > "{insert_args_log}"
-    cat >> "{insert_log}"
-    ;;
-  query)
-    printf 'query %s\n' "$*" > "{query_args_log}"
-    cat "{query_result}"
-    ;;
-  *)
-    echo "unsupported command: $cmd" >&2
-    exit 2
-    ;;
-esac
-"#,
-        insert_args_log = insert_args_log.display(),
-        insert_log = insert_log.display(),
-        query_args_log = query_args_log.display(),
-        query_result = query_result.display()
-    );
-    fs::write(script_path, script).expect("fake bq script should be created");
-    let mut perms = fs::metadata(script_path)
-        .expect("fake bq script metadata")
-        .permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(script_path, perms).expect("fake bq script should be executable");
-}
-
 fn decision_state(require_app_auth: bool) -> meerkat_mobkit_core::RuntimeDecisionState {
     build_runtime_decision_state(RuntimeDecisionInputs {
         bigquery: BigQueryNaming {
@@ -406,13 +456,13 @@ fn choke_101_rpc_ingress_target_defined_red() {
 
 #[test]
 fn choke_102_module_router_handoff_target_defined_red() {
-    let mut runtime = runtime_with_router_and_delivery();
+    let mut runtime = runtime_with_router_and_delivery_mcp();
     let observed = route_module_call(
         &runtime,
         &ModuleRouteRequest {
             module_id: "router".to_string(),
-            method: "router/echo".to_string(),
-            params: json!({"msg":"hello"}),
+            method: "routing.resolve".to_string(),
+            params: json!({"recipient":"hello@example.com"}),
         },
         Duration::from_secs(1),
     )
@@ -422,7 +472,7 @@ fn choke_102_module_router_handoff_target_defined_red() {
 
     assert_eq!(
         observed.payload,
-        json!({"via":"router","ok":true}),
+        json!({"sink":"email","target_module":"delivery"}),
         "CHOKE-102: router->module typed error/result contract verified"
     );
 }
@@ -434,8 +484,7 @@ fn choke_103_session_store_handoff_target_defined_red() {
     let temp = tempdir().expect("tempdir");
     let store_path = temp.path().join("sessions.json");
     let json_store = JsonFileSessionStore::new(&store_path);
-    let bq_adapter = BigQuerySessionStoreAdapter::new(
-        "bq",
+    let bq_adapter = BigQuerySessionStoreAdapter::new_native(
         observed.bigquery.dataset.clone(),
         observed.bigquery.table.clone(),
     );
@@ -662,7 +711,7 @@ fn choke_106_scheduling_dispatch_handoff_target_defined_red() {
 
 #[test]
 fn choke_107_routing_to_delivery_handoff_target_defined_red() {
-    let mut runtime = runtime_with_router_and_delivery();
+    let mut runtime = runtime_with_router_and_delivery_mcp();
     let _spawn_delivery = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
         r#"{"jsonrpc":"2.0","id":"choke-107-spawn","method":"mobkit/spawn_member","params":{"module_id":"delivery"}}"#,
@@ -955,7 +1004,7 @@ fn choke_110_sdk_contract_mapping_target_defined_red() {
         json!({
             "sub":"user-110",
             "email":"alice@example.com",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "provider":"google_oauth",
             "exp":4_000_000_000_u64
@@ -975,7 +1024,7 @@ fn choke_110_sdk_contract_mapping_target_defined_red() {
         &token,
         &JwtValidationConfig {
             shared_secret: "phase7-trusted-current-secret".to_string(),
-            issuer: Some("https://trusted.mobkit.local".to_string()),
+            issuer: Some("https://trusted.mobkit.localhost".to_string()),
             audience: Some("meerkat-console".to_string()),
             now_epoch_seconds: 1_900_000_000,
             leeway_seconds: 30,
@@ -1024,15 +1073,10 @@ fn choke_110_sdk_contract_mapping_target_defined_red() {
 
 #[test]
 fn e2e_401_rpc_surface_target_defined_red() {
-    let mut runtime = runtime_with_router_and_delivery();
+    let mut runtime = runtime_with_router_and_delivery_mcp();
     let status = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
         r#"{"jsonrpc":"2.0","id":"e2e-401-status","method":"mobkit/status","params":{}}"#,
-        Duration::from_secs(1),
-    ));
-    let proxy = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"e2e-401-proxy","method":"router/echo","params":{"msg":"hi"}}"#,
         Duration::from_secs(1),
     ));
     let reconcile = parse_response(&handle_mobkit_rpc_json(
@@ -1040,11 +1084,16 @@ fn e2e_401_rpc_surface_target_defined_red() {
         r#"{"jsonrpc":"2.0","id":"e2e-401-reconcile","method":"mobkit/reconcile","params":{"modules":["router","delivery"]}}"#,
         Duration::from_secs(1),
     ));
+    let resolve = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"e2e-401-resolve","method":"mobkit/routing/resolve","params":{"recipient":"hi@example.com","channel":"transactional"}}"#,
+        Duration::from_secs(1),
+    ));
 
     runtime.shutdown();
 
     assert_eq!(
-        json!({"status":status,"proxy":proxy,"reconcile":reconcile}),
+        json!({"status":status,"resolve":resolve,"reconcile":reconcile}),
         json!({
             "status":{
                 "jsonrpc":"2.0",
@@ -1055,13 +1104,18 @@ fn e2e_401_rpc_surface_target_defined_red() {
                     "loaded_modules":["router"]
                 }
             },
-            "proxy":{
+            "resolve":{
                 "jsonrpc":"2.0",
-                "id":"e2e-401-proxy",
+                "id":"e2e-401-resolve",
                 "result":{
-                    "module_id":"router",
-                    "method":"router/echo",
-                    "payload":{"via":"router","ok":true}
+                    "route_id":"route-000000",
+                    "recipient":"hi@example.com",
+                    "channel":"transactional",
+                    "sink":"email",
+                    "target_module":"delivery",
+                    "retry_max":1,
+                    "backoff_ms":250,
+                    "rate_limit_per_minute":2
                 }
             },
             "reconcile":{
@@ -1084,18 +1138,6 @@ fn e2e_501_session_persistence_target_defined_red() {
     let contracts = session_store_contracts(&state);
     let temp = tempdir().expect("tempdir");
     let sessions_path = temp.path().join("sessions.json");
-    let query_result = temp.path().join("query-result.json");
-    let bq_insert_log = temp.path().join("bq-insert.log");
-    let bq_insert_args_log = temp.path().join("bq-insert-args.log");
-    let bq_query_args_log = temp.path().join("bq-query-args.log");
-    let bq_script = temp.path().join("fake-bq.sh");
-    build_fake_bq_script(
-        &bq_script,
-        &bq_insert_log,
-        &bq_insert_args_log,
-        &query_result,
-        &bq_query_args_log,
-    );
 
     let writes = vec![
         SessionPersistenceRow {
@@ -1123,11 +1165,18 @@ fn e2e_501_session_persistence_target_defined_red() {
             payload: json!({"step":"update","version":2}),
         },
     ];
-    fs::write(
-        &query_result,
-        serde_json::to_string(&writes).expect("serialize query rows"),
-    )
-    .expect("write query result");
+    let query_rows = json!({
+        "rows": [
+            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
+    let bq_server = MockHttpServer::start(vec![
+        MockHttpResponse::json(json!({})),
+        MockHttpResponse::json(query_rows),
+    ]);
 
     let json_store = JsonFileSessionStore::new(&sessions_path)
         .with_stale_lock_threshold(Duration::from_millis(1));
@@ -1141,26 +1190,46 @@ fn e2e_501_session_persistence_target_defined_red() {
         .read_live_rows()
         .expect("json-file backend reads live rows");
 
-    let bq_store = BigQuerySessionStoreAdapter::new(
-        &bq_script,
+    let bq_store = BigQuerySessionStoreAdapter::new_native(
         state.bigquery.dataset.clone(),
         state.bigquery.table.clone(),
-    );
+    )
+    .with_project_id("phase3c-project")
+    .with_access_token("phase3c-token")
+    .with_api_base_url(format!("{}/bigquery/v2", bq_server.base_url()));
     bq_store
         .stream_insert_rows(&writes)
         .expect("bigquery adapter issues insert command");
     let bq_live = bq_store
         .read_live_rows()
         .expect("bigquery adapter reads live rows through query path");
-    let bq_insert_args = fs::read_to_string(&bq_insert_args_log).unwrap_or_default();
-    let bq_query_args = fs::read_to_string(&bq_query_args_log).unwrap_or_default();
+    let bq_requests = bq_server.captured_requests();
+    assert_eq!(
+        bq_requests.len(),
+        2,
+        "expected one insertAll call and one query call"
+    );
+    let bq_insert_body: Value =
+        serde_json::from_str(&bq_requests[0].body).expect("parse insertAll request body");
+    assert_eq!(bq_insert_body["rows"].as_array().map_or(0, Vec::len), writes.len());
     assert!(
-        bq_insert_args.contains("insert phase3c_dataset.phase3c_table"),
-        "insert command should include concrete dataset.table path"
+        bq_requests[0]
+            .path
+            .contains("/datasets/phase3c_dataset/tables/phase3c_table/insertAll"),
+        "insert request should include concrete dataset.table path"
+    );
+    let bq_query_body: Value =
+        serde_json::from_str(&bq_requests[1].body).expect("parse query request body");
+    let bq_query_text = bq_query_body["query"]
+        .as_str()
+        .expect("query text should be present");
+    assert!(
+        bq_query_text.contains("SELECT session_id, updated_at_ms, deleted, payload"),
+        "query request should include concrete read-path SQL"
     );
     assert!(
-        bq_query_args.contains("SELECT session_id, updated_at_ms, deleted, payload"),
-        "query command should include concrete read-path SQL"
+        bq_query_text.contains("phase3c-project.phase3c_dataset.phase3c_table"),
+        "query request should reference project.dataset.table"
     );
 
     assert_eq!(
@@ -1457,7 +1526,7 @@ fn e2e_701_auth_flow_target_defined_red() {
         json!({
             "sub":"user-1",
             "email":"alice@example.com",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "provider":"google_oauth",
             "exp":4_000_000_000_u64
@@ -1469,7 +1538,7 @@ fn e2e_701_auth_flow_target_defined_red() {
         json!({
             "sub":"svc:deploy-bot",
             "actor_type":"service",
-            "iss":"https://trusted.mobkit.local",
+            "iss":"https://trusted.mobkit.localhost",
             "aud":"meerkat-console",
             "provider":"generic_oidc",
             "exp":4_000_000_000_u64
@@ -1649,7 +1718,7 @@ fn e2e_901_scheduled_action_flow_target_defined_red() {
 
 #[test]
 fn e2e_1001_routing_delivery_flow_target_defined_red() {
-    let mut runtime = runtime_with_router_and_delivery();
+    let mut runtime = runtime_with_router_and_delivery_mcp();
     let _spawn_delivery = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
         r#"{"jsonrpc":"2.0","id":"e2e-1001-spawn","method":"mobkit/spawn_member","params":{"module_id":"delivery"}}"#,
@@ -1778,6 +1847,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
         "mobkit/memory/stores",
         "mobkit/memory/index",
         "mobkit/memory/query",
+        "mobkit/session_store/bigquery",
         "mobkit/gating/evaluate",
         "mobkit/gating/pending",
         "mobkit/gating/decide",
