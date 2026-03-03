@@ -659,7 +659,7 @@ fn choke_105_auth_to_console_route_target_defined_red() {
         ),
         (
             200,
-            json!({"modules":["router","delivery"]}),
+            json!({"contract_version":"0.1.0","modules":["router","delivery"]}),
             401,
             json!({"error":"unauthorized","reason":"provider_mismatch"}),
             401,
@@ -1211,7 +1211,10 @@ fn e2e_501_session_persistence_target_defined_red() {
     );
     let bq_insert_body: Value =
         serde_json::from_str(&bq_requests[0].body).expect("parse insertAll request body");
-    assert_eq!(bq_insert_body["rows"].as_array().map_or(0, Vec::len), writes.len());
+    assert_eq!(
+        bq_insert_body["rows"].as_array().map_or(0, Vec::len),
+        writes.len()
+    );
     assert!(
         bq_requests[0]
             .path

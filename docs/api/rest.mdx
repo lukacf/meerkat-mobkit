@@ -1,0 +1,151 @@
+---
+title: "REST API"
+description: "HTTP endpoints for console access, experience metadata, module inspection, and agent interactions."
+icon: "globe"
+---
+
+MobKit serves a REST API over HTTP using Axum. The API provides console access, runtime inspection, and agent interaction endpoints.
+
+## Base URL
+
+```
+http://localhost:8080
+```
+
+The port is configurable at runtime startup.
+
+---
+
+## Console endpoints
+
+### `GET /console`
+
+Returns the admin console HTML page. The page is a self-contained single-page React application with no external dependencies.
+
+**Response:** `text/html`
+
+### `GET /console/assets/console-app.js`
+
+Returns the console React bundle as JavaScript.
+
+**Response:** `application/javascript`
+
+---
+
+## JSON API endpoints
+
+### `GET /console/experience`
+
+Returns experience metadata describing the current runtime state. This is the primary data source for the console UI.
+
+**Response:**
+
+```json
+{
+  "agent_sidebar": {
+    "title": "Agents",
+    "live_snapshot": {
+      "agents": [
+        {
+          "agent_id": "agent-001",
+          "member_id": "lead-1",
+          "label": "Team Lead",
+          "kind": "autonomous_host"
+        }
+      ]
+    }
+  },
+  "activity_feed": { "title": "Activity" },
+  "chat_inspector": { "title": "Chat" },
+  "topology": {
+    "title": "Topology",
+    "live_snapshot": {
+      "nodes": [...],
+      "node_count": 5
+    }
+  },
+  "health_overview": {
+    "title": "Health",
+    "live_snapshot": {
+      "loaded_modules": ["router", "delivery", "scheduling"],
+      "loaded_module_count": 3,
+      "running": true
+    }
+  }
+}
+```
+
+When a Meerkat mob runtime is configured, the response includes live agent data from the mob. Without a mob runtime, only module-level information is returned.
+
+### `GET /console/modules`
+
+Returns the list of loaded modules.
+
+**Response:**
+
+```json
+{
+  "modules": [
+    { "id": "router", "health": "healthy" },
+    { "id": "delivery", "health": "healthy" },
+    { "id": "scheduling", "health": "starting" }
+  ]
+}
+```
+
+---
+
+## Interaction endpoint
+
+### `POST /interactions/stream`
+
+Send a message to a mob member and receive the response as an SSE stream. See the [SSE API](/api/sse) for details.
+
+**Request body:**
+
+```json
+{
+  "member_id": "lead-1",
+  "message": "What is the current status?"
+}
+```
+
+**Response:** `text/event-stream` (SSE)
+
+---
+
+## Authentication
+
+When `ConsolePolicy.require_app_auth` is `true`, all endpoints require a valid JWT token in the `Authorization` header:
+
+```
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+```
+
+The token is validated against the configured auth policy. See [authentication](/guides/authentication) for details.
+
+## Error responses
+
+API errors return standard HTTP status codes with a JSON body:
+
+```json
+{
+  "error": "unauthorized",
+  "message": "Email not in allowlist"
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Success |
+| `400` | Bad request (invalid parameters) |
+| `401` | Unauthorized (missing or invalid token) |
+| `403` | Forbidden (valid token, insufficient permissions) |
+| `404` | Not found |
+| `500` | Internal server error |
+
+## See also
+
+- [JSON-RPC](/api/rpc) -- full programmatic API
+- [SSE API](/api/sse) -- event streaming protocol
+- [Console guide](/guides/console) -- admin console details

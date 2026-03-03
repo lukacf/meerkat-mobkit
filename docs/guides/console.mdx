@@ -1,0 +1,161 @@
+---
+title: "Console"
+description: "React-based admin console with agent sidebar, activity feed, chat inspector, topology view, and health overview."
+icon: "desktop"
+---
+
+MobKit ships with a web-based admin console embedded directly in the Rust binary. The console provides real-time visibility into the running system: agents, events, modules, and interactions.
+
+## Accessing the console
+
+Once the runtime is serving HTTP, open the console at:
+
+```
+http://localhost:8080/console
+```
+
+The console is a single-page React application served from memory -- no external CDN, no build step at deployment time. The HTML and JavaScript are compiled into the binary via `include_str!`.
+
+## Panels
+
+The console is organized into five panels:
+
+### Agent sidebar
+
+Lists all agents and mob members in the runtime. Click a member to select it for the chat inspector. The sidebar pulls data from the `/console/experience` endpoint.
+
+### Activity feed
+
+Real-time event stream showing agent and module activity. Events are received via SSE from the `/interactions/stream` endpoint and displayed chronologically.
+
+### Chat inspector
+
+Send messages to a selected agent and view responses. The inspector composes an `InjectSseRequest` with the selected `member_id` and message text:
+
+```json
+{
+  "member_id": "lead-1",
+  "message": "What is the current status?"
+}
+```
+
+The response streams back as SSE frames, each containing an event type and JSON data payload.
+
+### Topology panel
+
+Visualizes the module topology: which modules are loaded, their connections, and node count. Data comes from the `topology` section of the experience metadata.
+
+### Health overview
+
+Shows runtime health status: loaded modules, their health states, and whether the system is running. Powered by the `health_overview` section of the experience metadata.
+
+## Experience metadata
+
+The console fetches its initial state from `GET /console/experience`, which returns a `ConsoleExperience` object:
+
+```typescript
+interface ConsoleExperience {
+  agent_sidebar?: {
+    title?: string;
+    live_snapshot?: {
+      agents?: Array<{
+        agent_id?: string;
+        member_id?: string;
+        label?: string;
+        kind?: string;
+      }>;
+    };
+  };
+  activity_feed?: { title?: string };
+  chat_inspector?: { title?: string };
+  topology?: {
+    title?: string;
+    live_snapshot?: {
+      nodes?: unknown[];
+      node_count?: number;
+    };
+  };
+  health_overview?: {
+    title?: string;
+    live_snapshot?: {
+      loaded_modules?: unknown[];
+      loaded_module_count?: number;
+      running?: boolean;
+    };
+  };
+}
+```
+
+When the unified runtime is configured, the experience metadata includes live data from the Meerkat mob. Without a mob runtime, the console falls back to module-level information.
+
+## SSE interaction protocol
+
+The chat inspector communicates through the `/interactions/stream` endpoint:
+
+<Steps>
+  <Step title="Send message">
+    POST to `/interactions/stream` with an `InjectSseRequest` body containing the target `member_id` and `message` text.
+  </Step>
+  <Step title="Receive SSE stream">
+    The response is an SSE stream. Each frame contains:
+
+    ```
+    id: frame-001
+    event: agent_event
+    data: {"type": "text_delta", "delta": "The current status is..."}
+    ```
+  </Step>
+  <Step title="Keep-alive">
+    The server sends keep-alive frames every 15 seconds (configurable) to prevent connection timeout.
+  </Step>
+</Steps>
+
+### SSE frame parsing
+
+The console client parses SSE frames using `parseSseFrames()`:
+
+```typescript
+const frames: ConsoleFrame[] = parseSseFrames(rawText);
+for (const frame of frames) {
+  console.log(frame.id, frame.event, frame.data);
+}
+```
+
+## Console routes
+
+| Route | Method | Response |
+|-------|--------|----------|
+| `/console` | GET | HTML page |
+| `/console/assets/console-app.js` | GET | React bundle (JavaScript) |
+| `/console/experience` | GET | Experience metadata (JSON) |
+| `/console/modules` | GET | Loaded modules list (JSON) |
+| `/interactions/stream` | POST | SSE event stream |
+
+## Authentication
+
+Console access is governed by `ConsolePolicy`:
+
+```rust
+ConsolePolicy {
+    require_app_auth: true,
+}
+```
+
+When `require_app_auth` is `true`, every request is checked against the `AuthPolicy` -- the provider must match, and the email must be in the allowlist. See [authentication](/guides/authentication) for details.
+
+## Build system
+
+The console is built with esbuild in two modes:
+
+| Mode | Format | React | Use case |
+|------|--------|-------|----------|
+| Library | CJS | External (peer dep) | Embedding in other React apps |
+| Browser app | IIFE | Bundled | Standalone console served by the runtime |
+
+The browser app bundle is what gets embedded in the Rust binary.
+
+## See also
+
+- [Unified runtime](/guides/unified-runtime) -- how the console is composed with the runtime
+- [SSE API](/api/sse) -- protocol details
+- [Authentication](/guides/authentication) -- console access control

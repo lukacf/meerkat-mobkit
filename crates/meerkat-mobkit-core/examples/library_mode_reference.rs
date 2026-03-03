@@ -2,11 +2,12 @@ use std::sync::Arc;
 
 use meerkat::{build_ephemeral_service, AgentFactory, Config};
 use meerkat_client::TestClient;
-use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
+use meerkat_mob::{MobStorage, Prefab, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_reference_app_router, build_runtime_decision_state, AuthPolicy, BigQueryNaming,
-    ConsolePolicy, MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime, RuntimeDecisionInputs,
-    RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state, handle_console_ingress_json, AuthPolicy, BigQueryNaming,
+    ConsolePolicy, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+    PreSpawnData, RuntimeDecisionInputs, RuntimeOpsPolicy, ScheduleDefinition, SubscribeRequest,
+    TrustedOidcRuntimeConfig, UnifiedRuntime,
 };
 
 #[tokio::main]
@@ -23,18 +24,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile.model = "gpt-5.2".to_string();
     }
 
-    let runtime = RealMobRuntime::bootstrap(
-        MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service).with_options(
-            MobBootstrapOptions {
-                allow_ephemeral_sessions: true,
-                notify_orchestrator_on_resume: true,
-                default_llm_client: Some(Arc::new(TestClient::default())),
+    let mut runtime = UnifiedRuntime::builder()
+        .mob_spec(
+            MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+                .with_options(MobBootstrapOptions {
+                    allow_ephemeral_sessions: true,
+                    notify_orchestrator_on_resume: true,
+                    default_llm_client: Some(Arc::new(TestClient::default())),
+                }),
+        )
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "reference-app".to_string(),
+                modules: vec![],
             },
-        ),
-    )
-    .await?;
+            pre_spawn: Vec::<PreSpawnData>::new(),
+        })
+        .timeout(std::time::Duration::from_secs(1))
+        .build()
+        .await?;
 
-    spawn_reference_members(&runtime).await?;
+    runtime.reconcile(reference_member_specs()).await?;
+    runtime.subscribe_events(SubscribeRequest::default())?;
+    let empty_schedules = Vec::<ScheduleDefinition>::new();
+    runtime
+        .dispatch_schedule_tick(&empty_schedules, 60_000)
+        .await?;
+    let _ = runtime.reconcile_modules(Vec::new(), std::time::Duration::from_secs(1));
+    let loaded_modules = runtime.loaded_modules();
+    if loaded_modules.iter().any(|module| module == "router")
+        && loaded_modules.iter().any(|module| module == "delivery")
+    {
+        if let Ok(resolution) =
+            runtime.resolve_routing(meerkat_mobkit_core::runtime::RoutingResolveRequest {
+                recipient: "sample@example.com".to_string(),
+                channel: Some("transactional".to_string()),
+                retry_max: Some(1),
+                backoff_ms: Some(250),
+                rate_limit_per_minute: Some(2),
+            })
+        {
+            let _ = runtime.send_delivery(meerkat_mobkit_core::runtime::DeliverySendRequest {
+                resolution,
+                payload: serde_json::json!({"message":"reference-app smoke"}),
+                idempotency_key: Some("reference-app-smoke".to_string()),
+            });
+        }
+    }
 
     let decisions = build_runtime_decision_state(RuntimeDecisionInputs {
         bigquery: BigQueryNaming {
@@ -51,38 +88,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         release_metadata_json: include_str!("../../../docs/rct/release-targets.json").to_string(),
     })
     .map_err(|err| std::io::Error::other(format!("failed to build console decisions: {err:?}")))?;
-
-    let app = build_reference_app_router(decisions, runtime);
+    let _console_ingress_preview = handle_console_ingress_json(
+        &decisions,
+        r#"{"method":"GET","path":"/console/modules","auth":null}"#,
+    );
+    let _console_router = runtime.build_console_json_router(decisions.clone());
+    let _interaction_router = runtime.build_interaction_sse_router();
 
     let listen_addr =
         std::env::var("MOBKIT_REF_ADDR").unwrap_or_else(|_| "127.0.0.1:3210".to_string());
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
     println!("reference app listening on http://{listen_addr}");
+    println!("GET  /console");
     println!("GET  /console/experience");
     println!("GET  /console/modules");
     println!(
         "POST /interactions/stream with JSON: {{\"member_id\":\"router\",\"message\":\"hello\"}}"
     );
-    axum::serve(listener, app).await?;
+    if std::env::var("MOBKIT_REF_HTTP_MODE").ok().as_deref() == Some("serve") {
+        runtime.serve(listener, decisions).await?;
+        return Ok(());
+    }
+
+    let run_report = runtime
+        .run(listener, decisions, async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+    let shutdown = run_report.shutdown;
+    if shutdown.module_shutdown.orphan_processes != 0 {
+        return Err(std::io::Error::other(format!(
+            "runtime shutdown left {} orphan process(es)",
+            shutdown.module_shutdown.orphan_processes
+        ))
+        .into());
+    }
+    shutdown
+        .mob_stop
+        .map_err(|err| std::io::Error::other(format!("failed to stop mob runtime: {err}")))?;
+    run_report.serve_result?;
     Ok(())
 }
 
-async fn spawn_reference_members(
-    runtime: &RealMobRuntime,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for member_id in ["router", "delivery"] {
-        runtime
-            .spawn(SpawnMemberSpec::from_wire(
+fn reference_member_specs() -> Vec<SpawnMemberSpec> {
+    ["router", "delivery"]
+        .into_iter()
+        .map(|member_id| {
+            SpawnMemberSpec::from_wire(
                 "lead".to_string(),
-                MeerkatId::from(member_id).to_string(),
+                member_id.to_string(),
                 Some(format!("You are {member_id}. Keep responses concise.")),
                 None,
                 None,
-            ))
-            .await?;
-    }
-
-    Ok(())
+            )
+        })
+        .collect()
 }
 
 fn trusted_modules_toml() -> String {

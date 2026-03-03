@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use meerkat_mobkit_core::{
@@ -13,6 +13,24 @@ fn project_root() -> PathBuf {
         .expect("project root should resolve")
 }
 
+fn read_traceability_from_repo(root: &Path) -> String {
+    let primary = root.join(".rct/traceability.md");
+    match std::fs::read_to_string(&primary) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let fallback = root.join("docs/rct/traceability.md");
+            std::fs::read_to_string(&fallback).unwrap_or_else(|fallback_err| {
+                panic!(
+                    "traceability read failed for {} and {}: {fallback_err}",
+                    primary.display(),
+                    fallback.display()
+                )
+            })
+        }
+        Err(err) => panic!("traceability read failed for {}: {err}", primary.display()),
+    }
+}
+
 #[test]
 fn phase0_governance_contracts_validate_current_repo_state() {
     let root = project_root();
@@ -20,8 +38,7 @@ fn phase0_governance_contracts_validate_current_repo_state() {
     let plan = std::fs::read_to_string(root.join(".rct/plan.yaml")).expect("read plan");
     let checklist =
         std::fs::read_to_string(root.join(".rct/checklist.yaml")).expect("read checklist");
-    let traceability =
-        std::fs::read_to_string(root.join("docs/rct/traceability.md")).expect("read traceability");
+    let traceability = read_traceability_from_repo(&root);
 
     validate_phase0_governance_contracts(&spec, &plan, &checklist, &traceability)
         .expect("current governance contract should validate");
@@ -43,14 +60,69 @@ fn phase0_governance_rejects_invalid_governance_state() {
 #[test]
 fn phase0_governance_rejects_unknown_traceability_status() {
     let markdown = "\
-| Trace-ID | Requirement ID | Phase | Evidence Log | Status |\n\
-|----------|----------------|-------|--------------|--------|\n\
-| TR-999   | REQ-X          | P0    | .rct/outputs/P0/ | PENDING |\n";
+| REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |\n\
+|--------|-------|----------------|----------------|----------|--------|\n\
+| CONTRACT-999 | P0 | - | - | .rct/outputs/P0/ | PENDING |\n";
     let err = validate_traceability_statuses(markdown)
         .expect_err("unknown status should fail validation");
     assert!(matches!(
         err,
         GovernanceValidationError::InvalidTraceabilityStatus { .. }
+    ));
+}
+
+#[test]
+fn phase0_governance_accepts_all_current_traceability_statuses() {
+    let mut markdown = String::from(
+        "\
+| REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |\n\
+|--------|-------|----------------|----------------|----------|--------|\n",
+    );
+    for (index, status) in [
+        "TYPED",
+        "WIRED",
+        "VALIDATED",
+        "PROVISIONAL",
+        "MISSING",
+        "DEFERRED",
+        "STUBBED",
+    ]
+    .iter()
+    .enumerate()
+    {
+        markdown.push_str(&format!(
+            "| TYPE-{index:03} | P0 | .rct/* | - | .rct/outputs/P0/ | {status} |\n"
+        ));
+    }
+
+    validate_traceability_statuses(&markdown).expect("all governance statuses should be accepted");
+}
+
+#[test]
+fn phase0_governance_rejects_missing_traceability_evidence() {
+    let markdown = "\
+| REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |\n\
+|--------|-------|----------------|----------------|----------|--------|\n\
+| TYPE-001 | P0 | .rct/* | - |   | TYPED |\n";
+    let err = validate_traceability_statuses(markdown)
+        .expect_err("missing evidence should fail validation");
+    assert!(matches!(
+        err,
+        GovernanceValidationError::MissingTraceabilityEvidence { .. }
+    ));
+}
+
+#[test]
+fn phase0_governance_rejects_placeholder_traceability_evidence() {
+    let markdown = "\
+| REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |\n\
+|--------|-------|----------------|----------------|----------|--------|\n\
+| TYPE-001 | P0 | .rct/* | - | - | TYPED |\n";
+    let err = validate_traceability_statuses(markdown)
+        .expect_err("placeholder evidence should fail validation");
+    assert!(matches!(
+        err,
+        GovernanceValidationError::MissingTraceabilityEvidence { .. }
     ));
 }
 

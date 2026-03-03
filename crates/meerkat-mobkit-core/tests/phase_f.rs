@@ -396,7 +396,9 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
 
     let requests = server.captured_requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests.iter().all(|request| request.path == "/bigquery/v2/projects/phase-f-project/queries"));
+    assert!(requests
+        .iter()
+        .all(|request| request.path == "/bigquery/v2/projects/phase-f-project/queries"));
 }
 
 #[test]

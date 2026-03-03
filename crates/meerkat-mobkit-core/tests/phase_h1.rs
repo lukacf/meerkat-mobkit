@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::to_bytes;
 use axum::body::Body;
@@ -8,10 +9,10 @@ use meerkat::{build_ephemeral_service, AgentFactory, Config};
 use meerkat_client::TestClient;
 use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_reference_app_router, build_runtime_decision_state, console_json_router,
-    handle_console_rest_json_route, AuthPolicy, BigQueryNaming, ConsolePolicy,
-    ConsoleRestJsonRequest, MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state, console_json_router, handle_console_rest_json_route, AuthPolicy,
+    BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    TrustedOidcRuntimeConfig, UnifiedRuntime,
 };
 use serde_json::{json, Value};
 use tempfile::TempDir;
@@ -19,7 +20,7 @@ use tower::ServiceExt;
 
 struct RuntimeFixture {
     _temp_dir: TempDir,
-    runtime: RealMobRuntime,
+    runtime: UnifiedRuntime,
 }
 
 fn trusted_toml() -> String {
@@ -89,17 +90,23 @@ async fn build_runtime_fixture() -> RuntimeFixture {
         profile.model = "gpt-5.2".to_string();
     }
 
-    let runtime = RealMobRuntime::bootstrap(
-        MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service).with_options(
-            MobBootstrapOptions {
-                allow_ephemeral_sessions: true,
-                notify_orchestrator_on_resume: true,
-                default_llm_client: Some(Arc::new(TestClient::default())),
-            },
-        ),
-    )
-    .await
-    .expect("bootstrap runtime");
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    let module_config = MobKitConfig {
+        modules: vec![],
+        discovery: DiscoverySpec {
+            namespace: "phase-h1".to_string(),
+            modules: vec![],
+        },
+        pre_spawn: vec![],
+    };
+    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, Duration::from_secs(2))
+        .await
+        .expect("bootstrap unified runtime");
 
     RuntimeFixture {
         _temp_dir: temp_dir,
@@ -107,16 +114,20 @@ async fn build_runtime_fixture() -> RuntimeFixture {
     }
 }
 
-async fn spawn_console_members(runtime: &RealMobRuntime) {
+fn console_member_spec(member_id: &str) -> SpawnMemberSpec {
+    SpawnMemberSpec::from_wire(
+        "lead".to_string(),
+        MeerkatId::from(member_id).to_string(),
+        Some(format!("You are {member_id}. Keep responses concise.")),
+        None,
+        None,
+    )
+}
+
+async fn spawn_console_members(runtime: &UnifiedRuntime) {
     for member_id in ["router", "delivery"] {
         runtime
-            .spawn(SpawnMemberSpec::from_wire(
-                "lead".to_string(),
-                MeerkatId::from(member_id).to_string(),
-                Some(format!("You are {member_id}. Keep responses concise.")),
-                None,
-                None,
-            ))
+            .spawn(console_member_spec(member_id))
             .await
             .expect("spawn console member");
     }
@@ -143,10 +154,12 @@ async fn get_console_experience(app: &Router) -> Value {
 
 #[tokio::test]
 async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
-    let fixture = build_runtime_fixture().await;
+    let mut fixture = build_runtime_fixture().await;
     spawn_console_members(&fixture.runtime).await;
 
-    let app = build_reference_app_router(decision_state(false), fixture.runtime.clone());
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
     let health_response = app
         .clone()
         .oneshot(
@@ -159,6 +172,66 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         .await
         .expect("health response");
     assert_eq!(health_response.status(), StatusCode::OK);
+
+    let console_entry_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console")
+                .body(Body::empty())
+                .expect("console entry request"),
+        )
+        .await
+        .expect("console entry response");
+    let console_entry_status = console_entry_response.status();
+    let console_entry_content_type = console_entry_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let console_entry_body = to_bytes(console_entry_response.into_body(), 1024 * 1024)
+        .await
+        .expect("console entry body");
+    let console_entry_text = String::from_utf8(console_entry_body.to_vec()).expect("console html");
+    assert_eq!(console_entry_status, StatusCode::OK);
+    assert!(
+        console_entry_content_type.starts_with("text/html"),
+        "expected text/html content-type, got: {console_entry_content_type}"
+    );
+    assert!(console_entry_text.contains("<div id=\"root\"></div>"));
+    assert!(console_entry_text.contains("/console/assets/console-app.js"));
+
+    let console_asset_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/console/assets/console-app.js")
+                .body(Body::empty())
+                .expect("console asset request"),
+        )
+        .await
+        .expect("console asset response");
+    let console_asset_status = console_asset_response.status();
+    let console_asset_content_type = console_asset_response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let console_asset_body = to_bytes(console_asset_response.into_body(), 1024 * 1024)
+        .await
+        .expect("console asset body");
+    let console_asset_text = String::from_utf8(console_asset_body.to_vec()).expect("console js");
+    assert_eq!(console_asset_status, StatusCode::OK);
+    assert!(
+        console_asset_content_type.starts_with("application/javascript"),
+        "expected application/javascript content-type, got: {console_asset_content_type}"
+    );
+    assert!(console_asset_text.contains("createConsoleApp"));
+
     let console_json = get_console_experience(&app).await;
     assert_eq!(
         console_json["agent_sidebar"]["panel_id"],
@@ -218,20 +291,18 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("text/event-stream")));
 
-    fixture
-        .runtime
-        .handle()
-        .retire_all()
-        .await
-        .expect("retire all");
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
 }
 
 #[tokio::test]
 async fn phase_h1_live_snapshot_tracks_runtime_drift() {
-    let fixture = build_runtime_fixture().await;
+    let mut fixture = build_runtime_fixture().await;
     spawn_console_members(&fixture.runtime).await;
 
-    let app = build_reference_app_router(decision_state(false), fixture.runtime.clone());
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
     let initial = get_console_experience(&app).await;
 
     assert_eq!(
@@ -243,12 +314,12 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
         json!(["delivery", "router"])
     );
 
-    fixture
+    let reconcile = fixture
         .runtime
-        .handle()
-        .retire(MeerkatId::from("delivery"))
+        .reconcile(vec![console_member_spec("router")])
         .await
-        .expect("retire delivery");
+        .expect("reconcile delivery retirement");
+    assert_eq!(reconcile.mob.retired, vec!["delivery".to_string()]);
 
     let after_retire = get_console_experience(&app).await;
     assert_eq!(
@@ -268,19 +339,13 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
         json!(1)
     );
 
-    fixture.runtime.stop().await.expect("stop runtime");
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
     let after_stop = get_console_experience(&app).await;
     assert_eq!(
         after_stop["health_overview"]["live_snapshot"]["running"],
         json!(false)
     );
-
-    fixture
-        .runtime
-        .handle()
-        .retire_all()
-        .await
-        .expect("retire all");
 }
 
 #[tokio::test]
@@ -358,10 +423,12 @@ async fn phase_h1_console_modules_route_honors_auth_mode() {
 
 #[tokio::test]
 async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected() {
-    let fixture = build_runtime_fixture().await;
+    let mut fixture = build_runtime_fixture().await;
     spawn_console_members(&fixture.runtime).await;
 
-    let app = build_reference_app_router(decision_state(false), fixture.runtime.clone());
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
     let console_json = get_console_experience(&app).await;
 
     let selected_agent_id = console_json["agent_sidebar"]["live_snapshot"]["agents"]
@@ -427,10 +494,6 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
     assert_eq!(unknown_status, StatusCode::NOT_FOUND);
     assert_eq!(unknown_json, json!({ "error": "member_not_found" }));
 
-    fixture
-        .runtime
-        .handle()
-        .retire_all()
-        .await
-        .expect("retire all");
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
 }

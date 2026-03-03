@@ -1,4 +1,7 @@
 use std::convert::Infallible;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_stream::stream;
@@ -12,10 +15,24 @@ use meerkat_core::AgentEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::mob_handle_runtime::{MobRuntimeError, RealMobRuntime};
+use crate::mob_handle_runtime::{MobRuntimeError, RealInteractionSubscription, RealMobRuntime};
 use meerkat_core::comms::SendError;
 use meerkat_core::service::SessionError;
 use meerkat_mob::MobError;
+
+const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const KEEP_ALIVE_TEXT: &str = "keep-alive";
+
+#[derive(Clone)]
+struct InteractionSseState {
+    inject_and_subscribe: InteractionSseInjectFn,
+    keep_alive_interval: Duration,
+}
+
+pub(crate) type InteractionSseInjectFuture =
+    Pin<Box<dyn Future<Output = Result<RealInteractionSubscription, MobRuntimeError>> + Send>>;
+pub(crate) type InteractionSseInjectFn =
+    Arc<dyn Fn(String, String) -> InteractionSseInjectFuture + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectSseRequest {
@@ -24,14 +41,71 @@ pub struct InjectSseRequest {
 }
 
 pub fn interaction_sse_router(runtime: RealMobRuntime) -> Router {
+    interaction_sse_router_with_injector(runtime_inject_fn(runtime))
+}
+
+pub fn interaction_sse_router_with_keep_alive_interval(
+    runtime: RealMobRuntime,
+    keep_alive_interval: Duration,
+) -> Router {
+    interaction_sse_router_with_injector_and_keep_alive_interval(
+        runtime_inject_fn(runtime),
+        keep_alive_interval,
+    )
+}
+
+pub(crate) fn interaction_sse_router_with_injector(
+    inject_and_subscribe: InteractionSseInjectFn,
+) -> Router {
+    interaction_sse_router_with_injector_and_keep_alive_interval(
+        inject_and_subscribe,
+        DEFAULT_KEEP_ALIVE_INTERVAL,
+    )
+}
+
+pub(crate) fn interaction_sse_router_with_injector_and_keep_alive_interval(
+    inject_and_subscribe: InteractionSseInjectFn,
+    keep_alive_interval: Duration,
+) -> Router {
     Router::new()
-        .route("/interactions/stream", post(interaction_sse_handler))
-        .with_state(runtime)
+        .route(
+            "/interactions/stream",
+            post(interaction_sse_handler_with_state),
+        )
+        .with_state(InteractionSseState {
+            inject_and_subscribe,
+            keep_alive_interval,
+        })
 }
 
 pub async fn interaction_sse_handler(
     State(runtime): State<RealMobRuntime>,
     Json(request): Json<InjectSseRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    interaction_sse_response(
+        runtime_inject_fn(runtime),
+        request,
+        DEFAULT_KEEP_ALIVE_INTERVAL,
+    )
+    .await
+}
+
+async fn interaction_sse_handler_with_state(
+    State(state): State<InteractionSseState>,
+    Json(request): Json<InjectSseRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    interaction_sse_response(
+        state.inject_and_subscribe.clone(),
+        request,
+        state.keep_alive_interval,
+    )
+    .await
+}
+
+async fn interaction_sse_response(
+    inject_and_subscribe: InteractionSseInjectFn,
+    request: InjectSseRequest,
+    keep_alive_interval: Duration,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let member_id = request.member_id.trim().to_string();
     if member_id.is_empty() {
@@ -47,8 +121,7 @@ pub async fn interaction_sse_handler(
         ));
     }
 
-    let mut subscription = runtime
-        .inject_and_subscribe(&member_id, request.message)
+    let mut subscription = (inject_and_subscribe)(member_id.clone(), request.message)
         .await
         .map_err(map_runtime_error)?;
 
@@ -76,8 +149,8 @@ pub async fn interaction_sse_handler(
 
     Ok(Sse::new(stream).keep_alive(
         KeepAlive::new()
-            .interval(Duration::from_secs(15))
-            .text("keep-alive"),
+            .interval(keep_alive_interval)
+            .text(KEEP_ALIVE_TEXT),
     ))
 }
 
@@ -122,4 +195,11 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
         }
         _ => http_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_server_error"),
     }
+}
+
+fn runtime_inject_fn(runtime: RealMobRuntime) -> InteractionSseInjectFn {
+    Arc::new(move |member_id: String, message: String| {
+        let runtime = runtime.clone();
+        Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
+    })
 }

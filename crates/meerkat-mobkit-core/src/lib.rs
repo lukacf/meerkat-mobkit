@@ -11,6 +11,7 @@ pub mod protocol;
 pub mod rpc;
 pub mod runtime;
 pub mod types;
+pub mod unified_runtime;
 
 pub use auth::{
     extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
@@ -34,8 +35,8 @@ pub use governance::{
     validate_traceability_statuses, GovernanceValidationError, STRICT_TRACEABILITY_STATUSES,
 };
 pub use http_console::{
-    build_reference_app_router, console_json_handler, console_json_router,
-    console_json_router_with_runtime, ConsoleJsonState,
+    console_frontend_app_js_handler, console_frontend_index_handler, console_frontend_router,
+    console_json_handler, console_json_router, console_json_router_with_runtime, ConsoleJsonState,
 };
 pub use http_sse::{
     agent_event_sse, interaction_sse_handler, interaction_sse_router, InjectSseRequest,
@@ -75,9 +76,16 @@ pub use runtime::{
     RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
     ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
     SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
-    SupervisorReport, TrustedOidcRuntimeConfig,
+    SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
+    TrustedOidcRuntimeConfig,
 };
 pub use types::{
     DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent, PreSpawnData,
     RestartPolicy, UnifiedEvent,
+};
+pub use unified_runtime::{
+    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
+    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };

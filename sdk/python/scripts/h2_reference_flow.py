@@ -30,6 +30,7 @@ EXPECTED_CAPABILITY_METHODS = [
     "mobkit/memory/stores",
     "mobkit/memory/index",
     "mobkit/memory/query",
+    "mobkit/session_store/bigquery",
     "mobkit/gating/evaluate",
     "mobkit/gating/pending",
     "mobkit/gating/decide",

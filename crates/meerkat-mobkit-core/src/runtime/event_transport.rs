@@ -46,6 +46,15 @@ pub fn normalize_event_line(line: &str) -> Result<EventEnvelope<UnifiedEvent>, N
 }
 
 impl MobkitRuntimeHandle {
+    pub(crate) fn append_normalized_event(
+        &mut self,
+        event: EventEnvelope<UnifiedEvent>,
+    ) -> Result<(), NormalizationError> {
+        let event = enforce_source_consistency(event)?;
+        insert_event_sorted(&mut self.merged_events, event);
+        Ok(())
+    }
+
     pub fn merged_events(&self) -> Vec<EventEnvelope<UnifiedEvent>> {
         self.merged_events.clone()
     }

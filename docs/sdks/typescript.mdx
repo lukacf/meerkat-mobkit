@@ -1,0 +1,105 @@
+---
+title: "TypeScript SDK"
+description: "TypeScript SDK for MobKit with type-safe contracts, parity tests, and ESM/CommonJS support."
+icon: "js"
+---
+
+The TypeScript SDK (`@meerkat/mobkit-sdk`) provides type-safe access to MobKit's JSON-RPC API from Node.js and browser environments.
+
+## Installation
+
+```bash
+npm install @meerkat/mobkit-sdk
+```
+
+## Quick start
+
+```typescript
+import { MobKitClient } from "@meerkat/mobkit-sdk";
+
+const client = new MobKitClient({
+  endpoint: "http://localhost:8080",
+});
+
+// Check runtime health
+const health = await client.health();
+console.log("Running:", health.running);
+
+// Query memory
+const results = await client.memoryQuery({
+  query: "What happened in the last deployment?",
+  limit: 5,
+});
+
+// Evaluate schedules
+const evaluation = await client.schedulingEvaluate({
+  schedules: [
+    {
+      schedule_id: "daily-report",
+      interval: "0 9 * * *",
+      timezone: "Europe/Stockholm",
+      jitter_ms: 0,
+      enabled: true,
+    },
+  ],
+  tick_ms: Date.now(),
+});
+```
+
+## Type definitions
+
+The SDK exports TypeScript interfaces matching the Rust contracts:
+
+```typescript
+interface ModuleConfig {
+  id: string;
+  command: string;
+  args: string[];
+  restart_policy: "never" | "on_failure" | "always";
+}
+
+interface EventEnvelope<T> {
+  event_id: string;
+  source: string;
+  timestamp_ms: number;
+  event: T;
+}
+
+interface UnifiedEvent {
+  kind: "agent" | "module";
+  agent_id?: string;
+  event_type?: string;
+  module?: string;
+  payload?: unknown;
+}
+
+interface ScheduleDefinition {
+  schedule_id: string;
+  interval: string;
+  timezone: string;
+  jitter_ms: number;
+  enabled: boolean;
+}
+```
+
+## Module support
+
+The SDK supports both ESM and CommonJS:
+
+```typescript
+// ESM
+import { MobKitClient } from "@meerkat/mobkit-sdk";
+
+// CommonJS
+const { MobKitClient } = require("@meerkat/mobkit-sdk");
+```
+
+## Contract parity
+
+The TypeScript SDK includes parity tests that validate type definitions against the Rust core. This ensures the SDK stays in sync with the runtime API across releases.
+
+## See also
+
+- [JSON-RPC API](/api/rpc) -- full method reference
+- [Rust SDK](/sdks/rust) -- primary Rust interface
+- [Python SDK](/sdks/python) -- Python equivalent
