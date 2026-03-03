@@ -21,6 +21,13 @@ from .helpers import (
     define_module_spec,
     define_module_tool,
 )
+from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQuery
+from . import config
+
+# Make config submodules accessible as meerkat_mobkit_sdk.auth, etc.
+auth = config.auth
+memory = config.memory
+session_store = config.session_store
 
 __all__ = [
     "MobkitAsyncTypedClient",
@@ -42,4 +49,11 @@ __all__ = [
     "define_module",
     "define_module_spec",
     "define_module_tool",
+    "DiscoverySpec",
+    "PreSpawnData",
+    "SessionBuildOptions",
+    "SessionQuery",
+    "auth",
+    "memory",
+    "session_store",
 ]
