@@ -5,6 +5,9 @@ const path = require("node:path");
 const { build } = require("esbuild");
 
 const outDir = path.join(__dirname, "dist");
+const indexSourcePath = path.join(__dirname, "src/index.tsx");
+const browserSourcePath = path.join(__dirname, "src/browser.tsx");
+const libraryBundlePath = path.join(outDir, "index.cjs");
 const appBundlePath = path.join(outDir, "console-app.js");
 const htmlPath = path.join(outDir, "index.html");
 
@@ -89,12 +92,27 @@ const html = `<!doctype html>
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
   await build({
-    entryPoints: [path.join(__dirname, "browser-entry.cjs")],
+    entryPoints: [indexSourcePath],
+    outfile: libraryBundlePath,
+    bundle: true,
+    format: "cjs",
+    platform: "neutral",
+    target: ["es2020"],
+    external: ["react", "react-dom", "react-dom/client"],
+    minify: false,
+  });
+  await build({
+    entryPoints: [browserSourcePath],
     outfile: appBundlePath,
     bundle: true,
     format: "iife",
     platform: "browser",
     target: ["es2020"],
+    define: {
+      "process.env.NODE_ENV": '"production"',
+      NODE_ENV: '"production"',
+    },
+    keepNames: true,
     minify: true,
   });
   await fs.writeFile(htmlPath, html, "utf8");
