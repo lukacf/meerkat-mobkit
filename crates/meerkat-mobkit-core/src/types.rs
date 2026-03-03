@@ -67,8 +67,8 @@ pub struct AgentDiscoverySpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<Value>,
     /// Extra instructions appended to the agent prompt.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub additional_instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_instructions: Vec<String>,
     /// Resume an existing session instead of creating a new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_session_id: Option<String>,

@@ -83,7 +83,7 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
             ("role".to_string(), "analyst".to_string()),
         ])),
         context: Some(json!({"env": "staging"})),
-        additional_instructions: Some("Be concise.".to_string()),
+        additional_instructions: vec!["Be concise.".to_string()],
         resume_session_id: None,
     };
 
@@ -91,8 +91,11 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
 
     assert_eq!(spawn.profile_name.as_str(), "worker");
     assert_eq!(spawn.meerkat_id.as_str(), "agent-1");
-    assert_eq!(spawn.initial_message.as_deref(), Some("Be concise."));
-    assert_eq!(spawn.context, Some(json!({"env": "staging"})));
+    assert!(spawn.initial_message.is_none(), "additional_instructions should not map to initial_message");
+    // additional_instructions merged into context
+    let ctx = spawn.context.as_ref().expect("context should be present");
+    assert_eq!(ctx["env"], "staging");
+    assert_eq!(ctx["additional_instructions"][0], "Be concise.");
     let labels = spawn.labels.as_ref().expect("labels should be present");
     assert_eq!(labels.get("team").map(String::as_str), Some("alpha"));
     assert_eq!(labels.get("role").map(String::as_str), Some("analyst"));
@@ -109,7 +112,7 @@ fn mk001_discovery_spec_to_spawn_spec_handles_resume_session_id() {
         meerkat_id: "agent-resume".to_string(),
         labels: None,
         context: None,
-        additional_instructions: None,
+        additional_instructions: vec![],
         resume_session_id: Some(session_uuid.to_string()),
     };
 
@@ -127,7 +130,7 @@ fn mk001_discovery_spec_to_spawn_spec_ignores_invalid_session_id() {
         meerkat_id: "agent-bad-session".to_string(),
         labels: None,
         context: None,
-        additional_instructions: None,
+        additional_instructions: vec![],
         resume_session_id: Some("not-a-uuid".to_string()),
     };
 
@@ -145,7 +148,7 @@ fn mk001_discovery_spec_to_spawn_spec_minimal() {
         meerkat_id: "leader".to_string(),
         labels: None,
         context: None,
-        additional_instructions: None,
+        additional_instructions: vec![],
         resume_session_id: None,
     };
 
@@ -165,7 +168,7 @@ fn mk001_agent_discovery_spec_serde_roundtrip() {
         meerkat_id: "agent-serde".to_string(),
         labels: Some(BTreeMap::from([("env".to_string(), "prod".to_string())])),
         context: Some(json!({"key": "value"})),
-        additional_instructions: Some("Follow protocol X.".to_string()),
+        additional_instructions: vec!["Follow protocol X.".to_string()],
         resume_session_id: Some("01933ee4-0fc2-7fa9-ae4f-6b2cb9571530".to_string()),
     };
 
@@ -181,7 +184,7 @@ fn mk001_agent_discovery_spec_serde_minimal_omits_none_fields() {
         meerkat_id: "agent-min".to_string(),
         labels: None,
         context: None,
-        additional_instructions: None,
+        additional_instructions: vec![],
         resume_session_id: None,
     };
 
@@ -229,7 +232,7 @@ async fn mk002_builder_with_discovery_spawns_discovered_agents() {
                 meerkat_id: "disc-1".to_string(),
                 labels: Some(BTreeMap::from([("tier".to_string(), "1".to_string())])),
                 context: Some(json!({"zone": "us-east"})),
-                additional_instructions: None,
+                additional_instructions: vec![],
                 resume_session_id: None,
             },
             AgentDiscoverySpec {
@@ -237,7 +240,7 @@ async fn mk002_builder_with_discovery_spawns_discovered_agents() {
                 meerkat_id: "disc-2".to_string(),
                 labels: None,
                 context: None,
-                additional_instructions: Some("Be brief.".to_string()),
+                additional_instructions: vec!["Be brief.".to_string()],
                 resume_session_id: None,
             },
         ],
@@ -293,7 +296,7 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
             meerkat_id: "hook-agent".to_string(),
             labels: None,
             context: None,
-            additional_instructions: None,
+            additional_instructions: vec![],
             resume_session_id: None,
         }],
     };

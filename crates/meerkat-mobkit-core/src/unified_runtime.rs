@@ -53,19 +53,32 @@ pub trait Discovery: Send + Sync {
 pub type PreSpawnHook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 /// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
+///
+/// `additional_instructions` are merged into the `context` field (not `initial_message`,
+/// which is the first user turn). The agent builder reads them from context during
+/// agent construction.
 pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpec {
     let resume_session_id = spec
         .resume_session_id
         .as_deref()
         .and_then(|s| SessionId::parse(s).ok());
 
+    // Merge additional_instructions into context so the agent builder can read them.
+    let context = {
+        let mut ctx = spec.context.clone().unwrap_or(json!({}));
+        if !spec.additional_instructions.is_empty() {
+            ctx["additional_instructions"] = json!(spec.additional_instructions);
+        }
+        Some(ctx)
+    };
+
     SpawnMemberSpec {
         profile_name: ProfileName::from(spec.profile.as_str()),
         meerkat_id: MeerkatId::from(spec.meerkat_id.as_str()),
-        initial_message: spec.additional_instructions.clone(),
+        initial_message: None,
         runtime_mode: None,
         backend: None,
-        context: spec.context.clone(),
+        context,
         labels: spec.labels.clone(),
         resume_session_id,
     }
