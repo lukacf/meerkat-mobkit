@@ -720,43 +720,39 @@ impl UnifiedRuntime {
         }
     }
 
-    async fn drain_in_flight_turns(&self) -> ShutdownDrainReport {
+    async fn drain_in_flight_turns(&mut self) -> ShutdownDrainReport {
         let start = std::time::Instant::now();
+        let mut drained_count = 0_usize;
 
-        let active_members = self.mob_runtime.discover().await;
-        let active_count = active_members
-            .iter()
-            .filter(|m| m.state == "active")
-            .count();
-
-        if active_count == 0 {
-            return ShutdownDrainReport {
-                drained_count: 0,
-                timed_out: false,
-                drain_duration_ms: start.elapsed().as_millis() as u64,
-            };
-        }
-
-        let drain_result =
-            tokio::time::timeout(self.drain_timeout, self.wait_for_turns_to_complete()).await;
+        // Drain pending mob agent events into the module runtime.
+        // This captures any in-flight turn outputs before we stop the mob.
+        let drain_result = tokio::time::timeout(self.drain_timeout, async {
+            loop {
+                match self.drain_mob_agent_events() {
+                    Ok(()) => {}
+                    Err(_) => break,
+                }
+                // Check if ingress is disconnected (no more events coming)
+                if self.mob_event_ingress.is_none() {
+                    break;
+                }
+                drained_count += 1;
+                // Brief yield to let in-flight turns produce more events
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                // After draining once with no new events, we're done
+                if drained_count > 1 {
+                    break;
+                }
+            }
+        })
+        .await;
 
         let timed_out = drain_result.is_err();
 
         ShutdownDrainReport {
-            drained_count: active_count,
+            drained_count,
             timed_out,
             drain_duration_ms: start.elapsed().as_millis() as u64,
-        }
-    }
-
-    async fn wait_for_turns_to_complete(&self) {
-        loop {
-            let members = self.mob_runtime.discover().await;
-            let still_active = members.iter().any(|m| m.state == "active");
-            if !still_active {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
