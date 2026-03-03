@@ -477,8 +477,8 @@ fn choke_102_module_router_handoff_target_defined_red() {
     );
 }
 
-#[test]
-fn choke_103_session_store_handoff_target_defined_red() {
+#[tokio::test]
+async fn choke_103_session_store_handoff_target_defined_red() {
     let observed = decision_state(true);
     let contracts = session_store_contracts(&observed);
     let temp = tempdir().expect("tempdir");
@@ -1132,8 +1132,8 @@ fn e2e_401_rpc_surface_target_defined_red() {
     );
 }
 
-#[test]
-fn e2e_501_session_persistence_target_defined_red() {
+#[tokio::test]
+async fn e2e_501_session_persistence_target_defined_red() {
     let state = decision_state(true);
     let contracts = session_store_contracts(&state);
     let temp = tempdir().expect("tempdir");
@@ -1196,10 +1196,11 @@ fn e2e_501_session_persistence_target_defined_red() {
     .with_access_token("phase3c-token")
     .with_api_base_url(format!("{}/bigquery/v2", bq_server.base_url()));
     bq_store
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect("bigquery adapter issues insert command");
     let bq_live = bq_store
         .read_live_rows()
+        .await
         .expect("bigquery adapter reads live rows through query path");
     let bq_requests = bq_server.captured_requests();
     assert_eq!(

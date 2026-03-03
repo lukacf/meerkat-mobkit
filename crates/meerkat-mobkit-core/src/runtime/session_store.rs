@@ -340,7 +340,7 @@ impl BigQuerySessionStoreAdapter {
         format!("{}.{}", self.dataset, self.table)
     }
 
-    pub fn stream_insert_rows(
+    pub async fn stream_insert_rows(
         &self,
         rows: &[SessionPersistenceRow],
     ) -> Result<(), BigQuerySessionStoreError> {
@@ -381,7 +381,7 @@ impl BigQuerySessionStoreAdapter {
             &endpoint,
             &access_token,
             Some(&request),
-        )?;
+        ).await?;
         if let Some(errors) = response.get("insertErrors").and_then(Value::as_array) {
             if !errors.is_empty() {
                 let detail = serde_json::to_string(errors)
@@ -395,15 +395,15 @@ impl BigQuerySessionStoreAdapter {
         Ok(())
     }
 
-    pub fn read_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+    pub async fn read_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
         let fq_table = self.fully_qualified_table()?;
         let query = format!(
             "SELECT session_id, updated_at_ms, deleted, payload FROM `{fq_table}` ORDER BY updated_at_ms ASC"
         );
-        self.execute_query(&query)
+        self.execute_query(&query).await
     }
 
-    pub fn read_latest_rows(
+    pub async fn read_latest_rows(
         &self,
     ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
         let fq_table = self.fully_qualified_table()?;
@@ -412,10 +412,10 @@ impl BigQuerySessionStoreAdapter {
              FROM `{fq_table}` \
              QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY updated_at_ms DESC) = 1"
         );
-        self.execute_query(&query)
+        self.execute_query(&query).await
     }
 
-    pub fn read_live_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+    pub async fn read_live_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
         let fq_table = self.fully_qualified_table()?;
         let query = format!(
             "SELECT session_id, updated_at_ms, deleted, payload FROM (\
@@ -424,7 +424,7 @@ impl BigQuerySessionStoreAdapter {
                QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY updated_at_ms DESC) = 1\
              ) WHERE deleted = false"
         );
-        self.execute_query(&query)
+        self.execute_query(&query).await
     }
 
     fn fully_qualified_table(&self) -> Result<String, BigQuerySessionStoreError> {
@@ -432,7 +432,7 @@ impl BigQuerySessionStoreAdapter {
         Ok(format!("{}.{}", project_id, self.table_ref()))
     }
 
-    fn execute_query(
+    async fn execute_query(
         &self,
         query: &str,
     ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
@@ -449,7 +449,7 @@ impl BigQuerySessionStoreAdapter {
             &endpoint,
             &access_token,
             Some(&request),
-        )?;
+        ).await?;
         parse_bigquery_query_rows(&response)
     }
 
@@ -505,14 +505,14 @@ impl BigQuerySessionStoreAdapter {
         ))
     }
 
-    fn send_json_request(
+    async fn send_json_request(
         &self,
         method: reqwest::Method,
         endpoint: &str,
         access_token: &str,
         body: Option<&Value>,
     ) -> Result<Value, BigQuerySessionStoreError> {
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(self.http_timeout)
             .build()
             .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
@@ -529,10 +529,12 @@ impl BigQuerySessionStoreAdapter {
 
         let response = request
             .send()
+            .await
             .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
         let status = response.status();
         let text = response
             .text()
+            .await
             .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
 
         if !status.is_success() {

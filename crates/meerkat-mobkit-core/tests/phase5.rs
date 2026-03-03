@@ -89,8 +89,8 @@ fn phase5_json_store_blocks_on_fresh_lock() {
     );
 }
 
-#[test]
-fn phase5_json_store_does_not_evict_aged_lock_with_live_owner() {
+#[tokio::test]
+async fn phase5_json_store_does_not_evict_aged_lock_with_live_owner() {
     let temp = tempdir().expect("tempdir");
     let sessions_path = temp.path().join("sessions.json");
     let store = JsonFileSessionStore::new(&sessions_path)
@@ -127,8 +127,8 @@ fn phase5_json_store_does_not_evict_aged_lock_with_live_owner() {
     );
 }
 
-#[test]
-fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
+#[tokio::test]
+async fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
     let writes = vec![
         SessionPersistenceRow {
             session_id: "s1".to_string(),
@@ -182,10 +182,10 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
         .with_api_base_url(format!("{}/bigquery/v2", mock_server.base_url()));
 
     store
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect("insertAll should succeed");
-    let latest = store.read_latest_rows().expect("query latest rows");
-    let live = store.read_live_rows().expect("query live rows");
+    let latest = store.read_latest_rows().await.expect("query latest rows");
+    let live = store.read_live_rows().await.expect("query live rows");
     let requests = mock_server.captured_requests();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[0].method, "POST");

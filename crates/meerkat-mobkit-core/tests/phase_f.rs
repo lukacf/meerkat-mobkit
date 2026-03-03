@@ -55,8 +55,8 @@ fn call_rpc(
     serde_json::from_str(&response_line).expect("parse rpc response")
 }
 
-#[test]
-fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() {
+#[tokio::test]
+async fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() {
     let writes = vec![
         SessionPersistenceRow {
             session_id: "s1".to_string(),
@@ -110,10 +110,10 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     store
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect("insertAll contract call should succeed");
-    let latest = store.read_latest_rows().expect("read latest via query API");
-    let live = store.read_live_rows().expect("read live via query API");
+    let latest = store.read_latest_rows().await.expect("read latest via query API");
+    let live = store.read_live_rows().await.expect("read live via query API");
 
     assert_eq!(
         latest,
@@ -485,8 +485,8 @@ fn phase_f_rpc_bigquery_timeout_ms_propagates_to_store_http_timeout() {
     );
 }
 
-#[test]
-fn phase_f_rpc_bigquery_invalid_params_return_minus_32602() {
+#[tokio::test]
+async fn phase_f_rpc_bigquery_invalid_params_return_minus_32602() {
     let mut runtime = start_phase_f_rpc_runtime();
     let missing_rows = call_rpc(
         &mut runtime,
@@ -524,8 +524,8 @@ fn phase_f_rpc_bigquery_invalid_params_return_minus_32602() {
     assert_eq!(invalid_timeout["error"]["code"], -32602);
 }
 
-#[test]
-fn phase_f_rpc_bigquery_store_and_api_failures_return_minus_32011() {
+#[tokio::test]
+async fn phase_f_rpc_bigquery_store_and_api_failures_return_minus_32011() {
     let mut runtime = start_phase_f_rpc_runtime();
     let missing_project = call_rpc(
         &mut runtime,
@@ -577,26 +577,26 @@ fn phase_f_rpc_bigquery_store_and_api_failures_return_minus_32011() {
     );
 }
 
-#[test]
-fn phase_f_bigquery_missing_project_or_token_configuration_returns_configuration_error() {
+#[tokio::test]
+async fn phase_f_bigquery_missing_project_or_token_configuration_returns_configuration_error() {
     let writes = sample_write_rows();
 
     let missing_project =
         BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
             .with_access_token("phase-f-token")
-            .stream_insert_rows(&writes)
+            .stream_insert_rows(&writes).await
             .expect_err("missing project_id should fail");
     assert_configuration_error_contains(missing_project, "missing BigQuery project_id");
 
     let missing_token = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect_err("missing access token should fail");
     assert_configuration_error_contains(missing_token, "missing BigQuery access token");
 }
 
-#[test]
-fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted() {
+#[tokio::test]
+async fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted() {
     let server = MockHttpServer::start(vec![MockHttpResponse::json(json!({
         "insertErrors": [
             {"index":0,"errors":[{"reason":"invalid","message":"row rejected"}]}
@@ -608,13 +608,13 @@ fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted() {
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     let err = store
-        .stream_insert_rows(&sample_write_rows())
+        .stream_insert_rows(&sample_write_rows()).await
         .expect_err("insertErrors should bubble as API failure");
     assert_api_error_contains(err, "insertAll returned row errors");
 }
 
-#[test]
-fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
+#[tokio::test]
+async fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
     let server = MockHttpServer::start(vec![MockHttpResponse {
         status_code: 503,
         content_type: "application/json".to_string(),
@@ -627,13 +627,13 @@ fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     let err = store
-        .stream_insert_rows(&sample_write_rows())
+        .stream_insert_rows(&sample_write_rows()).await
         .expect_err("non-2xx status should fail");
     assert_api_error_contains(err, "status 503");
 }
 
-#[test]
-fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
+#[tokio::test]
+async fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
     let malformed_rows_server = MockHttpServer::start(vec![MockHttpResponse::json(json!({
         "rows": [
             {"bad":"shape"}
@@ -645,7 +645,7 @@ fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
             .with_access_token("phase-f-token")
             .with_api_base_url(format!("{}/bigquery/v2", malformed_rows_server.base_url()));
     let malformed_rows_err = malformed_rows_store
-        .read_rows()
+        .read_rows().await
         .expect_err("query rows missing row.f should fail parsing");
     assert_invalid_query_error_contains(malformed_rows_err, "missing row.f cell array");
 
@@ -663,13 +663,13 @@ fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
                 malformed_payload_server.base_url()
             ));
     let malformed_payload_err = malformed_payload_store
-        .read_rows()
+        .read_rows().await
         .expect_err("invalid payload JSON should fail parsing");
     assert_invalid_query_error_contains(malformed_payload_err, "payload JSON parse failed");
 }
 
-#[test]
-fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
+#[tokio::test]
+async fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
     let timeout_server = MockHttpServer::start(vec![
         MockHttpResponse::json(json!({})).with_delay(Duration::from_millis(200))
     ]);
@@ -680,7 +680,7 @@ fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
         .with_http_timeout(Duration::from_millis(25));
     let timeout_started = Instant::now();
     let timeout_err = timeout_store
-        .stream_insert_rows(&sample_write_rows())
+        .stream_insert_rows(&sample_write_rows()).await
         .expect_err("delayed response should trigger HTTP timeout");
     let timeout_elapsed = timeout_started.elapsed();
     assert!(
@@ -707,6 +707,7 @@ fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
             .with_http_timeout(Duration::from_millis(250));
     let connection_err = connection_store
         .stream_insert_rows(&sample_write_rows())
+        .await
         .expect_err("connection failure should surface as HTTP error");
     assert_http_error_contains_any(
         connection_err,
@@ -719,8 +720,9 @@ fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
     );
 }
 
-#[test]
-fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
+#[tokio::test]
+#[ignore] // requires real BigQuery credentials and network
+async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
     let access_token = require_bigquery_access_token();
     let api_base_url = std::env::var("BIGQUERY_API_BASE_URL")
         .ok()
@@ -803,7 +805,7 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
     ];
 
     store
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect("stream insert rows into real BigQuery table");
 
     let expected_latest = vec![
@@ -830,10 +832,10 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let latest = store
-            .read_latest_rows()
+            .read_latest_rows().await
             .expect("query latest rows from real BigQuery");
         let live = store
-            .read_live_rows()
+            .read_live_rows().await
             .expect("query live rows from real BigQuery");
         if latest == expected_latest && live == expected_live {
             break;
