@@ -104,12 +104,15 @@ impl Display for UnifiedRuntimeBuilderError {
 
 impl std::error::Error for UnifiedRuntimeBuilderError {}
 
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 pub struct UnifiedRuntimeBuilder {
     mob_spec: Option<MobBootstrapSpec>,
     module_config: Option<MobKitConfig>,
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
     timeout: Option<Duration>,
+    drain_timeout: Option<Duration>,
     options: RuntimeOptions,
 }
 
@@ -134,6 +137,11 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    pub fn drain_timeout(mut self, timeout: Duration) -> Self {
+        self.drain_timeout = Some(timeout);
+        self
+    }
+
     pub fn runtime_options(mut self, options: RuntimeOptions) -> Self {
         self.options = options;
         self
@@ -155,11 +163,13 @@ impl UnifiedRuntimeBuilder {
             .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
                 UnifiedRuntimeBuilderField::Timeout,
             ))?;
+        let drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
         UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
             timeout,
+            drain_timeout,
             self.options,
         )
         .await
@@ -221,7 +231,15 @@ impl From<ScheduleValidationError> for UnifiedRuntimeError {
 }
 
 #[derive(Debug)]
+pub struct ShutdownDrainReport {
+    pub drained_count: usize,
+    pub timed_out: bool,
+    pub drain_duration_ms: u64,
+}
+
+#[derive(Debug)]
 pub struct UnifiedRuntimeShutdownReport {
+    pub drain: ShutdownDrainReport,
     pub module_shutdown: RuntimeShutdownReport,
     pub mob_stop: Result<(), MobRuntimeError>,
 }
@@ -270,6 +288,7 @@ pub struct UnifiedRuntime {
     module_runtime: MobkitRuntimeHandle,
     mob_event_ingress: Option<MobEventIngress>,
     shutting_down: bool,
+    drain_timeout: Duration,
 }
 
 enum MobEventIngress {
@@ -332,6 +351,7 @@ impl UnifiedRuntime {
     pub(crate) fn from_parts(
         mob_runtime: RealMobRuntime,
         module_runtime: MobkitRuntimeHandle,
+        drain_timeout: Duration,
     ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events();
         let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
@@ -340,6 +360,7 @@ impl UnifiedRuntime {
             module_runtime,
             mob_event_ingress,
             shutting_down: false,
+            drain_timeout,
         }
     }
 
@@ -353,6 +374,7 @@ impl UnifiedRuntime {
             module_config,
             Vec::new(),
             timeout,
+            DEFAULT_DRAIN_TIMEOUT,
             RuntimeOptions::default(),
         )
         .await
@@ -363,6 +385,7 @@ impl UnifiedRuntime {
         module_config: MobKitConfig,
         module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
         timeout: Duration,
+        drain_timeout: Duration,
         options: RuntimeOptions,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
         let mob_runtime = RealMobRuntime::bootstrap(mob_spec)
@@ -374,7 +397,9 @@ impl UnifiedRuntime {
         .join();
 
         match module_start_result {
-            Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime)),
+            Ok(Ok(module_runtime)) => {
+                Ok(Self::from_parts(mob_runtime, module_runtime, drain_timeout))
+            }
             Ok(Err(error)) => {
                 let startup_error = UnifiedRuntimeBootstrapError::Module(error);
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await
@@ -677,12 +702,61 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&mut self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down = true;
+
+        // Phase 1: Drain in-flight turns
+        let drain = self.drain_in_flight_turns().await;
+
+        // Phase 2: Close event router
         self.close_event_router().await;
+
+        // Phase 3: Shutdown modules and mob
         let module_shutdown = self.module_runtime.shutdown();
         let mob_stop = self.mob_runtime.stop().await;
+
         UnifiedRuntimeShutdownReport {
+            drain,
             module_shutdown,
             mob_stop,
+        }
+    }
+
+    async fn drain_in_flight_turns(&self) -> ShutdownDrainReport {
+        let start = std::time::Instant::now();
+
+        let active_members = self.mob_runtime.discover().await;
+        let active_count = active_members
+            .iter()
+            .filter(|m| m.state == "active")
+            .count();
+
+        if active_count == 0 {
+            return ShutdownDrainReport {
+                drained_count: 0,
+                timed_out: false,
+                drain_duration_ms: start.elapsed().as_millis() as u64,
+            };
+        }
+
+        let drain_result =
+            tokio::time::timeout(self.drain_timeout, self.wait_for_turns_to_complete()).await;
+
+        let timed_out = drain_result.is_err();
+
+        ShutdownDrainReport {
+            drained_count: active_count,
+            timed_out,
+            drain_duration_ms: start.elapsed().as_millis() as u64,
+        }
+    }
+
+    async fn wait_for_turns_to_complete(&self) {
+        loop {
+            let members = self.mob_runtime.discover().await;
+            let still_active = members.iter().any(|m| m.state == "active");
+            if !still_active {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 
