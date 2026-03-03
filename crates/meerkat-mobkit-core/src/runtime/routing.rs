@@ -131,14 +131,41 @@ impl MobkitRuntimeHandle {
         Self::parse_router_payload_overrides(payload)
     }
     fn matching_runtime_route(&self, recipient: &str, channel: &str) -> Option<&RuntimeRoute> {
+        // Priority 1: Exact recipient + exact channel
+        let exact = self.runtime_routes.values().find(|route| {
+            route.recipient != WILDCARD_ROUTE
+                && route.recipient == recipient
+                && route
+                    .channel
+                    .as_deref()
+                    .is_none_or(|c| c != WILDCARD_ROUTE && c == channel)
+        });
+        if exact.is_some() {
+            return exact;
+        }
+        // Priority 2: Exact recipient + wildcard channel
+        let exact_recip_wild_chan = self.runtime_routes.values().find(|route| {
+            route.recipient != WILDCARD_ROUTE
+                && route.recipient == recipient
+                && route.channel.as_deref() == Some(WILDCARD_ROUTE)
+        });
+        if exact_recip_wild_chan.is_some() {
+            return exact_recip_wild_chan;
+        }
+        // Priority 3: Wildcard recipient + exact channel
+        let wild_recip_exact_chan = self.runtime_routes.values().find(|route| {
+            route.recipient == WILDCARD_ROUTE
+                && route
+                    .channel
+                    .as_deref()
+                    .is_none_or(|c| c != WILDCARD_ROUTE && c == channel)
+        });
+        if wild_recip_exact_chan.is_some() {
+            return wild_recip_exact_chan;
+        }
+        // Priority 4: Wildcard recipient + wildcard channel
         self.runtime_routes.values().find(|route| {
-            if route.recipient != recipient {
-                return false;
-            }
-            route
-                .channel
-                .as_deref()
-                .is_none_or(|candidate| candidate == channel)
+            route.recipient == WILDCARD_ROUTE && route.channel.as_deref() == Some(WILDCARD_ROUTE)
         })
     }
 

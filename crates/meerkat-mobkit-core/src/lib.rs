@@ -77,7 +77,7 @@ pub use runtime::{
     ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
     SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
     SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
-    TrustedOidcRuntimeConfig,
+    TrustedOidcRuntimeConfig, WILDCARD_ROUTE,
 };
 pub use types::{
     DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent, PreSpawnData,
