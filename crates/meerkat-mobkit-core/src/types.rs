@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -46,6 +48,30 @@ pub enum RestartPolicy {
 pub struct DiscoverySpec {
     pub namespace: String,
     pub modules: Vec<String>,
+}
+
+/// Agent-level discovery specification for spawning agents into a mob.
+///
+/// Unlike [`DiscoverySpec`] (which describes module discovery for `MobKitConfig`),
+/// this type captures the fields needed to discover and spawn individual agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDiscoverySpec {
+    /// Agent profile name (maps to a profile in the mob definition).
+    pub profile: String,
+    /// Unique agent ID within the mob.
+    pub meerkat_id: String,
+    /// Application-defined labels for this agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub labels: Option<BTreeMap<String, String>>,
+    /// Opaque application context passed through to the agent build pipeline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<Value>,
+    /// Extra instructions appended to the agent prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_instructions: Option<String>,
+    /// Resume an existing session instead of creating a new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

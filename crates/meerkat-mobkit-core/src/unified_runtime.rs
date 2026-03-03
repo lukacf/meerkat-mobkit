@@ -1,13 +1,18 @@
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::get;
 use axum::Router;
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{AttributedEvent, MemberRef, MobEventRouterHandle, MobState, SpawnMemberSpec};
+use meerkat_core::types::SessionId;
+use meerkat_mob::{
+    AttributedEvent, MeerkatId, MemberRef, MobEventRouterHandle, MobState, ProfileName,
+    SpawnMemberSpec,
+};
 use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -28,12 +33,43 @@ use crate::runtime::{
     RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatchReport,
     ScheduleValidationError, SubscribeError, SubscribeRequest, SubscribeResponse,
 };
-use crate::types::{EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
+use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
 
 const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
 const ROSTER_ROUTE_CHANNEL: &str = "notification";
 const ROSTER_ROUTE_SINK: &str = "mob_member";
 const ROSTER_ROUTE_TARGET_MODULE: &str = "delivery";
+
+/// Trait for discovering agents to spawn into a mob at bootstrap time.
+///
+/// Implementations return a list of [`AgentDiscoverySpec`] entries, each
+/// of which is mapped to a [`SpawnMemberSpec`] and spawned in batch.
+pub trait Discovery: Send + Sync {
+    /// Return the set of agents that should be present in the mob.
+    fn discover(&self) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>>;
+}
+
+/// A callback that runs before discovery/spawn for session preloading, cache warming, etc.
+pub type PreSpawnHook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
+pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpec {
+    let resume_session_id = spec
+        .resume_session_id
+        .as_deref()
+        .and_then(|s| SessionId::parse(s).ok());
+
+    SpawnMemberSpec {
+        profile_name: ProfileName::from(spec.profile.as_str()),
+        meerkat_id: MeerkatId::from(spec.meerkat_id.as_str()),
+        initial_message: spec.additional_instructions.clone(),
+        runtime_mode: None,
+        backend: None,
+        context: spec.context.clone(),
+        labels: spec.labels.clone(),
+        resume_session_id,
+    }
+}
 
 #[derive(Debug)]
 pub enum UnifiedRuntimeBootstrapError {
@@ -104,13 +140,28 @@ impl Display for UnifiedRuntimeBuilderError {
 
 impl std::error::Error for UnifiedRuntimeBuilderError {}
 
-#[derive(Default)]
 pub struct UnifiedRuntimeBuilder {
     mob_spec: Option<MobBootstrapSpec>,
     module_config: Option<MobKitConfig>,
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
     timeout: Option<Duration>,
     options: RuntimeOptions,
+    discovery: Option<Box<dyn Discovery>>,
+    pre_spawn_hook: Option<PreSpawnHook>,
+}
+
+impl Default for UnifiedRuntimeBuilder {
+    fn default() -> Self {
+        Self {
+            mob_spec: None,
+            module_config: None,
+            module_agent_events: Vec::new(),
+            timeout: None,
+            options: RuntimeOptions::default(),
+            discovery: None,
+            pre_spawn_hook: None,
+        }
+    }
 }
 
 impl UnifiedRuntimeBuilder {
@@ -139,6 +190,16 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    pub fn discovery(mut self, discovery: impl Discovery + 'static) -> Self {
+        self.discovery = Some(Box::new(discovery));
+        self
+    }
+
+    pub fn pre_spawn_hook(mut self, hook: PreSpawnHook) -> Self {
+        self.pre_spawn_hook = Some(hook);
+        self
+    }
+
     pub async fn build(self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         let mob_spec = self
             .mob_spec
@@ -155,7 +216,7 @@ impl UnifiedRuntimeBuilder {
             .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
                 UnifiedRuntimeBuilderField::Timeout,
             ))?;
-        UnifiedRuntime::bootstrap_with_options(
+        let runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
@@ -163,7 +224,24 @@ impl UnifiedRuntimeBuilder {
             self.options,
         )
         .await
-        .map_err(UnifiedRuntimeBuilderError::Bootstrap)
+        .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+
+        if let Some(hook) = self.pre_spawn_hook {
+            hook().await;
+        }
+
+        if let Some(discovery) = self.discovery {
+            let specs = discovery.discover().await;
+            let spawn_specs: Vec<SpawnMemberSpec> =
+                specs.iter().map(discovery_spec_to_spawn_spec).collect();
+            runtime
+                .spawn_many(spawn_specs)
+                .await
+                .map_err(UnifiedRuntimeBootstrapError::Mob)
+                .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+        }
+
+        Ok(runtime)
     }
 }
 
@@ -392,6 +470,13 @@ impl UnifiedRuntime {
 
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
         self.mob_runtime.spawn(spec).await
+    }
+
+    pub async fn spawn_many(
+        &self,
+        specs: Vec<SpawnMemberSpec>,
+    ) -> Result<Vec<MemberRef>, MobRuntimeError> {
+        self.mob_runtime.spawn_many(specs).await
     }
 
     pub async fn reconcile(

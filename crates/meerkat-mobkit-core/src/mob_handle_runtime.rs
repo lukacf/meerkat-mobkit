@@ -164,6 +164,18 @@ impl RealMobRuntime {
         self.handle.spawn_spec(spec).await.map_err(Into::into)
     }
 
+    /// Spawn multiple members in parallel, delegating to the underlying
+    /// [`MobHandle::spawn_many`].
+    ///
+    /// Returns all member refs on success, or the first error encountered.
+    pub async fn spawn_many(
+        &self,
+        specs: Vec<SpawnMemberSpec>,
+    ) -> Result<Vec<MemberRef>, MobRuntimeError> {
+        let results = self.handle.spawn_many(specs).await;
+        results.into_iter().map(|r| r.map_err(Into::into)).collect()
+    }
+
     pub async fn reconcile(
         &self,
         desired_specs: Vec<SpawnMemberSpec>,

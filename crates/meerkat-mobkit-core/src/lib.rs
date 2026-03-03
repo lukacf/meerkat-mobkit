@@ -80,12 +80,13 @@ pub use runtime::{
     TrustedOidcRuntimeConfig,
 };
 pub use types::{
-    DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent, PreSpawnData,
-    RestartPolicy, UnifiedEvent,
+    AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent,
+    PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
-    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
-    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    discovery_spec_to_spawn_spec, Discovery, PreSpawnHook, UnifiedRuntime,
+    UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileError,
+    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
+    UnifiedRuntimeShutdownReport,
 };
