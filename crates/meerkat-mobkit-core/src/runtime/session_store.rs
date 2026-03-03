@@ -432,6 +432,68 @@ impl BigQuerySessionStoreAdapter {
         Ok(materialize_live_session_rows(&rows))
     }
 
+    /// Delete all rows except the latest per session_id.
+    /// Returns the number of deleted rows.
+    pub fn gc_superseded_rows(&self) -> Result<u64, BigQuerySessionStoreError> {
+        let project_id = self.resolve_project_id()?;
+        let access_token = self.resolve_access_token()?;
+        let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
+        let table_ref = self.table_ref();
+
+        let query = format!(
+            "DELETE FROM `{project_id}.{table_ref}` AS t \
+             WHERE STRUCT(t.session_id, t.updated_at_ms) NOT IN ( \
+               SELECT AS STRUCT session_id, MAX(updated_at_ms) \
+               FROM `{project_id}.{table_ref}` \
+               GROUP BY session_id \
+             )"
+        );
+
+        let request = serde_json::json!({
+            "query": query,
+            "useLegacySql": false,
+        });
+
+        let response = self.send_json_request(
+            reqwest::Method::POST,
+            &endpoint,
+            &access_token,
+            Some(&request),
+        )?;
+
+        let affected = response
+            .get("numDmlAffectedRows")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+
+        Ok(affected)
+    }
+
+    /// Admin reset: truncate the entire session table.
+    pub fn truncate_sessions(&self) -> Result<(), BigQuerySessionStoreError> {
+        let project_id = self.resolve_project_id()?;
+        let access_token = self.resolve_access_token()?;
+        let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
+
+        let table_ref = self.table_ref();
+        let query = format!("TRUNCATE TABLE `{project_id}.{table_ref}`");
+
+        let request = serde_json::json!({
+            "query": query,
+            "useLegacySql": false,
+        });
+
+        self.send_json_request(
+            reqwest::Method::POST,
+            &endpoint,
+            &access_token,
+            Some(&request),
+        )?;
+
+        Ok(())
+    }
+
     fn api_base_url(&self) -> &str {
         self.api_base_url.trim_end_matches('/')
     }
@@ -651,4 +713,34 @@ fn parse_bigquery_payload_cell(
 
 fn bigquery_cell_value(cell: &Value) -> &Value {
     cell.get("v").unwrap_or(cell)
+}
+
+/// Configuration for periodic BigQuery GC.
+#[derive(Debug, Clone)]
+pub struct BigQueryGcConfig {
+    pub interval: Duration,
+}
+
+impl Default for BigQueryGcConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(6 * 60 * 60),
+        }
+    }
+}
+
+/// Run periodic GC. Call this in a spawned thread.
+/// The returned closure loops indefinitely, sleeping for `config.interval`
+/// between each GC pass.
+pub fn run_periodic_gc(
+    adapter: BigQuerySessionStoreAdapter,
+    config: BigQueryGcConfig,
+) -> impl FnOnce() {
+    move || loop {
+        std::thread::sleep(config.interval);
+        match adapter.gc_superseded_rows() {
+            Ok(_deleted) => {}
+            Err(_err) => {}
+        }
+    }
 }
