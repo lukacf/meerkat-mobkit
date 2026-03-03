@@ -9,14 +9,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 try:
-    from meerkat_mobkit_sdk import (
+    from meerkat_mobkit import (
         MobkitTypedClient,
         build_console_modules_route,
         define_module_spec,
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from meerkat_mobkit_sdk import (  # type: ignore[no-redef]
+    from meerkat_mobkit import (  # type: ignore[no-redef]
         MobkitTypedClient,
         build_console_modules_route,
         define_module_spec,

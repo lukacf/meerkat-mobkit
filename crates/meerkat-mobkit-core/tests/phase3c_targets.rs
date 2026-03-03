@@ -1145,32 +1145,35 @@ fn e2e_501_session_persistence_target_defined_red() {
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
+    // BQ mock returns server-side deduped results (QUALIFY ROW_NUMBER already applied)
+    // read_live_rows sends WHERE deleted=false QUALIFY, so mock returns only live latest rows
     let query_rows = json!({
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
         ]
     });
     let bq_server = MockHttpServer::start(vec![
@@ -1227,8 +1230,8 @@ fn e2e_501_session_persistence_target_defined_red() {
         .as_str()
         .expect("query text should be present");
     assert!(
-        bq_query_text.contains("SELECT session_id, updated_at_ms, deleted, payload"),
-        "query request should include concrete read-path SQL"
+        bq_query_text.contains("SELECT session_id, updated_at_ms, deleted, payload, labels_json"),
+        "query request should include labels_json column: {bq_query_text}"
     );
     assert!(
         bq_query_text.contains("phase3c-project.phase3c_dataset.phase3c_table"),
@@ -1257,14 +1260,14 @@ fn e2e_501_session_persistence_target_defined_red() {
                 {"store":"json_file","dedup":true,"tombstones":true}
             ],
             "latest": [
-                {"session_id":"s1","updated_at_ms":2000,"deleted":true,"payload":{}},
-                {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+                {"session_id":"s1","updated_at_ms":2000,"deleted":true,"payload":{},"labels":{}},
+                {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
             ],
             "live": [
-                {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+                {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
             ],
             "bq_live": [
-                {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+                {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
             ]
         }),
         "E2E-501: concrete JSON + BigQuery backend paths preserve dedup-by-latest-row and tombstone filtering semantics"

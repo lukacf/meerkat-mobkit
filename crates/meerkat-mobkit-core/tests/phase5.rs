@@ -42,6 +42,7 @@ fn phase5_json_store_recovers_stale_lock_and_persists_rows() {
         updated_at_ms: 100,
         deleted: false,
         payload: json!({"step":"create"}),
+    ..Default::default()
     }];
     store
         .append_rows(&writes)
@@ -78,6 +79,7 @@ fn phase5_json_store_blocks_on_fresh_lock() {
             updated_at_ms: 200,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         }])
         .expect_err("fresh lock should block writer");
 
@@ -112,6 +114,7 @@ fn phase5_json_store_does_not_evict_aged_lock_with_live_owner() {
             updated_at_ms: 250,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         }])
         .expect_err("aged lock with live owner should block writer");
 
@@ -135,39 +138,57 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
     let query_rows = serde_json::json!({
         "jobComplete": true,
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"},{"v":"{}"}]},
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
+        ]
+    });
+    let _ = query_rows; // all rows not used directly; server-side dedup returns subsets
+    // Server-side QUALIFY dedup: read_latest_rows returns latest per session
+    let latest_rows = json!({
+        "rows": [
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
+        ]
+    });
+    // Server-side QUALIFY + WHERE deleted=false: read_live_rows returns live latest
+    let live_rows = json!({
+        "rows": [
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
         ]
     });
     let mock_server = MockHttpServer::start(vec![
         MockHttpResponse::json(serde_json::json!({})),
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(latest_rows),
+        MockHttpResponse::json(live_rows),
     ]);
 
     let store = BigQuerySessionStoreAdapter::new_native("phase5_dataset", "phase5_table")
@@ -200,10 +221,15 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
     );
     let query_body: serde_json::Value =
         serde_json::from_str(&requests[1].body).expect("parse query request");
-    assert!(query_body["query"]
-        .as_str()
-        .expect("query text")
-        .contains("SELECT session_id, updated_at_ms, deleted, payload"));
+    let query_text = query_body["query"].as_str().expect("query text");
+    assert!(
+        query_text.contains("SELECT session_id, updated_at_ms, deleted, payload, labels_json"),
+        "query should select labels_json column: {query_text}"
+    );
+    assert!(
+        query_text.contains("QUALIFY ROW_NUMBER()"),
+        "read_latest_rows should use server-side QUALIFY dedup: {query_text}"
+    );
 
     assert_eq!(
         latest,
@@ -213,12 +239,14 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
                 updated_at_ms: 2_000,
                 deleted: true,
                 payload: json!({}),
+            ..Default::default()
             },
             SessionPersistenceRow {
                 session_id: "s2".to_string(),
                 updated_at_ms: 3_000,
                 deleted: false,
                 payload: json!({"step":"update","version":2}),
+            ..Default::default()
             },
         ]
     );
@@ -229,6 +257,7 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         }]
     );
 }

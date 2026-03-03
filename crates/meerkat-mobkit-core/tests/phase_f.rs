@@ -23,6 +23,7 @@ fn sample_write_rows() -> Vec<SessionPersistenceRow> {
         updated_at_ms: 10_000,
         deleted: false,
         payload: json!({"step":"create"}),
+    ..Default::default()
     }]
 }
 
@@ -63,40 +64,50 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
-    let query_rows = json!({
+    // Server-side QUALIFY dedup: read_latest_rows returns latest per session
+    let latest_rows = json!({
         "jobComplete": true,
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
+        ]
+    });
+    // Server-side QUALIFY + WHERE deleted=false: read_live_rows returns live latest
+    let live_rows = json!({
+        "jobComplete": true,
+        "rows": [
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
         ]
     });
 
     let server = MockHttpServer::start(vec![
         MockHttpResponse::json(json!({})),
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(latest_rows),
+        MockHttpResponse::json(live_rows),
     ]);
     let store = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
@@ -117,12 +128,14 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
                 updated_at_ms: 2_000,
                 deleted: true,
                 payload: json!({}),
+            ..Default::default()
             },
             SessionPersistenceRow {
                 session_id: "s2".to_string(),
                 updated_at_ms: 3_000,
                 deleted: false,
                 payload: json!({"step":"update","version":2}),
+            ..Default::default()
             },
         ]
     );
@@ -133,6 +146,7 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         }]
     );
 
@@ -185,7 +199,7 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
 fn phase_f_rpc_builtin_bigquery_path_uses_native_adapter() {
     let query_rows = json!({
         "rows": [
-            {"f":[{"v":"rpc-session"},{"v":"1234"},{"v":"false"},{"v":"{\"kind\":\"rpc\"}"}]}
+            {"f":[{"v":"rpc-session"},{"v":"1234"},{"v":"false"},{"v":"{\"kind\":\"rpc\"}"},{"v":"{}"}]}
         ]
     });
     let server = MockHttpServer::start(vec![MockHttpResponse::json(query_rows)]);
@@ -216,7 +230,8 @@ fn phase_f_rpc_builtin_bigquery_path_uses_native_adapter() {
             "session_id":"rpc-session",
             "updated_at_ms":1234,
             "deleted":false,
-            "payload":{"kind":"rpc"}
+            "payload":{"kind":"rpc"},
+            "labels":{}
         }])
     );
 
@@ -263,12 +278,14 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
             updated_at_ms: 101,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "rpc-s1".to_string(),
             updated_at_ms: 202,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
     ];
 
@@ -318,17 +335,22 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
 
 #[test]
 fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
-    let query_rows = json!({
+    let all_rows = json!({
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"},{"v":"{}"}]},
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
+        ]
+    });
+    let live_rows = json!({
+        "rows": [
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"},{"v":"{}"}]}
         ]
     });
     let server = MockHttpServer::start(vec![
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(all_rows),
+        MockHttpResponse::json(live_rows),
     ]);
     let mut runtime = start_phase_f_rpc_runtime();
 
@@ -375,10 +397,10 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
     assert_eq!(
         read_all["result"]["rows"],
         json!([
-            {"session_id":"s1","updated_at_ms":1000,"deleted":false,"payload":{"step":"create"}},
-            {"session_id":"s1","updated_at_ms":2000,"deleted":true,"payload":{}},
-            {"session_id":"s2","updated_at_ms":1500,"deleted":false,"payload":{"step":"create"}},
-            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+            {"session_id":"s1","updated_at_ms":1000,"deleted":false,"payload":{"step":"create"},"labels":{}},
+            {"session_id":"s1","updated_at_ms":2000,"deleted":true,"payload":{},"labels":{}},
+            {"session_id":"s2","updated_at_ms":1500,"deleted":false,"payload":{"step":"create"},"labels":{}},
+            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
         ])
     );
 
@@ -390,7 +412,7 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
     assert_eq!(
         read_live["result"]["rows"],
         json!([
-            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
         ])
     );
 
@@ -618,7 +640,7 @@ fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
 
     let malformed_payload_server = MockHttpServer::start(vec![MockHttpResponse::json(json!({
         "rows": [
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"false"},{"v":"{not-json}"}]}
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"false"},{"v":"{not-json}"},{"v":"{}"}]}
         ]
     }))]);
     let malformed_payload_store =
@@ -748,24 +770,28 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
 
@@ -779,12 +805,14 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
     let expected_live = vec![SessionPersistenceRow {
@@ -792,6 +820,7 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
         updated_at_ms: 3_000,
         deleted: false,
         payload: json!({"step":"update","version":2}),
+    ..Default::default()
     }];
 
     let deadline = Instant::now() + Duration::from_secs(60);
