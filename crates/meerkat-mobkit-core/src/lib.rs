@@ -39,7 +39,9 @@ pub use http_console::{
     console_json_handler, console_json_router, console_json_router_with_runtime, ConsoleJsonState,
 };
 pub use http_sse::{
-    agent_event_sse, interaction_sse_handler, interaction_sse_router, InjectSseRequest,
+    agent_event_sse, agent_events_sse_router, interaction_sse_handler, interaction_sse_router,
+    mob_events_sse_router, AgentEventSubscribeFn, AgentEventSubscribeFuture, InjectSseRequest,
+    MobEventSubscribeFn, MobEventSubscribeFuture,
 };
 pub use mob_handle_runtime::{
     MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot, MobReconcileOptions,

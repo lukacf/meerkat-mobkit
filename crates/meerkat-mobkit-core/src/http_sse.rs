@@ -5,13 +5,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_stream::stream;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures::StreamExt;
+use meerkat_core::comms::EventStream;
+use meerkat_core::event::agent_event_type;
 use meerkat_core::AgentEvent;
+use meerkat_mob::MobEventRouterHandle;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -202,4 +206,121 @@ fn runtime_inject_fn(runtime: RealMobRuntime) -> InteractionSseInjectFn {
         let runtime = runtime.clone();
         Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
     })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Per-agent persistent SSE  (MK-005)
+// ---------------------------------------------------------------------------
+
+/// Future type returned by an agent event subscribe function.
+pub type AgentEventSubscribeFuture =
+    Pin<Box<dyn Future<Output = Result<EventStream, MobRuntimeError>> + Send>>;
+
+/// Function type that, given an agent id, returns a stream of that agent's events.
+pub type AgentEventSubscribeFn =
+    Arc<dyn Fn(String) -> AgentEventSubscribeFuture + Send + Sync>;
+
+#[derive(Clone)]
+struct AgentSseState {
+    subscribe_fn: AgentEventSubscribeFn,
+}
+
+/// Build an axum router serving `GET /agents/:agent_id/events` as persistent SSE.
+pub fn agent_events_sse_router(subscribe_fn: AgentEventSubscribeFn) -> Router {
+    Router::new()
+        .route("/agents/:agent_id/events", get(agent_events_sse_handler))
+        .with_state(AgentSseState { subscribe_fn })
+}
+
+async fn agent_events_sse_handler(
+    State(state): State<AgentSseState>,
+    Path(agent_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let agent_id = agent_id.trim().to_string();
+    if agent_id.is_empty() {
+        return Err(http_error(StatusCode::BAD_REQUEST, "agent_id must not be empty"));
+    }
+
+    let event_stream = (state.subscribe_fn)(agent_id.clone())
+        .await
+        .map_err(map_runtime_error)?;
+
+    let stream = stream! {
+        let mut seq = 0_u64;
+        tokio::pin!(event_stream);
+        while let Some(envelope) = event_stream.next().await {
+            let event_name = agent_event_type(&envelope.payload).to_string();
+            let payload = serde_json::to_string(&envelope.payload)
+                .unwrap_or_else(|_| "{}".to_string());
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .id(format!("{agent_id}:{seq}"))
+                    .event(event_name)
+                    .data(payload),
+            );
+            seq += 1;
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+            .text(KEEP_ALIVE_TEXT),
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3: Mob-merged SSE  (MK-006)
+// ---------------------------------------------------------------------------
+
+/// Future type returned by a mob event subscribe function.
+pub type MobEventSubscribeFuture =
+    Pin<Box<dyn Future<Output = MobEventRouterHandle> + Send>>;
+
+/// Function that creates a new mob event subscription each time it is called.
+pub type MobEventSubscribeFn = Arc<dyn Fn() -> MobEventSubscribeFuture + Send + Sync>;
+
+#[derive(Clone)]
+struct MobSseState {
+    subscribe_fn: MobEventSubscribeFn,
+}
+
+/// Build an axum router serving `GET /mob/events` as a merged SSE stream
+/// of all agent events tagged with their source agent id.
+pub fn mob_events_sse_router(subscribe_fn: MobEventSubscribeFn) -> Router {
+    Router::new()
+        .route("/mob/events", get(mob_events_sse_handler))
+        .with_state(MobSseState { subscribe_fn })
+}
+
+async fn mob_events_sse_handler(
+    State(state): State<MobSseState>,
+) -> impl IntoResponse {
+    let mut router_handle = (state.subscribe_fn)().await;
+
+    // `router_handle` is moved into this stream closure, keeping the event
+    // router task alive for the lifetime of the SSE connection.
+    let stream = stream! {
+        let mut seq = 0_u64;
+        while let Some(attributed) = router_handle.event_rx.recv().await {
+            let event_name = agent_event_type(&attributed.envelope.payload).to_string();
+            let data = json!({
+                "agent_id": attributed.source.to_string(),
+                "event": attributed.envelope.payload,
+            });
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .id(format!("mob:{seq}"))
+                    .event(event_name)
+                    .data(data.to_string()),
+            );
+            seq += 1;
+        }
+    };
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+            .text(KEEP_ALIVE_TEXT),
+    )
 }

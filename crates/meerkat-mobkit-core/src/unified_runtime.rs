@@ -7,7 +7,9 @@ use std::time::Duration;
 use axum::routing::get;
 use axum::Router;
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{AttributedEvent, MemberRef, MobEventRouterHandle, MobState, SpawnMemberSpec};
+use meerkat_mob::{
+    AttributedEvent, MeerkatId, MemberRef, MobEventRouterHandle, MobState, SpawnMemberSpec,
+};
 use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -15,7 +17,10 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
-use crate::http_sse::interaction_sse_router_with_injector;
+use crate::http_sse::{
+    agent_events_sse_router, interaction_sse_router_with_injector, mob_events_sse_router,
+    AgentEventSubscribeFn, MobEventSubscribeFn,
+};
 use crate::mob_handle_runtime::{
     MobBootstrapSpec, MobReconcileReport, MobRuntimeError, RealInteractionSubscription,
     RealMobRuntime,
@@ -482,12 +487,44 @@ impl UnifiedRuntime {
         }))
     }
 
+    /// Build an axum router for per-agent persistent SSE at `GET /agents/:agent_id/events`.
+    pub fn build_agent_sse_router(&self) -> Router {
+        let handle = self.mob_runtime.handle();
+        let subscribe_fn: AgentEventSubscribeFn =
+            Arc::new(move |agent_id: String| {
+                let handle = handle.clone();
+                Box::pin(async move {
+                    handle
+                        .subscribe_agent_events(&MeerkatId::from(agent_id))
+                        .await
+                        .map_err(MobRuntimeError::Mob)
+                })
+            });
+        agent_events_sse_router(subscribe_fn)
+    }
+
+    /// Build an axum router for mob-merged SSE at `GET /mob/events`.
+    ///
+    /// Each incoming connection creates a new mob event subscription, so
+    /// multiple clients receive independent streams. The returned router
+    /// keeps the event router handle alive for the lifetime of the stream.
+    pub fn build_mob_sse_router(&self) -> Router {
+        let mob_handle = self.mob_runtime.handle();
+        let subscribe_fn: MobEventSubscribeFn = Arc::new(move || {
+            let mob_handle = mob_handle.clone();
+            Box::pin(async move { mob_handle.subscribe_mob_events() })
+        });
+        mob_events_sse_router(subscribe_fn)
+    }
+
     pub fn build_reference_app_router(&self, decisions: RuntimeDecisionState) -> Router {
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
             .merge(self.build_console_json_router(decisions))
             .merge(self.build_interaction_sse_router())
+            .merge(self.build_agent_sse_router())
+            .merge(self.build_mob_sse_router())
     }
 
     pub async fn serve(
