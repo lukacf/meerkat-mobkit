@@ -22,8 +22,8 @@ use meerkat_mobkit_core::{
     ConsolePolicy, DiscoverySpec, EventEnvelope, LifecycleStage, MobBootstrapOptions,
     MobBootstrapSpec, MobKitConfig, MobkitRuntimeError, ModuleConfig, ModuleHealthState,
     ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse, NormalizationError, PreSpawnData,
-    RealMobRuntime, RestartPolicy, RpcRouteError, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    RuntimeOptions, ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
+    RestartPolicy, RpcRouteError, RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeOptions,
+    ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
     UnifiedRuntimeBootstrapError,
 };
 use serde_json::json;
@@ -374,12 +374,6 @@ async fn unified_bootstrap_failure_rolls_back_started_mob_runtime() {
         1,
         "module bootstrap failure must rollback started mob runtime"
     );
-}
-
-async fn build_real_mob_runtime(temp_dir: &tempfile::TempDir) -> RealMobRuntime {
-    RealMobRuntime::bootstrap(build_phase1_mob_spec(temp_dir))
-        .await
-        .expect("bootstrap mob runtime")
 }
 
 #[test]
@@ -828,19 +822,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         pre_spawn: vec![],
     };
 
-    let module_runtime =
-        std::thread::spawn(move || start_mobkit_runtime(config, vec![], Duration::from_secs(2)))
-            .join()
-            .expect("module runtime thread should join")
-            .expect("start scheduling module runtime");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut fixture = UnifiedRuntimeFixture {
-        runtime: UnifiedRuntime::from_parts(
-            build_real_mob_runtime(&temp_dir).await,
-            module_runtime,
-        ),
-        _temp_dir: temp_dir,
-    };
+    let mut fixture = build_unified_runtime_fixture(config).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -955,19 +937,7 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
         }],
     };
 
-    let module_runtime =
-        std::thread::spawn(move || start_mobkit_runtime(config, vec![], Duration::from_secs(2)))
-            .join()
-            .expect("module runtime thread should join")
-            .expect("start scheduling module runtime");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut fixture = UnifiedRuntimeFixture {
-        runtime: UnifiedRuntime::from_parts(
-            build_real_mob_runtime(&temp_dir).await,
-            module_runtime,
-        ),
-        _temp_dir: temp_dir,
-    };
+    let mut fixture = build_unified_runtime_fixture(config).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -1043,19 +1013,7 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
         }],
     };
 
-    let module_runtime =
-        std::thread::spawn(move || start_mobkit_runtime(config, vec![], Duration::from_secs(2)))
-            .join()
-            .expect("module runtime thread should join")
-            .expect("start scheduling module runtime");
-    let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut fixture = UnifiedRuntimeFixture {
-        runtime: UnifiedRuntime::from_parts(
-            build_real_mob_runtime(&temp_dir).await,
-            module_runtime,
-        ),
-        _temp_dir: temp_dir,
-    };
+    let mut fixture = build_unified_runtime_fixture(config).await;
     let dispatch = fixture
         .runtime
         .dispatch_schedule_tick(

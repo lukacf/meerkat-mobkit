@@ -12,11 +12,10 @@ use meerkat_core::StopReason;
 use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::runtime::{DeliverySendRequest, RoutingResolveRequest};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, start_mobkit_runtime, AuthPolicy, BigQueryNaming, ConsolePolicy,
-    DiscoverySpec, LifecycleStage, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    ModuleConfig, ModuleHealthState, PreSpawnData, RealMobRuntime, RestartPolicy,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeOptions, ScheduleDefinition,
-    TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
+    build_runtime_decision_state, AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec,
+    LifecycleStage, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
+    ModuleHealthState, PreSpawnData, RestartPolicy, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    RuntimeOptions, ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -467,57 +466,52 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
 fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_shutdown() {
     let fixture_binary = fixture_binary_path();
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let module_runtime = start_mobkit_runtime(
-        MobKitConfig {
+    let module_config = MobKitConfig {
+        modules: vec![
+            fixture_module("router", &fixture_binary),
+            fixture_module("delivery", &fixture_binary),
+            fixture_module("scheduling", &fixture_binary),
+        ],
+        discovery: DiscoverySpec {
+            namespace: "phase5-e2e-004".to_string(),
             modules: vec![
-                fixture_module("router", &fixture_binary),
-                fixture_module("delivery", &fixture_binary),
-                fixture_module("scheduling", &fixture_binary),
-            ],
-            discovery: DiscoverySpec {
-                namespace: "phase5-e2e-004".to_string(),
-                modules: vec![
-                    "router".to_string(),
-                    "delivery".to_string(),
-                    "scheduling".to_string(),
-                ],
-            },
-            pre_spawn: vec![
-                PreSpawnData {
-                    module_id: "router".to_string(),
-                    env: mcp_env(&[]),
-                },
-                PreSpawnData {
-                    module_id: "delivery".to_string(),
-                    env: mcp_env(&[]),
-                },
-                PreSpawnData {
-                    module_id: "scheduling".to_string(),
-                    env: mcp_env(&[
-                        ("MOBKIT_PHASE_C_SCHEDULING_MEMBER", "worker-1"),
-                        ("MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX", "phase5-happy"),
-                        ("MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION", "0"),
-                    ]),
-                },
+                "router".to_string(),
+                "delivery".to_string(),
+                "scheduling".to_string(),
             ],
         },
-        vec![],
-        Duration::from_secs(2),
-    )
-    .expect("start module runtime");
+        pre_spawn: vec![
+            PreSpawnData {
+                module_id: "router".to_string(),
+                env: mcp_env(&[]),
+            },
+            PreSpawnData {
+                module_id: "delivery".to_string(),
+                env: mcp_env(&[]),
+            },
+            PreSpawnData {
+                module_id: "scheduling".to_string(),
+                env: mcp_env(&[
+                    ("MOBKIT_PHASE_C_SCHEDULING_MEMBER", "worker-1"),
+                    ("MOBKIT_PHASE_C_SCHEDULING_MESSAGE_PREFIX", "phase5-happy"),
+                    ("MOBKIT_PHASE_C_SCHEDULING_DISABLE_INJECTION", "0"),
+                ]),
+            },
+        ],
+    };
 
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("build tokio runtime");
     let mut runtime = tokio_runtime.block_on(async {
-        let mob_runtime = RealMobRuntime::bootstrap(build_phase5_mob_spec(
-            &temp_dir,
-            Arc::new(TestClient::default()),
-        ))
+        UnifiedRuntime::bootstrap(
+            build_phase5_mob_spec(&temp_dir, Arc::new(TestClient::default())),
+            module_config,
+            Duration::from_secs(2),
+        )
         .await
-        .expect("bootstrap mob runtime");
-        UnifiedRuntime::from_parts(mob_runtime, module_runtime)
+        .expect("bootstrap unified runtime")
     });
 
     assert_eq!(runtime.status(), MobState::Running);

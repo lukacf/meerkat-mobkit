@@ -35,9 +35,8 @@ pub use governance::{
     validate_traceability_statuses, GovernanceValidationError, STRICT_TRACEABILITY_STATUSES,
 };
 pub use http_console::{
-    build_reference_app_router, console_frontend_app_js_handler, console_frontend_index_handler,
-    console_frontend_router, console_json_handler, console_json_router,
-    console_json_router_with_runtime, ConsoleJsonState,
+    console_frontend_app_js_handler, console_frontend_index_handler, console_frontend_router,
+    console_json_handler, console_json_router, console_json_router_with_runtime, ConsoleJsonState,
 };
 pub use http_sse::{
     agent_event_sse, interaction_sse_handler, interaction_sse_router, InjectSseRequest,

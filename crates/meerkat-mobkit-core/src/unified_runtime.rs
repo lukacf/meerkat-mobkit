@@ -172,6 +172,7 @@ pub enum UnifiedRuntimeError {
     Normalize(NormalizationError),
     Subscribe(SubscribeError),
     ScheduleValidation(ScheduleValidationError),
+    RuntimeShuttingDown,
     ScheduleDispatchThreadPanicked,
 }
 
@@ -182,6 +183,12 @@ impl Display for UnifiedRuntimeError {
             Self::Subscribe(err) => write!(f, "failed to subscribe to unified events: {err:?}"),
             Self::ScheduleValidation(err) => {
                 write!(f, "failed to dispatch schedule tick: {err:?}")
+            }
+            Self::RuntimeShuttingDown => {
+                write!(
+                    f,
+                    "failed to dispatch schedule tick: unified runtime is shutting down"
+                )
             }
             Self::ScheduleDispatchThreadPanicked => {
                 write!(
@@ -262,6 +269,7 @@ pub struct UnifiedRuntime {
     mob_runtime: RealMobRuntime,
     module_runtime: MobkitRuntimeHandle,
     mob_event_ingress: Option<MobEventIngress>,
+    shutting_down: bool,
 }
 
 enum MobEventIngress {
@@ -321,13 +329,17 @@ impl UnifiedRuntime {
         UnifiedRuntimeBuilder::default()
     }
 
-    pub fn from_parts(mob_runtime: RealMobRuntime, module_runtime: MobkitRuntimeHandle) -> Self {
+    pub(crate) fn from_parts(
+        mob_runtime: RealMobRuntime,
+        module_runtime: MobkitRuntimeHandle,
+    ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events();
         let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
         Self {
             mob_runtime,
             module_runtime,
             mob_event_ingress,
+            shutting_down: false,
         }
     }
 
@@ -356,10 +368,10 @@ impl UnifiedRuntime {
         let mob_runtime = RealMobRuntime::bootstrap(mob_spec)
             .await
             .map_err(UnifiedRuntimeBootstrapError::Mob)?;
-        let module_start_result = tokio::task::spawn_blocking(move || {
+        let module_start_result = std::thread::spawn(move || {
             start_mobkit_runtime_with_options(module_config, module_agent_events, timeout, options)
         })
-        .await;
+        .join();
 
         match module_start_result {
             Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime)),
@@ -597,6 +609,9 @@ impl UnifiedRuntime {
         schedules: &[ScheduleDefinition],
         tick_ms: u64,
     ) -> Result<ScheduleDispatchReport, UnifiedRuntimeError> {
+        if self.shutting_down {
+            return Err(UnifiedRuntimeError::RuntimeShuttingDown);
+        }
         let mut dispatch_report = self.dispatch_schedule_tick_blocking(schedules, tick_ms)?;
 
         for dispatch in &mut dispatch_report.dispatched {
@@ -661,6 +676,7 @@ impl UnifiedRuntime {
     }
 
     pub async fn shutdown(&mut self) -> UnifiedRuntimeShutdownReport {
+        self.shutting_down = true;
         self.close_event_router().await;
         let module_shutdown = self.module_runtime.shutdown();
         let mob_stop = self.mob_runtime.stop().await;
