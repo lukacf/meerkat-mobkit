@@ -83,20 +83,26 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
             payload: json!({"step":"update","version":2}),
         },
     ];
-    let query_rows = json!({
+    // read_latest_rows now uses server-side QUALIFY dedup; mock returns already-deduped rows
+    let latest_query_rows = json!({
         "jobComplete": true,
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
             {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
+    // read_live_rows uses server-side QUALIFY dedup + deleted=false filter
+    let live_query_rows = json!({
+        "jobComplete": true,
+        "rows": [
             {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
         ]
     });
 
     let server = MockHttpServer::start(vec![
         MockHttpResponse::json(json!({})),
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(latest_query_rows),
+        MockHttpResponse::json(live_query_rows),
     ]);
     let store = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
@@ -158,6 +164,13 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
         .as_array()
         .expect("insert request rows array");
     assert_eq!(inserted_rows.len(), writes.len());
+    // MK-008: insertId must not be present
+    for row in inserted_rows {
+        assert!(
+            row.get("insertId").is_none(),
+            "insertId must be removed from BQ streaming inserts"
+        );
+    }
     assert_eq!(
         insert_body["rows"][0]["json"]["session_id"],
         Value::String("s1".to_string())
@@ -179,6 +192,11 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
     let query_text = query_body["query"].as_str().expect("query body query text");
     assert!(query_text.contains("SELECT session_id, updated_at_ms, deleted, payload"));
     assert!(query_text.contains("phase-f-project.phase_f_dataset.phase_f_table"));
+    // MK-009: read_latest_rows must use server-side QUALIFY dedup
+    assert!(
+        query_text.contains("QUALIFY ROW_NUMBER()"),
+        "read_latest_rows query must use QUALIFY for server-side dedup"
+    );
 }
 
 #[test]
@@ -306,7 +324,15 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
     );
     let insert_body: Value =
         serde_json::from_str(&requests[0].body).expect("parse insert request body");
-    assert_eq!(insert_body["rows"].as_array().map_or(0, Vec::len), 2);
+    let rpc_inserted_rows = insert_body["rows"].as_array().expect("insert rows array");
+    assert_eq!(rpc_inserted_rows.len(), 2);
+    // MK-008: insertId must not be present
+    for row in rpc_inserted_rows {
+        assert!(
+            row.get("insertId").is_none(),
+            "insertId must be removed from BQ streaming inserts"
+        );
+    }
     assert_eq!(insert_body["rows"][0]["json"]["session_id"], "rpc-s1");
     assert_eq!(insert_body["rows"][0]["json"]["updated_at_ms"], "101");
     assert_eq!(
@@ -318,7 +344,8 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
 
 #[test]
 fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
-    let query_rows = json!({
+    // read_rows returns all raw rows (no server-side dedup)
+    let all_query_rows = json!({
         "rows": [
             {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
             {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
@@ -326,9 +353,15 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
             {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
         ]
     });
+    // read_live_rows uses server-side QUALIFY dedup + deleted=false filter
+    let live_query_rows = json!({
+        "rows": [
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
     let server = MockHttpServer::start(vec![
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(all_query_rows),
+        MockHttpResponse::json(live_query_rows),
     ]);
     let mut runtime = start_phase_f_rpc_runtime();
 
