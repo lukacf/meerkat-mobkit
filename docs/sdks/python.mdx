@@ -1,10 +1,12 @@
 ---
 title: "Python SDK"
-description: "Python SDK for MobKit with contract parity tests and pip-installable distribution."
+description: "MobKit Python SDK for building agent applications with typed JSON-RPC clients, module authoring, and FastAPI integration."
 icon: "python"
 ---
 
-The Python SDK (`meerkat-mobkit-sdk`) provides access to MobKit's JSON-RPC API from Python applications.
+The MobKit Python SDK (`meerkat-mobkit-sdk`) provides typed JSON-RPC clients,
+module authoring helpers, and console route utilities for building agent
+applications in Python.
 
 ## Installation
 
@@ -14,64 +16,420 @@ pip install meerkat-mobkit-sdk
 
 ## Quick start
 
+The fastest way to interact with a MobKit runtime is through the async typed client:
+
 ```python
-from meerkat_mobkit_sdk import MobKitClient
+from meerkat_mobkit_sdk import MobkitAsyncTypedClient
 
-client = MobKitClient(endpoint="http://localhost:8080")
+client = MobkitAsyncTypedClient.from_http("http://localhost:8080/rpc")
 
-# Check runtime health
-health = client.health()
-print("Running:", health.running)
+status = await client.status()
+print("Running:", status["running"])
+print("Modules:", status["loaded_modules"])
+```
 
-# Query memory
-results = client.memory_query(
-    query="What happened in the last deployment?",
-    limit=5,
+## Typed clients
+
+The SDK provides two typed clients that wrap the JSON-RPC transport layer with
+validated, typed method calls.
+
+### MobkitAsyncTypedClient
+
+The async client supports three factory methods for different transports:
+
+```python
+from meerkat_mobkit_sdk import MobkitAsyncTypedClient
+
+# HTTP transport (remote runtime)
+client = MobkitAsyncTypedClient.from_http(
+    "https://mobkit.example.com/rpc",
+    headers={"Authorization": "Bearer ..."},
+    timeout_seconds=10.0,
 )
 
-# Evaluate schedules
-evaluation = client.scheduling_evaluate(
-    schedules=[
-        {
-            "schedule_id": "daily-report",
-            "interval": "0 9 * * *",
-            "timezone": "Europe/Stockholm",
-            "jitter_ms": 0,
-            "enabled": True,
-        }
-    ],
-    tick_ms=int(time.time() * 1000),
+# Gateway binary transport (subprocess JSON-RPC)
+client = MobkitAsyncTypedClient.from_gateway_bin("/usr/local/bin/mobkit-gateway")
+
+# Custom transport (any async callable)
+async def my_transport(request):
+    # send request, return JSON-RPC response
+    ...
+
+client = MobkitAsyncTypedClient(my_transport)
+```
+
+#### Typed methods
+
+| Method | Return type | Description |
+|--------|-------------|-------------|
+| `status()` | `MobkitStatusResult` | Runtime health and loaded modules |
+| `capabilities()` | `MobkitCapabilitiesResult` | Contract version, available methods, loaded modules |
+| `reconcile(modules)` | `MobkitReconcileResult` | Reconcile module list with runtime |
+| `spawn_member(module_id)` | `MobkitSpawnMemberResult` | Spawn a new member from a module |
+| `subscribe_events(params)` | `MobkitSubscribeResult` | Subscribe to runtime event stream |
+| `rpc(request_id, method, params)` | `JsonRpcResponse` | Raw JSON-RPC call |
+
+```python
+# Typed calls return validated TypedDict results
+status = await client.status()
+# status["contract_version"]  -> str
+# status["running"]           -> bool
+# status["loaded_modules"]    -> list[str]
+
+caps = await client.capabilities()
+# caps["methods"] -> list[str], e.g. ["mobkit/status", "mobkit/reconcile", ...]
+
+result = await client.reconcile(["routing", "delivery"])
+# result["accepted"]            -> bool
+# result["reconciled_modules"]  -> list[str]
+# result["added"]               -> int
+
+spawned = await client.spawn_member("routing")
+# spawned["accepted"]   -> bool
+# spawned["module_id"]  -> str
+
+events = await client.subscribe_events({"scope": "mob"})
+# events["scope"]       -> "mob" | "agent" | "interaction"
+# events["events"]      -> list[MobkitSubscribeEventEnvelope]
+# events["event_frames"] -> list[str]  (raw SSE frames)
+```
+
+### MobkitTypedClient
+
+The synchronous client uses a gateway binary transport:
+
+```python
+from meerkat_mobkit_sdk import MobkitTypedClient
+
+client = MobkitTypedClient("/usr/local/bin/mobkit-gateway")
+
+status = client.status()
+caps = client.capabilities()
+result = client.reconcile(["routing"])
+spawned = client.spawn_member("routing")
+events = client.subscribe_events({"scope": "mob"})
+```
+
+The sync client exposes the same typed methods as the async client, but blocks
+on each call.
+
+## Error handling
+
+JSON-RPC errors are raised as `MobkitRpcError` with structured metadata:
+
+```python
+from meerkat_mobkit_sdk import MobkitAsyncTypedClient, MobkitRpcError
+
+client = MobkitAsyncTypedClient.from_http("http://localhost:8080/rpc")
+
+try:
+    await client.spawn_member("")
+except MobkitRpcError as exc:
+    print(exc.code)        # -32602
+    print(str(exc))        # "Invalid params: module_id required"
+    print(exc.method)      # "mobkit/spawn_member"
+    print(exc.request_id)  # "spawn_member"
+```
+
+Transport-level failures (connection refused, non-JSON responses) raise
+`RuntimeError` or `ValueError`.
+
+## Module authoring
+
+The SDK provides helpers for defining MobKit modules as Python subprocesses.
+
+### ModuleSpec
+
+Define a module's subprocess configuration:
+
+```python
+from meerkat_mobkit_sdk import build_module_spec
+
+spec = build_module_spec(
+    module_id="router",
+    command="python3",
+    args=["router.py", "--port", "9001"],
+    restart_policy="on_failure",
+)
+
+print(spec.to_dict())
+# {"id": "router", "command": "python3", "args": ["router.py", "--port", "9001"],
+#  "restart_policy": "on_failure"}
+```
+
+Or use `define_module_spec` for a plain dictionary result:
+
+```python
+from meerkat_mobkit_sdk import define_module_spec
+
+spec_dict = define_module_spec(
+    module_id="router",
+    command="python3",
+    args=["router.py"],
+    restart_policy="on_failure",
 )
 ```
+
+### Restart policies
+
+| Policy | Behavior |
+|--------|----------|
+| `"never"` | Module runs once; no restart on exit |
+| `"on_failure"` | Restart only on non-zero exit |
+| `"always"` | Restart unconditionally on any exit |
+
+### Module tools
+
+Define tools that a module exposes to agents:
+
+```python
+from meerkat_mobkit_sdk import define_module_tool
+
+async def health_handler(payload, context):
+    return {
+        "module_id": context["module_id"],
+        "status": "healthy",
+    }
+
+tool = define_module_tool(
+    name="health",
+    description="Returns module health status",
+    handler=health_handler,
+)
+```
+
+### Module definitions
+
+Combine a spec and tools into a full module definition:
+
+```python
+from meerkat_mobkit_sdk import build_module_spec, define_module, define_module_tool
+
+spec = build_module_spec(
+    module_id="router",
+    command="python3",
+    args=["router.py"],
+    restart_policy="on_failure",
+)
+
+tool = define_module_tool(
+    name="resolve",
+    handler=resolve_handler,
+    description="Resolve a routing destination",
+)
+
+module = define_module(
+    spec=spec,
+    tools=[tool],
+    description="Routing module",
+)
+```
+
+### Decorators
+
+Specs and tool handlers support decorator chains for composable customization:
+
+```python
+from meerkat_mobkit_sdk import ModuleSpec, build_module_spec, decorate_module_spec
+
+base = build_module_spec(
+    module_id="router",
+    command="python3",
+    args=["router.py"],
+    restart_policy="never",
+)
+
+production_spec = decorate_module_spec(
+    base,
+    lambda spec: ModuleSpec(
+        id=spec.id,
+        command=spec.command,
+        args=spec.args + ("--prod",),
+        restart_policy="on_failure",
+    ),
+)
+```
+
+Tool handler decorators wrap the handler with additional behavior:
+
+```python
+from meerkat_mobkit_sdk import define_module_tool
+
+def logging_decorator(next_handler):
+    async def wrapped(payload, context):
+        print(f"Calling tool with {payload}")
+        result = await next_handler(payload, context)
+        print(f"Tool returned {result}")
+        return result
+    return wrapped
+
+tool = define_module_tool(
+    name="health",
+    handler=health_handler,
+    decorators=[logging_decorator],
+)
+```
+
+## Console route helpers
+
+Build authenticated console API routes:
+
+```python
+from meerkat_mobkit_sdk import (
+    build_console_routes,
+    build_console_modules_route,
+    build_console_experience_route,
+)
+
+# Build all console routes with an auth token
+routes = build_console_routes(auth_token="my-jwt-token")
+# {"modules": "/console/modules?auth_token=my-jwt-token",
+#  "experience": "/console/experience?auth_token=my-jwt-token"}
+
+# Or build individual routes
+modules_url = build_console_modules_route("my-jwt-token")
+experience_url = build_console_experience_route("my-jwt-token")
+
+# Without auth token
+public_routes = build_console_routes()
+# {"modules": "/console/modules", "experience": "/console/experience"}
+```
+
+## Transport layer
+
+The SDK separates transport from typed logic. Both sync and async transports
+follow a protocol interface:
+
+```python
+# Async transport protocol
+class AsyncRpcTransport(Protocol):
+    async def __call__(self, request: JsonRpcRequest) -> Any: ...
+
+# Sync transport protocol
+class SyncRpcTransport(Protocol):
+    def __call__(self, request: JsonRpcRequest) -> Any: ...
+```
+
+### Built-in transports
+
+| Factory function | Transport | Description |
+|-----------------|-----------|-------------|
+| `create_http_transport(endpoint)` | HTTP POST | Sends JSON-RPC over HTTP |
+| `create_gateway_async_transport(bin)` | Subprocess (async) | Spawns gateway binary per request |
+| `create_gateway_sync_transport(bin)` | Subprocess (sync) | Spawns gateway binary per request |
+
+The gateway transport passes the JSON-RPC request via the `MOBKIT_RPC_REQUEST`
+environment variable and reads the response from stdout.
+
+## FastAPI integration
+
+Use the typed client inside a FastAPI application:
+
+```python
+from fastapi import FastAPI
+from meerkat_mobkit_sdk import MobkitAsyncTypedClient
+
+app = FastAPI()
+
+@app.on_event("startup")
+async def startup():
+    app.state.client = MobkitAsyncTypedClient.from_http(
+        "http://localhost:8080/rpc"
+    )
+
+@app.get("/status")
+async def get_status():
+    client = app.state.client
+    status = await client.status()
+    return {"running": status["running"], "modules": status["loaded_modules"]}
+
+@app.post("/reconcile")
+async def reconcile(modules: list[str]):
+    client = app.state.client
+    result = await client.reconcile(modules)
+    return result
+```
+
+## Result types
+
+All typed client methods return `TypedDict` instances with validated shapes.
+
+### MobkitStatusResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `contract_version` | `str` | JSON-RPC contract version |
+| `running` | `bool` | Whether the runtime is operational |
+| `loaded_modules` | `list[str]` | Currently loaded module IDs |
+
+### MobkitCapabilitiesResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `contract_version` | `str` | JSON-RPC contract version |
+| `methods` | `list[str]` | Available JSON-RPC method names |
+| `loaded_modules` | `list[str]` | Currently loaded module IDs |
+
+### MobkitReconcileResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `accepted` | `bool` | Whether reconciliation was accepted |
+| `reconciled_modules` | `list[str]` | Modules that were reconciled |
+| `added` | `int` | Number of newly added modules |
+
+### MobkitSpawnMemberResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `accepted` | `bool` | Whether the spawn was accepted |
+| `module_id` | `str` | ID of the spawned module |
+
+### MobkitSubscribeResult
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `scope` | `str` | Event scope: `"mob"`, `"agent"`, or `"interaction"` |
+| `replay_from_event_id` | `str \| None` | Cursor for resuming from a previous position |
+| `keep_alive` | `dict` | Keep-alive configuration (`interval_ms`, `event`) |
+| `keep_alive_comment` | `str` | SSE keep-alive comment string |
+| `event_frames` | `list[str]` | Raw SSE event frames |
+| `events` | `list[dict]` | Parsed event envelopes with `event_id`, `source`, `timestamp_ms`, `event` |
 
 ## Package structure
 
 ```
 sdk/python/
 ├── meerkat_mobkit_sdk/
-│   ├── __init__.py
-│   └── client.py
-├── tests/
-│   └── test_parity.py
+│   ├── __init__.py       # Public API exports
+│   ├── client.py         # Typed clients and transports
+│   └── helpers.py        # Module authoring and console routes
+├── examples/
+│   └── h2_reference_app.py
+├── scripts/
+│   ├── parity.py         # Contract parity tests
+│   ├── productization.py # Productization validation
+│   └── h2_reference_flow.py
 ├── setup.py
 └── pyproject.toml
 ```
 
 ## Contract parity
 
-The Python SDK includes parity tests that validate data structures against the Rust core contracts. These tests run as part of the CI pipeline to catch drift between SDK and runtime.
-
-## Build
-
-Built with setuptools and wheel:
+The Python SDK includes parity tests that validate typed clients and data
+structures against the Rust core JSON-RPC contracts. These tests run as part
+of the CI pipeline to catch drift between SDK and runtime.
 
 ```bash
 pip install -e ".[dev]"
-pytest tests/
+python scripts/parity.py
 ```
 
 ## See also
 
 - [JSON-RPC API](/api/rpc) -- full method reference
+- [SSE API](/api/sse) -- event streaming protocol
+- [Modules](/concepts/modules) -- module configuration and lifecycle
+- [Sessions](/concepts/sessions) -- session persistence
 - [Rust SDK](/sdks/rust) -- primary Rust interface
 - [TypeScript SDK](/sdks/typescript) -- TypeScript equivalent

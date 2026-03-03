@@ -1,13 +1,17 @@
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::get;
 use axum::Router;
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{AttributedEvent, MemberRef, MobEventRouterHandle, MobState, SpawnMemberSpec};
+use meerkat_mob::{
+    AttributedEvent, MeerkatId, MemberRef, MobEventRouterHandle, MobHandle, MobState,
+    SpawnMemberSpec,
+};
 use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -28,7 +32,49 @@ use crate::runtime::{
     RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatchReport,
     ScheduleValidationError, SubscribeError, SubscribeRequest, SubscribeResponse,
 };
-use crate::types::{EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
+use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
+
+/// Trait for discovering agents to spawn into a mob at bootstrap time.
+pub trait Discovery: Send + Sync {
+    fn discover(&self) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>>;
+}
+
+/// A callback that runs before discovery/spawn for session preloading, cache warming, etc.
+pub type PreSpawnHook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
+/// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
+pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpec {
+    let resume_session_id = spec
+        .resume_session_id
+        .as_deref()
+        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+    let context = {
+        let mut ctx = spec.context.clone().unwrap_or(json!({}));
+        if !spec.additional_instructions.is_empty() {
+            ctx["additional_instructions"] = json!(spec.additional_instructions);
+        }
+        Some(ctx)
+    };
+    SpawnMemberSpec {
+        profile_name: meerkat_mob::ProfileName::from(spec.profile.as_str()),
+        meerkat_id: MeerkatId::from(spec.meerkat_id.as_str()),
+        initial_message: None,
+        runtime_mode: None,
+        backend: None,
+        context,
+        labels: spec.labels.clone(),
+        resume_session_id,
+    }
+}
+
+/// Called after members are spawned. Receives the list of spawned member IDs.
+pub type PostSpawnHook =
+    Arc<dyn Fn(Vec<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Called after reconcile completes. Receives the reconcile report.
+pub type PostReconcileHook = Arc<
+    dyn Fn(UnifiedRuntimeReconcileReport) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
 
 const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
 const ROSTER_ROUTE_CHANNEL: &str = "notification";
@@ -111,6 +157,11 @@ pub struct UnifiedRuntimeBuilder {
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
     timeout: Option<Duration>,
     options: RuntimeOptions,
+    post_spawn_hook: Option<PostSpawnHook>,
+    post_reconcile_hook: Option<PostReconcileHook>,
+    drain_timeout: Option<Duration>,
+    discovery: Option<Box<dyn Discovery>>,
+    pre_spawn_hook: Option<PreSpawnHook>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -139,6 +190,31 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    pub fn post_spawn_hook(mut self, hook: PostSpawnHook) -> Self {
+        self.post_spawn_hook = Some(hook);
+        self
+    }
+
+    pub fn post_reconcile_hook(mut self, hook: PostReconcileHook) -> Self {
+        self.post_reconcile_hook = Some(hook);
+        self
+    }
+
+    pub fn drain_timeout(mut self, timeout: Duration) -> Self {
+        self.drain_timeout = Some(timeout);
+        self
+    }
+
+    pub fn discovery(mut self, discovery: impl Discovery + 'static) -> Self {
+        self.discovery = Some(Box::new(discovery));
+        self
+    }
+
+    pub fn pre_spawn_hook(mut self, hook: PreSpawnHook) -> Self {
+        self.pre_spawn_hook = Some(hook);
+        self
+    }
+
     pub async fn build(self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         let mob_spec = self
             .mob_spec
@@ -155,7 +231,7 @@ impl UnifiedRuntimeBuilder {
             .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
                 UnifiedRuntimeBuilderField::Timeout,
             ))?;
-        UnifiedRuntime::bootstrap_with_options(
+        let mut runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
@@ -163,7 +239,26 @@ impl UnifiedRuntimeBuilder {
             self.options,
         )
         .await
-        .map_err(UnifiedRuntimeBuilderError::Bootstrap)
+        .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+        runtime.post_spawn_hook = self.post_spawn_hook;
+        runtime.post_reconcile_hook = self.post_reconcile_hook;
+        runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
+
+        if let Some(hook) = self.pre_spawn_hook {
+            hook().await;
+        }
+        if let Some(discovery) = self.discovery {
+            let specs = discovery.discover().await;
+            let spawn_specs: Vec<SpawnMemberSpec> =
+                specs.iter().map(discovery_spec_to_spawn_spec).collect();
+            runtime
+                .spawn_many(spawn_specs)
+                .await
+                .map_err(UnifiedRuntimeBootstrapError::Mob)
+                .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+        }
+
+        Ok(runtime)
     }
 }
 
@@ -222,6 +317,7 @@ impl From<ScheduleValidationError> for UnifiedRuntimeError {
 
 #[derive(Debug)]
 pub struct UnifiedRuntimeShutdownReport {
+    pub drain: ShutdownDrainReport,
     pub module_shutdown: RuntimeShutdownReport,
     pub mob_stop: Result<(), MobRuntimeError>,
 }
@@ -265,11 +361,23 @@ impl Display for UnifiedRuntimeReconcileError {
 
 impl std::error::Error for UnifiedRuntimeReconcileError {}
 
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug)]
+pub struct ShutdownDrainReport {
+    pub drained_count: usize,
+    pub timed_out: bool,
+    pub drain_duration_ms: u64,
+}
+
 pub struct UnifiedRuntime {
     mob_runtime: RealMobRuntime,
     module_runtime: MobkitRuntimeHandle,
     mob_event_ingress: Option<MobEventIngress>,
     shutting_down: bool,
+    post_spawn_hook: Option<PostSpawnHook>,
+    post_reconcile_hook: Option<PostReconcileHook>,
+    drain_timeout: Duration,
 }
 
 enum MobEventIngress {
@@ -340,6 +448,9 @@ impl UnifiedRuntime {
             module_runtime,
             mob_event_ingress,
             shutting_down: false,
+            post_spawn_hook: None,
+            post_reconcile_hook: None,
+            drain_timeout: DEFAULT_DRAIN_TIMEOUT,
         }
     }
 
@@ -390,8 +501,24 @@ impl UnifiedRuntime {
         self.mob_runtime.status()
     }
 
+    pub fn mob_handle(&self) -> MobHandle {
+        self.mob_runtime.handle()
+    }
+
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
-        self.mob_runtime.spawn(spec).await
+        let member_id = spec.meerkat_id.to_string();
+        let member_ref = self.mob_runtime.spawn(spec).await?;
+        if let Some(hook) = &self.post_spawn_hook {
+            hook(vec![member_id]).await;
+        }
+        Ok(member_ref)
+    }
+
+    pub async fn spawn_many(
+        &self,
+        specs: Vec<SpawnMemberSpec>,
+    ) -> Result<Vec<MemberRef>, MobRuntimeError> {
+        self.mob_runtime.spawn_many(specs).await
     }
 
     pub async fn reconcile(
@@ -411,7 +538,11 @@ impl UnifiedRuntime {
             .map(|member| member.meerkat_id)
             .collect::<Vec<_>>();
         let routing = self.reconcile_routing_wiring(active_members)?;
-        Ok(UnifiedRuntimeReconcileReport { mob, routing })
+        let report = UnifiedRuntimeReconcileReport { mob, routing };
+        if let Some(hook) = &self.post_reconcile_hook {
+            hook(report.clone()).await;
+        }
+        Ok(report)
     }
 
     pub async fn inject_and_subscribe(
@@ -677,10 +808,37 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&mut self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down = true;
+
+        // Phase 1: Drain in-flight events
+        let drain_start = std::time::Instant::now();
+        let mut drained_count = 0_usize;
+        let drain_result = tokio::time::timeout(self.drain_timeout, async {
+            loop {
+                if self.drain_mob_agent_events().is_err() || self.mob_event_ingress.is_none() {
+                    break;
+                }
+                drained_count += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if drained_count > 1 {
+                    break;
+                }
+            }
+        })
+        .await;
+        let drain = ShutdownDrainReport {
+            drained_count,
+            timed_out: drain_result.is_err(),
+            drain_duration_ms: drain_start.elapsed().as_millis() as u64,
+        };
+
+        // Phase 2: Close event router
         self.close_event_router().await;
+
+        // Phase 3: Shutdown modules and mob
         let module_shutdown = self.module_runtime.shutdown();
         let mob_stop = self.mob_runtime.stop().await;
         UnifiedRuntimeShutdownReport {
+            drain,
             module_shutdown,
             mob_stop,
         }

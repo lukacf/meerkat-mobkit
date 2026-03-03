@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: meerkat-mobkit
+Version: 0.1.0
+Summary: Meerkat MobKit Python SDK
+Requires-Python: >=3.10

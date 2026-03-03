@@ -195,6 +195,7 @@ fn select_python_for_phase_h2() -> Option<String> {
 }
 
 #[test]
+#[ignore] // requires Python venv + cargo build (~15s)
 fn phase_h2_req_h2_001_req_h2_002_python_rpc_reference_app_parity_contracts() {
     let temp = tempfile::tempdir().expect("python phase_h2 venv tempdir");
     let venv_dir = temp.path().join("venv");

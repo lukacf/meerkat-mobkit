@@ -19,12 +19,18 @@ pub struct SessionStoreContract {
     pub bigquery_table: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPersistenceRow {
+    #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
     pub updated_at_ms: u64,
+    #[serde(default)]
     pub deleted: bool,
+    #[serde(default)]
     pub payload: Value,
+    #[serde(default)]
+    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -340,7 +346,7 @@ impl BigQuerySessionStoreAdapter {
         format!("{}.{}", self.dataset, self.table)
     }
 
-    pub fn stream_insert_rows(
+    pub async fn stream_insert_rows(
         &self,
         rows: &[SessionPersistenceRow],
     ) -> Result<(), BigQuerySessionStoreError> {
@@ -358,18 +364,21 @@ impl BigQuerySessionStoreAdapter {
         );
 
         let mut request_rows = Vec::with_capacity(rows.len());
-        for (idx, row) in rows.iter().enumerate() {
+        for row in rows {
             let payload_json = serde_json::to_string(&row.payload)
                 .map_err(|err| BigQuerySessionStoreError::Serialize(err.to_string()))?;
-            request_rows.push(serde_json::json!({
-                "insertId": format!("{}-{}-{idx}", row.session_id, row.updated_at_ms),
-                "json": {
-                    "session_id": row.session_id,
-                    "updated_at_ms": row.updated_at_ms.to_string(),
-                    "deleted": row.deleted,
-                    "payload": payload_json,
-                },
-            }));
+            let mut row_json = serde_json::json!({
+                "session_id": row.session_id,
+                "updated_at_ms": row.updated_at_ms.to_string(),
+                "deleted": row.deleted,
+                "payload": payload_json,
+            });
+            if !row.labels.is_empty() {
+                let labels_json = serde_json::to_string(&row.labels)
+                    .map_err(|err| BigQuerySessionStoreError::Serialize(err.to_string()))?;
+                row_json["labels_json"] = serde_json::Value::String(labels_json);
+            }
+            request_rows.push(serde_json::json!({ "json": row_json }));
         }
         let request = serde_json::json!({
             "ignoreUnknownValues": false,
@@ -382,7 +391,7 @@ impl BigQuerySessionStoreAdapter {
             &endpoint,
             &access_token,
             Some(&request),
-        )?;
+        ).await?;
         if let Some(errors) = response.get("insertErrors").and_then(Value::as_array) {
             if !errors.is_empty() {
                 let detail = serde_json::to_string(errors)
@@ -396,40 +405,99 @@ impl BigQuerySessionStoreAdapter {
         Ok(())
     }
 
-    pub fn read_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+    pub async fn read_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+        let fq_table = self.fully_qualified_table()?;
+        let query = format!(
+            "SELECT session_id, updated_at_ms, deleted, payload, labels_json FROM `{fq_table}` ORDER BY updated_at_ms ASC"
+        );
+        self.execute_query(&query).await
+    }
+
+    pub async fn read_latest_rows(
+        &self,
+    ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+        let fq_table = self.fully_qualified_table()?;
+        let query = format!(
+            "SELECT session_id, updated_at_ms, deleted, payload, labels_json \
+             FROM `{fq_table}` \
+             QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY updated_at_ms DESC) = 1"
+        );
+        self.execute_query(&query).await
+    }
+
+    pub async fn read_live_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+        let fq_table = self.fully_qualified_table()?;
+        let query = format!(
+            "SELECT session_id, updated_at_ms, deleted, payload, labels_json FROM (\
+               SELECT session_id, updated_at_ms, deleted, payload, labels_json \
+               FROM `{fq_table}` \
+               QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY updated_at_ms DESC) = 1\
+             ) WHERE deleted = false"
+        );
+        self.execute_query(&query).await
+    }
+
+    fn fully_qualified_table(&self) -> Result<String, BigQuerySessionStoreError> {
+        let project_id = self.resolve_project_id()?;
+        Ok(format!("{}.{}", project_id, self.table_ref()))
+    }
+
+    async fn execute_query(
+        &self,
+        query: &str,
+    ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
         let project_id = self.resolve_project_id()?;
         let access_token = self.resolve_access_token()?;
         let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
-        let query = format!(
-            "SELECT session_id, updated_at_ms, deleted, payload FROM `{}.{}` ORDER BY updated_at_ms ASC",
-            project_id,
-            self.table_ref()
-        );
         let request = serde_json::json!({
             "query": query,
             "useLegacySql": false,
             "maxResults": 10000,
         });
-
         let response = self.send_json_request(
             reqwest::Method::POST,
             &endpoint,
             &access_token,
             Some(&request),
-        )?;
+        ).await?;
         parse_bigquery_query_rows(&response)
     }
 
-    pub fn read_latest_rows(
-        &self,
-    ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
-        let rows = self.read_rows()?;
-        Ok(materialize_latest_session_rows(&rows))
+    pub async fn gc_superseded_rows(&self) -> Result<u64, BigQuerySessionStoreError> {
+        let project_id = self.resolve_project_id()?;
+        let access_token = self.resolve_access_token()?;
+        let table_ref = self.table_ref();
+        let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
+        let query = format!(
+            "DELETE FROM `{project_id}.{table_ref}` AS t \
+             WHERE STRUCT(t.session_id, t.updated_at_ms) NOT IN ( \
+               SELECT AS STRUCT session_id, MAX(updated_at_ms) \
+               FROM `{project_id}.{table_ref}` \
+               GROUP BY session_id \
+             )"
+        );
+        let request = serde_json::json!({ "query": query, "useLegacySql": false });
+        let response = self
+            .send_json_request(reqwest::Method::POST, &endpoint, &access_token, Some(&request))
+            .await?;
+        let affected = response
+            .get("numDmlAffectedRows")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        Ok(affected)
     }
 
-    pub fn read_live_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
-        let rows = self.read_rows()?;
-        Ok(materialize_live_session_rows(&rows))
+    pub async fn truncate_sessions(&self) -> Result<(), BigQuerySessionStoreError> {
+        let project_id = self.resolve_project_id()?;
+        let access_token = self.resolve_access_token()?;
+        let table_ref = self.table_ref();
+        let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
+        let query = format!("TRUNCATE TABLE `{project_id}.{table_ref}`");
+        let request = serde_json::json!({ "query": query, "useLegacySql": false });
+        self.send_json_request(reqwest::Method::POST, &endpoint, &access_token, Some(&request))
+            .await?;
+        Ok(())
     }
 
     fn api_base_url(&self) -> &str {
@@ -484,14 +552,14 @@ impl BigQuerySessionStoreAdapter {
         ))
     }
 
-    fn send_json_request(
+    async fn send_json_request(
         &self,
         method: reqwest::Method,
         endpoint: &str,
         access_token: &str,
         body: Option<&Value>,
     ) -> Result<Value, BigQuerySessionStoreError> {
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(self.http_timeout)
             .build()
             .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
@@ -508,10 +576,12 @@ impl BigQuerySessionStoreAdapter {
 
         let response = request
             .send()
+            .await
             .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
         let status = response.status();
         let text = response
             .text()
+            .await
             .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
 
         if !status.is_success() {
@@ -528,6 +598,38 @@ impl BigQuerySessionStoreAdapter {
 
         serde_json::from_str::<Value>(&text)
             .map_err(|err| BigQuerySessionStoreError::InvalidQueryResponse(err.to_string()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BigQueryGcConfig {
+    pub interval: Duration,
+}
+
+impl Default for BigQueryGcConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(6 * 60 * 60),
+        }
+    }
+}
+
+pub fn run_periodic_gc(
+    adapter: BigQuerySessionStoreAdapter,
+    config: BigQueryGcConfig,
+) -> impl FnOnce() {
+    move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("create async runtime for BQ GC");
+        loop {
+            std::thread::sleep(config.interval);
+            match rt.block_on(adapter.gc_superseded_rows()) {
+                Ok(_deleted) => {}
+                Err(_err) => {}
+            }
+        }
     }
 }
 
@@ -570,12 +672,18 @@ fn parse_bigquery_query_row(
     let updated_at_ms = parse_bigquery_u64_cell(&fields[1], "updated_at_ms")?;
     let deleted = parse_bigquery_bool_cell(&fields[2], "deleted")?;
     let payload = parse_bigquery_payload_cell(&fields[3], "payload")?;
+    let labels = if fields.len() > 4 {
+        parse_bigquery_labels_cell(&fields[4])?
+    } else {
+        BTreeMap::new()
+    };
 
     Ok(SessionPersistenceRow {
         session_id,
         updated_at_ms,
         deleted,
         payload,
+        labels,
     })
 }
 
@@ -646,6 +754,22 @@ fn parse_bigquery_payload_cell(
             })
         }
         _ => Ok(value.clone()),
+    }
+}
+
+fn parse_bigquery_labels_cell(
+    cell: &Value,
+) -> Result<BTreeMap<String, String>, BigQuerySessionStoreError> {
+    let value = bigquery_cell_value(cell);
+    match value {
+        Value::Null => Ok(BTreeMap::new()),
+        Value::String(s) if s.trim().is_empty() => Ok(BTreeMap::new()),
+        Value::String(s) => serde_json::from_str::<BTreeMap<String, String>>(s).map_err(|_| {
+            BigQuerySessionStoreError::InvalidQueryResponse(
+                "query column labels_json parse failed".to_string(),
+            )
+        }),
+        _ => Ok(BTreeMap::new()),
     }
 }
 

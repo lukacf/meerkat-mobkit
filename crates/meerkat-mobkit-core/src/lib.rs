@@ -2,6 +2,7 @@ pub mod auth;
 pub mod baseline;
 pub mod decisions;
 pub mod governance;
+pub mod http_auth;
 pub mod http_console;
 pub mod http_sse;
 pub mod mob_handle_runtime;
@@ -15,9 +16,9 @@ pub mod unified_runtime;
 
 pub use auth::{
     extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
-    select_jwk_for_token, validate_jwt_locally, Jwk, JwksDocument, JwtHeaderView,
-    JwtValidationConfig, JwtValidationError, OidcContractError, OidcDiscoveryDocument,
-    ValidatedJwt,
+    select_jwk_for_token, validate_jwt_locally, Jwk, JwksCache, JwksCacheConfig, JwksCacheError,
+    JwksDocument, JwtHeaderView, JwtValidationConfig, JwtValidationError, OidcContractError,
+    OidcDiscoveryDocument, ValidatedJwt,
 };
 pub use baseline::{
     verify_meerkat_baseline_symbols, BaselineVerificationError, BaselineVerificationReport,
@@ -38,8 +39,10 @@ pub use http_console::{
     console_frontend_app_js_handler, console_frontend_index_handler, console_frontend_router,
     console_json_handler, console_json_router, console_json_router_with_runtime, ConsoleJsonState,
 };
+pub use http_auth::{auth_middleware, with_auth_layer};
 pub use http_sse::{
-    agent_event_sse, interaction_sse_handler, interaction_sse_router, InjectSseRequest,
+    agent_event_sse, agent_events_sse_router, interaction_sse_handler, interaction_sse_router,
+    mob_events_sse_router, AgentEventSubscribeFn, InjectSseRequest, MobEventSubscribeFn,
 };
 pub use mob_handle_runtime::{
     MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot, MobReconcileOptions,
@@ -77,14 +80,15 @@ pub use runtime::{
     ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
     SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
     SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
-    TrustedOidcRuntimeConfig,
+    TrustedOidcRuntimeConfig, WILDCARD_ROUTE, BigQueryGcConfig,
 };
 pub use types::{
-    DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent, PreSpawnData,
-    RestartPolicy, UnifiedEvent,
+    AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent,
+    PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
-    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
+    discovery_spec_to_spawn_spec, Discovery, PostReconcileHook, PostSpawnHook,
+    ShutdownDrainReport, UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
     UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
     UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
     UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
