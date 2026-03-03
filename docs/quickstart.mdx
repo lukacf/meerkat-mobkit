@@ -92,11 +92,12 @@ The fastest way to get a running system is `start_mobkit_runtime`. It takes a mo
   </Tab>
   <Tab title="Python">
     ```python
-    from meerkat_mobkit_sdk import MobKitClient
+    from meerkat_mobkit_sdk import MobkitAsyncTypedClient
 
-    client = MobKitClient(endpoint="http://localhost:8080")
-    status = client.health()
-    print("Runtime status:", status)
+    client = MobkitAsyncTypedClient.from_http("http://localhost:8080/rpc")
+    status = await client.status()
+    print("Running:", status["running"])
+    print("Modules:", status["loaded_modules"])
     ```
   </Tab>
 </Tabs>
