@@ -1,8 +1,0 @@
-pyproject.toml
-meerkat_mobkit_sdk/__init__.py
-meerkat_mobkit_sdk/client.py
-meerkat_mobkit_sdk/helpers.py
-meerkat_mobkit_sdk.egg-info/PKG-INFO
-meerkat_mobkit_sdk.egg-info/SOURCES.txt
-meerkat_mobkit_sdk.egg-info/dependency_links.txt
-meerkat_mobkit_sdk.egg-info/top_level.txt

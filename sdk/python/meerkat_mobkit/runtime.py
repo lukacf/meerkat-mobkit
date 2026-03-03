@@ -1,10 +1,15 @@
 """MobKit runtime object — the running instance returned by the builder."""
 from __future__ import annotations
 
+import json
 from typing import Any, AsyncIterator
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .transport import PersistentTransport
+
+
+def _rpc_request(request_id: str, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
 
 
 class MobKitRuntime:
@@ -35,6 +40,24 @@ class MobKitRuntime:
         ):
             self._dispatcher.register_builder(self._config.session_builder)
         self._running = True
+
+    def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        """Send a JSON-RPC request and return the result. Raises on error."""
+        if self._transport is None:
+            raise RuntimeError("runtime not started — no transport available")
+        response = self._transport.send_sync(_rpc_request(method, method, params))
+        if "error" in response:
+            raise RuntimeError(f"RPC error: {response['error']}")
+        return response.get("result")
+
+    async def _rpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        """Async version of _rpc_sync."""
+        if self._transport is None:
+            raise RuntimeError("runtime not started — no transport available")
+        response = await self._transport.send_async(_rpc_request(method, method, params))
+        if "error" in response:
+            raise RuntimeError(f"RPC error: {response['error']}")
+        return response.get("result")
 
     def mob_handle(self) -> MobHandle:
         return MobHandle(self)
@@ -75,36 +98,52 @@ class MobKitRuntime:
 
 
 class MobHandle:
-    """Proxy for the Meerkat MobHandle API."""
+    """Proxy for the Meerkat MobHandle API via JSON-RPC."""
 
     def __init__(self, runtime: MobKitRuntime):
         self._runtime = runtime
 
     async def wire(self, source_id: str, target_id: str) -> None:
-        # Future: send RPC
-        pass
+        await self._runtime._rpc("mobkit/wire", {"source_id": source_id, "target_id": target_id})
 
     async def inject(self, member_id: str, message: str) -> str:
-        # Future: send RPC
-        return ""
+        result = await self._runtime._rpc("mobkit/inject", {"member_id": member_id, "message": message})
+        return result.get("interaction_id", "") if isinstance(result, dict) else ""
 
     async def discover(self) -> list[dict[str, Any]]:
-        # Future: send RPC
-        return []
+        result = await self._runtime._rpc("mobkit/discover")
+        return result if isinstance(result, list) else []
+
+    async def spawn(self, spec: dict[str, Any]) -> dict[str, Any]:
+        return await self._runtime._rpc("mobkit/spawn_member", spec)
+
+    async def reconcile(self, specs: list[dict[str, Any]]) -> dict[str, Any]:
+        return await self._runtime._rpc("mobkit/reconcile", {"specs": specs})
 
 
 class SseBridge:
-    """Bridge for streaming SSE events from the Rust runtime."""
+    """Bridge for streaming SSE events from the Rust runtime via HTTP."""
 
     def __init__(self, runtime: MobKitRuntime):
         self._runtime = runtime
 
     async def agent_events(self, agent_id: str) -> AsyncIterator[dict[str, Any]]:
-        # Future: connect to per-agent SSE endpoint
-        return
-        yield  # type: ignore[misc]
+        """Stream events for a specific agent.
+
+        Connects to GET /agents/{agent_id}/events on the Rust runtime.
+        """
+        # Requires HTTP SSE client — implementation depends on aiohttp/httpx
+        raise NotImplementedError(
+            "SSE streaming requires an HTTP client library (aiohttp or httpx). "
+            "Install one and use SseEventStream from meerkat_mobkit.sse to parse the stream."
+        )
 
     async def mob_events(self) -> AsyncIterator[dict[str, Any]]:
-        # Future: connect to mob SSE endpoint
-        return
-        yield  # type: ignore[misc]
+        """Stream all mob events (merged).
+
+        Connects to GET /mob/events on the Rust runtime.
+        """
+        raise NotImplementedError(
+            "SSE streaming requires an HTTP client library (aiohttp or httpx). "
+            "Install one and use SseEventStream from meerkat_mobkit.sse to parse the stream."
+        )

@@ -48,11 +48,11 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
         .resume_session_id
         .as_deref()
         .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
-    let context = {
+    let context = if spec.additional_instructions.is_empty() {
+        spec.context.clone()
+    } else {
         let mut ctx = spec.context.clone().unwrap_or(json!({}));
-        if !spec.additional_instructions.is_empty() {
-            ctx["additional_instructions"] = json!(spec.additional_instructions);
-        }
+        ctx["additional_instructions"] = json!(spec.additional_instructions);
         Some(ctx)
     };
     SpawnMemberSpec {

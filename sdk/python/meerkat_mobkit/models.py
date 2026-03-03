@@ -16,7 +16,7 @@ class DiscoverySpec:
     meerkat_id: str
     labels: dict[str, str] = field(default_factory=dict)
     app_context: Any | None = None
-    additional_instructions: str | None = None
+    additional_instructions: list[str] = field(default_factory=list)
     resume_session_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -28,8 +28,8 @@ class DiscoverySpec:
             result["labels"] = dict(self.labels)
         if self.app_context is not None:
             result["app_context"] = self.app_context
-        if self.additional_instructions is not None:
-            result["additional_instructions"] = self.additional_instructions
+        if self.additional_instructions:
+            result["additional_instructions"] = list(self.additional_instructions)
         if self.resume_session_id is not None:
             result["resume_session_id"] = self.resume_session_id
         return result
@@ -89,7 +89,7 @@ class SessionBuildOptions:
     """
 
     app_context: Any | None = None
-    additional_instructions: str | None = None
+    additional_instructions: list[str] = field(default_factory=list)
     session_id: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
     profile_name: str | None = None
@@ -107,8 +107,8 @@ class SessionBuildOptions:
         result: dict[str, Any] = {}
         if self.app_context is not None:
             result["app_context"] = self.app_context
-        if self.additional_instructions is not None:
-            result["additional_instructions"] = self.additional_instructions
+        if self.additional_instructions:
+            result["additional_instructions"] = list(self.additional_instructions)
         if self.session_id is not None:
             result["session_id"] = self.session_id
         if self.labels:
