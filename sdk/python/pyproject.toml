@@ -7,3 +7,7 @@ name = "meerkat-mobkit-sdk"
 version = "0.1.0"
 description = "Minimal Meerkat MobKit Python SDK artifacts for parity tests"
 requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["meerkat_mobkit_sdk*", "meerkat_mobkit*"]
