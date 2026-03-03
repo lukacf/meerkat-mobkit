@@ -296,6 +296,16 @@ async fn interaction_sse_response(
         _ => None,
     };
 
+    // SAFETY: When Last-Event-ID is present, this is a browser reconnect.
+    // Reject with 409 to prevent re-injection (duplicate side effects).
+    // Clients should use the replay-only endpoint for reconnection.
+    if last_event_id.is_some() {
+        return Err(http_error(
+            StatusCode::CONFLICT,
+            "reconnect with Last-Event-ID on POST would re-inject; use GET /interactions/replay instead",
+        ));
+    }
+
     let mut subscription = (inject_and_subscribe)(member_id.clone(), request.message)
         .await
         .map_err(map_runtime_error)?;
