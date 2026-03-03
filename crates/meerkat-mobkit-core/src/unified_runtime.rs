@@ -1,13 +1,16 @@
 use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::routing::get;
 use axum::Router;
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{AttributedEvent, MemberRef, MobEventRouterHandle, MobState, SpawnMemberSpec};
+use meerkat_mob::{
+    AttributedEvent, MemberRef, MobEventRouterHandle, MobHandle, MobState, SpawnMemberSpec,
+};
 use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -29,6 +32,15 @@ use crate::runtime::{
     ScheduleValidationError, SubscribeError, SubscribeRequest, SubscribeResponse,
 };
 use crate::types::{EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
+
+/// Called after members are spawned. Receives the list of spawned member IDs.
+pub type PostSpawnHook =
+    Arc<dyn Fn(Vec<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Called after reconcile completes. Receives the reconcile report.
+pub type PostReconcileHook = Arc<
+    dyn Fn(UnifiedRuntimeReconcileReport) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
 
 const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
 const ROSTER_ROUTE_CHANNEL: &str = "notification";
@@ -111,6 +123,8 @@ pub struct UnifiedRuntimeBuilder {
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
     timeout: Option<Duration>,
     options: RuntimeOptions,
+    post_spawn_hook: Option<PostSpawnHook>,
+    post_reconcile_hook: Option<PostReconcileHook>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -139,6 +153,16 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    pub fn post_spawn_hook(mut self, hook: PostSpawnHook) -> Self {
+        self.post_spawn_hook = Some(hook);
+        self
+    }
+
+    pub fn post_reconcile_hook(mut self, hook: PostReconcileHook) -> Self {
+        self.post_reconcile_hook = Some(hook);
+        self
+    }
+
     pub async fn build(self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         let mob_spec = self
             .mob_spec
@@ -155,7 +179,7 @@ impl UnifiedRuntimeBuilder {
             .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
                 UnifiedRuntimeBuilderField::Timeout,
             ))?;
-        UnifiedRuntime::bootstrap_with_options(
+        let mut runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
@@ -163,7 +187,10 @@ impl UnifiedRuntimeBuilder {
             self.options,
         )
         .await
-        .map_err(UnifiedRuntimeBuilderError::Bootstrap)
+        .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+        runtime.post_spawn_hook = self.post_spawn_hook;
+        runtime.post_reconcile_hook = self.post_reconcile_hook;
+        Ok(runtime)
     }
 }
 
@@ -270,6 +297,8 @@ pub struct UnifiedRuntime {
     module_runtime: MobkitRuntimeHandle,
     mob_event_ingress: Option<MobEventIngress>,
     shutting_down: bool,
+    post_spawn_hook: Option<PostSpawnHook>,
+    post_reconcile_hook: Option<PostReconcileHook>,
 }
 
 enum MobEventIngress {
@@ -340,6 +369,8 @@ impl UnifiedRuntime {
             module_runtime,
             mob_event_ingress,
             shutting_down: false,
+            post_spawn_hook: None,
+            post_reconcile_hook: None,
         }
     }
 
@@ -390,8 +421,17 @@ impl UnifiedRuntime {
         self.mob_runtime.status()
     }
 
+    pub fn mob_handle(&self) -> MobHandle {
+        self.mob_runtime.handle()
+    }
+
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
-        self.mob_runtime.spawn(spec).await
+        let member_id = spec.meerkat_id.to_string();
+        let member_ref = self.mob_runtime.spawn(spec).await?;
+        if let Some(hook) = &self.post_spawn_hook {
+            hook(vec![member_id]).await;
+        }
+        Ok(member_ref)
     }
 
     pub async fn reconcile(
@@ -411,7 +451,11 @@ impl UnifiedRuntime {
             .map(|member| member.meerkat_id)
             .collect::<Vec<_>>();
         let routing = self.reconcile_routing_wiring(active_members)?;
-        Ok(UnifiedRuntimeReconcileReport { mob, routing })
+        let report = UnifiedRuntimeReconcileReport { mob, routing };
+        if let Some(hook) = &self.post_reconcile_hook {
+            hook(report.clone()).await;
+        }
+        Ok(report)
     }
 
     pub async fn inject_and_subscribe(

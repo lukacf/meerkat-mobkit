@@ -84,8 +84,10 @@ pub use types::{
     RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
-    UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    PostReconcileHook, PostSpawnHook, UnifiedRuntime, UnifiedRuntimeBootstrapError,
+    UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
+    UnifiedRuntimeError, UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
     UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
+
+pub use meerkat_mob::MobHandle;
