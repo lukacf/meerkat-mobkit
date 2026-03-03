@@ -155,19 +155,25 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
             payload: json!({"step":"update","version":2}),
         },
     ];
-    let query_rows = serde_json::json!({
+    // read_latest_rows uses server-side QUALIFY dedup, so mock returns already-deduped rows
+    let latest_query_rows = serde_json::json!({
         "jobComplete": true,
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
             {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
+    // read_live_rows uses server-side QUALIFY dedup + WHERE deleted = false
+    let live_query_rows = serde_json::json!({
+        "jobComplete": true,
+        "rows": [
             {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
         ]
     });
     let mock_server = MockHttpServer::start(vec![
         MockHttpResponse::json(serde_json::json!({})),
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(latest_query_rows),
+        MockHttpResponse::json(live_query_rows),
     ]);
 
     let store = BigQuerySessionStoreAdapter::new_native("phase5_dataset", "phase5_table")
@@ -193,6 +199,13 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
         .as_array()
         .expect("insert request rows array");
     assert_eq!(insert_rows.len(), writes.len());
+    // insertId must not be present (MK-008)
+    for row in insert_rows {
+        assert!(
+            row.get("insertId").is_none(),
+            "insertId must be removed from BQ streaming inserts"
+        );
+    }
     assert_eq!(requests[1].method, "POST");
     assert_eq!(
         requests[1].path,
@@ -200,10 +213,29 @@ fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
     );
     let query_body: serde_json::Value =
         serde_json::from_str(&requests[1].body).expect("parse query request");
-    assert!(query_body["query"]
+    let query_text = query_body["query"]
         .as_str()
-        .expect("query text")
-        .contains("SELECT session_id, updated_at_ms, deleted, payload"));
+        .expect("query text");
+    assert!(query_text.contains("SELECT session_id, updated_at_ms, deleted, payload"));
+    // read_latest_rows must use server-side QUALIFY dedup (MK-009)
+    assert!(
+        query_text.contains("QUALIFY ROW_NUMBER()"),
+        "read_latest_rows query must use QUALIFY for server-side dedup"
+    );
+    // Verify read_live_rows query uses QUALIFY + WHERE deleted = false
+    let live_query_body: serde_json::Value =
+        serde_json::from_str(&requests[2].body).expect("parse live query request");
+    let live_query_text = live_query_body["query"]
+        .as_str()
+        .expect("live query text");
+    assert!(
+        live_query_text.contains("QUALIFY ROW_NUMBER()"),
+        "read_live_rows query must use QUALIFY for server-side dedup"
+    );
+    assert!(
+        live_query_text.contains("deleted = false"),
+        "read_live_rows query must filter deleted rows server-side"
+    );
 
     assert_eq!(
         latest,

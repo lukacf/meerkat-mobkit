@@ -1165,17 +1165,15 @@ fn e2e_501_session_persistence_target_defined_red() {
             payload: json!({"step":"update","version":2}),
         },
     ];
-    let query_rows = json!({
+    // read_live_rows uses server-side QUALIFY dedup + WHERE deleted = false
+    let live_query_rows = json!({
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
             {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
         ]
     });
     let bq_server = MockHttpServer::start(vec![
         MockHttpResponse::json(json!({})),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(live_query_rows),
     ]);
 
     let json_store = JsonFileSessionStore::new(&sessions_path)

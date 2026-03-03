@@ -358,11 +358,10 @@ impl BigQuerySessionStoreAdapter {
         );
 
         let mut request_rows = Vec::with_capacity(rows.len());
-        for (idx, row) in rows.iter().enumerate() {
+        for row in rows {
             let payload_json = serde_json::to_string(&row.payload)
                 .map_err(|err| BigQuerySessionStoreError::Serialize(err.to_string()))?;
             request_rows.push(serde_json::json!({
-                "insertId": format!("{}-{}-{idx}", row.session_id, row.updated_at_ms),
                 "json": {
                     "session_id": row.session_id,
                     "updated_at_ms": row.updated_at_ms.to_string(),
@@ -423,13 +422,55 @@ impl BigQuerySessionStoreAdapter {
     pub fn read_latest_rows(
         &self,
     ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
-        let rows = self.read_rows()?;
-        Ok(materialize_latest_session_rows(&rows))
+        let project_id = self.resolve_project_id()?;
+        let access_token = self.resolve_access_token()?;
+        let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
+        let query = format!(
+            "SELECT session_id, updated_at_ms, deleted, payload \
+             FROM `{}.{}` \
+             QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY updated_at_ms DESC) = 1",
+            project_id,
+            self.table_ref()
+        );
+        let request = serde_json::json!({
+            "query": query,
+            "useLegacySql": false,
+            "maxResults": 10000,
+        });
+        let response = self.send_json_request(
+            reqwest::Method::POST,
+            &endpoint,
+            &access_token,
+            Some(&request),
+        )?;
+        parse_bigquery_query_rows(&response)
     }
 
     pub fn read_live_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
-        let rows = self.read_rows()?;
-        Ok(materialize_live_session_rows(&rows))
+        let project_id = self.resolve_project_id()?;
+        let access_token = self.resolve_access_token()?;
+        let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
+        let query = format!(
+            "SELECT session_id, updated_at_ms, deleted, payload FROM (\
+               SELECT session_id, updated_at_ms, deleted, payload \
+               FROM `{}.{}` \
+               QUALIFY ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY updated_at_ms DESC) = 1\
+             ) WHERE deleted = false",
+            project_id,
+            self.table_ref()
+        );
+        let request = serde_json::json!({
+            "query": query,
+            "useLegacySql": false,
+            "maxResults": 10000,
+        });
+        let response = self.send_json_request(
+            reqwest::Method::POST,
+            &endpoint,
+            &access_token,
+            Some(&request),
+        )?;
+        parse_bigquery_query_rows(&response)
     }
 
     fn api_base_url(&self) -> &str {
