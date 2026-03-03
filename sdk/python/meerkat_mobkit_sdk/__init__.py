@@ -1,3 +1,4 @@
+from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .client import (
     MobkitAsyncTypedClient,
     MobkitRpcError,
@@ -21,25 +22,31 @@ from .helpers import (
     define_module_spec,
     define_module_tool,
 )
+from .sse import SseEvent, SseEventStream, parse_sse_stream
 
 __all__ = [
+    "CallbackDispatcher",
     "MobkitAsyncTypedClient",
     "MobkitRpcError",
     "MobkitTypedClient",
-    "create_gateway_async_transport",
-    "create_gateway_sync_transport",
-    "create_http_transport",
     "ModuleDefinition",
     "ModuleSpec",
     "ModuleTool",
+    "SessionAgentBuilder",
+    "SseEvent",
+    "SseEventStream",
     "build_console_experience_route",
     "build_console_modules_route",
     "build_console_route",
     "build_console_routes",
     "build_module_spec",
+    "create_gateway_async_transport",
+    "create_gateway_sync_transport",
+    "create_http_transport",
     "decorate_module_spec",
     "decorate_module_tool",
     "define_module",
     "define_module_spec",
     "define_module_tool",
+    "parse_sse_stream",
 ]
