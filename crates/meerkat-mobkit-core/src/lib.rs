@@ -2,6 +2,7 @@ pub mod auth;
 pub mod baseline;
 pub mod decisions;
 pub mod governance;
+pub mod http_auth;
 pub mod http_console;
 pub mod http_sse;
 pub mod mob_handle_runtime;
@@ -15,10 +16,11 @@ pub mod unified_runtime;
 
 pub use auth::{
     extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
-    select_jwk_for_token, validate_jwt_locally, Jwk, JwksDocument, JwtHeaderView,
-    JwtValidationConfig, JwtValidationError, OidcContractError, OidcDiscoveryDocument,
-    ValidatedJwt,
+    select_jwk_for_token, validate_jwt_locally, Jwk, JwksCache, JwksCacheConfig, JwksCacheError,
+    JwksDocument, JwtHeaderView, JwtValidationConfig, JwtValidationError, OidcContractError,
+    OidcDiscoveryDocument, ValidatedJwt,
 };
+pub use http_auth::{auth_middleware, with_auth_layer};
 pub use baseline::{
     verify_meerkat_baseline_symbols, BaselineVerificationError, BaselineVerificationReport,
     DEFAULT_MEERKAT_REPO, REQUIRED_MEERKAT_SYMBOLS,

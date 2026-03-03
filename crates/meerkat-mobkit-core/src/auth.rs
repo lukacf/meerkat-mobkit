@@ -1,3 +1,7 @@
+use std::fmt::{Display, Formatter};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use hmac::{Hmac, Mac};
@@ -5,6 +9,7 @@ use ring::signature::{self, RsaPublicKeyComponents, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::Sha256;
+use tokio::sync::RwLock;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -476,4 +481,180 @@ fn extract_audiences(claims: &Value) -> Vec<String> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// JwksCache — runtime JWKS cache with discovery, rotation, kid-miss refresh
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+pub enum JwksCacheError {
+    Discovery(OidcContractError),
+    Http(String),
+    Validation(JwtValidationError),
+    NoMatchingKey,
+    NotInitialized,
+}
+
+impl Display for JwksCacheError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discovery(err) => write!(f, "OIDC discovery error: {err:?}"),
+            Self::Http(msg) => write!(f, "HTTP fetch error: {msg}"),
+            Self::Validation(err) => write!(f, "JWT validation error: {err:?}"),
+            Self::NoMatchingKey => write!(f, "no matching JWK for token"),
+            Self::NotInitialized => write!(f, "JWKS cache not initialized"),
+        }
+    }
+}
+
+impl std::error::Error for JwksCacheError {}
+
+#[derive(Debug, Clone)]
+pub struct JwksCacheConfig {
+    pub discovery_url: String,
+    pub refresh_interval: Duration,
+    pub http_timeout: Duration,
+    pub issuer: Option<String>,
+    pub audience: Option<String>,
+    pub leeway_seconds: u64,
+}
+
+impl JwksCacheConfig {
+    pub fn new(discovery_url: String) -> Self {
+        Self {
+            discovery_url,
+            refresh_interval: Duration::from_secs(3600),
+            http_timeout: Duration::from_secs(10),
+            issuer: None,
+            audience: None,
+            leeway_seconds: 60,
+        }
+    }
+}
+
+struct JwksCacheInner {
+    jwks: Option<JwksDocument>,
+    last_refresh: Option<Instant>,
+}
+
+#[derive(Clone)]
+pub struct JwksCache {
+    inner: Arc<RwLock<JwksCacheInner>>,
+    config: Arc<JwksCacheConfig>,
+    http_client: reqwest::Client,
+}
+
+impl JwksCache {
+    pub fn new(config: JwksCacheConfig) -> Self {
+        let http_client = reqwest::Client::builder()
+            .timeout(config.http_timeout)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Self {
+            inner: Arc::new(RwLock::new(JwksCacheInner {
+                jwks: None,
+                last_refresh: None,
+            })),
+            config: Arc::new(config),
+            http_client,
+        }
+    }
+
+    /// Fetch OIDC discovery document and JWKS keys. Called on first use or periodic refresh.
+    pub async fn refresh(&self) -> Result<(), JwksCacheError> {
+        let discovery_json = fetch_json(&self.http_client, &self.config.discovery_url).await?;
+        let discovery =
+            parse_oidc_discovery_json(&discovery_json).map_err(JwksCacheError::Discovery)?;
+
+        let jwks_json = fetch_json(&self.http_client, &discovery.jwks_uri).await?;
+        let jwks = parse_jwks_json(&jwks_json).map_err(JwksCacheError::Discovery)?;
+
+        let mut inner = self.inner.write().await;
+        inner.jwks = Some(jwks);
+        inner.last_refresh = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Validate a JWT token using cached JWKS. Refreshes on kid miss.
+    pub async fn validate_token(&self, token: &str) -> Result<ValidatedJwt, JwksCacheError> {
+        self.maybe_refresh().await?;
+
+        let header = inspect_jwt_header(token).map_err(JwksCacheError::Validation)?;
+
+        // First attempt: try to find key in current cache.
+        match self.try_validate(token, &header).await {
+            Ok(jwt) => return Ok(jwt),
+            Err(JwksCacheError::NoMatchingKey) => {
+                // Kid miss — force refresh and retry once.
+            }
+            Err(err) => return Err(err),
+        }
+
+        self.refresh().await?;
+        self.try_validate(token, &header).await
+    }
+
+    async fn try_validate(
+        &self,
+        token: &str,
+        header: &JwtHeaderView,
+    ) -> Result<ValidatedJwt, JwksCacheError> {
+        let inner = self.inner.read().await;
+        let jwks = inner.jwks.as_ref().ok_or(JwksCacheError::NotInitialized)?;
+
+        let jwk = select_jwk_for_token(jwks, header.kid.as_deref(), &header.alg)
+            .map_err(|_| JwksCacheError::NoMatchingKey)?;
+
+        let verification_key =
+            build_jwt_verification_key(jwk, &header.alg).map_err(JwksCacheError::Discovery)?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let claims_config = JwtClaimsValidationConfig {
+            issuer: self.config.issuer.clone(),
+            audience: self.config.audience.clone(),
+            now_epoch_seconds: now,
+            leeway_seconds: self.config.leeway_seconds,
+        };
+
+        validate_jwt_with_verification_key(token, &verification_key, &claims_config)
+            .map_err(JwksCacheError::Validation)
+    }
+
+    /// Check if cache needs periodic refresh and refresh if needed.
+    async fn maybe_refresh(&self) -> Result<(), JwksCacheError> {
+        let needs_refresh = {
+            let inner = self.inner.read().await;
+            match inner.last_refresh {
+                Some(last) => last.elapsed() >= self.config.refresh_interval,
+                None => true,
+            }
+        };
+        if needs_refresh {
+            self.refresh().await?;
+        }
+        Ok(())
+    }
+}
+
+async fn fetch_json(client: &reqwest::Client, url: &str) -> Result<String, JwksCacheError> {
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|err| JwksCacheError::Http(format!("{err}")))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(JwksCacheError::Http(format!(
+            "HTTP {status} from {url}"
+        )));
+    }
+    response
+        .text()
+        .await
+        .map_err(|err| JwksCacheError::Http(format!("{err}")))
 }
