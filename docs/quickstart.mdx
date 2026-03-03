@@ -1,0 +1,136 @@
+---
+title: "Quickstart"
+description: "Bootstrap a MobKit runtime with modules and a Meerkat mob. Single binary, operational from the first call."
+---
+
+## Install
+
+<Tabs>
+  <Tab title="Rust crate">
+    ```toml Cargo.toml
+    [dependencies]
+    meerkat-mobkit-core = "0.1"
+    tokio = { version = "1", features = ["full"] }
+    ```
+
+    MobKit expects Meerkat crates on the same workspace. Add path patches if building from source:
+
+    ```toml Cargo.toml
+    [patch.crates-io]
+    meerkat = { path = "../raik/meerkat" }
+    meerkat-core = { path = "../raik/meerkat-core" }
+    meerkat-mob = { path = "../raik/meerkat-mob" }
+    meerkat-mcp = { path = "../raik/meerkat-mcp" }
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```bash
+    npm install @meerkat/mobkit-sdk
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```bash
+    pip install meerkat-mobkit-sdk
+    ```
+  </Tab>
+</Tabs>
+
+## Bootstrap a runtime
+
+The fastest way to get a running system is `start_mobkit_runtime`. It takes a module configuration, agent event stream, and a startup timeout.
+
+<Tabs>
+  <Tab title="Rust">
+    ```rust
+    use meerkat_mobkit_core::{
+        start_mobkit_runtime, MobKitConfig, ModuleConfig, DiscoverySpec,
+        RestartPolicy, EventEnvelope, UnifiedEvent,
+    };
+    use std::time::Duration;
+
+    let config = MobKitConfig {
+        modules: vec![
+            ModuleConfig {
+                id: "router".to_string(),
+                command: "meerkat-router".to_string(),
+                args: vec![],
+                restart_policy: RestartPolicy::OnFailure,
+            },
+            ModuleConfig {
+                id: "delivery".to_string(),
+                command: "meerkat-delivery".to_string(),
+                args: vec![],
+                restart_policy: RestartPolicy::OnFailure,
+            },
+        ],
+        discovery: DiscoverySpec {
+            namespace: "my-app".to_string(),
+            modules: vec!["router".to_string(), "delivery".to_string()],
+        },
+        pre_spawn: vec![],
+    };
+
+    let agent_events: Vec<EventEnvelope<UnifiedEvent>> = vec![];
+    let timeout = Duration::from_secs(30);
+
+    let mut runtime = start_mobkit_runtime(config, agent_events, timeout)?;
+    println!("Loaded modules: {:?}", runtime.loaded_modules());
+
+    for event in &runtime.merged_events {
+        println!("{} [{}] {:?}", event.event_id, event.source, event.event);
+    }
+    ```
+  </Tab>
+  <Tab title="TypeScript">
+    ```typescript
+    import { MobKitClient } from "@meerkat/mobkit-sdk";
+
+    const client = new MobKitClient({ endpoint: "http://localhost:8080" });
+    const status = await client.health();
+    console.log("Runtime status:", status);
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from meerkat_mobkit_sdk import MobKitClient
+
+    client = MobKitClient(endpoint="http://localhost:8080")
+    status = client.health()
+    print("Runtime status:", status)
+    ```
+  </Tab>
+</Tabs>
+
+## Use the unified runtime
+
+For production deployments that combine a Meerkat mob with MobKit modules, use the `UnifiedRuntime` builder:
+
+```rust
+use meerkat_mobkit_core::UnifiedRuntime;
+
+let runtime = UnifiedRuntime::builder()
+    .mob_spec(mob_spec)
+    .module_config(module_config)
+    .timeout(Duration::from_secs(30))
+    .build()
+    .await?;
+```
+
+The unified runtime bootstraps both systems, merges their event streams, and manages the combined lifecycle. See the [unified runtime guide](/guides/unified-runtime) for details.
+
+## Open the console
+
+Once the runtime is serving HTTP, open the admin console at:
+
+```
+http://localhost:8080/console
+```
+
+The console shows the agent sidebar, activity feed, topology view, and health overview -- all updating in real time via SSE.
+
+## What's next
+
+- [Modules](/concepts/modules) -- how the module system works
+- [Events](/concepts/events) -- the unified event model
+- [Operational subsystems](/concepts/gating) -- gating, delivery, scheduling, memory
+- [Architecture](/reference/architecture) -- internal design and crate structure

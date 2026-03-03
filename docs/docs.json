@@ -1,0 +1,108 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "name": "MobKit",
+  "description": "Companion orchestration platform for the Meerkat multi-agent runtime",
+  "theme": "maple",
+  "colors": {
+    "primary": "#6B8E5A",
+    "light": "#8AB576",
+    "dark": "#4F6B43"
+  },
+  "logo": {
+    "light": "/logo.png",
+    "dark": "/logo.png"
+  },
+  "navbar": {
+    "links": [
+      { "label": "GitHub", "href": "https://github.com/lukacf/meerkat-mobkit" }
+    ]
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Core concepts",
+            "pages": [
+              "concepts/modules",
+              "concepts/events",
+              "concepts/gating",
+              "concepts/delivery",
+              "concepts/scheduling",
+              "concepts/memory",
+              "concepts/sessions"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/unified-runtime",
+              "guides/module-system",
+              "guides/console",
+              "guides/authentication"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "APIs",
+        "groups": [
+          {
+            "group": "Protocols",
+            "pages": [
+              "api/rpc",
+              "api/rest",
+              "api/sse"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "SDKs",
+        "groups": [
+          {
+            "group": "Rust",
+            "pages": ["sdks/rust"]
+          },
+          {
+            "group": "TypeScript",
+            "pages": ["sdks/typescript"]
+          },
+          {
+            "group": "Python",
+            "pages": ["sdks/python"]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "reference/architecture",
+              "reference/configuration"
+            ]
+          },
+          {
+            "group": "Governance",
+            "pages": [
+              "reference/decisions",
+              "reference/governance"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/lukacf/meerkat-mobkit"
+    }
+  }
+}

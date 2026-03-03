@@ -1,0 +1,303 @@
+---
+title: "JSON-RPC"
+description: "JSON-RPC 2.0 protocol for MobKit runtime operations: gating, memory, routing, delivery, scheduling, sessions, and subscriptions."
+icon: "plug"
+---
+
+MobKit exposes its full operational API over JSON-RPC 2.0 via stdio. This is the primary programmatic interface for SDKs and tooling.
+
+## Protocol
+
+- **Transport:** JSON lines over stdio (one JSON object per line)
+- **Version:** JSON-RPC 2.0
+- **Contract version:** `0.1.0`
+
+### Capabilities handshake
+
+The first line from the MobKit process is a capabilities declaration:
+
+```json
+{"contract_version": "0.1.0"}
+```
+
+Clients must validate the contract version before sending requests.
+
+### Request format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "gating.evaluate",
+  "params": { ... }
+}
+```
+
+### Response format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": { ... }
+}
+```
+
+### Error format
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "error": { "code": -32602, "message": "Invalid params" }
+}
+```
+
+---
+
+## Gating methods
+
+### `gating.evaluate`
+
+Evaluate the risk tier for a proposed action.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `action_id` | `string` | yes | Unique action identifier |
+| `actor_id` | `string` | yes | Agent or user performing the action |
+| `action_type` | `string` | yes | Action category (e.g. `"delivery.send"`) |
+| `context` | `object` | no | Additional context for risk assessment |
+</Accordion>
+
+<Accordion title="Response">
+```json
+{
+  "risk_tier": "safe_dispatch",
+  "explanation": "Low-risk internal delivery",
+  "recommended_handling": "auto_approve"
+}
+```
+</Accordion>
+
+### `gating.decide`
+
+Approve or deny a pending gated action.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `pending_id` | `string` | yes | ID of the pending entry |
+| `decision` | `string` | yes | `"approve"` or `"deny"` |
+| `decided_by` | `string` | yes | Who made the decision |
+</Accordion>
+
+### `gating.pending`
+
+List all pending gated actions awaiting approval.
+
+### `gating.audit`
+
+Return the gating audit log (most recent entries, bounded by retention limit).
+
+---
+
+## Memory methods
+
+### `memory.index`
+
+Index content into Elephant's knowledge store.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `content` | `string` | yes | Text content to index |
+| `source_id` | `string` | yes | Identifier for the content source |
+| `metadata` | `object` | no | Additional metadata for filtering |
+</Accordion>
+
+### `memory.query`
+
+Query indexed content by semantic similarity.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | `string` | yes | Natural language query |
+| `limit` | `integer` | no | Maximum results (default: 10) |
+| `filters` | `object` | no | Metadata filters |
+</Accordion>
+
+### `memory.stores`
+
+Return information about configured memory backends.
+
+---
+
+## Routing methods
+
+### `routing.resolve`
+
+Resolve a logical destination to a physical route.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `destination` | `string` | yes | Logical destination identifier |
+| `channel` | `string` | no | Delivery channel (default: `"notification"`) |
+</Accordion>
+
+<Accordion title="Response">
+```json
+{
+  "route_id": "mob.member.lead-1.notification",
+  "channel": "notification",
+  "sink_adapter": "mob_member",
+  "target_module": "delivery"
+}
+```
+</Accordion>
+
+### `routing.routes`
+
+List all registered routes.
+
+### `routing.route.add`
+
+Register a new route.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `route_id` | `string` | yes | Unique route identifier |
+| `channel` | `string` | yes | Delivery channel |
+| `sink_adapter` | `string` | yes | Physical delivery backend |
+| `target_module` | `string` | yes | Module that handles delivery |
+</Accordion>
+
+### `routing.route.delete`
+
+Remove a registered route.
+
+---
+
+## Delivery methods
+
+### `delivery.send`
+
+Send a message through a resolved route.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `resolution` | `object` | yes | Routing resolution from `routing.resolve` |
+| `payload` | `object` | yes | Message payload |
+| `idempotency_key` | `string` | yes | Key for idempotent delivery |
+</Accordion>
+
+### `delivery.history`
+
+Return delivery records for audit and inspection.
+
+---
+
+## Scheduling methods
+
+### `scheduling.evaluate`
+
+Evaluate schedules at a given tick and return due triggers.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `schedules` | `array` | yes | Array of `ScheduleDefinition` objects |
+| `tick_ms` | `integer` | yes | Evaluation timestamp in milliseconds |
+</Accordion>
+
+<Accordion title="Response">
+```json
+{
+  "tick_ms": 1709500000000,
+  "due_triggers": [
+    {
+      "schedule_id": "daily-report",
+      "interval": "0 9 * * *",
+      "timezone": "Europe/Stockholm",
+      "due_tick_ms": 1709500000000
+    }
+  ]
+}
+```
+</Accordion>
+
+<Note>
+Maximum 256 schedules per request.
+</Note>
+
+---
+
+## Session store methods
+
+### `session_store.write`
+
+Persist a session row.
+
+### `session_store.read`
+
+Load a session row by ID.
+
+### `session_store.list`
+
+List all session IDs.
+
+### `session_store.delete`
+
+Remove a session row.
+
+### `session_store.bigquery`
+
+Execute BigQuery-specific session store operations.
+
+---
+
+## Subscribe methods
+
+### `subscribe`
+
+Subscribe to runtime events with scope filtering.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `scope` | `string` | yes | Event scope: `"all"`, `"agent"`, or `"module"` |
+| `cursor` | `string` | no | Resume from a previous event cursor |
+</Accordion>
+
+---
+
+## Console ingress
+
+### `console.route`
+
+Route a console REST-style request through the RPC interface:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "console.route",
+  "params": {
+    "path": "/console/experience",
+    "method": "GET"
+  }
+}
+```
+
+This enables RPC clients to access console data without a separate HTTP connection.
+
+## See also
+
+- [REST API](/api/rest) -- HTTP endpoints
+- [SSE API](/api/sse) -- event streaming
+- [Gating](/concepts/gating) -- risk-based approval details
+- [Delivery](/concepts/delivery) -- message dispatch details

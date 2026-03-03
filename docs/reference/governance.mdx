@@ -1,0 +1,114 @@
+---
+title: "Governance"
+description: "Release candidate tracking, traceability matrix, phase-based validation, and governance state contracts."
+icon: "clipboard-check"
+---
+
+MobKit includes a governance system for tracking release candidates through implementation phases. The governance layer validates that all contracts are traced, documented, and verified before a release.
+
+## Governance state
+
+The runtime declares its governance state as a string. The primary state for in-progress work:
+
+```
+"realignment_in_progress"
+```
+
+`validate_governance_state` verifies the state is recognized:
+
+```rust
+validate_governance_state("realignment_in_progress")?;
+```
+
+## Traceability statuses
+
+Every contract or feature in MobKit carries a traceability status. The strict status set used for validation:
+
+| Status | Meaning |
+|--------|---------|
+| `TYPED` | Contract has Rust types defined |
+| `WIRED` | Types are connected to runtime paths |
+| `VALIDATED` | Integration tests pass |
+| `PROVISIONAL` | Implementation exists but awaiting full validation |
+| `MISSING` | Not yet implemented |
+| `DEFERRED` | Explicitly deferred to a future release |
+| `STUBBED` | Placeholder implementation for testing |
+
+### Validation
+
+```rust
+validate_traceability_statuses(&["TYPED", "WIRED", "VALIDATED"])?;
+```
+
+All provided statuses must be in the `STRICT_TRACEABILITY_STATUSES` set. Unknown statuses produce a `GovernanceValidationError`.
+
+## Phase-based tracking
+
+MobKit development is organized into phases, each building on the previous:
+
+| Phase | Focus |
+|-------|-------|
+| Phase 0 | Type system, baseline verification, governance contracts |
+| Phase 1-5 | Core functionality: modules, routing, events, lifecycle |
+| Phase D | Delivery subsystem |
+| Phase E | Event transport and merging |
+| Phase H1/H2 | HTTP console and SSE |
+| Phase 10 | Session persistence |
+| Phase 11 | Advanced scenarios and integration |
+
+Phase completion is tracked through governance documents in `docs/rct/` (release candidate tracking).
+
+## Baseline verification
+
+Before MobKit can start, it verifies that the required Meerkat API symbols are available:
+
+```rust
+let report: BaselineVerificationReport = verify_meerkat_baseline_symbols()?;
+```
+
+The baseline check ensures that:
+- Required Meerkat crates are present
+- Expected API symbols are exported
+- Version compatibility is maintained
+
+### Required symbols
+
+The `REQUIRED_MEERKAT_SYMBOLS` constant lists every Meerkat API entry point that MobKit depends on. Missing symbols produce a `BaselineVerificationError`.
+
+## Phase 0 governance contracts
+
+`validate_phase0_governance_contracts` runs the full Phase 0 validation suite:
+
+1. Governance state validation
+2. Traceability status validation
+3. Baseline symbol verification
+
+This is available as a standalone binary (`phase0_governance_check`) for CI integration.
+
+## Governance validation errors
+
+| Error | Cause |
+|-------|-------|
+| `InvalidState` | Governance state not recognized |
+| `InvalidTraceabilityStatus` | Status not in strict set |
+| `BaselineVerificationFailed` | Required Meerkat symbols missing |
+| `ContractNotTraced` | Contract lacks traceability annotation |
+
+## CLI tools
+
+MobKit provides standalone binaries for governance checks:
+
+| Binary | Purpose |
+|--------|---------|
+| `phase0_baseline_check` | Verify Meerkat prerequisites |
+| `phase0_governance_check` | Validate governance state and traceability |
+| `phase0b_rpc_gateway` | RPC gateway for testing |
+| `phase_c_mcp_fixture` | MCP test fixture |
+
+These can be run in CI pipelines to enforce governance before merge.
+
+## See also
+
+- [Decisions](/reference/decisions) -- runtime policy enforcement
+- [Configuration](/reference/configuration) -- release metadata validation
+- [Architecture](/reference/architecture) -- crate structure

@@ -1,0 +1,53 @@
+---
+title: "Introduction"
+description: "MobKit is a companion orchestration platform for the Meerkat multi-agent runtime. Startup orchestration, module system, admin tooling, and multi-language SDKs."
+---
+
+MobKit is the operational layer that sits alongside [Meerkat](https://github.com/lukacf/meerkat). Meerkat owns agent construction, dispatch, prompt assembly, and the core agent loop. MobKit handles everything else: startup orchestration, module routing, operational subsystems, session persistence, and the admin console.
+
+It's a single Rust crate with a React console, JSON-RPC protocol, and SDKs in TypeScript and Python.
+
+## Why MobKit
+
+- **Startup orchestration.** Bootstrap a Meerkat mob and its operational modules in a single call. Process supervision with configurable restart policies. Lifecycle gates ensure modules are healthy before the runtime accepts work.
+- **Module system.** MCP-based modules for routing, delivery, scheduling, gating, and memory. Modules run as subprocesses and communicate over JSON-RPC or MCP tool calls.
+- **Operational subsystems.** Risk-based approval gates, message delivery with sink adapters, cron scheduling with timezone support, and Elephant-backed semantic memory -- all wired in as modules.
+- **Admin console.** React web UI embedded in the binary. Agent sidebar, activity feed, chat inspector, topology view, and health overview -- all powered by SSE streams.
+- **Session persistence.** JSON file store for local development, BigQuery adapter for production. Lock-based concurrency with stale lock recovery.
+- **Authentication.** JWT validation with OIDC discovery, JWKS key selection, and email allowlist enforcement. Google OAuth, GitHub OAuth, Generic OIDC, and Service Identity providers.
+- **Multi-language SDKs.** TypeScript and Python SDKs with contract parity tests against the Rust core.
+
+### How it relates to Meerkat
+
+| | Meerkat | MobKit |
+|---|---|---|
+| **Owns** | Agent loop, prompt assembly, tool dispatch, sessions, comms, mobs | Startup orchestration, module routing, operational subsystems |
+| **Interface** | Library crate, CLI, REST, RPC, MCP | Library crate, JSON-RPC, console UI |
+| **Modules** | MCP tool servers | MCP modules with supervision and routing |
+| **Persistence** | JSONL, redb session stores | JSON file store, BigQuery adapter |
+| **Auth** | API key isolation | JWT/OIDC validation, email allowlists |
+
+MobKit is not a replacement for Meerkat -- it's the companion that handles startup, operations, and administration while Meerkat handles the core agent runtime.
+
+## Explore the documentation
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Bootstrap a runtime with modules and a Meerkat mob in under a minute.
+  </Card>
+  <Card title="Core Concepts" icon="shapes" href="/concepts/modules">
+    Modules, events, gating, delivery, scheduling, memory, and sessions.
+  </Card>
+  <Card title="Guides" icon="book-open" href="/guides/unified-runtime">
+    Step-by-step walkthroughs for the unified runtime, module system, and console.
+  </Card>
+  <Card title="Architecture" icon="layer-group" href="/reference/architecture">
+    Internal architecture, crate structure, and design decisions.
+  </Card>
+  <Card title="APIs" icon="plug" href="/api/rpc">
+    JSON-RPC, REST, and SSE protocol references.
+  </Card>
+  <Card title="SDKs" icon="code" href="/sdks/rust">
+    Rust, TypeScript, and Python SDK documentation.
+  </Card>
+</CardGroup>

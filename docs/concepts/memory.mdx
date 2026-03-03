@@ -1,0 +1,95 @@
+---
+title: "Memory"
+description: "Elephant-backed semantic memory with indexing, querying, and conflict detection."
+icon: "brain"
+---
+
+MobKit's memory subsystem integrates with [Elephant](https://github.com/lukacf/elephant) to provide persistent semantic memory for agents. Content is indexed as assertions in Elephant's knowledge graph, enabling similarity search, relationship traversal, and truth-maintained conflict detection.
+
+## Architecture
+
+The memory subsystem connects to a running Elephant instance via HTTP. Configuration is provided through `ElephantMemoryBackendConfig`:
+
+```rust
+ElephantMemoryBackendConfig {
+    endpoint: "http://localhost:3000",
+    state_path: "/var/mobkit/memory",
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `endpoint` | `String` | Elephant HTTP API base URL |
+| `state_path` | `String` | Local directory for memory state files |
+
+The `ElephantMemoryStoreAdapter` handles connection health checks, request serialization, and error mapping.
+
+## Indexing
+
+Index content into Elephant with a `MemoryIndexRequest`:
+
+```rust
+MemoryIndexRequest {
+    content: "The quarterly report shows 15% revenue growth.",
+    source_id: "report-q4-2024",
+    metadata: json!({ "domain": "finance", "quarter": "Q4" }),
+}
+```
+
+The memory module processes the request through Elephant's ingestion pipeline: text chunking, embedding generation, entity extraction, and assertion creation. The result includes the indexed document ID and any extracted entities.
+
+## Querying
+
+Query memory with a `MemoryQueryRequest`:
+
+```rust
+MemoryQueryRequest {
+    query: "What was the revenue growth last quarter?",
+    limit: 5,
+    filters: json!({ "domain": "finance" }),
+}
+```
+
+The query is embedded and matched against indexed content using vector similarity search. Results include relevance scores and the original assertion evidence.
+
+## Conflict detection
+
+Elephant's truth maintenance system tracks conflicting assertions. When multiple sources make competing claims about the same fact, MobKit's gating subsystem can check for conflicts before approving an action via the `memory.conflict_read` MCP tool.
+
+A `MemoryConflictSignal` indicates:
+- Which assertions conflict
+- The source of each competing claim
+- The current truth slot resolution
+
+This integrates with [gating](/concepts/gating) to prevent agents from acting on contested information.
+
+## Health checks
+
+The memory adapter performs TCP-level health checks against the Elephant endpoint before dispatching requests. The health check:
+
+1. Resolves the endpoint hostname
+2. Opens a TCP connection with `ELEPHANT_HEALTHCHECK_TIMEOUT`
+3. Sends an HTTP GET to `/v1/health`
+4. Verifies a 2xx status response
+
+Failed health checks produce `ElephantMemoryStoreError::ExternalCallFailed` with diagnostic details.
+
+## Memory store info
+
+The `MemoryStoreInfo` struct provides introspection into the memory backend:
+
+```rust
+MemoryStoreInfo {
+    endpoint: "http://localhost:3000",
+    state_path: "/var/mobkit/memory",
+    healthy: true,
+}
+```
+
+This is available through the RPC API for monitoring and diagnostics.
+
+## See also
+
+- [Gating](/concepts/gating) -- conflict-aware approval gates
+- [Elephant documentation](https://github.com/lukacf/elephant) -- the underlying knowledge system
+- [RPC API](/api/rpc) -- `memory.*` methods

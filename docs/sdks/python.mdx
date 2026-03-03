@@ -1,0 +1,77 @@
+---
+title: "Python SDK"
+description: "Python SDK for MobKit with contract parity tests and pip-installable distribution."
+icon: "python"
+---
+
+The Python SDK (`meerkat-mobkit-sdk`) provides access to MobKit's JSON-RPC API from Python applications.
+
+## Installation
+
+```bash
+pip install meerkat-mobkit-sdk
+```
+
+## Quick start
+
+```python
+from meerkat_mobkit_sdk import MobKitClient
+
+client = MobKitClient(endpoint="http://localhost:8080")
+
+# Check runtime health
+health = client.health()
+print("Running:", health.running)
+
+# Query memory
+results = client.memory_query(
+    query="What happened in the last deployment?",
+    limit=5,
+)
+
+# Evaluate schedules
+evaluation = client.scheduling_evaluate(
+    schedules=[
+        {
+            "schedule_id": "daily-report",
+            "interval": "0 9 * * *",
+            "timezone": "Europe/Stockholm",
+            "jitter_ms": 0,
+            "enabled": True,
+        }
+    ],
+    tick_ms=int(time.time() * 1000),
+)
+```
+
+## Package structure
+
+```
+sdk/python/
+├── meerkat_mobkit_sdk/
+│   ├── __init__.py
+│   └── client.py
+├── tests/
+│   └── test_parity.py
+├── setup.py
+└── pyproject.toml
+```
+
+## Contract parity
+
+The Python SDK includes parity tests that validate data structures against the Rust core contracts. These tests run as part of the CI pipeline to catch drift between SDK and runtime.
+
+## Build
+
+Built with setuptools and wheel:
+
+```bash
+pip install -e ".[dev]"
+pytest tests/
+```
+
+## See also
+
+- [JSON-RPC API](/api/rpc) -- full method reference
+- [Rust SDK](/sdks/rust) -- primary Rust interface
+- [TypeScript SDK](/sdks/typescript) -- TypeScript equivalent
