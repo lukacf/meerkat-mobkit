@@ -185,14 +185,15 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
             return self.inner.build_agent(req, event_tx).await;
         }
 
-        // Send callback to Python with full session context
+        // Send callback to Python with full session context.
+        // app_context flows from SpawnMemberSpec.context → build.app_context.
         let options = json!({
             "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
             "model": &req.model,
             "prompt": &req.prompt,
             "labels": &req.labels,
             "app_context": req.build.as_ref()
-                .and_then(|b| b.provider_params.as_ref()),
+                .and_then(|b| b.app_context.as_ref()),
         });
         let params = json!({ "options": options });
         let callback_result = self.bridge.call("callback/build_agent", params).await;
@@ -237,23 +238,11 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Apply tools: try to parse as SkillKey refs for structured tools,
-                // and always store the raw tools JSON in build.provider_params
-                // so downstream builders can access the full tool descriptors.
+                // Store tools from Python callback in build.provider_params.
+                // Tools are opaque JSON — Python tool callables have been sanitized
+                // to strings by _sanitize_for_json. Factory builders that understand
+                // the "callback_tools" key can use them for tool injection.
                 if let Some(tools) = result.get("tools") {
-                    if let Some(arr) = tools.as_array() {
-                        // Try structured SkillKey parsing for compatible tools
-                        let skill_refs: Vec<meerkat_core::skills::SkillKey> = arr
-                            .iter()
-                            .filter_map(|t| serde_json::from_value(t.clone()).ok())
-                            .collect();
-                        if !skill_refs.is_empty() {
-                            let refs = modified_req.skill_references.get_or_insert_with(Vec::new);
-                            refs.extend(skill_refs);
-                        }
-                    }
-                    // Store raw tools in provider_params for factory builders
-                    // that support Python-style tool descriptors
                     let build = modified_req.build.get_or_insert_with(|| {
                         meerkat_core::service::SessionBuildOptions::default()
                     });
