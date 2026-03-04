@@ -15,6 +15,7 @@ use meerkat::{
     AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService,
     FactoryAgent, FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
+use meerkat_core::error::AgentError;
 use meerkat_mob::{MobDefinition, MobStorage};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -238,17 +239,45 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Store tools from Python callback in build.provider_params.
-                // Tools are opaque JSON — Python tool callables have been sanitized
-                // to strings by _sanitize_for_json. Factory builders that understand
-                // the "callback_tools" key can use them for tool injection.
+                // Callback tools contract: Python SDK enforces list[str] via
+                // SessionBuildOptions.add_tools(). Stored in provider_params
+                // as string names for downstream consumption.
+                //
+                // NOTE: These are tool *names*, not executable bindings.
+                // Resolution into AgentToolDispatcher requires a tool registry
+                // that maps names → implementations. This does not exist yet
+                // in the gateway binary. When it does, replace this storage
+                // with actual registration via build.external_tools.
                 if let Some(tools) = result.get("tools") {
-                    let build = modified_req.build.get_or_insert_with(|| {
-                        meerkat_core::service::SessionBuildOptions::default()
-                    });
-                    let params = build.provider_params.get_or_insert_with(|| json!({}));
-                    if let Some(obj) = params.as_object_mut() {
-                        obj.insert("callback_tools".to_string(), tools.clone());
+                    match tools.as_array() {
+                        Some(arr) => {
+                            // Strict contract: every element must be a string.
+                            // Python SDK validates this, but enforce here too.
+                            let mut valid_tools = Vec::with_capacity(arr.len());
+                            for v in arr {
+                                if v.is_string() {
+                                    valid_tools.push(v.clone());
+                                } else {
+                                    return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                        "callback/build_agent: tools must be strings, got: {v}"
+                                    ))));
+                                }
+                            }
+                            if !valid_tools.is_empty() {
+                                let build = modified_req.build.get_or_insert_with(|| {
+                                    meerkat_core::service::SessionBuildOptions::default()
+                                });
+                                let params = build.provider_params.get_or_insert_with(|| json!({}));
+                                if let Some(obj) = params.as_object_mut() {
+                                    obj.insert("callback_tools".to_string(), Value::Array(valid_tools));
+                                }
+                            }
+                        }
+                        None => {
+                            return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                "callback/build_agent: tools must be a JSON array, got: {tools}"
+                            ))));
+                        }
                     }
                 }
                 self.inner.build_agent(&modified_req, event_tx).await
