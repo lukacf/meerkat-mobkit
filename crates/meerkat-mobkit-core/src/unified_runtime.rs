@@ -25,13 +25,18 @@ use crate::mob_handle_runtime::{
     RealMobRuntime,
 };
 use crate::runtime::{
-    start_mobkit_runtime_with_options, DeliveryRecord, DeliverySendError, DeliverySendRequest,
-    LifecycleEvent, MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthTransition,
-    NormalizationError, RoutingResolution, RoutingResolveError, RoutingResolveRequest,
-    RuntimeDecisionState, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
-    RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatchReport,
-    ScheduleValidationError, SubscribeError, SubscribeRequest, SubscribeResponse,
+    start_mobkit_runtime_with_options, DeliveryHistoryRequest, DeliveryHistoryResponse,
+    DeliveryRecord, DeliverySendError, DeliverySendRequest, GatingAuditEntry, GatingDecideError,
+    GatingDecideRequest, GatingDecisionResult, GatingEvaluateRequest, GatingEvaluateResult,
+    GatingPendingEntry, LifecycleEvent, MemoryIndexError, MemoryIndexRequest, MemoryIndexResult,
+    MemoryQueryRequest, MemoryQueryResult, MemoryStoreInfo, MobkitRuntimeError,
+    MobkitRuntimeHandle, ModuleHealthTransition, NormalizationError, RoutingResolution,
+    RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState, RuntimeMutationError,
+    RuntimeOptions, RuntimeRoute, RuntimeRouteMutationError, RuntimeShutdownReport,
+    ScheduleDefinition, ScheduleDispatchReport, ScheduleEvaluation, ScheduleValidationError,
+    SubscribeError, SubscribeRequest, SubscribeResponse,
 };
+use crate::{route_module_call, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
 
 /// Trait for discovering agents to spawn into a mob at bootstrap time.
@@ -599,6 +604,81 @@ impl UnifiedRuntime {
         request: DeliverySendRequest,
     ) -> Result<DeliveryRecord, DeliverySendError> {
         self.module_runtime.send_delivery(request)
+    }
+
+    pub fn evaluate_schedule_tick(
+        &self,
+        schedules: &[ScheduleDefinition],
+        tick_ms: u64,
+    ) -> Result<ScheduleEvaluation, ScheduleValidationError> {
+        self.module_runtime.evaluate_schedule_tick(schedules, tick_ms)
+    }
+
+    pub fn list_runtime_routes(&self) -> Vec<RuntimeRoute> {
+        self.module_runtime.list_runtime_routes()
+    }
+
+    pub fn add_runtime_route(
+        &mut self,
+        route: RuntimeRoute,
+    ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
+        self.module_runtime.add_runtime_route(route)
+    }
+
+    pub fn delete_runtime_route(
+        &mut self,
+        route_key: &str,
+    ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
+        self.module_runtime.delete_runtime_route(route_key)
+    }
+
+    pub fn delivery_history(&self, request: DeliveryHistoryRequest) -> DeliveryHistoryResponse {
+        self.module_runtime.delivery_history(request)
+    }
+
+    pub fn memory_stores(&self) -> Vec<MemoryStoreInfo> {
+        self.module_runtime.memory_stores()
+    }
+
+    pub fn memory_index(
+        &mut self,
+        request: MemoryIndexRequest,
+    ) -> Result<MemoryIndexResult, MemoryIndexError> {
+        self.module_runtime.memory_index(request)
+    }
+
+    pub fn memory_query(&self, request: MemoryQueryRequest) -> MemoryQueryResult {
+        self.module_runtime.memory_query(request)
+    }
+
+    pub fn evaluate_gating_action(
+        &mut self,
+        request: GatingEvaluateRequest,
+    ) -> GatingEvaluateResult {
+        self.module_runtime.evaluate_gating_action(request)
+    }
+
+    pub fn list_gating_pending(&mut self) -> Vec<GatingPendingEntry> {
+        self.module_runtime.list_gating_pending()
+    }
+
+    pub fn decide_gating_action(
+        &mut self,
+        request: GatingDecideRequest,
+    ) -> Result<GatingDecisionResult, GatingDecideError> {
+        self.module_runtime.decide_gating_action(request)
+    }
+
+    pub fn gating_audit_entries(&mut self, limit: usize) -> Vec<GatingAuditEntry> {
+        self.module_runtime.gating_audit_entries(limit)
+    }
+
+    pub fn route_module_call(
+        &self,
+        request: &ModuleRouteRequest,
+        timeout: Duration,
+    ) -> Result<ModuleRouteResponse, ModuleRouteError> {
+        route_module_call(&self.module_runtime, request, timeout)
     }
 
     pub fn module_lifecycle_events(&self) -> Vec<LifecycleEvent> {

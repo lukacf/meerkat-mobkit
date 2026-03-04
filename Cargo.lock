@@ -2346,6 +2346,7 @@ dependencies = [
  "meerkat-core",
  "meerkat-mcp",
  "meerkat-mob",
+ "meerkat-session",
  "reqwest",
  "ring",
  "serde",

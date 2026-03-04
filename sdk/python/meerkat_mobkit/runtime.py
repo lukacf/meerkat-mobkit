@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
+import logging
 from typing import Any, AsyncIterator
 from urllib import request as urllib_request
+
+_log = logging.getLogger("meerkat_mobkit")
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .sse import SseEvent, parse_sse_stream
@@ -12,6 +16,12 @@ from .transport import PersistentTransport
 
 
 from .client import _build_request as _rpc_request
+
+_request_counter = itertools.count(1)
+
+
+def _next_request_id(method: str) -> str:
+    return f"{method}:{next(_request_counter)}"
 
 
 class MobKitRuntime:
@@ -50,24 +60,57 @@ class MobKitRuntime:
     async def _bootstrap(self) -> None:
         if self._config.gateway_bin:
             self._transport = PersistentTransport(self._config.gateway_bin)
+            # Register builder FIRST — init may trigger callback/build_agent
+            if self._config.session_builder and isinstance(
+                self._config.session_builder, SessionAgentBuilder
+            ):
+                self._dispatcher.register_builder(self._config.session_builder)
+            self._transport.set_callback_handler(self._dispatcher.handle_callback)
             self._transport.start()
-        if self._config.session_builder and isinstance(
+            if not self._transport.is_running():
+                raise RuntimeError(
+                    f"gateway binary failed to start: {self._config.gateway_bin}"
+                )
+            # Send config as init — Rust bootstraps and returns HTTP port
+            try:
+                init_result = self._rpc_sync("mobkit/init", self._build_init_params())
+                if isinstance(init_result, dict):
+                    self._rust_http_base = init_result.get("http_base_url")
+                    if not self._rust_http_base:
+                        _log.warning(
+                            "mobkit/init did not return http_base_url — "
+                            "SSE features (inject_and_subscribe, event streaming) unavailable"
+                        )
+            except Exception:
+                if self._transport is not None and not self._transport.is_running():
+                    raise RuntimeError("gateway process died during bootstrap")
+                _log.warning("mobkit/init failed — runtime may have limited functionality")
+        elif self._config.session_builder and isinstance(
             self._config.session_builder, SessionAgentBuilder
         ):
             self._dispatcher.register_builder(self._config.session_builder)
         self._running = True
-        # The Rust binary starts its own HTTP server. Query it for the port.
-        try:
-            status = self._rpc_sync("mobkit/status")
-            if isinstance(status, dict) and "http_base_url" in status:
-                self._rust_http_base = status["http_base_url"]
-        except Exception:
-            pass
+
+    def _build_init_params(self) -> dict[str, Any]:
+        """Build init params dict from builder config for mobkit/init RPC."""
+        params: dict[str, Any] = {}
+        if self._config.mob_config_path:
+            try:
+                with open(self._config.mob_config_path) as f:
+                    params["mob_config"] = f.read()
+            except FileNotFoundError:
+                pass
+        if self._config.modules:
+            params["modules"] = self._config.modules
+        params["has_session_builder"] = bool(self._config.session_builder)
+        params["runtime_options"] = {}
+        return params
 
     def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:
         if self._transport is None:
             raise RuntimeError("runtime not started — no transport available")
-        response = self._transport.send_sync(_rpc_request(method, method, params))
+        rid = _next_request_id(method)
+        response = self._transport.send_sync(_rpc_request(rid, method, params))
         if "error" in response:
             raise RuntimeError(f"RPC error: {response['error']}")
         return response.get("result")
@@ -75,7 +118,8 @@ class MobKitRuntime:
     async def _rpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
         if self._transport is None:
             raise RuntimeError("runtime not started — no transport available")
-        response = await self._transport.send_async(_rpc_request(method, method, params))
+        rid = _next_request_id(method)
+        response = await self._transport.send_async(_rpc_request(rid, method, params))
         if "error" in response:
             raise RuntimeError(f"RPC error: {response['error']}")
         return response.get("result")
@@ -202,6 +246,18 @@ class MobHandle:
     async def memory_query(self, query: str, **kwargs: Any) -> dict[str, Any]:
         return await self._runtime._rpc("mobkit/memory/query", {"query": query, **kwargs})
 
+    async def inject_and_subscribe(self, target: str, message: str) -> AsyncIterator[SseEvent]:
+        """Inject a message and stream SSE responses via HTTP.
+
+        Uses the Rust HTTP SSE endpoint (not stdio RPC) because this is
+        inherently streaming. ``target`` maps to ``member_id`` in the
+        Rust /interactions/stream endpoint.
+        Requires rust_http_base_url (guaranteed set after mobkit/init).
+        """
+        bridge = self._runtime.sse_bridge()
+        async for event in bridge.interaction_stream(target, message):
+            yield event
+
 
 class SseBridge:
     """Bridge for streaming SSE from the Rust backend's HTTP server.
@@ -292,7 +348,24 @@ class AsgiApp:
         self._runtime = runtime
         self._console = console
         self._auth_config = auth_config
-        self._fallback_app = fallback_app
+        self._fallback_app = self._normalize_fallback(fallback_app)
+
+    @staticmethod
+    def _normalize_fallback(app: Any) -> Any:
+        if app is None:
+            return None
+        if callable(app):
+            return app
+        if isinstance(app, list):
+            try:
+                from starlette.applications import Starlette
+            except ImportError:
+                raise ImportError(
+                    "extra_routes is a list of Route objects but starlette is not installed. "
+                    "Install starlette or pass an ASGI app directly."
+                )
+            return Starlette(routes=app)
+        return app
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
