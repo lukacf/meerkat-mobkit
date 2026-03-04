@@ -52,8 +52,8 @@ pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{run_process_json_line, ProcessBoundaryError};
 pub use protocol::{parse_module_event_line, parse_unified_event_line, ProtocolParseError};
 pub use rpc::{
-    handle_console_ingress_json, handle_mobkit_rpc_json, JsonRpcError, JsonRpcRequest,
-    JsonRpcResponse, MOBKIT_CONTRACT_VERSION,
+    handle_console_ingress_json, handle_mobkit_rpc_json, handle_unified_rpc_json, JsonRpcError,
+    JsonRpcRequest, JsonRpcResponse, MOBKIT_CONTRACT_VERSION,
 };
 pub use rpc::{parse_rpc_capabilities, RpcCapabilities, RpcCapabilitiesError};
 pub use runtime::{
