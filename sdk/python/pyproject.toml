@@ -3,7 +3,11 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "meerkat-mobkit-sdk"
+name = "meerkat-mobkit"
 version = "0.1.0"
-description = "Minimal Meerkat MobKit Python SDK artifacts for parity tests"
+description = "Meerkat MobKit Python SDK"
 requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["meerkat_mobkit*"]

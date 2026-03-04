@@ -6,3 +6,5 @@
 docs/rct/traceability.legacy-*.md
 **/__pycache__/
 *.pyc
+*.egg-info/
+sdk/python/build/

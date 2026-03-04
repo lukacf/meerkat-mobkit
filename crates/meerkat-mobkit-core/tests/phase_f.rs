@@ -23,6 +23,7 @@ fn sample_write_rows() -> Vec<SessionPersistenceRow> {
         updated_at_ms: 10_000,
         deleted: false,
         payload: json!({"step":"create"}),
+    ..Default::default()
     }]
 }
 
@@ -55,48 +56,58 @@ fn call_rpc(
     serde_json::from_str(&response_line).expect("parse rpc response")
 }
 
-#[test]
-fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() {
+#[tokio::test]
+async fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() {
     let writes = vec![
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
-    let query_rows = json!({
+    // read_latest_rows now uses server-side QUALIFY dedup; mock returns already-deduped rows
+    let latest_query_rows = json!({
         "jobComplete": true,
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
+    // read_live_rows uses server-side QUALIFY dedup + deleted=false filter
+    let live_query_rows = json!({
+        "jobComplete": true,
+        "rows": [
             {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
         ]
     });
 
     let server = MockHttpServer::start(vec![
         MockHttpResponse::json(json!({})),
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(latest_query_rows),
+        MockHttpResponse::json(live_query_rows),
     ]);
     let store = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
@@ -104,10 +115,10 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     store
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect("insertAll contract call should succeed");
-    let latest = store.read_latest_rows().expect("read latest via query API");
-    let live = store.read_live_rows().expect("read live via query API");
+    let latest = store.read_latest_rows().await.expect("read latest via query API");
+    let live = store.read_live_rows().await.expect("read live via query API");
 
     assert_eq!(
         latest,
@@ -117,12 +128,14 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
                 updated_at_ms: 2_000,
                 deleted: true,
                 payload: json!({}),
+            ..Default::default()
             },
             SessionPersistenceRow {
                 session_id: "s2".to_string(),
                 updated_at_ms: 3_000,
                 deleted: false,
                 payload: json!({"step":"update","version":2}),
+            ..Default::default()
             },
         ]
     );
@@ -133,6 +146,7 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         }]
     );
 
@@ -158,6 +172,13 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
         .as_array()
         .expect("insert request rows array");
     assert_eq!(inserted_rows.len(), writes.len());
+    // MK-008: insertId must not be present
+    for row in inserted_rows {
+        assert!(
+            row.get("insertId").is_none(),
+            "insertId must be removed from BQ streaming inserts"
+        );
+    }
     assert_eq!(
         insert_body["rows"][0]["json"]["session_id"],
         Value::String("s1".to_string())
@@ -179,6 +200,11 @@ fn phase_f_contract_native_bigquery_transport_request_shape_and_query_parsing() 
     let query_text = query_body["query"].as_str().expect("query body query text");
     assert!(query_text.contains("SELECT session_id, updated_at_ms, deleted, payload"));
     assert!(query_text.contains("phase-f-project.phase_f_dataset.phase_f_table"));
+    // MK-009: read_latest_rows must use server-side QUALIFY dedup
+    assert!(
+        query_text.contains("QUALIFY ROW_NUMBER()"),
+        "read_latest_rows query must use QUALIFY for server-side dedup"
+    );
 }
 
 #[test]
@@ -216,7 +242,7 @@ fn phase_f_rpc_builtin_bigquery_path_uses_native_adapter() {
             "session_id":"rpc-session",
             "updated_at_ms":1234,
             "deleted":false,
-            "payload":{"kind":"rpc"}
+            "payload":{"kind":"rpc"},"labels":{}
         }])
     );
 
@@ -263,12 +289,14 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
             updated_at_ms: 101,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "rpc-s1".to_string(),
             updated_at_ms: 202,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
     ];
 
@@ -306,7 +334,15 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
     );
     let insert_body: Value =
         serde_json::from_str(&requests[0].body).expect("parse insert request body");
-    assert_eq!(insert_body["rows"].as_array().map_or(0, Vec::len), 2);
+    let rpc_inserted_rows = insert_body["rows"].as_array().expect("insert rows array");
+    assert_eq!(rpc_inserted_rows.len(), 2);
+    // MK-008: insertId must not be present
+    for row in rpc_inserted_rows {
+        assert!(
+            row.get("insertId").is_none(),
+            "insertId must be removed from BQ streaming inserts"
+        );
+    }
     assert_eq!(insert_body["rows"][0]["json"]["session_id"], "rpc-s1");
     assert_eq!(insert_body["rows"][0]["json"]["updated_at_ms"], "101");
     assert_eq!(
@@ -318,17 +354,24 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
 
 #[test]
 fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
-    let query_rows = json!({
+    // read_rows returns all raw rows (no server-side dedup)
+    let all_query_rows = json!({
         "rows": [
-            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
-            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"}]},
-            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"}]},
+            {"f":[{"v":"s1"},{"v":"1000"},{"v":"false"},{"v":"{\"step\":\"create\"}"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s1"},{"v":"2000"},{"v":"true"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"1500"},{"v":"false"},{"v":"{\"step\":\"create\"}"},{"v":"{}"},{"v":"{}"}]},
+            {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
+        ]
+    });
+    // read_live_rows uses server-side QUALIFY dedup + deleted=false filter
+    let live_query_rows = json!({
+        "rows": [
             {"f":[{"v":"s2"},{"v":"3000"},{"v":"false"},{"v":"{\"step\":\"update\",\"version\":2}"}]}
         ]
     });
     let server = MockHttpServer::start(vec![
-        MockHttpResponse::json(query_rows.clone()),
-        MockHttpResponse::json(query_rows),
+        MockHttpResponse::json(all_query_rows),
+        MockHttpResponse::json(live_query_rows),
     ]);
     let mut runtime = start_phase_f_rpc_runtime();
 
@@ -375,10 +418,10 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
     assert_eq!(
         read_all["result"]["rows"],
         json!([
-            {"session_id":"s1","updated_at_ms":1000,"deleted":false,"payload":{"step":"create"}},
-            {"session_id":"s1","updated_at_ms":2000,"deleted":true,"payload":{}},
-            {"session_id":"s2","updated_at_ms":1500,"deleted":false,"payload":{"step":"create"}},
-            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+            {"session_id":"s1","updated_at_ms":1000,"deleted":false,"payload":{"step":"create"},"labels":{}},
+            {"session_id":"s1","updated_at_ms":2000,"deleted":true,"payload":{},"labels":{}},
+            {"session_id":"s2","updated_at_ms":1500,"deleted":false,"payload":{"step":"create"},"labels":{}},
+            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
         ])
     );
 
@@ -390,7 +433,7 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
     assert_eq!(
         read_live["result"]["rows"],
         json!([
-            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2}}
+            {"session_id":"s2","updated_at_ms":3000,"deleted":false,"payload":{"step":"update","version":2},"labels":{}}
         ])
     );
 
@@ -452,8 +495,8 @@ fn phase_f_rpc_bigquery_timeout_ms_propagates_to_store_http_timeout() {
     );
 }
 
-#[test]
-fn phase_f_rpc_bigquery_invalid_params_return_minus_32602() {
+#[tokio::test]
+async fn phase_f_rpc_bigquery_invalid_params_return_minus_32602() {
     let mut runtime = start_phase_f_rpc_runtime();
     let missing_rows = call_rpc(
         &mut runtime,
@@ -491,8 +534,8 @@ fn phase_f_rpc_bigquery_invalid_params_return_minus_32602() {
     assert_eq!(invalid_timeout["error"]["code"], -32602);
 }
 
-#[test]
-fn phase_f_rpc_bigquery_store_and_api_failures_return_minus_32011() {
+#[tokio::test]
+async fn phase_f_rpc_bigquery_store_and_api_failures_return_minus_32011() {
     let mut runtime = start_phase_f_rpc_runtime();
     let missing_project = call_rpc(
         &mut runtime,
@@ -544,26 +587,26 @@ fn phase_f_rpc_bigquery_store_and_api_failures_return_minus_32011() {
     );
 }
 
-#[test]
-fn phase_f_bigquery_missing_project_or_token_configuration_returns_configuration_error() {
+#[tokio::test]
+async fn phase_f_bigquery_missing_project_or_token_configuration_returns_configuration_error() {
     let writes = sample_write_rows();
 
     let missing_project =
         BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
             .with_access_token("phase-f-token")
-            .stream_insert_rows(&writes)
+            .stream_insert_rows(&writes).await
             .expect_err("missing project_id should fail");
     assert_configuration_error_contains(missing_project, "missing BigQuery project_id");
 
     let missing_token = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect_err("missing access token should fail");
     assert_configuration_error_contains(missing_token, "missing BigQuery access token");
 }
 
-#[test]
-fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted() {
+#[tokio::test]
+async fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted() {
     let server = MockHttpServer::start(vec![MockHttpResponse::json(json!({
         "insertErrors": [
             {"index":0,"errors":[{"reason":"invalid","message":"row rejected"}]}
@@ -575,13 +618,13 @@ fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted() {
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     let err = store
-        .stream_insert_rows(&sample_write_rows())
+        .stream_insert_rows(&sample_write_rows()).await
         .expect_err("insertErrors should bubble as API failure");
     assert_api_error_contains(err, "insertAll returned row errors");
 }
 
-#[test]
-fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
+#[tokio::test]
+async fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
     let server = MockHttpServer::start(vec![MockHttpResponse {
         status_code: 503,
         content_type: "application/json".to_string(),
@@ -594,13 +637,13 @@ fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     let err = store
-        .stream_insert_rows(&sample_write_rows())
+        .stream_insert_rows(&sample_write_rows()).await
         .expect_err("non-2xx status should fail");
     assert_api_error_contains(err, "status 503");
 }
 
-#[test]
-fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
+#[tokio::test]
+async fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
     let malformed_rows_server = MockHttpServer::start(vec![MockHttpResponse::json(json!({
         "rows": [
             {"bad":"shape"}
@@ -612,7 +655,7 @@ fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
             .with_access_token("phase-f-token")
             .with_api_base_url(format!("{}/bigquery/v2", malformed_rows_server.base_url()));
     let malformed_rows_err = malformed_rows_store
-        .read_rows()
+        .read_rows().await
         .expect_err("query rows missing row.f should fail parsing");
     assert_invalid_query_error_contains(malformed_rows_err, "missing row.f cell array");
 
@@ -630,13 +673,13 @@ fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failures() {
                 malformed_payload_server.base_url()
             ));
     let malformed_payload_err = malformed_payload_store
-        .read_rows()
+        .read_rows().await
         .expect_err("invalid payload JSON should fail parsing");
     assert_invalid_query_error_contains(malformed_payload_err, "payload JSON parse failed");
 }
 
-#[test]
-fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
+#[tokio::test]
+async fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
     let timeout_server = MockHttpServer::start(vec![
         MockHttpResponse::json(json!({})).with_delay(Duration::from_millis(200))
     ]);
@@ -647,7 +690,7 @@ fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
         .with_http_timeout(Duration::from_millis(25));
     let timeout_started = Instant::now();
     let timeout_err = timeout_store
-        .stream_insert_rows(&sample_write_rows())
+        .stream_insert_rows(&sample_write_rows()).await
         .expect_err("delayed response should trigger HTTP timeout");
     let timeout_elapsed = timeout_started.elapsed();
     assert!(
@@ -674,6 +717,7 @@ fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
             .with_http_timeout(Duration::from_millis(250));
     let connection_err = connection_store
         .stream_insert_rows(&sample_write_rows())
+        .await
         .expect_err("connection failure should surface as HTTP error");
     assert_http_error_contains_any(
         connection_err,
@@ -686,8 +730,9 @@ fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
     );
 }
 
-#[test]
-fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
+#[tokio::test]
+#[ignore] // requires real BigQuery credentials and network
+async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
     let access_token = require_bigquery_access_token();
     let api_base_url = std::env::var("BIGQUERY_API_BASE_URL")
         .ok()
@@ -748,29 +793,33 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
 
     store
-        .stream_insert_rows(&writes)
+        .stream_insert_rows(&writes).await
         .expect("stream insert rows into real BigQuery table");
 
     let expected_latest = vec![
@@ -779,12 +828,14 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
+        ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
+        ..Default::default()
         },
     ];
     let expected_live = vec![SessionPersistenceRow {
@@ -792,15 +843,16 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
         updated_at_ms: 3_000,
         deleted: false,
         payload: json!({"step":"update","version":2}),
+    ..Default::default()
     }];
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let latest = store
-            .read_latest_rows()
+            .read_latest_rows().await
             .expect("query latest rows from real BigQuery");
         let live = store
-            .read_live_rows()
+            .read_live_rows().await
             .expect("query live rows from real BigQuery");
         if latest == expected_latest && live == expected_live {
             break;

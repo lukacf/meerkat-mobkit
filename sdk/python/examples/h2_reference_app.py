@@ -11,10 +11,10 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 try:
-    from meerkat_mobkit_sdk import MobkitAsyncTypedClient, MobkitRpcError
+    from meerkat_mobkit import MobkitAsyncTypedClient, MobkitRpcError
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from meerkat_mobkit_sdk import (  # type: ignore[no-redef]
+    from meerkat_mobkit import (  # type: ignore[no-redef]
         MobkitAsyncTypedClient,
         MobkitRpcError,
     )

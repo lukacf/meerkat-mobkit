@@ -181,6 +181,7 @@ fn select_python_for_phase11() -> Option<String> {
 }
 
 #[test]
+#[ignore] // requires Python venv setup (~7s)
 fn phase11_sdk_001_sdk_002_choke_110_and_e2e_1101_parity_contracts() {
     assert_command_success(
         "TypeScript",

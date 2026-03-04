@@ -12,7 +12,7 @@ from typing import Any, Awaitable, Callable, cast
 from urllib.error import URLError
 
 try:
-    from meerkat_mobkit_sdk import (
+    from meerkat_mobkit import (
         MobkitAsyncTypedClient,
         MobkitRpcError,
         ModuleSpec,
@@ -28,7 +28,7 @@ try:
     )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from meerkat_mobkit_sdk import (  # type: ignore[no-redef]
+    from meerkat_mobkit import (  # type: ignore[no-redef]
         MobkitAsyncTypedClient,
         MobkitRpcError,
         ModuleSpec,

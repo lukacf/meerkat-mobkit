@@ -164,6 +164,17 @@ impl RealMobRuntime {
         self.handle.spawn_spec(spec).await.map_err(Into::into)
     }
 
+    pub async fn spawn_many(
+        &self,
+        specs: Vec<SpawnMemberSpec>,
+    ) -> Result<Vec<MemberRef>, MobRuntimeError> {
+        let mut refs = Vec::with_capacity(specs.len());
+        for spec in specs {
+            refs.push(self.handle.spawn_spec(spec).await?);
+        }
+        Ok(refs)
+    }
+
     pub async fn reconcile(
         &self,
         desired_specs: Vec<SpawnMemberSpec>,
