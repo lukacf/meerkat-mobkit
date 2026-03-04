@@ -17,6 +17,7 @@ from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
 from .types import (
+    CallToolResult,
     CapabilitiesResult,
     DeliveryResult,
     MemoryQueryResult,
@@ -274,6 +275,16 @@ class MobHandle:
     async def memory_query(self, query: str, **kwargs: Any) -> MemoryQueryResult:
         raw = await self._runtime._rpc("mobkit/memory/query", {"query": query, **kwargs})
         return MemoryQueryResult.from_dict(raw)
+
+    async def call_tool(
+        self, module_id: str, tool: str, arguments: dict[str, Any] | None = None
+    ) -> CallToolResult:
+        """Call an MCP tool on a loaded module."""
+        params: dict[str, Any] = {"module_id": module_id, "tool": tool}
+        if arguments:
+            params["arguments"] = arguments
+        raw = await self._runtime._rpc("mobkit/call_tool", params)
+        return CallToolResult.from_dict(raw)
 
     async def inject_and_subscribe(self, target: str, message: str) -> AsyncIterator[InteractionEvent]:
         bridge = self._runtime.sse_bridge()

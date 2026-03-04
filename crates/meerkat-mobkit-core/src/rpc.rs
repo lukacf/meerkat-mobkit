@@ -202,7 +202,8 @@ pub fn handle_mobkit_rpc_json(
                     "mobkit/gating/evaluate",
                     "mobkit/gating/pending",
                     "mobkit/gating/decide",
-                    "mobkit/gating/audit"
+                    "mobkit/gating/audit",
+                    "mobkit/call_tool"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),
@@ -693,6 +694,64 @@ pub fn handle_mobkit_rpc_json(
                 }),
             },
         },
+        "mobkit/call_tool" => {
+            let module_id = request.params.get("module_id").and_then(Value::as_str);
+            let tool = request.params.get("tool").and_then(Value::as_str);
+            let arguments = request.params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+
+            match (module_id, tool) {
+                (Some(module_id), Some(tool)) if !module_id.is_empty() && !tool.is_empty() => {
+                    let route = route_module_call(
+                        runtime,
+                        &ModuleRouteRequest {
+                            module_id: module_id.to_string(),
+                            method: tool.to_string(),
+                            params: arguments,
+                        },
+                        timeout,
+                    );
+                    match route {
+                        Ok(response) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::json!({
+                                "module_id": response.module_id,
+                                "tool": response.method,
+                                "result": response.payload
+                            })),
+                            error: None,
+                        },
+                        Err(ModuleRouteError::UnloadedModule(mid)) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32601,
+                                message: format!("Module '{mid}' not loaded"),
+                            }),
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("Tool call failed: {err:?}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: module_id and tool required".to_string(),
+                    }),
+                },
+            }
+        }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method
                 .split('/')
@@ -862,7 +921,8 @@ pub async fn handle_unified_rpc_json(
                     "mobkit/gating/evaluate",
                     "mobkit/gating/pending",
                     "mobkit/gating/decide",
-                    "mobkit/gating/audit"
+                    "mobkit/gating/audit",
+                    "mobkit/call_tool"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),
@@ -1404,6 +1464,63 @@ pub async fn handle_unified_rpc_json(
                 }),
             },
         },
+        "mobkit/call_tool" => {
+            let module_id = request.params.get("module_id").and_then(Value::as_str);
+            let tool = request.params.get("tool").and_then(Value::as_str);
+            let arguments = request.params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+
+            match (module_id, tool) {
+                (Some(module_id), Some(tool)) if !module_id.is_empty() && !tool.is_empty() => {
+                    let route = runtime.route_module_call(
+                        &ModuleRouteRequest {
+                            module_id: module_id.to_string(),
+                            method: tool.to_string(),
+                            params: arguments,
+                        },
+                        timeout,
+                    );
+                    match route {
+                        Ok(response) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::json!({
+                                "module_id": response.module_id,
+                                "tool": response.method,
+                                "result": response.payload
+                            })),
+                            error: None,
+                        },
+                        Err(ModuleRouteError::UnloadedModule(mid)) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32601,
+                                message: format!("Module '{mid}' not loaded"),
+                            }),
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("Tool call failed: {err:?}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: module_id and tool required".to_string(),
+                    }),
+                },
+            }
+        }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method
                 .split('/')

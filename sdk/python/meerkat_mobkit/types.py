@@ -158,3 +158,19 @@ class MemoryQueryResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemoryQueryResult:
         return cls(results=list(data.get("results", [])))
+
+
+@dataclass(frozen=True)
+class CallToolResult:
+    """Result of calling an MCP tool on a loaded module."""
+    module_id: str
+    tool: str
+    result: Any
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CallToolResult:
+        return cls(
+            module_id=data.get("module_id", ""),
+            tool=data.get("tool", ""),
+            result=data.get("result"),
+        )

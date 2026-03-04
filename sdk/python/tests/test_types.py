@@ -1,5 +1,6 @@
 """Tests for typed return models (from_dict)."""
 from meerkat_mobkit.types import (
+    CallToolResult,
     CapabilitiesResult,
     DeliveryResult,
     EventEnvelope,
@@ -148,3 +149,15 @@ class TestMemoryQueryResult:
     def test_from_dict(self):
         r = MemoryQueryResult.from_dict({"results": [{"key": "val"}]})
         assert r.results == [{"key": "val"}]
+
+
+class TestCallToolResult:
+    def test_from_dict(self):
+        r = CallToolResult.from_dict({
+            "module_id": "gmail",
+            "tool": "gmail_search",
+            "result": {"messages": [{"id": "1", "subject": "Hello"}]},
+        })
+        assert r.module_id == "gmail"
+        assert r.tool == "gmail_search"
+        assert r.result == {"messages": [{"id": "1", "subject": "Hello"}]}
