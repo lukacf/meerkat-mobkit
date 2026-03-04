@@ -90,20 +90,42 @@ All `MobHandle` methods return typed dataclasses instead of raw dicts:
 | `status()` | `StatusResult` | `contract_version`, `running`, `loaded_modules` |
 | `capabilities()` | `CapabilitiesResult` | `contract_version`, `methods`, `loaded_modules` |
 | `reconcile(modules)` | `ReconcileResult` | `accepted`, `reconciled_modules`, `added` |
-| `spawn(spec)` | `SpawnResult` | `accepted`, `module_id` |
-| `spawn_member(module_id)` | `SpawnMemberResult` | `accepted`, `module_id` |
-| `subscribe_events(...)` | `SubscribeResult` | `scope`, `events`, `event_frames` |
+| `spawn(spec: DiscoverySpec)` | `SpawnResult` | `accepted`, `module_id`, `meerkat_id`, `profile` |
+| `spawn_member(module_id)` | `SpawnResult` | `accepted`, `module_id` |
+| `subscribe_events(...)` | `SubscribeResult` | `scope`, `keep_alive: KeepAliveConfig`, `events: list[EventEnvelope]` |
 | `resolve_routing(recipient)` | `RoutingResolution` | `recipient`, `route` |
 | `send_delivery(...)` | `DeliveryResult` | `delivered`, `delivery_id` |
 | `memory_query(query)` | `MemoryQueryResult` | `results` |
+| `inject_and_subscribe(target, message)` | `AsyncIterator[InteractionEvent]` | `event_id`, `event_type`, `data` |
 
 ```python
-from meerkat_mobkit.types import StatusResult
+from meerkat_mobkit.types import StatusResult, SpawnResult, SubscribeResult
 
 status = await handle.status()
 print(status.running)           # bool
 print(status.loaded_modules)    # list[str]
 print(status.contract_version)  # str
+
+# SubscribeResult has fully typed nested objects
+sub = await handle.subscribe_events(scope="mob")
+print(sub.keep_alive.interval_ms)  # int
+for env in sub.events:
+    print(env.event_id, env.source, env.timestamp_ms)
+```
+
+### SpawnResult
+
+`spawn(spec: DiscoverySpec)` and `spawn_member(module_id)` both return `SpawnResult`. The discovery-path spawn includes additional fields:
+
+```python
+from meerkat_mobkit import DiscoverySpec
+
+spec = DiscoverySpec(profile="assistant", meerkat_id="agent-1")
+result = await handle.spawn(spec)
+print(result.accepted)     # bool
+print(result.module_id)    # str
+print(result.meerkat_id)   # str | None (set for discovery spawns)
+print(result.profile)      # str | None (set for discovery spawns)
 ```
 
 ## Error hierarchy
@@ -138,7 +160,7 @@ except RpcError as exc:
 Typed event classes for SSE streaming:
 
 ```python
-from meerkat_mobkit.events import MobEvent, AgentEvent, InteractionEvent
+from meerkat_mobkit.events import MobEvent, AgentEvent, InteractionEvent, EventStream
 ```
 
 ```python
@@ -160,12 +182,55 @@ class MyBuilder(SessionAgentBuilder):
         options.add_tools(["search", "calculator"])  # list[str] enforced
 ```
 
-## Module authoring
+## Configuration helpers
 
-Define MobKit modules as Python subprocesses:
+The SDK provides factory functions for common configuration objects:
+
+### Authentication
 
 ```python
-from meerkat_mobkit import build_module_spec, define_module, define_module_tool
+from meerkat_mobkit import auth
+
+# Google OAuth
+google = auth.google(client_id="your-client-id.apps.googleusercontent.com")
+
+# JWT with shared secret
+jwt = auth.jwt(shared_secret="your-secret", issuer="my-app")
+
+rt = await MobKit.builder().auth(google).build()
+```
+
+### Memory
+
+```python
+from meerkat_mobkit import memory
+
+elephant = memory.elephant(
+    endpoint="http://localhost:8000",
+    space_id="my-space",
+)
+
+rt = await MobKit.builder().memory(elephant).build()
+```
+
+### Session store
+
+```python
+from meerkat_mobkit import session_store
+
+# Local JSON file store
+local = session_store.json(path="./sessions")
+
+# BigQuery production store
+bq = session_store.bigquery(dataset="my_dataset", table="sessions")
+```
+
+## Module authoring
+
+Module authoring helpers are available via `meerkat_mobkit.helpers`:
+
+```python
+from meerkat_mobkit.helpers import build_module_spec, define_module, define_module_tool
 
 spec = build_module_spec(
     module_id="router",
@@ -182,26 +247,6 @@ tool = define_module_tool(
 
 module = define_module(spec=spec, tools=[tool])
 ```
-
-## BREAKING CHANGES from v0.1.0
-
-This release replaces the entire public API surface. Key changes:
-
-| Removed (v0.1) | Replacement (v0.2) |
-|----------------|-------------------|
-| `MobkitTypedClient` | `MobKit.builder()...build()` → `MobKitRuntime` |
-| `MobkitAsyncTypedClient` | `MobKit.builder()...build()` → `MobKitRuntime` |
-| `MobkitRpcError` | `meerkat_mobkit.errors.RpcError` |
-| `create_gateway_sync_transport` | Internal: `_client.py` |
-| `create_gateway_async_transport` | Internal: `_client.py` |
-| `create_http_transport` | Internal: `_client.py` |
-| `PersistentTransport` | Internal: `_transport.py` |
-| `SseEvent`, `SseEventStream` | Internal: `_sse.py` |
-| `MobHandle` (public) | `runtime.mob_handle()` (internal) |
-| `SseBridge` (public) | `runtime.sse_bridge()` (internal) |
-| `dict[str, Any]` returns | Typed dataclasses (`StatusResult`, etc.) |
-| `RuntimeError` / `ValueError` | Typed errors (`RpcError`, `TransportError`, etc.) |
-| `SessionBuildOptions.add_tools(list[Any])` | `SessionBuildOptions.add_tools(list[str])` |
 
 ## See also
 
