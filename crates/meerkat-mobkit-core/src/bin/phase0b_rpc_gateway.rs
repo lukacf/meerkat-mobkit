@@ -366,9 +366,50 @@ external_addressable = true
         }
     });
 
-    // 4. Build session service with callback bridge
+    // 4. Build callback bridge and start stdin multiplexer BEFORE bootstrap.
+    // This ensures callback responses (e.g. callback/build_agent during discovery
+    // spawn) are routed even while UnifiedRuntime::bootstrap is running.
     let bridge = StdioCallbackBridge::new(stdout_tx.clone());
+    let (rpc_tx, mut rpc_rx) = mpsc::channel::<String>(64);
 
+    let stdin_reader = tokio::spawn({
+        let bridge = bridge.clone();
+        let rpc_tx = rpc_tx.clone();
+        async move {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line).await {
+                    Ok(0) => break, // EOF
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let msg: Value = match serde_json::from_str(trimmed) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                // Callback responses: "id" starts with "cb-" and no "method"
+                let is_callback_response = msg
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|id| id.starts_with("cb-"))
+                    && msg.get("method").is_none();
+
+                if is_callback_response {
+                    bridge.route_callback_response(msg).await;
+                } else {
+                    // Queue RPC request for the dispatch loop
+                    let _ = rpc_tx.send(trimmed.to_string()).await;
+                }
+            }
+        }
+    });
+
+    // 5. Build session service with callback bridge
     // AgentFactory needs a working directory for agent scratch space even with
     // EphemeralSessionService (sessions don't persist, but agents use the path
     // during execution). temp_dir must outlive runtime — dropped after shutdown.
@@ -400,21 +441,20 @@ external_addressable = true
                 "id": request_id,
                 "error": { "code": -32603, "message": format!("Runtime bootstrap failed: {e}") }
             });
-            // Use blocking stdout since the channel writer is in a task
             let mut stdout = std::io::stdout().lock();
             let _ = writeln!(stdout, "{}", serde_json::to_string(&error_response).unwrap());
             let _ = stdout.flush();
             std::process::exit(1);
         });
 
-    // 5. Bind HTTP server on ephemeral port
+    // 6. Bind HTTP server on ephemeral port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind ephemeral port");
     let port = listener.local_addr().expect("local addr").port();
     let http_base_url = format!("http://127.0.0.1:{port}");
 
-    // 6. Start HTTP with graceful shutdown
+    // 7. Start HTTP with graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let app = runtime.build_reference_app_router(minimal_decision_state());
     let serve_task = tokio::spawn({
@@ -428,7 +468,7 @@ external_addressable = true
         }
     });
 
-    // 7. Send init response via stdout channel
+    // 8. Send init response via stdout channel
     let loaded_modules = runtime.loaded_modules();
     let init_response = json!({
         "jsonrpc": "2.0",
@@ -442,60 +482,36 @@ external_addressable = true
         .send(serde_json::to_string(&init_response).unwrap())
         .await;
 
-    // 8. Multiplexed dispatch loop: read lines from stdin, route to RPC dispatch or callback responses
+    // 9. RPC dispatch loop: process queued requests from the stdin reader task
     {
-        let mut line = String::new();
         loop {
-            line.clear();
-            let read_result = tokio::select! {
-                result = reader.read_line(&mut line) => result,
+            let request_line = tokio::select! {
+                line = rpc_rx.recv() => match line {
+                    Some(l) => l,
+                    None => break, // stdin reader closed (EOF or error)
+                },
                 _ = tokio::signal::ctrl_c() => break,
             };
-            match read_result {
-                Ok(0) => break, // EOF — stdin closed
-                Ok(_) => {}
-                Err(_) => break,
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-
-            // Parse to determine if this is an RPC request or a callback response
-            let msg: Value = match serde_json::from_str(trimmed) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            // Callback responses have "id" starting with "cb-" and no "method"
-            let is_callback_response = msg.get("id")
-                .and_then(|v| v.as_str())
-                .is_some_and(|id| id.starts_with("cb-"))
-                && !msg.get("method").is_some();
-
-            if is_callback_response {
-                bridge.route_callback_response(msg).await;
-            } else {
-                // Regular RPC request from Python
-                let response = handle_unified_rpc_json(
-                    &mut runtime,
-                    trimmed,
-                    timeout,
-                    Some(&http_base_url),
-                )
-                .await;
-                if !response.is_empty() {
-                    let _ = stdout_tx.send(response).await;
-                }
+            let response = handle_unified_rpc_json(
+                &mut runtime,
+                &request_line,
+                timeout,
+                Some(&http_base_url),
+            )
+            .await;
+            if !response.is_empty() {
+                let _ = stdout_tx.send(response).await;
             }
         }
     }
 
-    // 9. Graceful shutdown: stop HTTP server, then runtime
+    // 10. Graceful shutdown: stop HTTP server, then runtime
     let _ = shutdown_tx.send(true);
     let _ = serve_task.await;
     runtime.shutdown().await;
+    drop(rpc_tx);
     drop(stdout_tx);
+    let _ = stdin_reader.await;
     let _ = stdout_writer.await;
     drop(temp_dir);
 }
