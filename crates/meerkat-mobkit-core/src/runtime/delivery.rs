@@ -67,9 +67,7 @@ impl MobkitRuntimeHandle {
             .retain(|key, _| key.window_start_ms >= earliest_window_start_ms);
     }
     fn next_delivery_sequence(&mut self) -> u64 {
-        let sequence = self.delivery_sequence;
-        self.delivery_sequence = self.delivery_sequence.saturating_add(1);
-        sequence
+        Self::next_sequence(&mut self.delivery_sequence)
     }
     fn replay_delivery_for_scoped_idempotency(
         &mut self,

@@ -178,9 +178,7 @@ fn parse_http_url(url: &str) -> Result<ParsedHttpUrl, ElephantMemoryStoreError> 
 
 impl MobkitRuntimeHandle {
     fn next_memory_sequence(&mut self) -> u64 {
-        let sequence = self.memory_sequence;
-        self.memory_sequence = self.memory_sequence.saturating_add(1);
-        sequence
+        Self::next_sequence(&mut self.memory_sequence)
     }
 
     pub(super) fn canonical_memory_token(raw: &str) -> Option<String> {

@@ -192,6 +192,13 @@ class MobkitTypedClient:
         self.gateway_bin = gateway_bin
         self._sync_transport = create_gateway_sync_transport(gateway_bin)
 
+    @classmethod
+    def from_persistent(cls, transport: SyncRpcTransport) -> "MobkitTypedClient":
+        instance = cls.__new__(cls)
+        instance.gateway_bin = ""
+        instance._sync_transport = transport
+        return instance
+
     def rpc(
         self, request_id: str, method: str, params: Mapping[str, Any] | None = None
     ) -> JsonRpcResponse:

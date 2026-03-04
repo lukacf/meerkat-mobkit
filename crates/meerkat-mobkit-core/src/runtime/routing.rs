@@ -4,6 +4,11 @@ use super::module_boundary::{
 };
 use super::*;
 
+fn require_non_empty(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+}
+
 const MCP_REQUIRED_CORE_MODULES: [&str; 4] = ["router", "delivery", "memory", "scheduling"];
 pub const WILDCARD_ROUTE: &str = "*";
 
@@ -121,9 +126,7 @@ impl MobkitRuntimeHandle {
         }
     }
     fn next_routing_sequence(&mut self) -> u64 {
-        let sequence = self.routing_sequence;
-        self.routing_sequence = self.routing_sequence.saturating_add(1);
-        sequence
+        Self::next_sequence(&mut self.routing_sequence)
     }
     fn parse_router_mcp_overrides(response: &Value) -> RouterBoundaryOverrides {
         let Some(payload) = response.as_object() else {
@@ -178,27 +181,21 @@ impl MobkitRuntimeHandle {
         &mut self,
         route: RuntimeRoute,
     ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
-        let route_key = route.route_key.trim();
-        if route_key.is_empty() {
-            return Err(RuntimeRouteMutationError::EmptyRouteKey);
-        }
-        let recipient = route.recipient.trim();
-        if recipient.is_empty() {
-            return Err(RuntimeRouteMutationError::EmptyRecipient);
-        }
+        let route_key = require_non_empty(&route.route_key)
+            .ok_or(RuntimeRouteMutationError::EmptyRouteKey)?;
+        let recipient = require_non_empty(&route.recipient)
+            .ok_or(RuntimeRouteMutationError::EmptyRecipient)?;
         if route
             .channel
             .as_ref()
-            .is_some_and(|channel| channel.trim().is_empty())
+            .is_some_and(|channel| require_non_empty(channel).is_none())
         {
             return Err(RuntimeRouteMutationError::InvalidChannel);
         }
-        if route.sink.trim().is_empty() {
-            return Err(RuntimeRouteMutationError::EmptySink);
-        }
-        if route.target_module.trim().is_empty() {
-            return Err(RuntimeRouteMutationError::EmptyTargetModule);
-        }
+        let sink = require_non_empty(&route.sink)
+            .ok_or(RuntimeRouteMutationError::EmptySink)?;
+        let target_module = require_non_empty(&route.target_module)
+            .ok_or(RuntimeRouteMutationError::EmptyTargetModule)?;
         if route
             .retry_max
             .is_some_and(|retry_max| retry_max > ROUTING_RETRY_MAX_CAP)
@@ -213,14 +210,11 @@ impl MobkitRuntimeHandle {
         }
 
         let canonical = RuntimeRoute {
-            route_key: route_key.to_string(),
-            recipient: recipient.to_string(),
-            channel: route
-                .channel
-                .map(|channel| channel.trim().to_string())
-                .filter(|channel| !channel.is_empty()),
-            sink: route.sink.trim().to_string(),
-            target_module: route.target_module.trim().to_string(),
+            route_key,
+            recipient,
+            channel: route.channel.as_deref().and_then(require_non_empty),
+            sink,
+            target_module,
             retry_max: route.retry_max,
             backoff_ms: route.backoff_ms,
             rate_limit_per_minute: route.rate_limit_per_minute,
@@ -254,19 +248,14 @@ impl MobkitRuntimeHandle {
             return Err(RoutingResolveError::DeliveryModuleNotLoaded);
         }
 
-        let recipient = request.recipient.trim();
-        if recipient.is_empty() {
-            return Err(RoutingResolveError::EmptyRecipient);
-        }
+        let recipient = require_non_empty(&request.recipient)
+            .ok_or(RoutingResolveError::EmptyRecipient)?;
         let request_value = serde_json::to_value(&request).unwrap_or(Value::Null);
 
-        let channel = request
-            .channel
-            .unwrap_or_else(|| "notification".to_string());
-        let channel = channel.trim();
-        if channel.is_empty() {
-            return Err(RoutingResolveError::InvalidChannel);
-        }
+        let channel = require_non_empty(
+            &request.channel.unwrap_or_else(|| "notification".to_string()),
+        )
+        .ok_or(RoutingResolveError::InvalidChannel)?;
         let mut retry_max = request.retry_max.unwrap_or(1);
         if retry_max > ROUTING_RETRY_MAX_CAP {
             return Err(RoutingResolveError::RetryMaxExceedsCap {
@@ -278,7 +267,7 @@ impl MobkitRuntimeHandle {
         if rate_limit_per_minute == 0 {
             return Err(RoutingResolveError::InvalidRateLimitPerMinute);
         }
-        let mut resolved_channel = channel.to_string();
+        let mut resolved_channel = channel;
         let mut backoff_ms = request.backoff_ms.unwrap_or(250);
 
         let mut sink = if recipient.contains('@') {
@@ -341,7 +330,7 @@ impl MobkitRuntimeHandle {
         if rate_limit_per_minute == 0 {
             return Err(RoutingResolveError::InvalidRateLimitPerMinute);
         }
-        if let Some(route_override) = self.matching_runtime_route(recipient, &resolved_channel) {
+        if let Some(route_override) = self.matching_runtime_route(&recipient, &resolved_channel) {
             sink = route_override.sink.clone();
             target_module = route_override.target_module.clone();
             retry_max = route_override.retry_max.unwrap_or(retry_max);
@@ -364,7 +353,7 @@ impl MobkitRuntimeHandle {
         let route_id = format!("route-{route_sequence:06}");
         let resolution = RoutingResolution {
             route_id: route_id.clone(),
-            recipient: recipient.to_string(),
+            recipient,
             channel: resolved_channel,
             sink,
             target_module,

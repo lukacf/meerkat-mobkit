@@ -62,7 +62,7 @@ fn main() {
     println!("SMOKE: loaded modules={:?}", runtime.loaded_modules());
 
     println!("SMOKE: merged stream");
-    for event in &runtime.merged_events {
+    for event in runtime.merged_events() {
         println!(
             "  - id={} src={} ts={} kind={:?}",
             event.event_id, event.source, event.timestamp_ms, event.event

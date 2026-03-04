@@ -6,9 +6,7 @@ use super::*;
 
 impl MobkitRuntimeHandle {
     fn next_gating_sequence(&mut self) -> u64 {
-        let sequence = self.gating_sequence;
-        self.gating_sequence = self.gating_sequence.saturating_add(1);
-        sequence
+        Self::next_sequence(&mut self.gating_sequence)
     }
     fn append_gating_audit(&mut self, mut entry: GatingAuditEntry) {
         let audit_sequence = self.next_gating_sequence();

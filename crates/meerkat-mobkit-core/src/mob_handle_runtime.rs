@@ -9,6 +9,9 @@ use meerkat_mob::{
 };
 use serde::{Deserialize, Serialize};
 
+pub const MEMBER_STATE_ACTIVE: &str = "active";
+pub const MEMBER_STATE_RETIRING: &str = "retiring";
+
 #[derive(Clone, Default)]
 pub struct MobBootstrapOptions {
     pub allow_ephemeral_sessions: bool,
@@ -151,8 +154,8 @@ impl RealMobRuntime {
                     meerkat_id: entry.meerkat_id.to_string(),
                     profile: entry.profile.to_string(),
                     state: match entry.state {
-                        MemberState::Active => "active".to_string(),
-                        MemberState::Retiring => "retiring".to_string(),
+                        MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
+                        MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
                     },
                     wired_to,
                 }
