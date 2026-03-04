@@ -11,8 +11,7 @@ from .sse import SseEvent, parse_sse_stream
 from .transport import PersistentTransport
 
 
-def _rpc_request(request_id: str, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params or {}}
+from .client import _build_request as _rpc_request
 
 
 class MobKitRuntime:
