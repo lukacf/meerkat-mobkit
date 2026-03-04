@@ -237,10 +237,13 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Apply tools as skill_references (Python returns tool names/keys as JSON)
-                if let Some(tools) = result.get("tools").and_then(|v| v.as_array()) {
-                    if !tools.is_empty() {
-                        let skill_refs: Vec<meerkat_core::skills::SkillKey> = tools
+                // Apply tools: try to parse as SkillKey refs for structured tools,
+                // and always store the raw tools JSON in build.provider_params
+                // so downstream builders can access the full tool descriptors.
+                if let Some(tools) = result.get("tools") {
+                    if let Some(arr) = tools.as_array() {
+                        // Try structured SkillKey parsing for compatible tools
+                        let skill_refs: Vec<meerkat_core::skills::SkillKey> = arr
                             .iter()
                             .filter_map(|t| serde_json::from_value(t.clone()).ok())
                             .collect();
@@ -248,6 +251,15 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                             let refs = modified_req.skill_references.get_or_insert_with(Vec::new);
                             refs.extend(skill_refs);
                         }
+                    }
+                    // Store raw tools in provider_params for factory builders
+                    // that support Python-style tool descriptors
+                    let build = modified_req.build.get_or_insert_with(|| {
+                        meerkat_core::service::SessionBuildOptions::default()
+                    });
+                    let params = build.provider_params.get_or_insert_with(|| json!({}));
+                    if let Some(obj) = params.as_object_mut() {
+                        obj.insert("callback_tools".to_string(), tools.clone());
                     }
                 }
                 self.inner.build_agent(&modified_req, event_tx).await

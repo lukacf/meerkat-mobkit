@@ -12,6 +12,26 @@ from typing import Any, Callable
 _log = logging.getLogger("meerkat_mobkit")
 
 
+def _sanitize_for_json(obj: Any) -> Any:
+    """Recursively sanitize a value so json.dumps won't fail.
+
+    Non-serializable leaves (callables, custom objects) are converted to
+    their string representation so the callback response always reaches Rust.
+    """
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    # Fall back to string repr for non-serializable objects (e.g. tool callables)
+    try:
+        json.dumps(obj)
+        return obj
+    except (TypeError, ValueError):
+        return str(obj)
+
+
 class PersistentTransport:
     """Long-lived mobkit-rpc subprocess communicating over stdin/stdout JSON-RPC.
 
@@ -130,15 +150,22 @@ class PersistentTransport:
                 raise RuntimeError(
                     "PersistentTransport: no running event loop for callback dispatch"
                 )
-            response = {"jsonrpc": "2.0", "id": callback_id, "result": result}
+            # Ensure result is JSON-serializable before building response.
+            # Tools or other callback results may contain non-serializable objects;
+            # sanitize them to strings to prevent json.dumps failures in _write_line.
+            response = {"jsonrpc": "2.0", "id": callback_id, "result": _sanitize_for_json(result)}
+            self._write_line(response)
         except Exception as exc:
             _log.warning("callback dispatch error: %s", exc)
-            response = {
+            error_response = {
                 "jsonrpc": "2.0",
                 "id": callback_id,
                 "error": {"code": -32000, "message": str(exc)},
             }
-        self._write_line(response)
+            try:
+                self._write_line(error_response)
+            except Exception:
+                _log.error("failed to send callback error response for id=%s", callback_id)
 
     def _write_line(self, obj: dict) -> None:
         with self._write_lock:
