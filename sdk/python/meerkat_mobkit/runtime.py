@@ -84,7 +84,7 @@ class MobKitRuntime:
             except Exception:
                 if self._transport is not None and not self._transport.is_running():
                     raise RuntimeError("gateway process died during bootstrap")
-                _log.warning("mobkit/init failed — runtime may have limited functionality")
+                raise RuntimeError("mobkit/init failed — runtime could not be initialized")
         elif self._config.session_builder and isinstance(
             self._config.session_builder, SessionAgentBuilder
         ):
@@ -95,11 +95,8 @@ class MobKitRuntime:
         """Build init params dict from builder config for mobkit/init RPC."""
         params: dict[str, Any] = {}
         if self._config.mob_config_path:
-            try:
-                with open(self._config.mob_config_path) as f:
-                    params["mob_config"] = f.read()
-            except FileNotFoundError:
-                pass
+            with open(self._config.mob_config_path) as f:
+                params["mob_config"] = f.read()
         if self._config.modules:
             params["modules"] = self._config.modules
         params["has_session_builder"] = bool(self._config.session_builder)

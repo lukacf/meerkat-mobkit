@@ -673,6 +673,14 @@ impl UnifiedRuntime {
         self.module_runtime.gating_audit_entries(limit)
     }
 
+    pub fn spawn_member(
+        &mut self,
+        module_id: &str,
+        timeout: Duration,
+    ) -> Result<(), RuntimeMutationError> {
+        self.module_runtime.spawn_member(module_id, timeout)
+    }
+
     pub fn route_module_call(
         &self,
         request: &ModuleRouteRequest,

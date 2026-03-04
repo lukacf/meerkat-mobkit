@@ -120,11 +120,17 @@ impl StdioCallbackBridge {
             "method": method,
             "params": params,
         });
-        let line = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-        self.stdout_tx
-            .send(line)
-            .await
-            .map_err(|_| "stdout channel closed".to_string())?;
+        let line = match serde_json::to_string(&request) {
+            Ok(l) => l,
+            Err(e) => {
+                self.pending.lock().await.remove(&id_str);
+                return Err(e.to_string());
+            }
+        };
+        if let Err(_) = self.stdout_tx.send(line).await {
+            self.pending.lock().await.remove(&id_str);
+            return Err("stdout channel closed".to_string());
+        }
 
         // Wait for Python to respond (routed by the stdin multiplexer)
         match tokio::time::timeout(Duration::from_secs(120), rx).await {
@@ -175,29 +181,73 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
         req: &CreateSessionRequest,
         event_tx: mpsc::Sender<AgentEvent>,
     ) -> Result<Self::Agent, SessionError> {
-        if self.has_session_builder {
-            // Send callback to Python with session build options
-            let options = json!({
-                "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
-                "model": &req.model,
-                "prompt": &req.prompt,
-            });
-            let params = json!({ "options": options });
-            match self.bridge.call("callback/build_agent", params).await {
-                Ok(result) => {
-                    // Python returned modified options — we could apply them to req
-                    // but CreateSessionRequest fields are pub so we'd need to mutate.
-                    // For now, log and proceed with original request.
-                    // Future: apply profile_name, additional_instructions from result.
-                    let _ = result;
+        if !self.has_session_builder {
+            return self.inner.build_agent(req, event_tx).await;
+        }
+
+        // Send callback to Python with session build options
+        let options = json!({
+            "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
+            "model": &req.model,
+            "prompt": &req.prompt,
+        });
+        let params = json!({ "options": options });
+        let callback_result = self.bridge.call("callback/build_agent", params).await;
+
+        match callback_result {
+            Ok(result) => {
+                // Apply Python-returned options to a cloned request
+                let mut modified_req = CreateSessionRequest {
+                    model: req.model.clone(),
+                    prompt: req.prompt.clone(),
+                    system_prompt: req.system_prompt.clone(),
+                    max_tokens: req.max_tokens,
+                    event_tx: req.event_tx.clone(),
+                    host_mode: req.host_mode,
+                    skill_references: req.skill_references.clone(),
+                    initial_turn: req.initial_turn.clone(),
+                    build: req.build.clone(),
+                    labels: req.labels.clone(),
+                };
+                // Apply additional_instructions as system prompt extension
+                if let Some(instructions) = result.get("additional_instructions") {
+                    if let Some(arr) = instructions.as_array() {
+                        let combined: Vec<&str> = arr
+                            .iter()
+                            .filter_map(|v| v.as_str())
+                            .collect();
+                        if !combined.is_empty() {
+                            let extra = combined.join("\n");
+                            modified_req.system_prompt = Some(match &modified_req.system_prompt {
+                                Some(existing) => format!("{existing}\n{extra}"),
+                                None => extra,
+                            });
+                        }
+                    }
                 }
-                Err(err) => {
-                    eprintln!("callback/build_agent failed: {err}");
-                    // Continue with default build — don't fail the session
+                // Apply profile_name as model override if provided
+                if let Some(profile) = result.get("profile_name").and_then(|v| v.as_str()) {
+                    if !profile.is_empty() {
+                        modified_req.model = profile.to_string();
+                    }
                 }
+                // Apply labels
+                if let Some(labels) = result.get("labels").and_then(|v| v.as_object()) {
+                    let label_map = modified_req.labels.get_or_insert_with(Default::default);
+                    for (k, v) in labels {
+                        if let Some(s) = v.as_str() {
+                            label_map.insert(k.clone(), s.to_string());
+                        }
+                    }
+                }
+                self.inner.build_agent(&modified_req, event_tx).await
+            }
+            Err(err) => {
+                eprintln!("callback/build_agent failed: {err}");
+                // Continue with default build — don't fail the session
+                self.inner.build_agent(req, event_tx).await
             }
         }
-        self.inner.build_agent(req, event_tx).await
     }
 }
 

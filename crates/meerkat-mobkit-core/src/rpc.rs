@@ -904,32 +904,50 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/spawn_member" => {
-            let profile = request
-                .params
-                .get("profile")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let meerkat_id = request
-                .params
-                .get("meerkat_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if profile.is_empty() || meerkat_id.is_empty() {
-                JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: profile and meerkat_id required".to_string(),
-                    }),
+            // Support both legacy module_id pattern and mob profile+meerkat_id pattern
+            let module_id = request.params.get("module_id").and_then(Value::as_str);
+            let profile = request.params.get("profile").and_then(Value::as_str);
+            let meerkat_id = request.params.get("meerkat_id").and_then(Value::as_str);
+
+            if let Some(module_id) = module_id {
+                // Legacy module spawn: {"module_id": "routing"}
+                if module_id.is_empty() {
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id.clone(),
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: "Invalid params: module_id required".to_string(),
+                        }),
+                    }
+                } else {
+                    match runtime.spawn_member(module_id, timeout) {
+                        Ok(()) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::json!({
+                                "accepted": true,
+                                "module_id": module_id
+                            })),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!("Invalid params: {err:?}"),
+                            }),
+                        },
+                    }
                 }
-            } else {
+            } else if let (Some(profile), Some(meerkat_id)) = (profile, meerkat_id) {
+                // Mob agent spawn: {"profile": "default", "meerkat_id": "agent-1"}
                 let spec = meerkat_mob::SpawnMemberSpec::from_wire(
-                    profile,
-                    meerkat_id.clone(),
+                    profile.to_string(),
+                    meerkat_id.to_string(),
                     request
                         .params
                         .get("initial_message")
@@ -957,6 +975,17 @@ pub async fn handle_unified_rpc_json(
                             message: format!("Invalid params: {err}"),
                         }),
                     },
+                }
+            } else {
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: module_id or (profile + meerkat_id) required"
+                            .to_string(),
+                    }),
                 }
             }
         }
