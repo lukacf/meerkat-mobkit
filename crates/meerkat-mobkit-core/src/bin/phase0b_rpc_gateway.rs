@@ -15,6 +15,7 @@ use meerkat::{
     AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService,
     FactoryAgent, FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
+use meerkat_core::error::AgentError;
 use meerkat_mob::{MobDefinition, MobStorage};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -239,38 +240,44 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     }
                 }
                 // Callback tools contract: Python SDK enforces list[str] via
-                // SessionBuildOptions.add_tools(). Each string is a tool name
-                // that the profile's agent builder should resolve against its
-                // registered tool surface. Stored in provider_params for
-                // downstream builders to consume.
+                // SessionBuildOptions.add_tools(). Stored in provider_params
+                // as string names for downstream consumption.
+                //
+                // NOTE: These are tool *names*, not executable bindings.
+                // Resolution into AgentToolDispatcher requires a tool registry
+                // that maps names → implementations. This does not exist yet
+                // in the gateway binary. When it does, replace this storage
+                // with actual registration via build.external_tools.
                 if let Some(tools) = result.get("tools") {
-                    if let Some(arr) = tools.as_array() {
-                        let valid_tools: Vec<Value> = arr
-                            .iter()
-                            .filter(|v| {
+                    match tools.as_array() {
+                        Some(arr) => {
+                            // Strict contract: every element must be a string.
+                            // Python SDK validates this, but enforce here too.
+                            let mut valid_tools = Vec::with_capacity(arr.len());
+                            for v in arr {
                                 if v.is_string() {
-                                    true
+                                    valid_tools.push(v.clone());
                                 } else {
-                                    eprintln!(
-                                        "callback/build_agent: ignoring non-string tool: {}",
-                                        v
-                                    );
-                                    false
+                                    return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                        "callback/build_agent: tools must be strings, got: {v}"
+                                    ))));
                                 }
-                            })
-                            .cloned()
-                            .collect();
-                        if !valid_tools.is_empty() {
-                            let build = modified_req.build.get_or_insert_with(|| {
-                                meerkat_core::service::SessionBuildOptions::default()
-                            });
-                            let params = build.provider_params.get_or_insert_with(|| json!({}));
-                            if let Some(obj) = params.as_object_mut() {
-                                obj.insert("callback_tools".to_string(), Value::Array(valid_tools));
+                            }
+                            if !valid_tools.is_empty() {
+                                let build = modified_req.build.get_or_insert_with(|| {
+                                    meerkat_core::service::SessionBuildOptions::default()
+                                });
+                                let params = build.provider_params.get_or_insert_with(|| json!({}));
+                                if let Some(obj) = params.as_object_mut() {
+                                    obj.insert("callback_tools".to_string(), Value::Array(valid_tools));
+                                }
                             }
                         }
-                    } else {
-                        eprintln!("callback/build_agent: tools must be a JSON array, got: {}", tools);
+                        None => {
+                            return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                "callback/build_agent: tools must be a JSON array, got: {tools}"
+                            ))));
+                        }
                     }
                 }
                 self.inner.build_agent(&modified_req, event_tx).await
