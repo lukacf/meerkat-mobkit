@@ -1,15 +1,19 @@
 """MobKit Python SDK.
 
-All imports come from this package:
-    from meerkat_mobkit import MobKit, auth, memory, session_store
+Usage::
+
+    from meerkat_mobkit import MobKit, MobKitRuntime, MobKitBuilder
     from meerkat_mobkit import DiscoverySpec, PreSpawnData, SessionQuery
     from meerkat_mobkit import SessionAgentBuilder, SessionBuildOptions
+    from meerkat_mobkit.errors import MobKitError, RpcError, NotConnectedError
+    from meerkat_mobkit.types import StatusResult, CapabilitiesResult
+    from meerkat_mobkit.events import MobEvent, AgentEvent, InteractionEvent
 """
 from __future__ import annotations
 
 # Builder + Runtime
 from .builder import MobKit, MobKitBuilder
-from .runtime import MobHandle, MobKitRuntime, SseBridge
+from .runtime import MobKitRuntime
 
 # Data models
 from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQuery
@@ -17,24 +21,34 @@ from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQue
 # Agent builder protocol
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 
-# SSE bridge
-from .sse import SseEvent, SseEventStream, parse_sse_stream
+# Errors
+from .errors import (
+    CapabilityUnavailableError,
+    ContractMismatchError,
+    MobKitError,
+    NotConnectedError,
+    RpcError,
+    TransportError,
+)
 
-# Transport
-from .transport import PersistentTransport, create_persistent_transport
+# Typed return models
+from .types import (
+    CapabilitiesResult,
+    DeliveryResult,
+    MemoryQueryResult,
+    ReconcileResult,
+    RoutingResolution,
+    SpawnMemberResult,
+    SpawnResult,
+    StatusResult,
+    SubscribeResult,
+)
+
+# Typed events
+from .events import AgentEvent, EventStream, InteractionEvent, MobEvent
 
 # Config modules (importable as meerkat_mobkit.auth, etc.)
 from .config import auth, memory, session_store
-
-# Typed RPC clients (low-level)
-from .client import (
-    MobkitAsyncTypedClient,
-    MobkitRpcError,
-    MobkitTypedClient,
-    create_gateway_async_transport,
-    create_gateway_sync_transport,
-    create_http_transport,
-)
 
 # Module authoring helpers
 from .helpers import (
@@ -58,8 +72,6 @@ __all__ = [
     "MobKit",
     "MobKitBuilder",
     "MobKitRuntime",
-    "MobHandle",
-    "SseBridge",
     # Data models
     "DiscoverySpec",
     "PreSpawnData",
@@ -68,24 +80,32 @@ __all__ = [
     # Agent builder
     "CallbackDispatcher",
     "SessionAgentBuilder",
-    # SSE
-    "SseEvent",
-    "SseEventStream",
-    "parse_sse_stream",
-    # Transport
-    "PersistentTransport",
-    "create_persistent_transport",
+    # Errors
+    "MobKitError",
+    "TransportError",
+    "RpcError",
+    "CapabilityUnavailableError",
+    "ContractMismatchError",
+    "NotConnectedError",
+    # Typed return models
+    "StatusResult",
+    "CapabilitiesResult",
+    "ReconcileResult",
+    "SpawnResult",
+    "SpawnMemberResult",
+    "SubscribeResult",
+    "RoutingResolution",
+    "DeliveryResult",
+    "MemoryQueryResult",
+    # Typed events
+    "MobEvent",
+    "AgentEvent",
+    "InteractionEvent",
+    "EventStream",
     # Config modules
     "auth",
     "memory",
     "session_store",
-    # Typed RPC clients
-    "MobkitAsyncTypedClient",
-    "MobkitRpcError",
-    "MobkitTypedClient",
-    "create_gateway_async_transport",
-    "create_gateway_sync_transport",
-    "create_http_transport",
     # Module authoring
     "ModuleDefinition",
     "ModuleSpec",

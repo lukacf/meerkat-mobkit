@@ -238,17 +238,39 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Store tools from Python callback in build.provider_params.
-                // Tools are opaque JSON — Python tool callables have been sanitized
-                // to strings by _sanitize_for_json. Factory builders that understand
-                // the "callback_tools" key can use them for tool injection.
+                // Callback tools contract: Python SDK enforces list[str] via
+                // SessionBuildOptions.add_tools(). Each string is a tool name
+                // that the profile's agent builder should resolve against its
+                // registered tool surface. Stored in provider_params for
+                // downstream builders to consume.
                 if let Some(tools) = result.get("tools") {
-                    let build = modified_req.build.get_or_insert_with(|| {
-                        meerkat_core::service::SessionBuildOptions::default()
-                    });
-                    let params = build.provider_params.get_or_insert_with(|| json!({}));
-                    if let Some(obj) = params.as_object_mut() {
-                        obj.insert("callback_tools".to_string(), tools.clone());
+                    if let Some(arr) = tools.as_array() {
+                        let valid_tools: Vec<Value> = arr
+                            .iter()
+                            .filter(|v| {
+                                if v.is_string() {
+                                    true
+                                } else {
+                                    eprintln!(
+                                        "callback/build_agent: ignoring non-string tool: {}",
+                                        v
+                                    );
+                                    false
+                                }
+                            })
+                            .cloned()
+                            .collect();
+                        if !valid_tools.is_empty() {
+                            let build = modified_req.build.get_or_insert_with(|| {
+                                meerkat_core::service::SessionBuildOptions::default()
+                            });
+                            let params = build.provider_params.get_or_insert_with(|| json!({}));
+                            if let Some(obj) = params.as_object_mut() {
+                                obj.insert("callback_tools".to_string(), Value::Array(valid_tools));
+                            }
+                        }
+                    } else {
+                        eprintln!("callback/build_agent: tools must be a JSON array, got: {}", tools);
                     }
                 }
                 self.inner.build_agent(&modified_req, event_tx).await

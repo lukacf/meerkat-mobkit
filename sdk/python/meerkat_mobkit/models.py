@@ -93,14 +93,17 @@ class SessionBuildOptions:
     session_id: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
     profile_name: str | None = None
-    _tools: list[Any] = field(default_factory=list, repr=False)
+    _tools: list[str] = field(default_factory=list, repr=False)
 
-    def add_tools(self, tools: list[Any]) -> None:
+    def add_tools(self, tools: list[str]) -> None:
         """Add tools to the agent being built."""
+        for t in tools:
+            if not isinstance(t, str):
+                raise TypeError(f"tools must be strings, got {type(t).__name__}: {t!r}")
         self._tools.extend(tools)
 
     @property
-    def tools(self) -> list[Any]:
+    def tools(self) -> list[str]:
         return list(self._tools)
 
     def to_dict(self) -> dict[str, Any]:

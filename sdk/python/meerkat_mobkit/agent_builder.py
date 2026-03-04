@@ -47,5 +47,10 @@ class CallbackDispatcher:
                 raise ValueError("no SessionAgentBuilder registered")
             opts = SessionBuildOptions(**(params.get("options", {})))
             await self._builder.build_agent(opts)
+            for t in opts.tools:
+                if not isinstance(t, str):
+                    raise TypeError(
+                        f"build_agent produced non-string tool {type(t).__name__}: {t!r}"
+                    )
             return opts.to_dict()
         raise ValueError(f"unknown callback method: {method}")
