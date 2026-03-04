@@ -185,11 +185,14 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
             return self.inner.build_agent(req, event_tx).await;
         }
 
-        // Send callback to Python with session build options
+        // Send callback to Python with full session context
         let options = json!({
             "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
             "model": &req.model,
             "prompt": &req.prompt,
+            "labels": &req.labels,
+            "app_context": req.build.as_ref()
+                .and_then(|b| b.provider_params.as_ref()),
         });
         let params = json!({ "options": options });
         let callback_result = self.bridge.call("callback/build_agent", params).await;
@@ -225,18 +228,25 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Apply profile_name as model override if provided
-                if let Some(profile) = result.get("profile_name").and_then(|v| v.as_str()) {
-                    if !profile.is_empty() {
-                        modified_req.model = profile.to_string();
-                    }
-                }
                 // Apply labels
                 if let Some(labels) = result.get("labels").and_then(|v| v.as_object()) {
                     let label_map = modified_req.labels.get_or_insert_with(Default::default);
                     for (k, v) in labels {
                         if let Some(s) = v.as_str() {
                             label_map.insert(k.clone(), s.to_string());
+                        }
+                    }
+                }
+                // Apply tools as skill_references (Python returns tool names/keys as JSON)
+                if let Some(tools) = result.get("tools").and_then(|v| v.as_array()) {
+                    if !tools.is_empty() {
+                        let skill_refs: Vec<meerkat_core::skills::SkillKey> = tools
+                            .iter()
+                            .filter_map(|t| serde_json::from_value(t.clone()).ok())
+                            .collect();
+                        if !skill_refs.is_empty() {
+                            let refs = modified_req.skill_references.get_or_insert_with(Vec::new);
+                            refs.extend(skill_refs);
                         }
                     }
                 }
@@ -358,11 +368,11 @@ external_addressable = true
     // 4. Build session service with callback bridge
     let bridge = StdioCallbackBridge::new(stdout_tx.clone());
 
-    // IMPORTANT: temp_dir must outlive runtime — it's dropped after shutdown at end of fn.
-    let temp_dir = tempfile::tempdir().expect("create temp dir for sessions");
-    let session_path = temp_dir.path().join("sessions");
-    std::fs::create_dir_all(&session_path).expect("create session directory");
-    let factory = AgentFactory::new(&session_path).comms(true);
+    // AgentFactory needs a working directory for agent scratch space even with
+    // EphemeralSessionService (sessions don't persist, but agents use the path
+    // during execution). temp_dir must outlive runtime — dropped after shutdown.
+    let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
+    let factory = AgentFactory::new(temp_dir.path()).comms(true);
     let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
     let callback_builder = StdioCallbackAgentBuilder {
         inner: inner_builder,

@@ -71,9 +71,11 @@ class MobKitRuntime:
                 raise RuntimeError(
                     f"gateway binary failed to start: {self._config.gateway_bin}"
                 )
-            # Send config as init — Rust bootstraps and returns HTTP port
+            # Send config as init — use async RPC to avoid deadlock if Rust
+            # sends callback/build_agent during bootstrap (the event loop must
+            # remain unblocked so run_coroutine_threadsafe can dispatch callbacks)
             try:
-                init_result = self._rpc_sync("mobkit/init", self._build_init_params())
+                init_result = await self._rpc("mobkit/init", self._build_init_params())
                 if isinstance(init_result, dict):
                     self._rust_http_base = init_result.get("http_base_url")
                     if not self._rust_http_base:
