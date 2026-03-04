@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator
 from urllib import request as urllib_request
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
@@ -18,8 +18,21 @@ def _rpc_request(request_id: str, method: str, params: dict[str, Any] | None = N
 class MobKitRuntime:
     """Running MobKit runtime instance.
 
-    Created by MobKit.builder().build(). Manages the persistent
-    mobkit-rpc subprocess and exposes the runtime API surface.
+    The Rust runtime (mobkit-rpc binary) runs its own HTTP server for SSE
+    endpoints. The Python ASGI app is a separate frontend that proxies
+    SSE routes to the Rust backend and handles REST routes directly.
+
+    Architecture::
+
+        Browser → Python ASGI (uvicorn :8080)
+                    ├─ /healthz, /rpc → handled directly via RPC transport
+                    ├─ /agents/{id}/events → HTTP proxy to Rust :8081
+                    ├─ /mob/events → HTTP proxy to Rust :8081
+                    ├─ /interactions/stream → HTTP proxy to Rust :8081
+                    └─ /* → fallback_app (Starlette/FastAPI)
+
+        Python ←──RPC──→ Rust (mobkit-rpc subprocess, stdio JSON-RPC)
+        Rust HTTP server (:8081) serves SSE endpoints directly
     """
 
     def __init__(self, config: Any, transport: PersistentTransport | None = None):
@@ -27,7 +40,7 @@ class MobKitRuntime:
         self._transport = transport
         self._running = False
         self._dispatcher = CallbackDispatcher()
-        self._http_base: str | None = None
+        self._rust_http_base: str | None = None
 
     @classmethod
     async def _create(cls, config: Any) -> MobKitRuntime:
@@ -44,6 +57,13 @@ class MobKitRuntime:
         ):
             self._dispatcher.register_builder(self._config.session_builder)
         self._running = True
+        # The Rust binary starts its own HTTP server. Query it for the port.
+        try:
+            status = self._rpc_sync("mobkit/status")
+            if isinstance(status, dict) and "http_base_url" in status:
+                self._rust_http_base = status["http_base_url"]
+        except Exception:
+            pass
 
     def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:
         if self._transport is None:
@@ -62,9 +82,18 @@ class MobKitRuntime:
         return response.get("result")
 
     @property
-    def http_base_url(self) -> str | None:
-        """Base URL of the Rust HTTP server (set during serve or via builder)."""
-        return self._http_base
+    def rust_http_base_url(self) -> str | None:
+        """Base URL of the Rust HTTP server (e.g. http://127.0.0.1:8081).
+
+        This is the *Rust backend* port, not the Python ASGI port.
+        Set automatically during bootstrap if the Rust binary reports it,
+        or manually via ``set_rust_http_base(url)``.
+        """
+        return self._rust_http_base
+
+    def set_rust_http_base(self, url: str) -> None:
+        """Manually set the Rust backend's HTTP base URL."""
+        self._rust_http_base = url
 
     def mob_handle(self) -> MobHandle:
         return MobHandle(self)
@@ -81,22 +110,9 @@ class MobKitRuntime:
     ) -> AsgiApp:
         """Build an ASGI application.
 
-        The returned app handles REST routes directly and proxies SSE routes
-        to the Rust backend. One origin, one port, one deployment surface.
-
-        Routes:
-        - GET /healthz — health check
-        - POST /rpc — JSON-RPC proxy to Rust
-        - GET /agents/{id}/events — SSE proxy (per-agent)
-        - GET /mob/events — SSE proxy (merged)
-        - POST /interactions/stream — SSE proxy (interaction)
-
-        Args:
-            console: Mount console UI routes (future).
-            auth: Auth config for middleware (future).
-            extra_routes: A raw ASGI app to fall through to for app-defined
-                routes (e.g. a Starlette/FastAPI app). If a path isn't
-                handled by the built-in routes, it's forwarded here.
+        REST routes are handled directly via RPC. SSE routes are proxied
+        to the Rust backend's HTTP server. Unmatched paths fall through
+        to extra_routes (a Starlette/FastAPI app).
         """
         return AsgiApp(
             runtime=self,
@@ -112,11 +128,9 @@ class MobKitRuntime:
         host: str = "0.0.0.0",
         port: int = 8080,
     ) -> None:
-        """Start serving. Uses uvicorn if available, falls back to signal wait."""
+        """Start the Python ASGI frontend."""
         if app is None:
             app = self.asgi()
-
-        self._http_base = f"http://{host}:{port}"
 
         try:
             import uvicorn
@@ -146,7 +160,7 @@ class MobKitRuntime:
 class MobHandle:
     """Proxy for the Meerkat MobHandle API via JSON-RPC.
 
-    Uses the actual RPC methods from the Rust contract.
+    Method names match the Rust RPC contract exactly.
     """
 
     def __init__(self, runtime: MobKitRuntime):
@@ -158,8 +172,9 @@ class MobHandle:
     async def capabilities(self) -> dict[str, Any]:
         return await self._runtime._rpc("mobkit/capabilities")
 
-    async def spawn_member(self, module_id: str) -> dict[str, Any]:
-        return await self._runtime._rpc("mobkit/spawn_member", {"module_id": module_id})
+    async def spawn(self, member_spec: dict[str, Any]) -> dict[str, Any]:
+        """Spawn a mob member from a spec dict."""
+        return await self._runtime._rpc("mobkit/spawn_member", member_spec)
 
     async def reconcile(self, modules: list[str]) -> dict[str, Any]:
         return await self._runtime._rpc("mobkit/reconcile", {"modules": modules})
@@ -190,45 +205,47 @@ class MobHandle:
 
 
 class SseBridge:
-    """Bridge for streaming SSE events from the Rust runtime's HTTP endpoints.
+    """Bridge for streaming SSE from the Rust backend's HTTP server.
 
-    Uses stdlib urllib for zero external dependencies. Each open SSE connection
-    uses one OS thread via asyncio.to_thread. For high-concurrency deployments,
-    wrap the runtime with an httpx-based bridge instead.
+    Connects to the Rust binary's HTTP port (not the Python ASGI port)
+    and streams events via urllib. One OS thread per open SSE connection
+    via asyncio.to_thread — acceptable for moderate concurrency. For high
+    concurrency, use httpx with an async HTTP client instead.
     """
 
     def __init__(self, runtime: MobKitRuntime):
         self._runtime = runtime
 
     def _base_url(self) -> str:
-        base = self._runtime.http_base_url
+        base = self._runtime.rust_http_base_url
         if base is None:
             raise RuntimeError(
-                "SSE bridge requires http_base_url — call runtime.serve() first "
-                "or set it via the builder"
+                "SSE bridge requires rust_http_base_url — set it via "
+                "runtime.set_rust_http_base('http://127.0.0.1:8081') or "
+                "ensure the Rust binary reports it during bootstrap"
             )
         return base
 
-    async def agent_events(self, agent_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Stream events for a specific agent from GET /agents/{id}/events."""
+    async def agent_events(self, agent_id: str) -> AsyncIterator[SseEvent]:
+        """Stream per-agent events. Yields SseEvent objects directly."""
         url = f"{self._base_url()}/agents/{agent_id}/events"
         async for event in self._stream_sse(url):
-            yield event.to_dict()
+            yield event
 
-    async def mob_events(self) -> AsyncIterator[dict[str, Any]]:
-        """Stream all mob events from GET /mob/events."""
+    async def mob_events(self) -> AsyncIterator[SseEvent]:
+        """Stream merged mob events. Yields SseEvent objects directly."""
         url = f"{self._base_url()}/mob/events"
         async for event in self._stream_sse(url):
-            yield event.to_dict()
+            yield event
 
     async def interaction_stream(
         self, member_id: str, message: str
-    ) -> AsyncIterator[dict[str, Any]]:
-        """POST /interactions/stream and stream SSE events."""
+    ) -> AsyncIterator[SseEvent]:
+        """POST /interactions/stream and yield SseEvent objects."""
         url = f"{self._base_url()}/interactions/stream"
         body = json.dumps({"member_id": member_id, "message": message}).encode()
         async for event in self._stream_sse(url, method="POST", body=body):
-            yield event.to_dict()
+            yield event
 
     async def _stream_sse(
         self,
@@ -257,23 +274,13 @@ class SseBridge:
 
 
 class AsgiApp:
-    """ASGI application that handles REST and proxies SSE to the Rust runtime.
+    """ASGI app: REST handled directly, SSE proxied to Rust backend.
 
-    The browser talks to one host. REST routes (/healthz, /rpc) are handled
-    directly. SSE routes (/agents/{id}/events, /mob/events, /interactions/stream)
-    are proxied to the Rust backend via SseBridge. Unmatched paths fall through
-    to the fallback_app (a Starlette/FastAPI app, or any ASGI callable).
+    The browser talks to one host (the Python ASGI port). REST routes use
+    the RPC transport. SSE routes are proxied to the Rust backend's HTTP
+    server via SseBridge (which connects to a *different* port).
 
-    Usage with Starlette::
-
-        from starlette.applications import Starlette
-        from starlette.routing import Route
-
-        starlette_app = Starlette(routes=[
-            Route("/my-page", my_handler),
-        ])
-
-        app = runtime.asgi(extra_routes=starlette_app)
+    Unmatched paths fall through to fallback_app (Starlette/FastAPI).
     """
 
     def __init__(
@@ -302,15 +309,19 @@ class AsgiApp:
             await _send_response(send, 200, b"ok", content_type=b"text/plain")
             return
 
-        # --- JSON-RPC proxy ---
+        # --- JSON-RPC (async, not blocking) ---
         if path == "/rpc" and method == "POST":
             body = await _read_body(receive)
-            parsed = json.loads(body)
-            result = self._runtime._rpc_sync(
-                parsed.get("method", ""),
-                parsed.get("params"),
-            )
-            await _send_response(send, 200, json.dumps(result).encode())
+            try:
+                parsed = json.loads(body)
+                result = await self._runtime._rpc(
+                    parsed.get("method", ""),
+                    parsed.get("params"),
+                )
+                await _send_response(send, 200, json.dumps(result).encode())
+            except Exception as exc:
+                err = json.dumps({"error": str(exc)}).encode()
+                await _send_response(send, 500, err)
             return
 
         # --- SSE proxy: per-agent events ---
@@ -342,7 +353,7 @@ class AsgiApp:
             )
             return
 
-        # --- Fallback to app-defined routes (Starlette, FastAPI, etc.) ---
+        # --- Fallback ---
         if self._fallback_app is not None:
             await self._fallback_app(scope, receive, send)
             return
@@ -352,9 +363,29 @@ class AsgiApp:
     async def _proxy_sse(
         self,
         send: Any,
-        event_stream: AsyncIterator[dict[str, Any]],
+        event_stream: AsyncIterator[SseEvent],
     ) -> None:
-        """Stream SSE events to the ASGI client."""
+        """Proxy SSE events from the Rust backend to the ASGI client.
+
+        Validates the connection before sending headers by pulling the
+        first event. If the bridge fails (backend unreachable), returns
+        502 instead of a broken SSE stream.
+        """
+        try:
+            first_event: SseEvent | None = None
+            async for event in event_stream:
+                first_event = event
+                break
+
+            if first_event is None:
+                await _send_response(send, 204, b"")
+                return
+        except Exception as exc:
+            err = json.dumps({"error": f"SSE backend unavailable: {exc}"}).encode()
+            await _send_response(send, 502, err)
+            return
+
+        # Connection validated — send SSE headers and stream
         await send({
             "type": "http.response.start",
             "status": 200,
@@ -364,14 +395,21 @@ class AsgiApp:
                 [b"connection", b"keep-alive"],
             ],
         })
-        async for event_dict in event_stream:
-            event = SseEvent(
-                id=event_dict.get("id"),
-                event=event_dict.get("event", "message"),
-                data=event_dict.get("data", ""),
-            )
-            chunk = event.encode().encode("utf-8")
-            await send({"type": "http.response.body", "body": chunk, "more_body": True})
+
+        # Send first event
+        await send({
+            "type": "http.response.body",
+            "body": first_event.encode().encode("utf-8"),
+            "more_body": True,
+        })
+
+        # Stream remaining events
+        try:
+            async for event in event_stream:
+                chunk = event.encode().encode("utf-8")
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
+        except Exception:
+            pass  # Client disconnect or backend failure — close cleanly
         await send({"type": "http.response.body", "body": b""})
 
 
