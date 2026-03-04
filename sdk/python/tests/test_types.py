@@ -2,6 +2,8 @@
 from meerkat_mobkit.types import (
     CapabilitiesResult,
     DeliveryResult,
+    EventEnvelope,
+    KeepAliveConfig,
     MemoryQueryResult,
     ReconcileResult,
     RoutingResolution,
@@ -43,17 +45,55 @@ class TestReconcileResult:
 
 
 class TestSpawnResult:
-    def test_from_dict(self):
+    def test_from_dict_module_spawn(self):
         r = SpawnResult.from_dict({"accepted": True, "module_id": "mod-1"})
         assert r.accepted is True
         assert r.module_id == "mod-1"
+        assert r.meerkat_id is None
+        assert r.profile is None
+
+    def test_from_dict_discovery_spawn(self):
+        r = SpawnResult.from_dict({
+            "accepted": True,
+            "module_id": "mod-1",
+            "meerkat_id": "mk-123",
+            "profile": "assistant",
+        })
+        assert r.meerkat_id == "mk-123"
+        assert r.profile == "assistant"
+
+    def test_from_dict_no_module_id(self):
+        """Rust discovery-path may not return module_id."""
+        r = SpawnResult.from_dict({"accepted": True, "meerkat_id": "mk-123"})
+        assert r.accepted is True
+        assert r.module_id == ""
+        assert r.meerkat_id == "mk-123"
 
 
 class TestSpawnMemberResult:
+    def test_is_spawn_result_alias(self):
+        assert SpawnMemberResult is SpawnResult
+
+
+class TestKeepAliveConfig:
     def test_from_dict(self):
-        r = SpawnMemberResult.from_dict({"accepted": False, "module_id": "mod-2"})
-        assert r.accepted is False
-        assert r.module_id == "mod-2"
+        r = KeepAliveConfig.from_dict({"interval_ms": 15000, "event": "ping"})
+        assert r.interval_ms == 15000
+        assert r.event == "ping"
+
+
+class TestEventEnvelope:
+    def test_from_dict(self):
+        r = EventEnvelope.from_dict({
+            "event_id": "ev-1",
+            "source": "agent-1",
+            "timestamp_ms": 1234567890,
+            "event": {"kind": "ready"},
+        })
+        assert r.event_id == "ev-1"
+        assert r.source == "agent-1"
+        assert r.timestamp_ms == 1234567890
+        assert r.event == {"kind": "ready"}
 
 
 class TestSubscribeResult:
@@ -62,18 +102,30 @@ class TestSubscribeResult:
             {
                 "scope": "mob",
                 "replay_from_event_id": "ev-1",
-                "keep_alive": {"interval": 15},
+                "keep_alive": {"interval_ms": 15000, "event": "ping"},
                 "keep_alive_comment": "ping",
                 "event_frames": ["frame1"],
-                "events": [{"type": "init"}],
+                "events": [
+                    {
+                        "event_id": "ev-2",
+                        "source": "agent-1",
+                        "timestamp_ms": 100,
+                        "event": {"kind": "init"},
+                    }
+                ],
             }
         )
         assert r.scope == "mob"
         assert r.replay_from_event_id == "ev-1"
-        assert r.keep_alive == {"interval": 15}
+        assert isinstance(r.keep_alive, KeepAliveConfig)
+        assert r.keep_alive.interval_ms == 15000
+        assert r.keep_alive.event == "ping"
         assert r.keep_alive_comment == "ping"
         assert r.event_frames == ["frame1"]
-        assert r.events == [{"type": "init"}]
+        assert len(r.events) == 1
+        assert isinstance(r.events[0], EventEnvelope)
+        assert r.events[0].event_id == "ev-2"
+        assert r.events[0].event == {"kind": "init"}
 
 
 class TestRoutingResolution:

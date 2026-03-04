@@ -52,42 +52,76 @@ class ReconcileResult:
 
 @dataclass(frozen=True)
 class SpawnResult:
+    """Result of spawning a mob member (both spec-based and module-id-based)."""
     accepted: bool
     module_id: str
+    meerkat_id: str | None = None
+    profile: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SpawnResult:
-        return cls(accepted=data["accepted"], module_id=data["module_id"])
+        return cls(
+            accepted=data["accepted"],
+            module_id=data.get("module_id", ""),
+            meerkat_id=data.get("meerkat_id"),
+            profile=data.get("profile"),
+        )
+
+
+# Alias for backward compat within SDK — both spawn paths return SpawnResult
+SpawnMemberResult = SpawnResult
 
 
 @dataclass(frozen=True)
-class SpawnMemberResult:
-    accepted: bool
-    module_id: str
+class KeepAliveConfig:
+    interval_ms: int
+    event: str
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> SpawnMemberResult:
-        return cls(accepted=data["accepted"], module_id=data["module_id"])
+    def from_dict(cls, data: dict[str, Any]) -> KeepAliveConfig:
+        return cls(
+            interval_ms=data.get("interval_ms", 0),
+            event=data.get("event", ""),
+        )
+
+
+@dataclass(frozen=True)
+class EventEnvelope:
+    event_id: str
+    source: str
+    timestamp_ms: int
+    event: Any
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> EventEnvelope:
+        return cls(
+            event_id=data.get("event_id", ""),
+            source=data.get("source", ""),
+            timestamp_ms=data.get("timestamp_ms", 0),
+            event=data.get("event"),
+        )
 
 
 @dataclass(frozen=True)
 class SubscribeResult:
     scope: str
     replay_from_event_id: str | None
-    keep_alive: dict[str, Any]
+    keep_alive: KeepAliveConfig
     keep_alive_comment: str
     event_frames: list[str]
-    events: list[dict[str, Any]]
+    events: list[EventEnvelope]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SubscribeResult:
+        ka_raw = data.get("keep_alive", {})
+        events_raw = data.get("events", [])
         return cls(
             scope=data["scope"],
             replay_from_event_id=data.get("replay_from_event_id"),
-            keep_alive=dict(data.get("keep_alive", {})),
+            keep_alive=KeepAliveConfig.from_dict(ka_raw),
             keep_alive_comment=data.get("keep_alive_comment", ""),
             event_frames=list(data.get("event_frames", [])),
-            events=list(data.get("events", [])),
+            events=[EventEnvelope.from_dict(e) for e in events_raw],
         )
 
 

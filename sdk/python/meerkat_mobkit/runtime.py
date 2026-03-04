@@ -15,13 +15,13 @@ from .errors import NotConnectedError, RpcError, TransportError
 from .events import InteractionEvent
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
+from .models import DiscoverySpec
 from .types import (
     CapabilitiesResult,
     DeliveryResult,
     MemoryQueryResult,
     ReconcileResult,
     RoutingResolution,
-    SpawnMemberResult,
     SpawnResult,
     StatusResult,
     SubscribeResult,
@@ -233,13 +233,15 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/capabilities")
         return CapabilitiesResult.from_dict(raw)
 
-    async def spawn(self, member_spec: dict[str, Any]) -> SpawnResult:
-        raw = await self._runtime._rpc("mobkit/spawn_member", member_spec)
+    async def spawn(self, spec: DiscoverySpec) -> SpawnResult:
+        """Spawn a mob member from a full discovery spec."""
+        raw = await self._runtime._rpc("mobkit/spawn_member", spec.to_dict())
         return SpawnResult.from_dict(raw)
 
-    async def spawn_member(self, module_id: str) -> SpawnMemberResult:
+    async def spawn_member(self, module_id: str) -> SpawnResult:
+        """Spawn a mob member by module ID."""
         raw = await self._runtime._rpc("mobkit/spawn_member", {"module_id": module_id})
-        return SpawnMemberResult.from_dict(raw)
+        return SpawnResult.from_dict(raw)
 
     async def reconcile(self, modules: list[str]) -> ReconcileResult:
         raw = await self._runtime._rpc("mobkit/reconcile", {"modules": modules})

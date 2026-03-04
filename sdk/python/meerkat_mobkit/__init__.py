@@ -8,6 +8,10 @@ Usage::
     from meerkat_mobkit.errors import MobKitError, RpcError, NotConnectedError
     from meerkat_mobkit.types import StatusResult, CapabilitiesResult
     from meerkat_mobkit.events import MobEvent, AgentEvent, InteractionEvent
+
+Module authoring helpers are available via::
+
+    from meerkat_mobkit.helpers import ModuleSpec, define_module, ...
 """
 from __future__ import annotations
 
@@ -18,8 +22,8 @@ from .runtime import MobKitRuntime
 # Data models
 from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQuery
 
-# Agent builder protocol
-from .agent_builder import CallbackDispatcher, SessionAgentBuilder
+# Agent builder protocol (public contract — CallbackDispatcher is internal)
+from .agent_builder import SessionAgentBuilder
 
 # Errors
 from .errors import (
@@ -35,6 +39,8 @@ from .errors import (
 from .types import (
     CapabilitiesResult,
     DeliveryResult,
+    EventEnvelope,
+    KeepAliveConfig,
     MemoryQueryResult,
     ReconcileResult,
     RoutingResolution,
@@ -50,23 +56,6 @@ from .events import AgentEvent, EventStream, InteractionEvent, MobEvent
 # Config modules (importable as meerkat_mobkit.auth, etc.)
 from .config import auth, memory, session_store
 
-# Module authoring helpers
-from .helpers import (
-    ModuleDefinition,
-    ModuleSpec,
-    ModuleTool,
-    build_console_experience_route,
-    build_console_modules_route,
-    build_console_route,
-    build_console_routes,
-    build_module_spec,
-    decorate_module_spec,
-    decorate_module_tool,
-    define_module,
-    define_module_spec,
-    define_module_tool,
-)
-
 __all__ = [
     # Builder + Runtime
     "MobKit",
@@ -78,7 +67,6 @@ __all__ = [
     "SessionBuildOptions",
     "SessionQuery",
     # Agent builder
-    "CallbackDispatcher",
     "SessionAgentBuilder",
     # Errors
     "MobKitError",
@@ -94,6 +82,8 @@ __all__ = [
     "SpawnResult",
     "SpawnMemberResult",
     "SubscribeResult",
+    "KeepAliveConfig",
+    "EventEnvelope",
     "RoutingResolution",
     "DeliveryResult",
     "MemoryQueryResult",
@@ -106,18 +96,4 @@ __all__ = [
     "auth",
     "memory",
     "session_store",
-    # Module authoring
-    "ModuleDefinition",
-    "ModuleSpec",
-    "ModuleTool",
-    "build_console_experience_route",
-    "build_console_modules_route",
-    "build_console_route",
-    "build_console_routes",
-    "build_module_spec",
-    "decorate_module_spec",
-    "decorate_module_tool",
-    "define_module",
-    "define_module_spec",
-    "define_module_tool",
 ]
