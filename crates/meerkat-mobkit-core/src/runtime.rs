@@ -705,9 +705,9 @@ pub struct MobkitRuntimeHandle {
     runtime_options: RuntimeOptions,
     loaded_modules: BTreeSet<String>,
     live_children: BTreeMap<String, Child>,
-    pub lifecycle_events: Vec<LifecycleEvent>,
-    pub supervisor_report: SupervisorReport,
-    pub merged_events: Vec<EventEnvelope<UnifiedEvent>>,
+    pub(crate) lifecycle_events: Vec<LifecycleEvent>,
+    pub(crate) supervisor_report: SupervisorReport,
+    pub(crate) merged_events: Vec<EventEnvelope<UnifiedEvent>>,
     scheduling_claims: BTreeSet<String>,
     scheduling_claim_ticks: BTreeMap<u64, Vec<String>>,
     scheduling_last_due_ticks: BTreeMap<String, u64>,
@@ -733,6 +733,29 @@ pub struct MobkitRuntimeHandle {
     memory_conflicts: BTreeMap<MemoryConflictKey, MemoryConflictSignal>,
     memory_backend: Option<ElephantMemoryStoreAdapter>,
     running: bool,
+}
+
+impl MobkitRuntimeHandle {
+    pub fn lifecycle_events(&self) -> &[LifecycleEvent] {
+        &self.lifecycle_events
+    }
+
+    pub fn supervisor_report(&self) -> &SupervisorReport {
+        &self.supervisor_report
+    }
+
+    #[doc(hidden)]
+    pub fn inject_test_events(&mut self, events: Vec<EventEnvelope<UnifiedEvent>>) {
+        for event in events {
+            insert_event_sorted(&mut self.merged_events, event);
+        }
+    }
+
+    fn next_sequence(counter: &mut u64) -> u64 {
+        let seq = *counter;
+        *counter = counter.saturating_add(1);
+        seq
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

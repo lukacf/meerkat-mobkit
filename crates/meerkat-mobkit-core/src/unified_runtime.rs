@@ -609,7 +609,7 @@ impl UnifiedRuntime {
         self.module_runtime.supervisor_report.transitions.clone()
     }
 
-    pub fn module_events(&self) -> Vec<EventEnvelope<UnifiedEvent>> {
+    pub fn module_events(&self) -> &[EventEnvelope<UnifiedEvent>] {
         self.module_runtime.merged_events()
     }
 
@@ -682,18 +682,18 @@ impl UnifiedRuntime {
         let mut removed_route_keys = Vec::new();
 
         if router_module_loaded {
+            let managed_routes = self.managed_roster_routes();
             let active_member_set = active_members.iter().cloned().collect::<BTreeSet<_>>();
-            for route in self.managed_roster_routes() {
+            for route in &managed_routes {
                 if !active_member_set.contains(&route.recipient) {
                     self.module_runtime
                         .delete_runtime_route(&route.route_key)
                         .map_err(UnifiedRuntimeReconcileError::RouteMutation)?;
-                    removed_route_keys.push(route.route_key);
+                    removed_route_keys.push(route.route_key.clone());
                 }
             }
 
-            let existing_managed_recipients = self
-                .managed_roster_routes()
+            let existing_managed_recipients = managed_routes
                 .into_iter()
                 .map(|route| route.recipient)
                 .collect::<BTreeSet<_>>();

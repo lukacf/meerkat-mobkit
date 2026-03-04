@@ -160,9 +160,7 @@ impl MobkitRuntimeHandle {
     }
 
     fn next_scheduling_dispatch_sequence(&mut self) -> u64 {
-        let sequence = self.scheduling_dispatch_sequence;
-        self.scheduling_dispatch_sequence = self.scheduling_dispatch_sequence.saturating_add(1);
-        sequence
+        Self::next_sequence(&mut self.scheduling_dispatch_sequence)
     }
     pub fn evaluate_schedule_tick(
         &self,

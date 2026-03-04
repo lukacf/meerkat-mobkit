@@ -46,6 +46,7 @@ use session_store_methods::{
 };
 use subscribe_methods::{parse_subscribe_request, SubscribeParamsError};
 
+pub const JSONRPC_VERSION: &str = "2.0";
 pub const MOBKIT_CONTRACT_VERSION: &str = "0.1.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 
@@ -114,7 +115,7 @@ pub fn handle_mobkit_rpc_json(
         Ok(raw_request) => raw_request,
         Err(_) => {
             return serialize_response(&JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: Value::Null,
                 result: None,
                 error: Some(JsonRpcError {
@@ -133,7 +134,7 @@ pub fn handle_mobkit_rpc_json(
         Ok(request) => request,
         Err(_) => {
             return serialize_response(&JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
@@ -148,7 +149,7 @@ pub fn handle_mobkit_rpc_json(
 
     if request.jsonrpc != "2.0" {
         let response = JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
             result: None,
             error: Some(JsonRpcError {
@@ -165,7 +166,7 @@ pub fn handle_mobkit_rpc_json(
 
     let response = match request.method.as_str() {
         "mobkit/status" => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id.clone(),
             result: Some(serde_json::json!({
                 "contract_version": MOBKIT_CONTRACT_VERSION,
@@ -175,7 +176,7 @@ pub fn handle_mobkit_rpc_json(
             error: None,
         },
         "mobkit/capabilities" => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id.clone(),
             result: Some(serde_json::json!({
                 "contract_version": MOBKIT_CONTRACT_VERSION,
@@ -221,7 +222,7 @@ pub fn handle_mobkit_rpc_json(
 
             match runtime.reconcile_modules(modules.clone(), timeout) {
                 Ok(added) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::json!({
                         "accepted": true,
@@ -231,7 +232,7 @@ pub fn handle_mobkit_rpc_json(
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -250,7 +251,7 @@ pub fn handle_mobkit_rpc_json(
                 .to_string();
             if module_id.is_empty() {
                 JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -261,7 +262,7 @@ pub fn handle_mobkit_rpc_json(
             } else {
                 match runtime.spawn_member(&module_id, timeout) {
                     Ok(()) => JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
+                        jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id.clone(),
                         result: Some(serde_json::json!({
                             "accepted": true,
@@ -270,7 +271,7 @@ pub fn handle_mobkit_rpc_json(
                         error: None,
                     },
                     Err(err) => JsonRpcResponse {
-                        jsonrpc: "2.0".to_string(),
+                        jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id.clone(),
                         result: None,
                         error: Some(JsonRpcError {
@@ -284,13 +285,13 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/scheduling/evaluate" => match parse_scheduling_params(&request.params) {
             Ok((schedules, tick_ms)) => match runtime.evaluate_schedule_tick(&schedules, tick_ms) {
                 Ok(evaluation) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -303,7 +304,7 @@ pub fn handle_mobkit_rpc_json(
                 },
             },
             Err(message) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -315,13 +316,13 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/scheduling/dispatch" => match parse_scheduling_params(&request.params) {
             Ok((schedules, tick_ms)) => match runtime.dispatch_schedule_tick(&schedules, tick_ms) {
                 Ok(dispatch) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(dispatch).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -334,7 +335,7 @@ pub fn handle_mobkit_rpc_json(
                 },
             },
             Err(message) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -350,13 +351,13 @@ pub fn handle_mobkit_rpc_json(
                     .map_err(RoutingDeliveryParamsError::Routing)
             }) {
                 Ok(resolution) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(resolution).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -368,7 +369,7 @@ pub fn handle_mobkit_rpc_json(
         }
         "mobkit/routing/routes/list" => match parse_routing_routes_list_params(&request.params) {
             Ok(()) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(serde_json::json!({
                     "routes": runtime.list_runtime_routes()
@@ -376,7 +377,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -392,13 +393,13 @@ pub fn handle_mobkit_rpc_json(
                     .map_err(RoutingDeliveryParamsError::RouteMutation)
             }) {
             Ok(route) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(serde_json::json!({ "route": route })),
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -414,13 +415,13 @@ pub fn handle_mobkit_rpc_json(
                     .map_err(RoutingDeliveryParamsError::RouteMutation)
             }) {
             Ok(route) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(serde_json::json!({ "deleted": route })),
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -436,13 +437,13 @@ pub fn handle_mobkit_rpc_json(
                     .map_err(RoutingDeliveryParamsError::Delivery)
             }) {
                 Ok(record) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(record).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -454,7 +455,7 @@ pub fn handle_mobkit_rpc_json(
         }
         "mobkit/delivery/history" => match parse_delivery_history_params(&request.params) {
             Ok(history_request) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(
                     serde_json::to_value(runtime.delivery_history(history_request))
@@ -463,7 +464,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -479,13 +480,13 @@ pub fn handle_mobkit_rpc_json(
                     .map_err(SubscribeParamsError::Runtime)
             }) {
                 Ok(subscribe_result) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(subscribe_result).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -497,7 +498,7 @@ pub fn handle_mobkit_rpc_json(
         }
         "mobkit/memory/stores" => match parse_memory_stores_params(&request.params) {
             Ok(()) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(serde_json::json!({
                     "stores": runtime.memory_stores(),
@@ -505,7 +506,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -517,13 +518,13 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/memory/index" => match parse_memory_index_params(&request.params) {
             Ok(index_request) => match runtime.memory_index(index_request) {
                 Ok(indexed) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(indexed).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(MemoryIndexError::BackendPersistFailed(error)) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -535,7 +536,7 @@ pub fn handle_mobkit_rpc_json(
                     }),
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -548,7 +549,7 @@ pub fn handle_mobkit_rpc_json(
                 },
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -559,7 +560,7 @@ pub fn handle_mobkit_rpc_json(
         },
         "mobkit/memory/query" => match parse_memory_query_params(&request.params) {
             Ok(query_request) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(
                     serde_json::to_value(runtime.memory_query(query_request))
@@ -568,7 +569,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -582,13 +583,13 @@ pub fn handle_mobkit_rpc_json(
                 .and_then(run_bigquery_session_store_request)
             {
                 Ok(result) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(result),
                     error: None,
                 },
                 Err(BigQuerySessionStoreRpcError::Params(message)) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -597,7 +598,7 @@ pub fn handle_mobkit_rpc_json(
                     }),
                 },
                 Err(BigQuerySessionStoreRpcError::Store(error)) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -612,7 +613,7 @@ pub fn handle_mobkit_rpc_json(
         }
         "mobkit/gating/evaluate" => match parse_gating_evaluate_params(&request.params) {
             Ok(gating_request) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(
                     serde_json::to_value(runtime.evaluate_gating_action(gating_request))
@@ -621,7 +622,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -632,7 +633,7 @@ pub fn handle_mobkit_rpc_json(
         },
         "mobkit/gating/pending" => match parse_gating_pending_params(&request.params) {
             Ok(()) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(serde_json::json!({
                     "pending": runtime.list_gating_pending(),
@@ -640,7 +641,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -656,13 +657,13 @@ pub fn handle_mobkit_rpc_json(
                     .map_err(GatingParamsError::Decision)
             }) {
                 Ok(result) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::to_value(result).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -674,7 +675,7 @@ pub fn handle_mobkit_rpc_json(
         }
         "mobkit/gating/audit" => match parse_gating_audit_params(&request.params) {
             Ok(limit) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: Some(serde_json::json!({
                     "entries": runtime.gating_audit_entries(limit),
@@ -682,7 +683,7 @@ pub fn handle_mobkit_rpc_json(
                 error: None,
             },
             Err(err) => JsonRpcResponse {
-                jsonrpc: "2.0".to_string(),
+                jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
                 result: None,
                 error: Some(JsonRpcError {
@@ -708,7 +709,7 @@ pub fn handle_mobkit_rpc_json(
             );
             match route {
                 Ok(response) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: Some(serde_json::json!({
                         "module_id": response.module_id,
@@ -718,7 +719,7 @@ pub fn handle_mobkit_rpc_json(
                     error: None,
                 },
                 Err(ModuleRouteError::UnloadedModule(module_id)) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -727,7 +728,7 @@ pub fn handle_mobkit_rpc_json(
                     }),
                 },
                 Err(err) => JsonRpcResponse {
-                    jsonrpc: "2.0".to_string(),
+                    jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
                     result: None,
                     error: Some(JsonRpcError {
@@ -738,7 +739,7 @@ pub fn handle_mobkit_rpc_json(
             }
         }
         _ => JsonRpcResponse {
-            jsonrpc: "2.0".to_string(),
+            jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
             result: None,
             error: Some(JsonRpcError {

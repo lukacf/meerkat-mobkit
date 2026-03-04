@@ -66,7 +66,7 @@ pub enum BigQuerySessionStoreError {
     ProcessFailed { command: String, stderr: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct BigQuerySessionStoreAdapter {
     dataset: String,
     table: String,
@@ -74,6 +74,7 @@ pub struct BigQuerySessionStoreAdapter {
     api_base_url: String,
     access_token: Option<String>,
     http_timeout: Duration,
+    client: reqwest::Client,
 }
 
 struct JsonFileLockGuard {
@@ -308,13 +309,18 @@ impl BigQuerySessionStoreAdapter {
     }
 
     pub fn new_native(dataset: impl Into<String>, table: impl Into<String>) -> Self {
+        let http_timeout = Duration::from_secs(30);
         Self {
             dataset: dataset.into(),
             table: table.into(),
             project_id: None,
             api_base_url: Self::DEFAULT_API_BASE_URL.to_string(),
             access_token: None,
-            http_timeout: Duration::from_secs(30),
+            client: reqwest::Client::builder()
+                .timeout(http_timeout)
+                .build()
+                .expect("build reqwest::Client"),
+            http_timeout,
         }
     }
 
@@ -335,6 +341,10 @@ impl BigQuerySessionStoreAdapter {
 
     pub fn with_http_timeout(mut self, timeout: Duration) -> Self {
         self.http_timeout = timeout;
+        self.client = reqwest::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("build reqwest::Client");
         self
     }
 
@@ -559,12 +569,7 @@ impl BigQuerySessionStoreAdapter {
         access_token: &str,
         body: Option<&Value>,
     ) -> Result<Value, BigQuerySessionStoreError> {
-        let client = reqwest::Client::builder()
-            .timeout(self.http_timeout)
-            .build()
-            .map_err(|err| BigQuerySessionStoreError::Http(format!("{err:?}")))?;
-
-        let mut request = client
+        let mut request = self.client
             .request(method, endpoint)
             .bearer_auth(access_token)
             .header("accept", "application/json");

@@ -50,7 +50,7 @@ fn main() {
     println!("mob running: {}", runtime.is_running());
     println!("loaded modules: {:?}", runtime.loaded_modules());
     println!("lifecycle stages:");
-    for event in &runtime.lifecycle_events {
+    for event in runtime.lifecycle_events() {
         let stage = match event.stage {
             LifecycleStage::MobStarted => "MobStarted",
             LifecycleStage::ModulesStarted => "ModulesStarted",
@@ -62,7 +62,7 @@ fn main() {
     }
 
     println!("merged events:");
-    for event in &runtime.merged_events {
+    for event in runtime.merged_events() {
         println!(
             "  - id={} source={} ts={} event={:?}",
             event.event_id, event.source, event.timestamp_ms, event.event

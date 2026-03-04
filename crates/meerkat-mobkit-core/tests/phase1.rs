@@ -396,7 +396,7 @@ fn req_001_startup_ordering_and_graceful_shutdown_kills_tracked_children() {
 
     assert_eq!(
         runtime
-            .lifecycle_events
+            .lifecycle_events()
             .iter()
             .map(|event| event.stage.clone())
             .collect::<Vec<_>>(),
@@ -408,7 +408,7 @@ fn req_001_startup_ordering_and_graceful_shutdown_kills_tracked_children() {
     );
 
     let pid = runtime
-        .merged_events
+        .merged_events()
         .iter()
         .find_map(|event| match &event.event {
             UnifiedEvent::Module(module) if module.module == "mod-a" => {
@@ -435,7 +435,7 @@ fn req_001_startup_ordering_and_graceful_shutdown_kills_tracked_children() {
 
     assert_eq!(
         runtime
-            .lifecycle_events
+            .lifecycle_events()
             .iter()
             .map(|event| event.stage.clone())
             .collect::<Vec<_>>(),
@@ -494,7 +494,7 @@ fn req_002_supervisor_transitions_and_restart_policy_enforced_with_budgets() {
     .expect("runtime starts with supervisor transitions");
 
     let never = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "never")
@@ -510,7 +510,7 @@ fn req_002_supervisor_transitions_and_restart_policy_enforced_with_budgets() {
     );
 
     let on_failure = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "on-failure")
@@ -529,7 +529,7 @@ fn req_002_supervisor_transitions_and_restart_policy_enforced_with_budgets() {
     );
 
     let always = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "always")
@@ -596,7 +596,7 @@ fn req_003_event_bus_merges_agent_and_module_events_with_deterministic_order() {
 
     assert_eq!(
         runtime
-            .merged_events
+            .merged_events()
             .iter()
             .map(|event| event.event_id.clone())
             .collect::<Vec<_>>(),
@@ -608,11 +608,11 @@ fn req_003_event_bus_merges_agent_and_module_events_with_deterministic_order() {
         ]
     );
     assert!(matches!(
-        runtime.merged_events[0].event,
+        runtime.merged_events()[0].event,
         UnifiedEvent::Agent { .. }
     ));
     assert!(matches!(
-        runtime.merged_events[2].event,
+        runtime.merged_events()[2].event,
         UnifiedEvent::Module(_)
     ));
 }

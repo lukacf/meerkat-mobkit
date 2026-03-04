@@ -55,8 +55,8 @@ impl MobkitRuntimeHandle {
         Ok(())
     }
 
-    pub fn merged_events(&self) -> Vec<EventEnvelope<UnifiedEvent>> {
-        self.merged_events.clone()
+    pub fn merged_events(&self) -> &[EventEnvelope<UnifiedEvent>] {
+        &self.merged_events
     }
     pub fn subscribe_events(
         &self,
@@ -78,32 +78,25 @@ impl MobkitRuntimeHandle {
             }
         }
 
-        let scoped_events = self
+        let scoped_events: Vec<_> = self
             .merged_events
             .iter()
             .filter(|event| event_matches_request(event, &request))
-            .cloned()
-            .collect::<Vec<_>>();
-        let bounded_scoped_events = scoped_events
-            .iter()
-            .rev()
-            .take(SUBSCRIBE_REPLAY_EVENT_CAP)
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>();
+            .collect();
+        let skip = scoped_events.len().saturating_sub(SUBSCRIBE_REPLAY_EVENT_CAP);
+        let bounded = &scoped_events[skip..];
 
-        let replay_events = match request.last_event_id.as_ref() {
+        let replay_slice = match request.last_event_id.as_ref() {
             Some(checkpoint) => {
-                let start_idx = bounded_scoped_events
+                let start_idx = bounded
                     .iter()
                     .position(|event| event.event_id == *checkpoint)
                     .ok_or_else(|| SubscribeError::UnknownCheckpoint(checkpoint.clone()))?;
-                bounded_scoped_events[start_idx..].to_vec()
+                &bounded[start_idx..]
             }
-            None => bounded_scoped_events,
+            None => bounded,
         };
+        let replay_events: Vec<_> = replay_slice.iter().map(|e| (*e).clone()).collect();
         let event_frames = replay_events
             .iter()
             .map(build_sse_event_frame)

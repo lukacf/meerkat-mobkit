@@ -107,7 +107,7 @@ fn phase_d_req_d_001_forced_crash_restart_policy_and_backoff_are_enforced() {
     );
 
     let transitions = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "forced-crash")
@@ -185,7 +185,7 @@ fn phase_d_req_d_002_shutdown_lifecycle_is_clean_after_forced_crash_recovery() {
     assert!(runtime.loaded_modules().is_empty());
 
     let stages = runtime
-        .lifecycle_events
+        .lifecycle_events()
         .iter()
         .map(|event| event.stage.clone())
         .collect::<Vec<_>>();
@@ -229,7 +229,7 @@ fn phase_d_mutation_spawn_member_uses_supervisor_retry_backoff_and_transitions()
     );
 
     let transitions = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "forced-crash")
@@ -304,7 +304,7 @@ fn phase_d_mutation_spawn_member_failure_surfaces_error_warning_and_transitions(
         .contains(&"always-fail".to_string()));
 
     let transitions = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "always-fail")
@@ -375,7 +375,7 @@ fn phase_d_mutation_reconcile_uses_supervisor_and_propagates_partial_failure() {
     assert!(!loaded.contains(&"always-fail".to_string()));
 
     let forced_crash_transitions = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .filter(|transition| transition.module_id == "forced-crash")

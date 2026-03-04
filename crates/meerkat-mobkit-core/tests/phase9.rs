@@ -178,7 +178,7 @@ fn phase9_req_002_choke_106_supervisor_restart_signal_is_wired_into_dispatch() {
         .dispatch_schedule_tick(&schedules, 60_000)
         .expect("dispatch succeeds");
     let saw_restart_transition = runtime
-        .supervisor_report
+        .supervisor_report()
         .transitions
         .iter()
         .any(|transition| {
@@ -959,7 +959,7 @@ fn phase9_schedule_016_dispatch_event_append_preserves_merged_event_order() {
         .dispatch_schedule_tick(std::slice::from_ref(&schedule), 60_000)
         .expect("dispatch at 60000 succeeds");
 
-    let merged = runtime.merged_events();
+    let merged = runtime.merged_events().to_vec();
     runtime.shutdown();
 
     assert!(merged.windows(2).all(|pair| {

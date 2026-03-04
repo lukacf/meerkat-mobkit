@@ -343,7 +343,7 @@ fn runtime_with_router_and_delivery_mcp() -> meerkat_mobkit_core::MobkitRuntimeH
 
 fn runtime_with_phase6_agent_events() -> meerkat_mobkit_core::MobkitRuntimeHandle {
     let mut runtime = runtime_with_router_and_delivery();
-    runtime.merged_events.extend(vec![
+    runtime.inject_test_events(vec![
         EventEnvelope {
             event_id: "evt-agent-a-0".to_string(),
             source: "agent".to_string(),
@@ -399,12 +399,6 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit_core::MobkitRuntimeHandl
             },
         },
     ]);
-    runtime.merged_events.sort_by(|left, right| {
-        left.timestamp_ms
-            .cmp(&right.timestamp_ms)
-            .then_with(|| left.event_id.cmp(&right.event_id))
-            .then_with(|| left.source.cmp(&right.source))
-    });
     runtime
 }
 
