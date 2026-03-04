@@ -40,20 +40,25 @@ pub trait Discovery: Send + Sync {
 }
 
 /// A callback that runs before discovery/spawn for session preloading, cache warming, etc.
-pub type PreSpawnHook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+/// Returns `Result` so preloading failures (e.g. BQ unreachable) can abort bootstrap.
+pub type PreSpawnHook = Box<
+    dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send>>
+        + Send,
+>;
 
 /// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
+///
+/// `additional_instructions` maps directly to `SpawnMemberSpec.additional_instructions`,
+/// which flows through Meerkat's build pipeline to `AgentBuildConfig.additional_instructions`.
 pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpec {
     let resume_session_id = spec
         .resume_session_id
         .as_deref()
         .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
-    let context = if spec.additional_instructions.is_empty() {
-        spec.context.clone()
+    let additional_instructions = if spec.additional_instructions.is_empty() {
+        None
     } else {
-        let mut ctx = spec.context.clone().unwrap_or(json!({}));
-        ctx["additional_instructions"] = json!(spec.additional_instructions);
-        Some(ctx)
+        Some(spec.additional_instructions.clone())
     };
     SpawnMemberSpec {
         profile_name: meerkat_mob::ProfileName::from(spec.profile.as_str()),
@@ -61,9 +66,10 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
         initial_message: None,
         runtime_mode: None,
         backend: None,
-        context,
+        context: spec.context.clone(),
         labels: spec.labels.clone(),
         resume_session_id,
+        additional_instructions,
     }
 }
 
@@ -90,6 +96,7 @@ pub enum UnifiedRuntimeBootstrapError {
         startup_error: Box<UnifiedRuntimeBootstrapError>,
         rollback_error: MobRuntimeError,
     },
+    PreSpawnHook(String),
 }
 
 impl Display for UnifiedRuntimeBootstrapError {
@@ -102,6 +109,9 @@ impl Display for UnifiedRuntimeBootstrapError {
                     f,
                     "failed to bootstrap module runtime: startup thread panicked"
                 )
+            }
+            Self::PreSpawnHook(err) => {
+                write!(f, "pre-spawn hook failed: {err}")
             }
             Self::ModuleStartupRollbackFailed {
                 startup_error,
@@ -245,7 +255,13 @@ impl UnifiedRuntimeBuilder {
         runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
 
         if let Some(hook) = self.pre_spawn_hook {
-            hook().await;
+            hook()
+                .await
+                .map_err(|err| {
+                    UnifiedRuntimeBuilderError::Bootstrap(
+                        UnifiedRuntimeBootstrapError::PreSpawnHook(err.to_string()),
+                    )
+                })?;
         }
         if let Some(discovery) = self.discovery {
             let specs = discovery.discover().await;

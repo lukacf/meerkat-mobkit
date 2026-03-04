@@ -92,10 +92,14 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
     assert_eq!(spawn.profile_name.as_str(), "worker");
     assert_eq!(spawn.meerkat_id.as_str(), "agent-1");
     assert!(spawn.initial_message.is_none(), "additional_instructions should not map to initial_message");
-    // additional_instructions merged into context
+    // additional_instructions maps directly to SpawnMemberSpec.additional_instructions
+    assert_eq!(
+        spawn.additional_instructions.as_deref(),
+        Some(&["Be concise.".to_string()][..])
+    );
+    // context passes through unchanged
     let ctx = spawn.context.as_ref().expect("context should be present");
     assert_eq!(ctx["env"], "staging");
-    assert_eq!(ctx["additional_instructions"][0], "Be concise.");
     let labels = spawn.labels.as_ref().expect("labels should be present");
     assert_eq!(labels.get("team").map(String::as_str), Some("alpha"));
     assert_eq!(labels.get("role").map(String::as_str), Some("analyst"));
@@ -287,6 +291,7 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
             let flag = hook_ran_clone.clone();
             Box::pin(async move {
                 flag.store(true, Ordering::SeqCst);
+                Ok(())
             })
         });
 

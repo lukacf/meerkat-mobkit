@@ -626,8 +626,14 @@ pub fn run_periodic_gc(
         loop {
             std::thread::sleep(config.interval);
             match rt.block_on(adapter.gc_superseded_rows()) {
-                Ok(_deleted) => {}
-                Err(_err) => {}
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        eprintln!("[mobkit-gc] deleted {deleted} superseded session rows");
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[mobkit-gc] gc_superseded_rows failed: {err:?}");
+                }
             }
         }
     }
