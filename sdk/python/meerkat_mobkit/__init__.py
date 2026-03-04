@@ -37,6 +37,7 @@ from .errors import (
 
 # Typed return models
 from .types import (
+    CallToolResult,
     CapabilitiesResult,
     DeliveryResult,
     EventEnvelope,
@@ -87,6 +88,7 @@ __all__ = [
     "RoutingResolution",
     "DeliveryResult",
     "MemoryQueryResult",
+    "CallToolResult",
     # Typed events
     "MobEvent",
     "AgentEvent",
