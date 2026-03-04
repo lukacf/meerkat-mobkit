@@ -319,7 +319,7 @@ impl BigQuerySessionStoreAdapter {
             client: reqwest::Client::builder()
                 .timeout(http_timeout)
                 .build()
-                .expect("build reqwest::Client"),
+                .unwrap_or_default(),
             http_timeout,
         }
     }
@@ -344,7 +344,7 @@ impl BigQuerySessionStoreAdapter {
         self.client = reqwest::Client::builder()
             .timeout(timeout)
             .build()
-            .expect("build reqwest::Client");
+            .unwrap_or_default();
         self
     }
 
