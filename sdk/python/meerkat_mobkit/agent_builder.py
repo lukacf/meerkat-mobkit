@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 from typing import Any, Protocol, runtime_checkable
 
 from .models import SessionBuildOptions
@@ -46,16 +45,25 @@ class CallbackDispatcher:
         self._builder: SessionAgentBuilder | None = None
         # Keyed by (scope_id, tool_name) to isolate concurrent sessions
         self._tool_handlers: dict[tuple[str, str], Any] = {}
+        # Track scope_ids so we can clean up handlers when a scope is released
+        self._scope_tools: dict[str, list[str]] = {}
 
     def register_builder(self, builder: SessionAgentBuilder) -> None:
         self._builder = builder
+
+    def release_scope(self, scope_id: str) -> None:
+        """Remove all tool handlers for a scope. Call when a session ends."""
+        for tool_name in self._scope_tools.pop(scope_id, []):
+            self._tool_handlers.pop((scope_id, tool_name), None)
 
     async def handle_callback(self, method: str, params: dict[str, Any]) -> Any:
         if method == "callback/build_agent":
             if self._builder is None:
                 raise ValueError("no SessionAgentBuilder registered")
             raw_options = dict(params.get("options", {}))
-            scope_id = raw_options.pop("scope_id", "")
+            scope_id = raw_options.pop("scope_id", None)
+            if not scope_id:
+                raise ValueError("callback/build_agent requires scope_id in options")
             opts = SessionBuildOptions(**raw_options)
             await self._builder.build_agent(opts)
             for t in opts.tools:
@@ -64,12 +72,17 @@ class CallbackDispatcher:
                         f"build_agent produced non-string tool {type(t).__name__}: {t!r}"
                     )
             # Capture tool handlers scoped to this build's scope_id
+            tool_names = []
             for name, handler in opts.tool_handlers.items():
                 self._tool_handlers[(scope_id, name)] = handler
+                tool_names.append(name)
+            self._scope_tools[scope_id] = tool_names
             return opts.to_dict()
 
         if method == "callback/call_tool":
-            scope_id = params.get("scope_id", "")
+            scope_id = params.get("scope_id")
+            if not scope_id:
+                raise ValueError("callback/call_tool requires scope_id")
             tool_name = params.get("tool", "")
             arguments = params.get("arguments", {})
             handler = self._tool_handlers.get((scope_id, tool_name))
@@ -78,8 +91,6 @@ class CallbackDispatcher:
                     f"no handler registered for tool: {tool_name} (scope: {scope_id})"
                 )
             result = handler(arguments)
-            # Await if the handler returned a coroutine (covers async functions,
-            # wrapped/decorated async callables, and partial'd coroutines)
             if asyncio.iscoroutine(result):
                 result = await result
             return {"content": result}

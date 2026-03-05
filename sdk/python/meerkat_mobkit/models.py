@@ -115,6 +115,8 @@ class SessionBuildOptions:
         """
         if not isinstance(name, str):
             raise TypeError(f"tool name must be a string, got {type(name).__name__}: {name!r}")
+        if not callable(handler):
+            raise TypeError(f"handler must be callable, got {type(handler).__name__}: {handler!r}")
         self._tools.append(name)
         self._tool_handlers[name] = handler
 

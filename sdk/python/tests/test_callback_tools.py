@@ -84,14 +84,12 @@ class TestCallbackToolDispatch:
         await dispatcher.handle_callback(
             "callback/build_agent", {"options": {"scope_id": "session-A"}}
         )
-        # Call with correct scope works
         result = await dispatcher.handle_callback(
             "callback/call_tool",
             {"scope_id": "session-A", "tool": "sync_tool", "arguments": {"input": "ok"}},
         )
         assert result == {"content": {"echo": "ok"}}
 
-        # Call with wrong scope fails
         with pytest.raises(ValueError, match="no handler registered"):
             await dispatcher.handle_callback(
                 "callback/call_tool",
@@ -108,7 +106,6 @@ class TestCallbackToolDispatch:
 
         class WrappedBuilder:
             async def build_agent(self, opts: SessionBuildOptions) -> None:
-                # partial of an async function — iscoroutinefunction returns False
                 opts.register_tool("wrapped", partial(base_handler, "PREFIX"))
 
         d.register_builder(WrappedBuilder())
@@ -120,3 +117,55 @@ class TestCallbackToolDispatch:
             {"scope_id": "s1", "tool": "wrapped", "arguments": {"input": "test"}},
         )
         assert result == {"content": "PREFIX: test"}
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_id_in_build_raises(self, dispatcher):
+        """build_agent without scope_id fails fast."""
+        with pytest.raises(ValueError, match="requires scope_id"):
+            await dispatcher.handle_callback(
+                "callback/build_agent", {"options": {}}
+            )
+
+    @pytest.mark.asyncio
+    async def test_missing_scope_id_in_call_raises(self, dispatcher):
+        """call_tool without scope_id fails fast."""
+        with pytest.raises(ValueError, match="requires scope_id"):
+            await dispatcher.handle_callback(
+                "callback/call_tool", {"tool": "anything", "arguments": {}}
+            )
+
+    @pytest.mark.asyncio
+    async def test_release_scope_cleans_handlers(self, dispatcher):
+        """release_scope removes handlers for that scope."""
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
+        )
+        assert ("s1", "sync_tool") in dispatcher._tool_handlers
+        dispatcher.release_scope("s1")
+        assert ("s1", "sync_tool") not in dispatcher._tool_handlers
+        assert "s1" not in dispatcher._scope_tools
+
+    @pytest.mark.asyncio
+    async def test_release_scope_does_not_affect_other_scopes(self, dispatcher):
+        """Releasing one scope leaves other scopes intact."""
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
+        )
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s2"}}
+        )
+        dispatcher.release_scope("s1")
+        assert ("s1", "sync_tool") not in dispatcher._tool_handlers
+        assert ("s2", "sync_tool") in dispatcher._tool_handlers
+
+
+class TestRegisterToolValidation:
+    def test_non_callable_handler_raises(self):
+        opts = SessionBuildOptions()
+        with pytest.raises(TypeError, match="handler must be callable"):
+            opts.register_tool("bad", "not_a_function")
+
+    def test_none_handler_raises(self):
+        opts = SessionBuildOptions()
+        with pytest.raises(TypeError, match="handler must be callable"):
+            opts.register_tool("bad", None)
