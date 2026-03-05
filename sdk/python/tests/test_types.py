@@ -187,9 +187,12 @@ class TestToolCaller:
         )
 
     def test_tool_caller_stores_module_id(self):
-        from meerkat_mobkit.runtime import ToolCaller
-        caller = ToolCaller(None, "my-module")
+        from unittest.mock import AsyncMock
+        from meerkat_mobkit.runtime import ToolCaller, MobHandle
+        mock_handle = AsyncMock(spec=MobHandle)
+        caller = ToolCaller(mock_handle, "my-module")
         assert caller._module_id == "my-module"
+        assert caller._mob_handle is mock_handle
 
     @pytest.mark.asyncio
     async def test_call_propagates_errors(self):
