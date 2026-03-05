@@ -13,7 +13,7 @@ class TestNewSymbolsExist:
         "StatusResult", "CapabilitiesResult", "ReconcileResult",
         "SpawnResult", "SpawnMemberResult", "SubscribeResult",
         "KeepAliveConfig", "EventEnvelope",
-        "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult",
+        "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult", "ToolCaller",
         "MobEvent", "AgentEvent", "InteractionEvent", "EventStream",
         "auth", "memory", "session_store",
     ])

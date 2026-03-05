@@ -17,7 +17,7 @@ from __future__ import annotations
 
 # Builder + Runtime
 from .builder import MobKit, MobKitBuilder
-from .runtime import MobKitRuntime
+from .runtime import MobKitRuntime, ToolCaller
 
 # Data models
 from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQuery
@@ -89,6 +89,7 @@ __all__ = [
     "DeliveryResult",
     "MemoryQueryResult",
     "CallToolResult",
+    "ToolCaller",
     # Typed events
     "MobEvent",
     "AgentEvent",
