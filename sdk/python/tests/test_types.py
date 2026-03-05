@@ -190,3 +190,14 @@ class TestToolCaller:
         from meerkat_mobkit.runtime import ToolCaller
         caller = ToolCaller(None, "my-module")
         assert caller._module_id == "my-module"
+
+    @pytest.mark.asyncio
+    async def test_call_propagates_errors(self):
+        from unittest.mock import AsyncMock
+        from meerkat_mobkit.runtime import ToolCaller
+
+        mock_handle = AsyncMock()
+        mock_handle.call_tool.side_effect = RuntimeError("module not loaded")
+        gmail = ToolCaller(mock_handle, "google-workspace")
+        with pytest.raises(RuntimeError, match="module not loaded"):
+            await gmail("gmail_search", query="test")

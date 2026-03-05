@@ -314,7 +314,10 @@ class ToolCaller:
         self._module_id = module_id
 
     async def __call__(self, tool: str, **kwargs: Any) -> Any:
-        """Call a tool on the bound MCP module, return unwrapped result."""
+        """Call a tool on the bound MCP module, return unwrapped result.
+
+        Raises whatever ``call_tool`` raises on failure (e.g. ``RpcError``).
+        """
         result = await self._mob_handle.call_tool(self._module_id, tool, kwargs or None)
         return result.result
 
