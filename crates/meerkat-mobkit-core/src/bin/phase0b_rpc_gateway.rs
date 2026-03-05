@@ -175,11 +175,12 @@ impl StdioCallbackBridge {
 /// and returns the result.
 struct CallbackToolDispatcher {
     bridge: StdioCallbackBridge,
+    scope_id: String,
     tool_defs: Arc<[Arc<ToolDef>]>,
 }
 
 impl CallbackToolDispatcher {
-    fn new(bridge: StdioCallbackBridge, tool_names: Vec<String>) -> Self {
+    fn new(bridge: StdioCallbackBridge, scope_id: String, tool_names: Vec<String>) -> Self {
         let tool_defs: Vec<Arc<ToolDef>> = tool_names
             .into_iter()
             .map(|name| {
@@ -192,6 +193,7 @@ impl CallbackToolDispatcher {
             .collect();
         Self {
             bridge,
+            scope_id,
             tool_defs: tool_defs.into(),
         }
     }
@@ -211,6 +213,7 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
             }
         })?;
         let params = json!({
+            "scope_id": self.scope_id,
             "tool": call.name,
             "arguments": args,
         });
@@ -261,9 +264,19 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
             return self.inner.build_agent(req, event_tx).await;
         }
 
+        // Generate a unique scope ID for this build — used to isolate tool
+        // handlers between concurrent sessions on the Python side.
+        let scope_id = format!(
+            "build-{}",
+            self.bridge
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+
         // Send callback to Python with full session context.
         // app_context flows from SpawnMemberSpec.context → build.app_context.
         let options = json!({
+            "scope_id": scope_id,
             "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
             "model": &req.model,
             "prompt": &req.prompt,
@@ -333,6 +346,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                             if !tool_names.is_empty() {
                                 let dispatcher = CallbackToolDispatcher::new(
                                     self.bridge.clone(),
+                                    scope_id.clone(),
                                     tool_names,
                                 );
                                 let build = modified_req.build.get_or_insert_with(|| {

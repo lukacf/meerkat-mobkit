@@ -1,6 +1,8 @@
 """Tests for callback tool dispatch (callback/call_tool)."""
+from functools import partial
+
 import pytest
-from meerkat_mobkit.agent_builder import CallbackDispatcher, SessionAgentBuilder
+from meerkat_mobkit.agent_builder import CallbackDispatcher
 from meerkat_mobkit.models import SessionBuildOptions
 
 
@@ -27,38 +29,44 @@ class TestCallbackToolDispatch:
     @pytest.mark.asyncio
     async def test_build_agent_captures_handlers(self, dispatcher):
         result = await dispatcher.handle_callback(
-            "callback/build_agent", {"options": {}}
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
         )
         assert result["tools"] == ["sync_tool", "async_tool"]
         assert result["profile_name"] == "test"
-        assert "sync_tool" in dispatcher._tool_handlers
-        assert "async_tool" in dispatcher._tool_handlers
+        assert ("s1", "sync_tool") in dispatcher._tool_handlers
+        assert ("s1", "async_tool") in dispatcher._tool_handlers
 
     @pytest.mark.asyncio
     async def test_call_sync_tool(self, dispatcher):
-        # First build to register tools
-        await dispatcher.handle_callback("callback/build_agent", {"options": {}})
-        # Then call the tool
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
+        )
         result = await dispatcher.handle_callback(
-            "callback/call_tool", {"tool": "sync_tool", "arguments": {"input": "hello"}}
+            "callback/call_tool",
+            {"scope_id": "s1", "tool": "sync_tool", "arguments": {"input": "hello"}},
         )
         assert result == {"content": {"echo": "hello"}}
 
     @pytest.mark.asyncio
     async def test_call_async_tool(self, dispatcher):
-        await dispatcher.handle_callback("callback/build_agent", {"options": {}})
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
+        )
         result = await dispatcher.handle_callback(
             "callback/call_tool",
-            {"tool": "async_tool", "arguments": {"input": "world"}},
+            {"scope_id": "s1", "tool": "async_tool", "arguments": {"input": "world"}},
         )
         assert result == {"content": {"async_echo": "world"}}
 
     @pytest.mark.asyncio
     async def test_call_unknown_tool_raises(self, dispatcher):
-        await dispatcher.handle_callback("callback/build_agent", {"options": {}})
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
+        )
         with pytest.raises(ValueError, match="no handler registered for tool"):
             await dispatcher.handle_callback(
-                "callback/call_tool", {"tool": "nonexistent", "arguments": {}}
+                "callback/call_tool",
+                {"scope_id": "s1", "tool": "nonexistent", "arguments": {}},
             )
 
     @pytest.mark.asyncio
@@ -66,5 +74,49 @@ class TestCallbackToolDispatch:
         d = CallbackDispatcher()
         with pytest.raises(ValueError, match="no handler registered for tool"):
             await d.handle_callback(
-                "callback/call_tool", {"tool": "anything", "arguments": {}}
+                "callback/call_tool",
+                {"scope_id": "s1", "tool": "anything", "arguments": {}},
             )
+
+    @pytest.mark.asyncio
+    async def test_scope_isolation(self, dispatcher):
+        """Tools from one scope are not visible in another scope."""
+        await dispatcher.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "session-A"}}
+        )
+        # Call with correct scope works
+        result = await dispatcher.handle_callback(
+            "callback/call_tool",
+            {"scope_id": "session-A", "tool": "sync_tool", "arguments": {"input": "ok"}},
+        )
+        assert result == {"content": {"echo": "ok"}}
+
+        # Call with wrong scope fails
+        with pytest.raises(ValueError, match="no handler registered"):
+            await dispatcher.handle_callback(
+                "callback/call_tool",
+                {"scope_id": "session-B", "tool": "sync_tool", "arguments": {}},
+            )
+
+    @pytest.mark.asyncio
+    async def test_wrapped_async_handler(self):
+        """Async callables that aren't detected by iscoroutinefunction still work."""
+        d = CallbackDispatcher()
+
+        async def base_handler(prefix, args):
+            return f"{prefix}: {args.get('input', '')}"
+
+        class WrappedBuilder:
+            async def build_agent(self, opts: SessionBuildOptions) -> None:
+                # partial of an async function — iscoroutinefunction returns False
+                opts.register_tool("wrapped", partial(base_handler, "PREFIX"))
+
+        d.register_builder(WrappedBuilder())
+        await d.handle_callback(
+            "callback/build_agent", {"options": {"scope_id": "s1"}}
+        )
+        result = await d.handle_callback(
+            "callback/call_tool",
+            {"scope_id": "s1", "tool": "wrapped", "arguments": {"input": "test"}},
+        )
+        assert result == {"content": "PREFIX: test"}
