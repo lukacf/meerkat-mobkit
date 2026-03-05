@@ -94,17 +94,37 @@ class SessionBuildOptions:
     labels: dict[str, str] = field(default_factory=dict)
     profile_name: str | None = None
     _tools: list[str] = field(default_factory=list, repr=False)
+    _tool_handlers: dict[str, Any] = field(default_factory=dict, repr=False)
 
     def add_tools(self, tools: list[str]) -> None:
-        """Add tools to the agent being built."""
+        """Declare tool names the agent can use."""
         for t in tools:
             if not isinstance(t, str):
                 raise TypeError(f"tools must be strings, got {type(t).__name__}: {t!r}")
         self._tools.extend(tools)
 
+    def register_tool(self, name: str, handler: Any) -> None:
+        """Register a callable tool with the agent.
+
+        The handler is called when the agent invokes this tool. It receives
+        a dict of arguments and should return a JSON-serializable result.
+
+        Args:
+            name: Tool name (string).
+            handler: Async or sync callable ``(args: dict) -> Any``.
+        """
+        if not isinstance(name, str):
+            raise TypeError(f"tool name must be a string, got {type(name).__name__}: {name!r}")
+        self._tools.append(name)
+        self._tool_handlers[name] = handler
+
     @property
     def tools(self) -> list[str]:
         return list(self._tools)
+
+    @property
+    def tool_handlers(self) -> dict[str, Any]:
+        return dict(self._tool_handlers)
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}

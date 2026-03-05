@@ -35,6 +35,26 @@ class TestSessionBuildOptions:
         assert d["profile_name"] == "default"
         assert d["tools"] == ["tool_x"]
 
+    def test_register_tool(self):
+        opts = SessionBuildOptions()
+        handler = lambda args: {"result": "ok"}
+        opts.register_tool("search", handler)
+        assert opts.tools == ["search"]
+        assert opts.tool_handlers == {"search": handler}
+
+    def test_register_tool_non_string_raises(self):
+        opts = SessionBuildOptions()
+        with pytest.raises(TypeError):
+            opts.register_tool(123, lambda args: None)
+
+    def test_register_tool_and_add_tools_coexist(self):
+        opts = SessionBuildOptions()
+        handler = lambda args: "result"
+        opts.add_tools(["declared_only"])
+        opts.register_tool("with_handler", handler)
+        assert opts.tools == ["declared_only", "with_handler"]
+        assert opts.tool_handlers == {"with_handler": handler}
+
 
 class TestDiscoverySpec:
     def test_to_dict(self):
