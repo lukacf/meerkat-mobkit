@@ -1,4 +1,5 @@
 """Tests for typed return models (from_dict)."""
+import pytest
 from meerkat_mobkit.types import (
     CallToolResult,
     CapabilitiesResult,
@@ -161,3 +162,31 @@ class TestCallToolResult:
         assert r.module_id == "gmail"
         assert r.tool == "gmail_search"
         assert r.result == {"messages": [{"id": "1", "subject": "Hello"}]}
+
+
+class TestToolCaller:
+    @pytest.mark.asyncio
+    async def test_call_unwraps_result(self):
+        """ToolCaller.__call__ should unwrap CallToolResult.result."""
+        from unittest.mock import AsyncMock
+        from meerkat_mobkit.runtime import ToolCaller
+
+        mock_handle = AsyncMock()
+        mock_handle.call_tool.return_value = CallToolResult.from_dict({
+            "module_id": "google-workspace",
+            "tool": "gmail_search",
+            "result": [{"id": "1", "subject": "Hello"}],
+        })
+
+        gmail = ToolCaller(mock_handle, "google-workspace")
+        messages = await gmail("gmail_search", query="is:unread")
+
+        assert messages == [{"id": "1", "subject": "Hello"}]
+        mock_handle.call_tool.assert_called_once_with(
+            "google-workspace", "gmail_search", {"query": "is:unread"}
+        )
+
+    def test_tool_caller_stores_module_id(self):
+        from meerkat_mobkit.runtime import ToolCaller
+        caller = ToolCaller(None, "my-module")
+        assert caller._module_id == "my-module"

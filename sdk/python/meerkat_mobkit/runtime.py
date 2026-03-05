@@ -286,10 +286,37 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/call_tool", params)
         return CallToolResult.from_dict(raw)
 
+    def tool_caller(self, module_id: str) -> ToolCaller:
+        """Return a callable scoped to one MCP module.
+
+        Usage::
+
+            gmail = mob_handle.tool_caller("google-workspace")
+            messages = await gmail("gmail_search", query="is:unread")
+        """
+        return ToolCaller(self, module_id)
+
     async def inject_and_subscribe(self, target: str, message: str) -> AsyncIterator[InteractionEvent]:
         bridge = self._runtime.sse_bridge()
         async for event in bridge.interaction_stream(target, message):
             yield InteractionEvent.from_sse(event)
+
+
+class ToolCaller:
+    """Bound callable scoped to one MCP module.
+
+    Wraps ``MobHandle.call_tool`` with a fixed ``module_id`` and unwraps
+    the result so callers get raw data instead of ``CallToolResult``.
+    """
+
+    def __init__(self, mob_handle: MobHandle, module_id: str) -> None:
+        self._mob_handle = mob_handle
+        self._module_id = module_id
+
+    async def __call__(self, tool: str, **kwargs: Any) -> Any:
+        """Call a tool on the bound MCP module, return unwrapped result."""
+        result = await self._mob_handle.call_tool(self._module_id, tool, kwargs or None)
+        return result.result
 
 
 class SseBridge:
