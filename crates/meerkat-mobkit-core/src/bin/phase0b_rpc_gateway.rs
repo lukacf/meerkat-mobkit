@@ -15,7 +15,9 @@ use meerkat::{
     AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService,
     FactoryAgent, FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
-use meerkat_core::error::AgentError;
+use meerkat_core::error::{AgentError, ToolError};
+use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
+use meerkat_core::AgentToolDispatcher;
 use meerkat_mob::{MobDefinition, MobStorage};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -166,6 +168,82 @@ impl StdioCallbackBridge {
     }
 }
 
+/// Tool dispatcher that routes tool calls to Python via the callback bridge.
+///
+/// Created from tool name strings provided by `SessionBuildOptions.add_tools()`.
+/// When the agent calls a tool, `dispatch()` sends `callback/call_tool` to Python
+/// and returns the result.
+struct CallbackToolDispatcher {
+    bridge: StdioCallbackBridge,
+    scope_id: String,
+    tool_defs: Arc<[Arc<ToolDef>]>,
+}
+
+impl CallbackToolDispatcher {
+    fn new(bridge: StdioCallbackBridge, scope_id: String, tool_names: Vec<String>) -> Self {
+        let tool_defs: Vec<Arc<ToolDef>> = tool_names
+            .into_iter()
+            .map(|name| {
+                Arc::new(ToolDef {
+                    name,
+                    description: "Python callback tool".to_string(),
+                    input_schema: json!({"type": "object"}),
+                })
+            })
+            .collect();
+        Self {
+            bridge,
+            scope_id,
+            tool_defs: tool_defs.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentToolDispatcher for CallbackToolDispatcher {
+    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+        Arc::clone(&self.tool_defs)
+    }
+
+    async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolResult, ToolError> {
+        let args: Value = serde_json::from_str(call.args.get()).map_err(|e| {
+            ToolError::InvalidArguments {
+                name: call.name.to_string(),
+                reason: e.to_string(),
+            }
+        })?;
+        let params = json!({
+            "scope_id": self.scope_id,
+            "tool": call.name,
+            "arguments": args,
+        });
+        match self.bridge.call("callback/call_tool", params).await {
+            Ok(result) => {
+                let content = result
+                    .get("content")
+                    .map(|v| {
+                        if let Some(s) = v.as_str() {
+                            s.to_string()
+                        } else {
+                            serde_json::to_string(v).unwrap_or_default()
+                        }
+                    })
+                    .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default());
+                Ok(ToolResult {
+                    tool_use_id: call.id.to_string(),
+                    content,
+                    is_error: false,
+                })
+            }
+            Err(err) => Ok(ToolResult {
+                tool_use_id: call.id.to_string(),
+                content: format!("Tool execution failed: {err}"),
+                is_error: true,
+            }),
+        }
+    }
+}
+
 /// Wraps FactoryAgentBuilder — sends callback/build_agent to Python before building.
 struct StdioCallbackAgentBuilder {
     inner: FactoryAgentBuilder,
@@ -186,9 +264,19 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
             return self.inner.build_agent(req, event_tx).await;
         }
 
+        // Generate a unique scope ID for this build — used to isolate tool
+        // handlers between concurrent sessions on the Python side.
+        let scope_id = format!(
+            "build-{}",
+            self.bridge
+                .counter
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+
         // Send callback to Python with full session context.
         // app_context flows from SpawnMemberSpec.context → build.app_context.
         let options = json!({
+            "scope_id": scope_id,
             "session_id": req.labels.as_ref().and_then(|l| l.get("session_id")),
             "model": &req.model,
             "prompt": &req.prompt,
@@ -239,38 +327,32 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Callback tools contract: Python SDK enforces list[str] via
-                // SessionBuildOptions.add_tools(). Stored in provider_params
-                // as string names for downstream consumption.
-                //
-                // NOTE: These are tool *names*, not executable bindings.
-                // Resolution into AgentToolDispatcher requires a tool registry
-                // that maps names → implementations. This does not exist yet
-                // in the gateway binary. When it does, replace this storage
-                // with actual registration via build.external_tools.
+                // Callback tools: Python SDK provides tool names via add_tools()
+                // or register_tool(). Create a CallbackToolDispatcher that routes
+                // tool calls back to Python via callback/call_tool.
                 if let Some(tools) = result.get("tools") {
                     match tools.as_array() {
                         Some(arr) => {
-                            // Strict contract: every element must be a string.
-                            // Python SDK validates this, but enforce here too.
-                            let mut valid_tools = Vec::with_capacity(arr.len());
+                            let mut tool_names = Vec::with_capacity(arr.len());
                             for v in arr {
-                                if v.is_string() {
-                                    valid_tools.push(v.clone());
+                                if let Some(name) = v.as_str() {
+                                    tool_names.push(name.to_string());
                                 } else {
                                     return Err(SessionError::Agent(AgentError::ToolError(format!(
                                         "callback/build_agent: tools must be strings, got: {v}"
                                     ))));
                                 }
                             }
-                            if !valid_tools.is_empty() {
+                            if !tool_names.is_empty() {
+                                let dispatcher = CallbackToolDispatcher::new(
+                                    self.bridge.clone(),
+                                    scope_id.clone(),
+                                    tool_names,
+                                );
                                 let build = modified_req.build.get_or_insert_with(|| {
                                     meerkat_core::service::SessionBuildOptions::default()
                                 });
-                                let params = build.provider_params.get_or_insert_with(|| json!({}));
-                                if let Some(obj) = params.as_object_mut() {
-                                    obj.insert("callback_tools".to_string(), Value::Array(valid_tools));
-                                }
+                                build.external_tools = Some(Arc::new(dispatcher));
                             }
                         }
                         None => {
