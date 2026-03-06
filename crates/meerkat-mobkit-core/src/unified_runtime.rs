@@ -12,6 +12,7 @@ use meerkat_mob::{
     AttributedEvent, MeerkatId, MemberRef, MobEventRouterHandle, MobHandle, MobState,
     SpawnMemberSpec,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -21,8 +22,8 @@ use tokio::task::JoinHandle;
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
 use crate::http_sse::DEFAULT_KEEP_ALIVE_INTERVAL;
 use crate::mob_handle_runtime::{
-    MobBootstrapSpec, MobReconcileReport, MobRuntimeError, RealInteractionSubscription,
-    RealMobRuntime,
+    MobBootstrapSpec, MobMemberSnapshot, MobReconcileReport, MobRuntimeError,
+    RealInteractionSubscription, RealMobRuntime,
 };
 use crate::runtime::{
     start_mobkit_runtime_with_options, DeliveryHistoryRequest, DeliveryHistoryResponse,
@@ -66,6 +67,80 @@ pub type PreSpawnHook = Box<
     dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<PreSpawnContext, Box<dyn std::error::Error + Send>>> + Send>>
         + Send,
 >;
+
+// ---------------------------------------------------------------------------
+// Dynamic peer edge reconciliation
+// ---------------------------------------------------------------------------
+
+/// Error constructing a [`DesiredPeerEdge`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesiredPeerEdgeError {
+    EmptyEndpoint,
+    SelfEdge,
+}
+
+impl Display for DesiredPeerEdgeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyEndpoint => write!(f, "edge endpoint must not be empty"),
+            Self::SelfEdge => write!(f, "self-edges are not allowed"),
+        }
+    }
+}
+
+impl std::error::Error for DesiredPeerEdgeError {}
+
+/// A canonical undirected peer edge. Endpoints are sorted at construction
+/// time and self-edges are rejected, so the invariant `a < b` always holds.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct DesiredPeerEdge {
+    pub a: String,
+    pub b: String,
+}
+
+impl DesiredPeerEdge {
+    pub fn new(a: impl Into<String>, b: impl Into<String>) -> Result<Self, DesiredPeerEdgeError> {
+        let mut a = a.into().trim().to_string();
+        let mut b = b.into().trim().to_string();
+        if a.is_empty() || b.is_empty() {
+            return Err(DesiredPeerEdgeError::EmptyEndpoint);
+        }
+        if a == b {
+            return Err(DesiredPeerEdgeError::SelfEdge);
+        }
+        if a > b {
+            std::mem::swap(&mut a, &mut b);
+        }
+        Ok(Self { a, b })
+    }
+
+    pub fn endpoints(&self) -> (&str, &str) {
+        (&self.a, &self.b)
+    }
+}
+
+/// Trait for computing desired peer edges from active mob members.
+///
+/// The app owns the policy (which agents should be wired). MobKit owns
+/// the lifecycle-safe reconciliation that makes reality match the policy.
+pub trait EdgeDiscovery: Send + Sync {
+    fn discover_edges(
+        &self,
+        active_members: Vec<MobMemberSnapshot>,
+    ) -> Pin<Box<dyn Future<Output = Vec<DesiredPeerEdge>> + Send + '_>>;
+}
+
+/// Report from dynamic edge reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UnifiedRuntimeReconcileEdgesReport {
+    pub desired_edges: Vec<DesiredPeerEdge>,
+    pub wired_edges: Vec<DesiredPeerEdge>,
+    pub unwired_edges: Vec<DesiredPeerEdge>,
+    pub retained_edges: Vec<DesiredPeerEdge>,
+    pub preexisting_edges: Vec<DesiredPeerEdge>,
+    pub skipped_missing_members: Vec<DesiredPeerEdge>,
+    pub pruned_stale_managed_edges: Vec<DesiredPeerEdge>,
+}
 
 /// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
 ///
@@ -193,6 +268,7 @@ pub struct UnifiedRuntimeBuilder {
     drain_timeout: Option<Duration>,
     discovery: Option<Box<dyn Discovery>>,
     pre_spawn_hook: Option<PreSpawnHook>,
+    edge_discovery: Option<Box<dyn EdgeDiscovery>>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -246,6 +322,11 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    pub fn edge_discovery(mut self, edge_discovery: impl EdgeDiscovery + 'static) -> Self {
+        self.edge_discovery = Some(Box::new(edge_discovery));
+        self
+    }
+
     pub async fn build(self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         let mob_spec = self
             .mob_spec
@@ -274,6 +355,7 @@ impl UnifiedRuntimeBuilder {
         runtime.post_spawn_hook = self.post_spawn_hook;
         runtime.post_reconcile_hook = self.post_reconcile_hook;
         runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
+        runtime.edge_discovery = self.edge_discovery;
 
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
             hook()
@@ -295,6 +377,11 @@ impl UnifiedRuntimeBuilder {
                 .await
                 .map_err(UnifiedRuntimeBootstrapError::Mob)
                 .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+        }
+
+        // Run initial edge reconciliation after spawn completes
+        if runtime.edge_discovery.is_some() {
+            runtime.reconcile_edges().await;
         }
 
         Ok(runtime)
@@ -378,6 +465,7 @@ pub struct UnifiedRuntimeReconcileRoutingReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnifiedRuntimeReconcileReport {
     pub mob: MobReconcileReport,
+    pub edges: UnifiedRuntimeReconcileEdgesReport,
     pub routing: UnifiedRuntimeReconcileRoutingReport,
 }
 
@@ -417,6 +505,10 @@ pub struct UnifiedRuntime {
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
     drain_timeout: Duration,
+    edge_discovery: Option<Box<dyn EdgeDiscovery>>,
+    /// Dynamic edges managed by edge reconciliation. Only edges in this set
+    /// can be unwired by the reconciler — static/preexisting edges are safe.
+    managed_dynamic_edges: BTreeSet<(String, String)>,
 }
 
 enum MobEventIngress {
@@ -490,6 +582,8 @@ impl UnifiedRuntime {
             post_spawn_hook: None,
             post_reconcile_hook: None,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
+            edge_discovery: None,
+            managed_dynamic_edges: BTreeSet::new(),
         }
     }
 
@@ -571,24 +665,145 @@ impl UnifiedRuntime {
         &mut self,
         desired_specs: Vec<SpawnMemberSpec>,
     ) -> Result<UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileError> {
+        // 1. Member reconcile
         let mob = self
             .mob_runtime
             .reconcile(desired_specs)
             .await
             .map_err(UnifiedRuntimeReconcileError::Mob)?;
-        let active_members = self
-            .mob_runtime
-            .discover()
-            .await
-            .into_iter()
-            .map(|member| member.meerkat_id)
+        // 2. Refresh active members
+        let active_snapshots = self.mob_runtime.discover().await;
+        let active_member_ids = active_snapshots
+            .iter()
+            .map(|m| m.meerkat_id.clone())
             .collect::<Vec<_>>();
-        let routing = self.reconcile_routing_wiring(active_members)?;
-        let report = UnifiedRuntimeReconcileReport { mob, routing };
+        // 3 + 4. Edge discovery + dynamic edge reconcile
+        let edges = self
+            .reconcile_edges_from_members(active_snapshots)
+            .await;
+        // 5. Routing reconcile
+        let routing = self.reconcile_routing_wiring(active_member_ids)?;
+        let report = UnifiedRuntimeReconcileReport { mob, edges, routing };
         if let Some(hook) = &self.post_reconcile_hook {
             hook(report.clone()).await;
         }
         Ok(report)
+    }
+
+    /// Reconcile dynamic peer edges using fresh roster state.
+    ///
+    /// Refreshes the roster, runs edge discovery if configured, diffs
+    /// desired vs managed edges, and calls wire/unwire as needed.
+    pub async fn reconcile_edges(
+        &mut self,
+    ) -> UnifiedRuntimeReconcileEdgesReport {
+        let active_members = self.mob_runtime.discover().await;
+        self.reconcile_edges_from_members(active_members).await
+    }
+
+    async fn reconcile_edges_from_members(
+        &mut self,
+        active_members: Vec<MobMemberSnapshot>,
+    ) -> UnifiedRuntimeReconcileEdgesReport {
+        let edge_discovery = match &self.edge_discovery {
+            Some(d) => d,
+            None => return UnifiedRuntimeReconcileEdgesReport::default(),
+        };
+
+        let active_ids: BTreeSet<String> = active_members
+            .iter()
+            .map(|m| m.meerkat_id.clone())
+            .collect();
+
+        // Build current wiring map from snapshots
+        let mut current_edges: BTreeSet<(String, String)> = BTreeSet::new();
+        for member in &active_members {
+            for peer in &member.wired_to {
+                let mut a = member.meerkat_id.clone();
+                let mut b = peer.clone();
+                if a > b {
+                    std::mem::swap(&mut a, &mut b);
+                }
+                current_edges.insert((a, b));
+            }
+        }
+
+        // Run edge discovery
+        let raw_desired = edge_discovery.discover_edges(active_members).await;
+
+        // Deduplicate (DesiredPeerEdge is already canonical, but multiple
+        // entries for the same pair can come from discovery)
+        let desired: BTreeSet<(String, String)> = raw_desired
+            .iter()
+            .map(|e| (e.a.clone(), e.b.clone()))
+            .collect();
+
+        let mut report = UnifiedRuntimeReconcileEdgesReport {
+            desired_edges: raw_desired,
+            ..Default::default()
+        };
+
+        // Classify desired edges
+        for (a, b) in &desired {
+            // Skip if either endpoint is missing
+            if !active_ids.contains(a) || !active_ids.contains(b) {
+                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                    report.skipped_missing_members.push(edge);
+                }
+                continue;
+            }
+            let key = (a.clone(), b.clone());
+            if self.managed_dynamic_edges.contains(&key) {
+                // Already managed by us — retained
+                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                    report.retained_edges.push(edge);
+                }
+            } else if current_edges.contains(&key) {
+                // Exists but not managed by us (static or external) — don't claim
+                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                    report.preexisting_edges.push(edge);
+                }
+            } else {
+                // New edge — wire it
+                let mid_a = MeerkatId::from(a.as_str());
+                let mid_b = MeerkatId::from(b.as_str());
+                if self.mob_runtime.handle().wire(mid_a, mid_b).await.is_ok() {
+                    self.managed_dynamic_edges.insert(key);
+                    if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                        report.wired_edges.push(edge);
+                    }
+                }
+            }
+        }
+
+        // Unwire managed edges that are no longer desired
+        let to_unwire: Vec<(String, String)> = self
+            .managed_dynamic_edges
+            .iter()
+            .filter(|key| !desired.contains(*key))
+            .cloned()
+            .collect();
+
+        for (a, b) in to_unwire {
+            // If either endpoint is gone, just prune from managed set
+            if !active_ids.contains(&a) || !active_ids.contains(&b) {
+                self.managed_dynamic_edges.remove(&(a.clone(), b.clone()));
+                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                    report.pruned_stale_managed_edges.push(edge);
+                }
+                continue;
+            }
+            let mid_a = MeerkatId::from(a.as_str());
+            let mid_b = MeerkatId::from(b.as_str());
+            if self.mob_runtime.handle().unwire(mid_a, mid_b).await.is_ok() {
+                self.managed_dynamic_edges.remove(&(a.clone(), b.clone()));
+                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                    report.unwired_edges.push(edge);
+                }
+            }
+        }
+
+        report
     }
 
     pub async fn inject_and_subscribe(
