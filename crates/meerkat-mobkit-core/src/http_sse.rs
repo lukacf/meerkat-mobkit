@@ -31,10 +31,19 @@ pub(crate) type InteractionSseInjectFuture =
     Pin<Box<dyn Future<Output = Result<RealInteractionSubscription, MobRuntimeError>> + Send>>;
 pub(crate) type InteractionSseInjectFn =
     Arc<dyn Fn(String, String) -> InteractionSseInjectFuture + Send + Sync>;
+/// Ensure-and-inject parameters for the SSE handler.
+#[derive(Debug, Clone)]
+pub(crate) struct EnsureInjectParams {
+    pub member_id: String,
+    pub profile: String,
+    pub message: String,
+    pub context: Option<serde_json::Value>,
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
+}
+
 /// Like InteractionSseInjectFn but spawns-if-missing before injecting.
-/// Args: (member_id, profile, message)
 pub(crate) type InteractionSseEnsureInjectFn =
-    Arc<dyn Fn(String, String, String) -> InteractionSseInjectFuture + Send + Sync>;
+    Arc<dyn Fn(EnsureInjectParams) -> InteractionSseInjectFuture + Send + Sync>;
 
 #[derive(Clone)]
 struct InteractionSseState {
@@ -51,6 +60,12 @@ pub struct InjectSseRequest {
     /// This is the "ensure_member + inject" pattern for chat/Slack-style apps.
     #[serde(default)]
     pub ensure_with_profile: Option<String>,
+    /// Application context passed through to the agent build pipeline (ensure mode only).
+    #[serde(default)]
+    pub context: Option<serde_json::Value>,
+    /// Application-defined labels for the member (ensure mode only).
+    #[serde(default)]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 pub fn interaction_sse_router(runtime: RealMobRuntime) -> Router {
@@ -101,6 +116,12 @@ pub async fn interaction_sse_handler(
     State(runtime): State<RealMobRuntime>,
     Json(request): Json<InjectSseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if request.ensure_with_profile.is_some() {
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            "ensure_with_profile is not supported on this endpoint; use the unified runtime router",
+        ));
+    }
     interaction_sse_response(
         runtime_inject_fn(runtime),
         request,
@@ -128,13 +149,25 @@ async fn interaction_sse_handler_with_state(
     }
 
     // If ensure_with_profile is set and we have the ensure injector,
-    // use spawn-if-missing + inject. Otherwise use plain inject.
+    // use inject-first-then-spawn-if-missing. Otherwise use plain inject.
     let subscription = if let (Some(profile), Some(ensure_fn)) =
         (&request.ensure_with_profile, &state.ensure_and_inject)
     {
-        (ensure_fn)(member_id.clone(), profile.clone(), request.message)
-            .await
-            .map_err(map_runtime_error)?
+        (ensure_fn)(EnsureInjectParams {
+            member_id: member_id.clone(),
+            profile: profile.clone(),
+            message: request.message,
+            context: request.context,
+            labels: request.labels,
+        })
+        .await
+        .map_err(map_runtime_error)?
+    } else if request.ensure_with_profile.is_some() {
+        // ensure_with_profile set but no ensure handler wired — reject explicitly
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            "ensure_with_profile is not supported on this endpoint; use the unified runtime router",
+        ));
     } else {
         (state.inject_and_subscribe)(member_id.clone(), request.message)
             .await

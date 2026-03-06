@@ -604,27 +604,44 @@ impl UnifiedRuntime {
     /// Ensure a member exists (spawning from `spec` if missing), then inject a
     /// message and return a streaming subscription.
     ///
-    /// This is the "find logical target, create if missing, then inject and stream"
-    /// primitive that chat/Slack-style apps need. Without this, callers must
-    /// manually check the roster, spawn, then inject — a race-prone sequence.
+    /// Uses inject-first strategy: tries inject_and_subscribe first, and only
+    /// spawns if the member doesn't exist. This avoids spawning members that
+    /// can't be injected (e.g. non-externally-addressable profiles) and handles
+    /// concurrent callers gracefully (duplicate spawn → `MeerkatAlreadyExists`
+    /// is treated as success since the member exists).
     pub async fn ensure_and_inject_and_subscribe(
         &self,
         spec: SpawnMemberSpec,
         message: String,
     ) -> Result<RealInteractionSubscription, MobRuntimeError> {
-        let member_id = spec.meerkat_id.clone();
-        // Check if already in roster
-        let exists = self
+        let member_id_str = spec.meerkat_id.to_string();
+        // Try inject first — if the member exists, this succeeds without spawning.
+        match self
             .mob_runtime
-            .handle()
-            .get_member(&member_id)
+            .inject_and_subscribe(&member_id_str, message.clone())
             .await
-            .is_some();
-        if !exists {
-            self.spawn(spec).await?;
+        {
+            Ok(subscription) => return Ok(subscription),
+            Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {
+                // Member doesn't exist — fall through to spawn
+            }
+            Err(other) => return Err(other),
         }
+        // Spawn the member. Treat MeerkatAlreadyExists as success (concurrent caller won).
+        match self.mob_runtime.spawn(spec).await {
+            Ok(_member_ref) => {
+                if let Some(hook) = &self.post_spawn_hook {
+                    hook(vec![member_id_str.clone()]).await;
+                }
+            }
+            Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatAlreadyExists(_))) => {
+                // Another caller spawned it concurrently — that's fine.
+            }
+            Err(err) => return Err(err),
+        }
+        // Now inject into the (newly spawned or concurrently created) member.
         self.mob_runtime
-            .inject_and_subscribe(&member_id.to_string(), message)
+            .inject_and_subscribe(&member_id_str, message)
             .await
     }
 
@@ -775,31 +792,45 @@ impl UnifiedRuntime {
         let ensure_runtime = self.mob_runtime.clone();
         let post_spawn = self.post_spawn_hook.clone();
         let ensure_fn: InteractionSseEnsureInjectFn = Arc::new(
-            move |member_id: String, profile: String, message: String| {
+            move |params: crate::http_sse::EnsureInjectParams| {
                 let runtime = ensure_runtime.clone();
                 let post_spawn = post_spawn.clone();
                 Box::pin(async move {
-                    let mid = meerkat_mob::MeerkatId::from(member_id.as_str());
-                    let exists = runtime.handle().get_member(&mid).await.is_some();
-                    if !exists {
-                        let spec = SpawnMemberSpec {
-                            profile_name: meerkat_mob::ProfileName::from(profile.as_str()),
-                            meerkat_id: mid.clone(),
-                            initial_message: None,
-                            runtime_mode: None,
-                            backend: None,
-                            context: None,
-                            labels: None,
-                            resume_session_id: None,
-                            additional_instructions: None,
-                        };
-                        runtime.spawn(spec).await?;
-                        if let Some(hook) = &post_spawn {
-                            hook(vec![member_id.clone()]).await;
+                    // Inject-first: try inject, spawn only if member doesn't exist.
+                    // This avoids spawning members for profiles that can't be injected.
+                    match runtime
+                        .inject_and_subscribe(&params.member_id, params.message.clone())
+                        .await
+                    {
+                        Ok(sub) => return Ok(sub),
+                        Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {}
+                        Err(other) => return Err(other),
+                    }
+                    let mid = meerkat_mob::MeerkatId::from(params.member_id.as_str());
+                    let spec = SpawnMemberSpec {
+                        profile_name: meerkat_mob::ProfileName::from(params.profile.as_str()),
+                        meerkat_id: mid,
+                        initial_message: None,
+                        runtime_mode: None,
+                        backend: None,
+                        context: params.context,
+                        labels: params.labels,
+                        resume_session_id: None,
+                        additional_instructions: None,
+                    };
+                    match runtime.spawn(spec).await {
+                        Ok(_) => {
+                            if let Some(hook) = &post_spawn {
+                                hook(vec![params.member_id.clone()]).await;
+                            }
                         }
+                        Err(MobRuntimeError::Mob(
+                            meerkat_mob::MobError::MeerkatAlreadyExists(_),
+                        )) => {}
+                        Err(err) => return Err(err),
                     }
                     runtime
-                        .inject_and_subscribe(&member_id, message)
+                        .inject_and_subscribe(&params.member_id, params.message)
                         .await
                 })
             },
