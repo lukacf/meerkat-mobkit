@@ -419,7 +419,8 @@ impl UnifiedRuntimeBuilder {
 
         // Run initial edge reconciliation after spawn completes
         if runtime.edge_discovery.is_some() {
-            runtime.reconcile_edges().await;
+            let report = runtime.reconcile_edges().await;
+            runtime.bootstrap_edges_report = Some(report);
         }
 
         Ok(runtime)
@@ -547,6 +548,9 @@ pub struct UnifiedRuntime {
     /// Dynamic edges managed by edge reconciliation. Only edges in this set
     /// can be unwired by the reconciler — static/preexisting edges are safe.
     managed_dynamic_edges: BTreeSet<(String, String)>,
+    /// Edge reconciliation report from bootstrap. Inspect after build() to
+    /// detect incomplete startup topology.
+    bootstrap_edges_report: Option<UnifiedRuntimeReconcileEdgesReport>,
 }
 
 enum MobEventIngress {
@@ -622,6 +626,7 @@ impl UnifiedRuntime {
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             edge_discovery: None,
             managed_dynamic_edges: BTreeSet::new(),
+            bootstrap_edges_report: None,
         }
     }
 
@@ -666,6 +671,14 @@ impl UnifiedRuntime {
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await
             }
         }
+    }
+
+    /// Bootstrap edge reconciliation report, if edge discovery was configured.
+    ///
+    /// Inspect after `build()` to detect incomplete startup topology.
+    /// Returns `None` if no edge discovery was configured.
+    pub fn bootstrap_edges_report(&self) -> Option<&UnifiedRuntimeReconcileEdgesReport> {
+        self.bootstrap_edges_report.as_ref()
     }
 
     pub fn status(&self) -> MobState {
@@ -860,9 +873,19 @@ impl UnifiedRuntime {
             .collect();
 
         for (a, b) in to_unwire {
+            let key = (a.clone(), b.clone());
             // If either endpoint is gone, just prune from managed set
             if !active_ids.contains(&a) || !active_ids.contains(&b) {
-                self.managed_dynamic_edges.remove(&(a.clone(), b.clone()));
+                self.managed_dynamic_edges.remove(&key);
+                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                    report.pruned_stale_managed_edges.push(edge);
+                }
+                continue;
+            }
+            // If the edge is already gone from the mob graph (out-of-band
+            // unwire/reset), just drop ownership — don't attempt unwire.
+            if !current_edges.contains(&key) {
+                self.managed_dynamic_edges.remove(&key);
                 if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                     report.pruned_stale_managed_edges.push(edge);
                 }
@@ -872,7 +895,7 @@ impl UnifiedRuntime {
             let mid_b = MeerkatId::from(b.as_str());
             match self.mob_runtime.handle().unwire(mid_a, mid_b).await {
                 Ok(()) => {
-                    self.managed_dynamic_edges.remove(&(a.clone(), b.clone()));
+                    self.managed_dynamic_edges.remove(&key);
                     if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                         report.unwired_edges.push(edge);
                     }
