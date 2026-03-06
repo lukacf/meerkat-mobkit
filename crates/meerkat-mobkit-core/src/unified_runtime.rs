@@ -609,6 +609,7 @@ impl UnifiedRuntime {
     fn validate_profile_for_inject(
         &self,
         profile_name: &meerkat_mob::ProfileName,
+        meerkat_id: &meerkat_mob::MeerkatId,
         runtime_mode_override: Option<meerkat_mob::MobRuntimeMode>,
     ) -> Result<(), MobRuntimeError> {
         let handle = self.mob_runtime.handle();
@@ -618,16 +619,14 @@ impl UnifiedRuntime {
         })?;
         if !profile.external_addressable {
             return Err(MobRuntimeError::Mob(
-                meerkat_mob::MobError::NotExternallyAddressable(meerkat_mob::MeerkatId::from(
-                    profile_name.as_ref(),
-                )),
+                meerkat_mob::MobError::NotExternallyAddressable(meerkat_id.clone()),
             ));
         }
         let effective_mode = runtime_mode_override.unwrap_or(profile.runtime_mode);
         if effective_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
             return Err(MobRuntimeError::Mob(meerkat_mob::MobError::UnsupportedForMode {
                 mode: effective_mode,
-                reason: "ensure_and_inject requires autonomous_host mode".into(),
+                reason: "inject_and_subscribe requires autonomous_host mode".into(),
             }));
         }
         Ok(())
@@ -663,7 +662,7 @@ impl UnifiedRuntime {
             Err(other) => return Err(other),
         }
         // Validate profile supports inject BEFORE spawning to avoid stray members.
-        self.validate_profile_for_inject(&spec.profile_name, spec.runtime_mode)?;
+        self.validate_profile_for_inject(&spec.profile_name, &spec.meerkat_id, spec.runtime_mode)?;
         // Spawn the member.
         let was_concurrent = match self.mob_runtime.spawn(spec).await {
             Ok(_member_ref) => {
@@ -893,7 +892,7 @@ impl UnifiedRuntime {
                             return Err(MobRuntimeError::Mob(
                                 meerkat_mob::MobError::UnsupportedForMode {
                                     mode: profile.runtime_mode,
-                                    reason: "ensure_and_inject requires autonomous_host mode"
+                                    reason: "inject_and_subscribe requires autonomous_host mode"
                                         .into(),
                                 },
                             ));
