@@ -87,8 +87,9 @@ pub use types::{
     PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
-    discovery_spec_to_spawn_spec, Discovery, PostReconcileHook, PostSpawnHook,
-    ShutdownDrainReport, UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
+    discovery_spec_to_spawn_spec, Discovery, PostReconcileHook, PostSpawnHook, PreSpawnContext,
+    PreSpawnHook, ShutdownDrainReport, UnifiedRuntime, UnifiedRuntimeBootstrapError,
+    UnifiedRuntimeBuilder,
     UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
     UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
     UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,

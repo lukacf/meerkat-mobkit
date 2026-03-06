@@ -21,7 +21,10 @@ struct MockDiscovery {
 }
 
 impl Discovery for MockDiscovery {
-    fn discover(&self) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>> {
+    fn discover(
+        &self,
+        _context: serde_json::Value,
+    ) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>> {
         let specs = self.specs.clone();
         Box::pin(async move { specs })
     }
@@ -291,7 +294,7 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
             let flag = hook_ran_clone.clone();
             Box::pin(async move {
                 flag.store(true, Ordering::SeqCst);
-                Ok(())
+                Ok(serde_json::Value::Null)
             })
         });
 

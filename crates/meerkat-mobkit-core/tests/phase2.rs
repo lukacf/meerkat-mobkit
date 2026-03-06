@@ -282,7 +282,7 @@ fn sc_001_reference_app_router_proves_unified_owned_stream_ingress_path() {
     let unified_runtime_source = include_str!("../src/unified_runtime.rs");
     assert!(unified_runtime_source.contains(".merge(self.build_console_frontend_router())"));
     assert!(unified_runtime_source.contains(".merge(self.build_interaction_sse_router())"));
-    assert!(unified_runtime_source.contains("interaction_sse_router_with_injector"));
+    assert!(unified_runtime_source.contains("interaction_sse_router_full"));
     assert!(!unified_runtime_source.contains("interaction_sse_router(self.mob_runtime.clone())"));
 }
 

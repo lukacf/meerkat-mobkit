@@ -19,7 +19,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
-use crate::http_sse::interaction_sse_router_with_injector;
+use crate::http_sse::DEFAULT_KEEP_ALIVE_INTERVAL;
 use crate::mob_handle_runtime::{
     MobBootstrapSpec, MobReconcileReport, MobRuntimeError, RealInteractionSubscription,
     RealMobRuntime,
@@ -39,15 +39,31 @@ use crate::runtime::{
 use crate::{route_module_call, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
 
+/// Opaque context produced by [`PreSpawnHook`] and consumed by [`Discovery::discover`].
+///
+/// Carries data from the pre-spawn phase (e.g. session resume maps, warmed caches)
+/// into the discovery phase without requiring shared side-channel state.
+pub type PreSpawnContext = serde_json::Value;
+
 /// Trait for discovering agents to spawn into a mob at bootstrap time.
+///
+/// `discover` receives the [`PreSpawnContext`] produced by the pre-spawn hook
+/// (or `Value::Null` if no hook ran). This enables the "query sessions once,
+/// build a resume map, feed that into discovery" pattern without side-channel state.
 pub trait Discovery: Send + Sync {
-    fn discover(&self) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>>;
+    fn discover(
+        &self,
+        context: PreSpawnContext,
+    ) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>>;
 }
 
 /// A callback that runs before discovery/spawn for session preloading, cache warming, etc.
-/// Returns `Result` so preloading failures (e.g. BQ unreachable) can abort bootstrap.
+///
+/// Returns a [`PreSpawnContext`] on success, which is passed to [`Discovery::discover`].
+/// This enables pre-spawn to produce data (resume maps, session queries, etc.) that
+/// discovery consumes, replacing the need for shared mutable side-channel state.
 pub type PreSpawnHook = Box<
-    dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send>>
+    dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<PreSpawnContext, Box<dyn std::error::Error + Send>>> + Send>>
         + Send,
 >;
 
@@ -259,17 +275,19 @@ impl UnifiedRuntimeBuilder {
         runtime.post_reconcile_hook = self.post_reconcile_hook;
         runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
 
-        if let Some(hook) = self.pre_spawn_hook {
+        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
             hook()
                 .await
                 .map_err(|err| {
                     UnifiedRuntimeBuilderError::Bootstrap(
                         UnifiedRuntimeBootstrapError::PreSpawnHook(err.to_string()),
                     )
-                })?;
-        }
+                })?
+        } else {
+            serde_json::Value::Null
+        };
         if let Some(discovery) = self.discovery {
-            let specs = discovery.discover().await;
+            let specs = discovery.discover(pre_spawn_context).await;
             let spawn_specs: Vec<SpawnMemberSpec> =
                 specs.iter().map(discovery_spec_to_spawn_spec).collect();
             runtime
@@ -539,7 +557,14 @@ impl UnifiedRuntime {
         &self,
         specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<MemberRef>, MobRuntimeError> {
-        self.mob_runtime.spawn_many(specs).await
+        let member_ids: Vec<String> = specs.iter().map(|s| s.meerkat_id.to_string()).collect();
+        let refs = self.mob_runtime.spawn_many(specs).await?;
+        if !member_ids.is_empty() {
+            if let Some(hook) = &self.post_spawn_hook {
+                hook(member_ids).await;
+            }
+        }
+        Ok(refs)
     }
 
     pub async fn reconcile(
@@ -574,6 +599,116 @@ impl UnifiedRuntime {
         self.mob_runtime
             .inject_and_subscribe(member_id, message)
             .await
+    }
+
+    /// Validate that a profile supports inject_and_subscribe before spawning.
+    ///
+    /// Checks: profile exists, external_addressable, and effective runtime mode
+    /// is AutonomousHost. Returns the error that inject_and_subscribe would
+    /// return, so callers get a clear rejection without roster mutation.
+    fn validate_profile_for_inject(
+        &self,
+        profile_name: &meerkat_mob::ProfileName,
+        meerkat_id: &meerkat_mob::MeerkatId,
+        runtime_mode_override: Option<meerkat_mob::MobRuntimeMode>,
+    ) -> Result<(), MobRuntimeError> {
+        let handle = self.mob_runtime.handle();
+        let definition = handle.definition();
+        let profile = definition.profiles.get(profile_name).ok_or_else(|| {
+            MobRuntimeError::Mob(meerkat_mob::MobError::ProfileNotFound(profile_name.clone()))
+        })?;
+        if !profile.external_addressable {
+            return Err(MobRuntimeError::Mob(
+                meerkat_mob::MobError::NotExternallyAddressable(meerkat_id.clone()),
+            ));
+        }
+        let effective_mode = runtime_mode_override.unwrap_or(profile.runtime_mode);
+        if effective_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
+            return Err(MobRuntimeError::Mob(meerkat_mob::MobError::UnsupportedForMode {
+                mode: effective_mode,
+                reason: "inject_and_subscribe requires autonomous_host mode".into(),
+            }));
+        }
+        Ok(())
+    }
+
+    /// Ensure a member exists (spawning from `spec` if missing), then inject a
+    /// message and return a streaming subscription.
+    ///
+    /// Uses inject-first strategy: tries inject_and_subscribe first, and only
+    /// spawns if the member doesn't exist. Pre-validates the profile before
+    /// spawning to avoid leaving stray members for non-injectable profiles.
+    ///
+    /// For concurrent callers: if spawn returns `MeerkatAlreadyExists`, the
+    /// member may still be pending (Meerkat returns the same error for both
+    /// "already in roster" and "spawn in progress"). We retry inject with
+    /// backoff to wait for the pending spawn to complete.
+    pub async fn ensure_and_inject_and_subscribe(
+        &self,
+        spec: SpawnMemberSpec,
+        message: String,
+    ) -> Result<RealInteractionSubscription, MobRuntimeError> {
+        let member_id_str = spec.meerkat_id.to_string();
+        // Try inject first — if the member exists, this succeeds without spawning.
+        match self
+            .mob_runtime
+            .inject_and_subscribe(&member_id_str, message.clone())
+            .await
+        {
+            Ok(subscription) => return Ok(subscription),
+            Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {
+                // Member doesn't exist — fall through to spawn
+            }
+            Err(other) => return Err(other),
+        }
+        // Validate profile supports inject BEFORE spawning to avoid stray members.
+        self.validate_profile_for_inject(&spec.profile_name, &spec.meerkat_id, spec.runtime_mode)?;
+        // Spawn the member.
+        let was_concurrent = match self.mob_runtime.spawn(spec).await {
+            Ok(_member_ref) => {
+                if let Some(hook) = &self.post_spawn_hook {
+                    hook(vec![member_id_str.clone()]).await;
+                }
+                false
+            }
+            Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatAlreadyExists(_))) => {
+                // Another caller is spawning or already spawned — may still be pending.
+                true
+            }
+            Err(err) => return Err(err),
+        };
+        // Inject with retry: if the spawn was concurrent (MeerkatAlreadyExists),
+        // the member may still be pending. Retry with backoff.
+        let max_retries = if was_concurrent { 10 } else { 1 };
+        let mut last_err = None;
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+            }
+            match self
+                .mob_runtime
+                .inject_and_subscribe(&member_id_str, message.clone())
+                .await
+            {
+                Ok(subscription) => return Ok(subscription),
+                Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_)))
+                    if was_concurrent =>
+                {
+                    last_err = Some(MobRuntimeError::Mob(
+                        meerkat_mob::MobError::MeerkatNotFound(
+                            meerkat_mob::MeerkatId::from(member_id_str.as_str()),
+                        ),
+                    ));
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(
+                meerkat_mob::MeerkatId::from(member_id_str.as_str()),
+            ))
+        }))
     }
 
     pub fn module_is_running(&self) -> bool {
@@ -710,11 +845,124 @@ impl UnifiedRuntime {
     }
 
     pub fn build_interaction_sse_router(&self) -> Router {
+        use crate::http_sse::{interaction_sse_router_full, InteractionSseEnsureInjectFn};
         let runtime = self.interaction_sse_runtime();
-        interaction_sse_router_with_injector(Arc::new(move |member_id: String, message: String| {
+        let inject_fn = {
             let runtime = runtime.clone();
-            Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
-        }))
+            Arc::new(move |member_id: String, message: String| {
+                let runtime = runtime.clone();
+                Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
+                    as crate::http_sse::InteractionSseInjectFuture
+            })
+        };
+        let ensure_runtime = self.mob_runtime.clone();
+        let post_spawn = self.post_spawn_hook.clone();
+        let ensure_fn: InteractionSseEnsureInjectFn = Arc::new(
+            move |params: crate::http_sse::EnsureInjectParams| {
+                let runtime = ensure_runtime.clone();
+                let post_spawn = post_spawn.clone();
+                Box::pin(async move {
+                    // Inject-first: try inject, spawn only if member doesn't exist.
+                    match runtime
+                        .inject_and_subscribe(&params.member_id, params.message.clone())
+                        .await
+                    {
+                        Ok(sub) => return Ok(sub),
+                        Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {}
+                        Err(other) => return Err(other),
+                    }
+                    // Validate profile supports inject BEFORE spawning.
+                    let profile_name = meerkat_mob::ProfileName::from(params.profile.as_str());
+                    {
+                        let handle = runtime.handle();
+                        let definition = handle.definition();
+                        let profile = definition.profiles.get(&profile_name).ok_or_else(|| {
+                            MobRuntimeError::Mob(meerkat_mob::MobError::ProfileNotFound(
+                                profile_name.clone(),
+                            ))
+                        })?;
+                        if !profile.external_addressable {
+                            return Err(MobRuntimeError::Mob(
+                                meerkat_mob::MobError::NotExternallyAddressable(
+                                    meerkat_mob::MeerkatId::from(params.member_id.as_str()),
+                                ),
+                            ));
+                        }
+                        if profile.runtime_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
+                            return Err(MobRuntimeError::Mob(
+                                meerkat_mob::MobError::UnsupportedForMode {
+                                    mode: profile.runtime_mode,
+                                    reason: "inject_and_subscribe requires autonomous_host mode"
+                                        .into(),
+                                },
+                            ));
+                        }
+                    }
+                    let mid = meerkat_mob::MeerkatId::from(params.member_id.as_str());
+                    let resume_session_id = params
+                        .resume_session_id
+                        .as_deref()
+                        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+                    let additional_instructions = params.additional_instructions.and_then(|v| {
+                        if v.is_empty() { None } else { Some(v) }
+                    });
+                    let spec = SpawnMemberSpec {
+                        profile_name: meerkat_mob::ProfileName::from(params.profile.as_str()),
+                        meerkat_id: mid,
+                        initial_message: None,
+                        runtime_mode: None,
+                        backend: None,
+                        context: params.context,
+                        labels: params.labels,
+                        resume_session_id,
+                        additional_instructions,
+                    };
+                    let was_concurrent = match runtime.spawn(spec).await {
+                        Ok(_) => {
+                            if let Some(hook) = &post_spawn {
+                                hook(vec![params.member_id.clone()]).await;
+                            }
+                            false
+                        }
+                        Err(MobRuntimeError::Mob(
+                            meerkat_mob::MobError::MeerkatAlreadyExists(_),
+                        )) => true,
+                        Err(err) => return Err(err),
+                    };
+                    // Retry inject with backoff if spawn was concurrent (may still be pending)
+                    let max_retries: u64 = if was_concurrent { 10 } else { 1 };
+                    let mut last_err = None;
+                    for attempt in 0..max_retries {
+                        if attempt > 0 {
+                            tokio::time::sleep(Duration::from_millis(100 * attempt)).await;
+                        }
+                        match runtime
+                            .inject_and_subscribe(&params.member_id, params.message.clone())
+                            .await
+                        {
+                            Ok(sub) => return Ok(sub),
+                            Err(MobRuntimeError::Mob(
+                                meerkat_mob::MobError::MeerkatNotFound(_),
+                            )) if was_concurrent => {
+                                last_err = Some(MobRuntimeError::Mob(
+                                    meerkat_mob::MobError::MeerkatNotFound(
+                                        meerkat_mob::MeerkatId::from(params.member_id.as_str()),
+                                    ),
+                                ));
+                                continue;
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+                    Err(last_err.unwrap_or_else(|| {
+                        MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(
+                            meerkat_mob::MeerkatId::from(params.member_id.as_str()),
+                        ))
+                    }))
+                })
+            },
+        );
+        interaction_sse_router_full(inject_fn, Some(ensure_fn), DEFAULT_KEEP_ALIVE_INTERVAL)
     }
 
     pub fn build_reference_app_router(&self, decisions: RuntimeDecisionState) -> Router {
