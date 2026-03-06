@@ -39,6 +39,8 @@ pub(crate) struct EnsureInjectParams {
     pub message: String,
     pub context: Option<serde_json::Value>,
     pub labels: Option<std::collections::BTreeMap<String, String>>,
+    pub resume_session_id: Option<String>,
+    pub additional_instructions: Option<Vec<String>>,
 }
 
 /// Like InteractionSseInjectFn but spawns-if-missing before injecting.
@@ -66,6 +68,12 @@ pub struct InjectSseRequest {
     /// Application-defined labels for the member (ensure mode only).
     #[serde(default)]
     pub labels: Option<std::collections::BTreeMap<String, String>>,
+    /// Resume an existing session instead of creating a new one (ensure mode only).
+    #[serde(default)]
+    pub resume_session_id: Option<String>,
+    /// Additional instruction sections appended to the system prompt (ensure mode only).
+    #[serde(default)]
+    pub additional_instructions: Option<Vec<String>>,
 }
 
 pub fn interaction_sse_router(runtime: RealMobRuntime) -> Router {
@@ -159,6 +167,8 @@ async fn interaction_sse_handler_with_state(
             message: request.message,
             context: request.context,
             labels: request.labels,
+            resume_session_id: request.resume_session_id,
+            additional_instructions: request.additional_instructions,
         })
         .await
         .map_err(map_runtime_error)?

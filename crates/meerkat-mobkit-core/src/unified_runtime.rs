@@ -606,9 +606,12 @@ impl UnifiedRuntime {
     ///
     /// Uses inject-first strategy: tries inject_and_subscribe first, and only
     /// spawns if the member doesn't exist. This avoids spawning members that
-    /// can't be injected (e.g. non-externally-addressable profiles) and handles
-    /// concurrent callers gracefully (duplicate spawn → `MeerkatAlreadyExists`
-    /// is treated as success since the member exists).
+    /// can't be injected (e.g. non-externally-addressable profiles).
+    ///
+    /// For concurrent callers: if spawn returns `MeerkatAlreadyExists`, the
+    /// member may still be pending (Meerkat returns the same error for both
+    /// "already in roster" and "spawn in progress"). We retry inject with
+    /// backoff to wait for the pending spawn to complete.
     pub async fn ensure_and_inject_and_subscribe(
         &self,
         spec: SpawnMemberSpec,
@@ -627,22 +630,52 @@ impl UnifiedRuntime {
             }
             Err(other) => return Err(other),
         }
-        // Spawn the member. Treat MeerkatAlreadyExists as success (concurrent caller won).
-        match self.mob_runtime.spawn(spec).await {
+        // Spawn the member.
+        let was_concurrent = match self.mob_runtime.spawn(spec).await {
             Ok(_member_ref) => {
                 if let Some(hook) = &self.post_spawn_hook {
                     hook(vec![member_id_str.clone()]).await;
                 }
+                false
             }
             Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatAlreadyExists(_))) => {
-                // Another caller spawned it concurrently — that's fine.
+                // Another caller is spawning or already spawned — may still be pending.
+                true
             }
             Err(err) => return Err(err),
+        };
+        // Inject with retry: if the spawn was concurrent (MeerkatAlreadyExists),
+        // the member may still be pending. Retry with backoff.
+        let max_retries = if was_concurrent { 10 } else { 1 };
+        let mut last_err = None;
+        for attempt in 0..max_retries {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+            }
+            match self
+                .mob_runtime
+                .inject_and_subscribe(&member_id_str, message.clone())
+                .await
+            {
+                Ok(subscription) => return Ok(subscription),
+                Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_)))
+                    if was_concurrent =>
+                {
+                    last_err = Some(MobRuntimeError::Mob(
+                        meerkat_mob::MobError::MeerkatNotFound(
+                            meerkat_mob::MeerkatId::from(member_id_str.as_str()),
+                        ),
+                    ));
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
         }
-        // Now inject into the (newly spawned or concurrently created) member.
-        self.mob_runtime
-            .inject_and_subscribe(&member_id_str, message)
-            .await
+        Err(last_err.unwrap_or_else(|| {
+            MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(
+                meerkat_mob::MeerkatId::from(member_id_str.as_str()),
+            ))
+        }))
     }
 
     pub fn module_is_running(&self) -> bool {
@@ -797,7 +830,6 @@ impl UnifiedRuntime {
                 let post_spawn = post_spawn.clone();
                 Box::pin(async move {
                     // Inject-first: try inject, spawn only if member doesn't exist.
-                    // This avoids spawning members for profiles that can't be injected.
                     match runtime
                         .inject_and_subscribe(&params.member_id, params.message.clone())
                         .await
@@ -807,6 +839,13 @@ impl UnifiedRuntime {
                         Err(other) => return Err(other),
                     }
                     let mid = meerkat_mob::MeerkatId::from(params.member_id.as_str());
+                    let resume_session_id = params
+                        .resume_session_id
+                        .as_deref()
+                        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+                    let additional_instructions = params.additional_instructions.and_then(|v| {
+                        if v.is_empty() { None } else { Some(v) }
+                    });
                     let spec = SpawnMemberSpec {
                         profile_name: meerkat_mob::ProfileName::from(params.profile.as_str()),
                         meerkat_id: mid,
@@ -815,23 +854,51 @@ impl UnifiedRuntime {
                         backend: None,
                         context: params.context,
                         labels: params.labels,
-                        resume_session_id: None,
-                        additional_instructions: None,
+                        resume_session_id,
+                        additional_instructions,
                     };
-                    match runtime.spawn(spec).await {
+                    let was_concurrent = match runtime.spawn(spec).await {
                         Ok(_) => {
                             if let Some(hook) = &post_spawn {
                                 hook(vec![params.member_id.clone()]).await;
                             }
+                            false
                         }
                         Err(MobRuntimeError::Mob(
                             meerkat_mob::MobError::MeerkatAlreadyExists(_),
-                        )) => {}
+                        )) => true,
                         Err(err) => return Err(err),
+                    };
+                    // Retry inject with backoff if spawn was concurrent (may still be pending)
+                    let max_retries: u64 = if was_concurrent { 10 } else { 1 };
+                    let mut last_err = None;
+                    for attempt in 0..max_retries {
+                        if attempt > 0 {
+                            tokio::time::sleep(Duration::from_millis(100 * attempt)).await;
+                        }
+                        match runtime
+                            .inject_and_subscribe(&params.member_id, params.message.clone())
+                            .await
+                        {
+                            Ok(sub) => return Ok(sub),
+                            Err(MobRuntimeError::Mob(
+                                meerkat_mob::MobError::MeerkatNotFound(_),
+                            )) if was_concurrent => {
+                                last_err = Some(MobRuntimeError::Mob(
+                                    meerkat_mob::MobError::MeerkatNotFound(
+                                        meerkat_mob::MeerkatId::from(params.member_id.as_str()),
+                                    ),
+                                ));
+                                continue;
+                            }
+                            Err(err) => return Err(err),
+                        }
                     }
-                    runtime
-                        .inject_and_subscribe(&params.member_id, params.message)
-                        .await
+                    Err(last_err.unwrap_or_else(|| {
+                        MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(
+                            meerkat_mob::MeerkatId::from(params.member_id.as_str()),
+                        ))
+                    }))
                 })
             },
         );
