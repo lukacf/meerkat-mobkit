@@ -601,12 +601,44 @@ impl UnifiedRuntime {
             .await
     }
 
+    /// Validate that a profile supports inject_and_subscribe before spawning.
+    ///
+    /// Checks: profile exists, external_addressable, and effective runtime mode
+    /// is AutonomousHost. Returns the error that inject_and_subscribe would
+    /// return, so callers get a clear rejection without roster mutation.
+    fn validate_profile_for_inject(
+        &self,
+        profile_name: &meerkat_mob::ProfileName,
+        runtime_mode_override: Option<meerkat_mob::MobRuntimeMode>,
+    ) -> Result<(), MobRuntimeError> {
+        let handle = self.mob_runtime.handle();
+        let definition = handle.definition();
+        let profile = definition.profiles.get(profile_name).ok_or_else(|| {
+            MobRuntimeError::Mob(meerkat_mob::MobError::ProfileNotFound(profile_name.clone()))
+        })?;
+        if !profile.external_addressable {
+            return Err(MobRuntimeError::Mob(
+                meerkat_mob::MobError::NotExternallyAddressable(meerkat_mob::MeerkatId::from(
+                    profile_name.as_ref(),
+                )),
+            ));
+        }
+        let effective_mode = runtime_mode_override.unwrap_or(profile.runtime_mode);
+        if effective_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
+            return Err(MobRuntimeError::Mob(meerkat_mob::MobError::UnsupportedForMode {
+                mode: effective_mode,
+                reason: "ensure_and_inject requires autonomous_host mode".into(),
+            }));
+        }
+        Ok(())
+    }
+
     /// Ensure a member exists (spawning from `spec` if missing), then inject a
     /// message and return a streaming subscription.
     ///
     /// Uses inject-first strategy: tries inject_and_subscribe first, and only
-    /// spawns if the member doesn't exist. This avoids spawning members that
-    /// can't be injected (e.g. non-externally-addressable profiles).
+    /// spawns if the member doesn't exist. Pre-validates the profile before
+    /// spawning to avoid leaving stray members for non-injectable profiles.
     ///
     /// For concurrent callers: if spawn returns `MeerkatAlreadyExists`, the
     /// member may still be pending (Meerkat returns the same error for both
@@ -630,6 +662,8 @@ impl UnifiedRuntime {
             }
             Err(other) => return Err(other),
         }
+        // Validate profile supports inject BEFORE spawning to avoid stray members.
+        self.validate_profile_for_inject(&spec.profile_name, spec.runtime_mode)?;
         // Spawn the member.
         let was_concurrent = match self.mob_runtime.spawn(spec).await {
             Ok(_member_ref) => {
@@ -837,6 +871,33 @@ impl UnifiedRuntime {
                         Ok(sub) => return Ok(sub),
                         Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {}
                         Err(other) => return Err(other),
+                    }
+                    // Validate profile supports inject BEFORE spawning.
+                    let profile_name = meerkat_mob::ProfileName::from(params.profile.as_str());
+                    {
+                        let handle = runtime.handle();
+                        let definition = handle.definition();
+                        let profile = definition.profiles.get(&profile_name).ok_or_else(|| {
+                            MobRuntimeError::Mob(meerkat_mob::MobError::ProfileNotFound(
+                                profile_name.clone(),
+                            ))
+                        })?;
+                        if !profile.external_addressable {
+                            return Err(MobRuntimeError::Mob(
+                                meerkat_mob::MobError::NotExternallyAddressable(
+                                    meerkat_mob::MeerkatId::from(params.member_id.as_str()),
+                                ),
+                            ));
+                        }
+                        if profile.runtime_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
+                            return Err(MobRuntimeError::Mob(
+                                meerkat_mob::MobError::UnsupportedForMode {
+                                    mode: profile.runtime_mode,
+                                    reason: "ensure_and_inject requires autonomous_host mode"
+                                        .into(),
+                                },
+                            ));
+                        }
                     }
                     let mid = meerkat_mob::MeerkatId::from(params.member_id.as_str());
                     let resume_session_id = params
