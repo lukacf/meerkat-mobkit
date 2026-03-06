@@ -92,10 +92,28 @@ impl std::error::Error for DesiredPeerEdgeError {}
 
 /// A canonical undirected peer edge. Endpoints are sorted at construction
 /// time and self-edges are rejected, so the invariant `a < b` always holds.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+///
+/// Fields are private — use [`DesiredPeerEdge::new`] or [`endpoints`] to access.
+/// Deserialization validates the invariant, rejecting non-canonical inputs.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct DesiredPeerEdge {
-    pub a: String,
-    pub b: String,
+    a: String,
+    b: String,
+}
+
+impl<'de> Deserialize<'de> for DesiredPeerEdge {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            a: String,
+            b: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        DesiredPeerEdge::new(raw.a, raw.b).map_err(serde::de::Error::custom)
+    }
 }
 
 impl DesiredPeerEdge {
@@ -130,7 +148,18 @@ pub trait EdgeDiscovery: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = Vec<DesiredPeerEdge>> + Send + '_>>;
 }
 
+/// A failed edge operation during reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeReconcileFailure {
+    pub edge: DesiredPeerEdge,
+    pub operation: String,
+    pub error: String,
+}
+
 /// Report from dynamic edge reconciliation.
+///
+/// Best-effort: partial success is reported clearly. Apps decide whether
+/// to treat failures as fatal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UnifiedRuntimeReconcileEdgesReport {
     pub desired_edges: Vec<DesiredPeerEdge>,
@@ -140,6 +169,15 @@ pub struct UnifiedRuntimeReconcileEdgesReport {
     pub preexisting_edges: Vec<DesiredPeerEdge>,
     pub skipped_missing_members: Vec<DesiredPeerEdge>,
     pub pruned_stale_managed_edges: Vec<DesiredPeerEdge>,
+    #[serde(default)]
+    pub failures: Vec<EdgeReconcileFailure>,
+}
+
+impl UnifiedRuntimeReconcileEdgesReport {
+    /// True if all desired edges were successfully applied or retained.
+    pub fn is_complete(&self) -> bool {
+        self.failures.is_empty() && self.skipped_missing_members.is_empty()
+    }
 }
 
 /// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
@@ -731,11 +769,14 @@ impl UnifiedRuntime {
         // Run edge discovery
         let raw_desired = edge_discovery.discover_edges(active_members).await;
 
-        // Deduplicate (DesiredPeerEdge is already canonical, but multiple
-        // entries for the same pair can come from discovery)
+        // Deduplicate and defensively validate (DesiredPeerEdge enforces
+        // invariants at construction, but we still canonicalize the key set)
         let desired: BTreeSet<(String, String)> = raw_desired
             .iter()
-            .map(|e| (e.a.clone(), e.b.clone()))
+            .map(|e| {
+                let (a, b) = e.endpoints();
+                (a.to_string(), b.to_string())
+            })
             .collect();
 
         let mut report = UnifiedRuntimeReconcileEdgesReport {
@@ -745,7 +786,7 @@ impl UnifiedRuntime {
 
         // Classify desired edges
         for (a, b) in &desired {
-            // Skip if either endpoint is missing
+            // Skip if either endpoint is missing from the active roster
             if !active_ids.contains(a) || !active_ids.contains(b) {
                 if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
                     report.skipped_missing_members.push(edge);
@@ -754,9 +795,32 @@ impl UnifiedRuntime {
             }
             let key = (a.clone(), b.clone());
             if self.managed_dynamic_edges.contains(&key) {
-                // Already managed by us — retained
-                if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                    report.retained_edges.push(edge);
+                // Managed by us — check if the actual edge still exists in the
+                // mob graph. If an out-of-band unwire() removed it, re-wire.
+                if current_edges.contains(&key) {
+                    if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                        report.retained_edges.push(edge);
+                    }
+                } else {
+                    // Managed edge disappeared from mob graph — heal it
+                    let mid_a = MeerkatId::from(a.as_str());
+                    let mid_b = MeerkatId::from(b.as_str());
+                    match self.mob_runtime.handle().wire(mid_a, mid_b).await {
+                        Ok(()) => {
+                            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                                report.wired_edges.push(edge);
+                            }
+                        }
+                        Err(err) => {
+                            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                                report.failures.push(EdgeReconcileFailure {
+                                    edge,
+                                    operation: "wire (heal)".into(),
+                                    error: format!("{err}"),
+                                });
+                            }
+                        }
+                    }
                 }
             } else if current_edges.contains(&key) {
                 // Exists but not managed by us (static or external) — don't claim
@@ -767,10 +831,21 @@ impl UnifiedRuntime {
                 // New edge — wire it
                 let mid_a = MeerkatId::from(a.as_str());
                 let mid_b = MeerkatId::from(b.as_str());
-                if self.mob_runtime.handle().wire(mid_a, mid_b).await.is_ok() {
-                    self.managed_dynamic_edges.insert(key);
-                    if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                        report.wired_edges.push(edge);
+                match self.mob_runtime.handle().wire(mid_a, mid_b).await {
+                    Ok(()) => {
+                        self.managed_dynamic_edges.insert(key);
+                        if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                            report.wired_edges.push(edge);
+                        }
+                    }
+                    Err(err) => {
+                        if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                            report.failures.push(EdgeReconcileFailure {
+                                edge,
+                                operation: "wire".into(),
+                                error: format!("{err}"),
+                            });
+                        }
                     }
                 }
             }
@@ -795,10 +870,21 @@ impl UnifiedRuntime {
             }
             let mid_a = MeerkatId::from(a.as_str());
             let mid_b = MeerkatId::from(b.as_str());
-            if self.mob_runtime.handle().unwire(mid_a, mid_b).await.is_ok() {
-                self.managed_dynamic_edges.remove(&(a.clone(), b.clone()));
-                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                    report.unwired_edges.push(edge);
+            match self.mob_runtime.handle().unwire(mid_a, mid_b).await {
+                Ok(()) => {
+                    self.managed_dynamic_edges.remove(&(a.clone(), b.clone()));
+                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                        report.unwired_edges.push(edge);
+                    }
+                }
+                Err(err) => {
+                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                        report.failures.push(EdgeReconcileFailure {
+                            edge,
+                            operation: "unwire".into(),
+                            error: format!("{err}"),
+                        });
+                    }
                 }
             }
         }
