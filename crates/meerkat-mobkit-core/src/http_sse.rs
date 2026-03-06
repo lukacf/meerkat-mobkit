@@ -24,24 +24,33 @@ use meerkat_core::comms::SendError;
 use meerkat_core::service::SessionError;
 use meerkat_mob::MobError;
 
-const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
+pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const KEEP_ALIVE_TEXT: &str = "keep-alive";
-
-#[derive(Clone)]
-struct InteractionSseState {
-    inject_and_subscribe: InteractionSseInjectFn,
-    keep_alive_interval: Duration,
-}
 
 pub(crate) type InteractionSseInjectFuture =
     Pin<Box<dyn Future<Output = Result<RealInteractionSubscription, MobRuntimeError>> + Send>>;
 pub(crate) type InteractionSseInjectFn =
     Arc<dyn Fn(String, String) -> InteractionSseInjectFuture + Send + Sync>;
+/// Like InteractionSseInjectFn but spawns-if-missing before injecting.
+/// Args: (member_id, profile, message)
+pub(crate) type InteractionSseEnsureInjectFn =
+    Arc<dyn Fn(String, String, String) -> InteractionSseInjectFuture + Send + Sync>;
+
+#[derive(Clone)]
+struct InteractionSseState {
+    inject_and_subscribe: InteractionSseInjectFn,
+    ensure_and_inject: Option<InteractionSseEnsureInjectFn>,
+    keep_alive_interval: Duration,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectSseRequest {
     pub member_id: String,
     pub message: String,
+    /// When set, auto-spawn the member if not in the roster before injecting.
+    /// This is the "ensure_member + inject" pattern for chat/Slack-style apps.
+    #[serde(default)]
+    pub ensure_with_profile: Option<String>,
 }
 
 pub fn interaction_sse_router(runtime: RealMobRuntime) -> Router {
@@ -61,14 +70,19 @@ pub fn interaction_sse_router_with_keep_alive_interval(
 pub(crate) fn interaction_sse_router_with_injector(
     inject_and_subscribe: InteractionSseInjectFn,
 ) -> Router {
-    interaction_sse_router_with_injector_and_keep_alive_interval(
-        inject_and_subscribe,
-        DEFAULT_KEEP_ALIVE_INTERVAL,
-    )
+    interaction_sse_router_full(inject_and_subscribe, None, DEFAULT_KEEP_ALIVE_INTERVAL)
 }
 
 pub(crate) fn interaction_sse_router_with_injector_and_keep_alive_interval(
     inject_and_subscribe: InteractionSseInjectFn,
+    keep_alive_interval: Duration,
+) -> Router {
+    interaction_sse_router_full(inject_and_subscribe, None, keep_alive_interval)
+}
+
+pub(crate) fn interaction_sse_router_full(
+    inject_and_subscribe: InteractionSseInjectFn,
+    ensure_and_inject: Option<InteractionSseEnsureInjectFn>,
     keep_alive_interval: Duration,
 ) -> Router {
     Router::new()
@@ -78,6 +92,7 @@ pub(crate) fn interaction_sse_router_with_injector_and_keep_alive_interval(
         )
         .with_state(InteractionSseState {
             inject_and_subscribe,
+            ensure_and_inject,
             keep_alive_interval,
         })
 }
@@ -98,12 +113,39 @@ async fn interaction_sse_handler_with_state(
     State(state): State<InteractionSseState>,
     Json(request): Json<InjectSseRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    interaction_sse_response(
-        state.inject_and_subscribe.clone(),
-        request,
+    let member_id = request.member_id.trim().to_string();
+    if member_id.is_empty() {
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            "member_id must not be empty",
+        ));
+    }
+    if request.message.trim().is_empty() {
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            "message must not be empty",
+        ));
+    }
+
+    // If ensure_with_profile is set and we have the ensure injector,
+    // use spawn-if-missing + inject. Otherwise use plain inject.
+    let subscription = if let (Some(profile), Some(ensure_fn)) =
+        (&request.ensure_with_profile, &state.ensure_and_inject)
+    {
+        (ensure_fn)(member_id.clone(), profile.clone(), request.message)
+            .await
+            .map_err(map_runtime_error)?
+    } else {
+        (state.inject_and_subscribe)(member_id.clone(), request.message)
+            .await
+            .map_err(map_runtime_error)?
+    };
+
+    Ok(build_sse_stream(
+        member_id,
+        subscription,
         state.keep_alive_interval,
-    )
-    .await
+    ))
 }
 
 async fn interaction_sse_response(
@@ -125,17 +167,24 @@ async fn interaction_sse_response(
         ));
     }
 
-    let mut subscription = (inject_and_subscribe)(member_id.clone(), request.message)
+    let subscription = (inject_and_subscribe)(member_id.clone(), request.message)
         .await
         .map_err(map_runtime_error)?;
 
+    Ok(build_sse_stream(member_id, subscription, keep_alive_interval))
+}
+
+fn build_sse_stream(
+    member_id: String,
+    mut subscription: RealInteractionSubscription,
+    keep_alive_interval: Duration,
+) -> impl IntoResponse {
     let interaction_id = subscription.interaction_id.clone();
-    let stream_member_id = member_id.clone();
     let stream = stream! {
         let mut seq = 0_u64;
         let start_data = json!({
             "interaction_id": interaction_id,
-            "member_id": stream_member_id,
+            "member_id": member_id,
         });
         yield Ok::<Event, Infallible>(
             Event::default()
@@ -151,11 +200,11 @@ async fn interaction_sse_response(
         }
     };
 
-    Ok(Sse::new(stream).keep_alive(
+    Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(keep_alive_interval)
             .text(KEEP_ALIVE_TEXT),
-    ))
+    )
 }
 
 pub fn agent_event_sse(interaction_id: &str, seq: u64, event: &AgentEvent) -> Event {

@@ -19,7 +19,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
-use crate::http_sse::interaction_sse_router_with_injector;
+use crate::http_sse::DEFAULT_KEEP_ALIVE_INTERVAL;
 use crate::mob_handle_runtime::{
     MobBootstrapSpec, MobReconcileReport, MobRuntimeError, RealInteractionSubscription,
     RealMobRuntime,
@@ -39,15 +39,31 @@ use crate::runtime::{
 use crate::{route_module_call, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, ModuleEvent, UnifiedEvent};
 
+/// Opaque context produced by [`PreSpawnHook`] and consumed by [`Discovery::discover`].
+///
+/// Carries data from the pre-spawn phase (e.g. session resume maps, warmed caches)
+/// into the discovery phase without requiring shared side-channel state.
+pub type PreSpawnContext = serde_json::Value;
+
 /// Trait for discovering agents to spawn into a mob at bootstrap time.
+///
+/// `discover` receives the [`PreSpawnContext`] produced by the pre-spawn hook
+/// (or `Value::Null` if no hook ran). This enables the "query sessions once,
+/// build a resume map, feed that into discovery" pattern without side-channel state.
 pub trait Discovery: Send + Sync {
-    fn discover(&self) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>>;
+    fn discover(
+        &self,
+        context: PreSpawnContext,
+    ) -> Pin<Box<dyn Future<Output = Vec<AgentDiscoverySpec>> + Send + '_>>;
 }
 
 /// A callback that runs before discovery/spawn for session preloading, cache warming, etc.
-/// Returns `Result` so preloading failures (e.g. BQ unreachable) can abort bootstrap.
+///
+/// Returns a [`PreSpawnContext`] on success, which is passed to [`Discovery::discover`].
+/// This enables pre-spawn to produce data (resume maps, session queries, etc.) that
+/// discovery consumes, replacing the need for shared mutable side-channel state.
 pub type PreSpawnHook = Box<
-    dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send>>
+    dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<PreSpawnContext, Box<dyn std::error::Error + Send>>> + Send>>
         + Send,
 >;
 
@@ -259,17 +275,19 @@ impl UnifiedRuntimeBuilder {
         runtime.post_reconcile_hook = self.post_reconcile_hook;
         runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
 
-        if let Some(hook) = self.pre_spawn_hook {
+        let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
             hook()
                 .await
                 .map_err(|err| {
                     UnifiedRuntimeBuilderError::Bootstrap(
                         UnifiedRuntimeBootstrapError::PreSpawnHook(err.to_string()),
                     )
-                })?;
-        }
+                })?
+        } else {
+            serde_json::Value::Null
+        };
         if let Some(discovery) = self.discovery {
-            let specs = discovery.discover().await;
+            let specs = discovery.discover(pre_spawn_context).await;
             let spawn_specs: Vec<SpawnMemberSpec> =
                 specs.iter().map(discovery_spec_to_spawn_spec).collect();
             runtime
@@ -539,7 +557,14 @@ impl UnifiedRuntime {
         &self,
         specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<MemberRef>, MobRuntimeError> {
-        self.mob_runtime.spawn_many(specs).await
+        let member_ids: Vec<String> = specs.iter().map(|s| s.meerkat_id.to_string()).collect();
+        let refs = self.mob_runtime.spawn_many(specs).await?;
+        if !member_ids.is_empty() {
+            if let Some(hook) = &self.post_spawn_hook {
+                hook(member_ids).await;
+            }
+        }
+        Ok(refs)
     }
 
     pub async fn reconcile(
@@ -573,6 +598,33 @@ impl UnifiedRuntime {
     ) -> Result<RealInteractionSubscription, MobRuntimeError> {
         self.mob_runtime
             .inject_and_subscribe(member_id, message)
+            .await
+    }
+
+    /// Ensure a member exists (spawning from `spec` if missing), then inject a
+    /// message and return a streaming subscription.
+    ///
+    /// This is the "find logical target, create if missing, then inject and stream"
+    /// primitive that chat/Slack-style apps need. Without this, callers must
+    /// manually check the roster, spawn, then inject — a race-prone sequence.
+    pub async fn ensure_and_inject_and_subscribe(
+        &self,
+        spec: SpawnMemberSpec,
+        message: String,
+    ) -> Result<RealInteractionSubscription, MobRuntimeError> {
+        let member_id = spec.meerkat_id.clone();
+        // Check if already in roster
+        let exists = self
+            .mob_runtime
+            .handle()
+            .get_member(&member_id)
+            .await
+            .is_some();
+        if !exists {
+            self.spawn(spec).await?;
+        }
+        self.mob_runtime
+            .inject_and_subscribe(&member_id.to_string(), message)
             .await
     }
 
@@ -710,11 +762,49 @@ impl UnifiedRuntime {
     }
 
     pub fn build_interaction_sse_router(&self) -> Router {
+        use crate::http_sse::{interaction_sse_router_full, InteractionSseEnsureInjectFn};
         let runtime = self.interaction_sse_runtime();
-        interaction_sse_router_with_injector(Arc::new(move |member_id: String, message: String| {
+        let inject_fn = {
             let runtime = runtime.clone();
-            Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
-        }))
+            Arc::new(move |member_id: String, message: String| {
+                let runtime = runtime.clone();
+                Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
+                    as crate::http_sse::InteractionSseInjectFuture
+            })
+        };
+        let ensure_runtime = self.mob_runtime.clone();
+        let post_spawn = self.post_spawn_hook.clone();
+        let ensure_fn: InteractionSseEnsureInjectFn = Arc::new(
+            move |member_id: String, profile: String, message: String| {
+                let runtime = ensure_runtime.clone();
+                let post_spawn = post_spawn.clone();
+                Box::pin(async move {
+                    let mid = meerkat_mob::MeerkatId::from(member_id.as_str());
+                    let exists = runtime.handle().get_member(&mid).await.is_some();
+                    if !exists {
+                        let spec = SpawnMemberSpec {
+                            profile_name: meerkat_mob::ProfileName::from(profile.as_str()),
+                            meerkat_id: mid.clone(),
+                            initial_message: None,
+                            runtime_mode: None,
+                            backend: None,
+                            context: None,
+                            labels: None,
+                            resume_session_id: None,
+                            additional_instructions: None,
+                        };
+                        runtime.spawn(spec).await?;
+                        if let Some(hook) = &post_spawn {
+                            hook(vec![member_id.clone()]).await;
+                        }
+                    }
+                    runtime
+                        .inject_and_subscribe(&member_id, message)
+                        .await
+                })
+            },
+        );
+        interaction_sse_router_full(inject_fn, Some(ensure_fn), DEFAULT_KEEP_ALIVE_INTERVAL)
     }
 
     pub fn build_reference_app_router(&self, decisions: RuntimeDecisionState) -> Router {
