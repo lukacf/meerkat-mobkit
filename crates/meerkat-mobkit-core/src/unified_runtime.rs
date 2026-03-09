@@ -20,10 +20,9 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
-use crate::http_sse::DEFAULT_KEEP_ALIVE_INTERVAL;
 use crate::mob_handle_runtime::{
     MobBootstrapSpec, MobMemberSnapshot, MobReconcileReport, MobRuntimeError,
-    RealInteractionSubscription, RealMobRuntime,
+    RealMobRuntime,
 };
 use crate::runtime::{
     start_mobkit_runtime_with_options, DeliveryHistoryRequest, DeliveryHistoryResponse,
@@ -563,47 +562,6 @@ struct MobEventForwarder {
     task: JoinHandle<()>,
 }
 
-#[derive(Clone)]
-struct UnifiedInteractionSseRuntime {
-    mob_runtime: RealMobRuntime,
-}
-
-impl UnifiedInteractionSseRuntime {
-    fn new(mob_runtime: RealMobRuntime) -> Self {
-        Self { mob_runtime }
-    }
-
-    async fn inject_and_subscribe(
-        &self,
-        member_id: &str,
-        message: String,
-    ) -> Result<RealInteractionSubscription, MobRuntimeError> {
-        self.mob_runtime
-            .inject_and_subscribe(member_id, message)
-            .await
-    }
-}
-
-#[derive(Debug)]
-enum UnifiedRuntimeInjectionError {
-    Mob(MobRuntimeError),
-}
-
-impl UnifiedRuntimeInjectionError {
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::Mob(_) => "mob_runtime",
-        }
-    }
-}
-
-impl Display for UnifiedRuntimeInjectionError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Mob(err) => write!(f, "mob injection failed: {err}"),
-        }
-    }
-}
 
 impl UnifiedRuntime {
     pub fn builder() -> UnifiedRuntimeBuilder {
@@ -915,124 +873,15 @@ impl UnifiedRuntime {
         report
     }
 
-    pub async fn inject_and_subscribe(
+    /// Send a message to a mob member (fire-and-forget, no subscription).
+    pub async fn send_message(
         &self,
         member_id: &str,
         message: String,
-    ) -> Result<RealInteractionSubscription, MobRuntimeError> {
-        self.mob_runtime
-            .inject_and_subscribe(member_id, message)
-            .await
-    }
-
-    /// Validate that a profile supports inject_and_subscribe before spawning.
-    ///
-    /// Checks: profile exists, external_addressable, and effective runtime mode
-    /// is AutonomousHost. Returns the error that inject_and_subscribe would
-    /// return, so callers get a clear rejection without roster mutation.
-    fn validate_profile_for_inject(
-        &self,
-        profile_name: &meerkat_mob::ProfileName,
-        meerkat_id: &meerkat_mob::MeerkatId,
-        runtime_mode_override: Option<meerkat_mob::MobRuntimeMode>,
     ) -> Result<(), MobRuntimeError> {
-        let handle = self.mob_runtime.handle();
-        let definition = handle.definition();
-        let profile = definition.profiles.get(profile_name).ok_or_else(|| {
-            MobRuntimeError::Mob(meerkat_mob::MobError::ProfileNotFound(profile_name.clone()))
-        })?;
-        if !profile.external_addressable {
-            return Err(MobRuntimeError::Mob(
-                meerkat_mob::MobError::NotExternallyAddressable(meerkat_id.clone()),
-            ));
-        }
-        let effective_mode = runtime_mode_override.unwrap_or(profile.runtime_mode);
-        if effective_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
-            return Err(MobRuntimeError::Mob(meerkat_mob::MobError::UnsupportedForMode {
-                mode: effective_mode,
-                reason: "inject_and_subscribe requires autonomous_host mode".into(),
-            }));
-        }
-        Ok(())
-    }
-
-    /// Ensure a member exists (spawning from `spec` if missing), then inject a
-    /// message and return a streaming subscription.
-    ///
-    /// Uses inject-first strategy: tries inject_and_subscribe first, and only
-    /// spawns if the member doesn't exist. Pre-validates the profile before
-    /// spawning to avoid leaving stray members for non-injectable profiles.
-    ///
-    /// For concurrent callers: if spawn returns `MeerkatAlreadyExists`, the
-    /// member may still be pending (Meerkat returns the same error for both
-    /// "already in roster" and "spawn in progress"). We retry inject with
-    /// backoff to wait for the pending spawn to complete.
-    pub async fn ensure_and_inject_and_subscribe(
-        &self,
-        spec: SpawnMemberSpec,
-        message: String,
-    ) -> Result<RealInteractionSubscription, MobRuntimeError> {
-        let member_id_str = spec.meerkat_id.to_string();
-        // Try inject first — if the member exists, this succeeds without spawning.
-        match self
-            .mob_runtime
-            .inject_and_subscribe(&member_id_str, message.clone())
+        self.mob_runtime
+            .send_message(member_id, message)
             .await
-        {
-            Ok(subscription) => return Ok(subscription),
-            Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {
-                // Member doesn't exist — fall through to spawn
-            }
-            Err(other) => return Err(other),
-        }
-        // Validate profile supports inject BEFORE spawning to avoid stray members.
-        self.validate_profile_for_inject(&spec.profile_name, &spec.meerkat_id, spec.runtime_mode)?;
-        // Spawn the member.
-        let was_concurrent = match self.mob_runtime.spawn(spec).await {
-            Ok(_member_ref) => {
-                if let Some(hook) = &self.post_spawn_hook {
-                    hook(vec![member_id_str.clone()]).await;
-                }
-                false
-            }
-            Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatAlreadyExists(_))) => {
-                // Another caller is spawning or already spawned — may still be pending.
-                true
-            }
-            Err(err) => return Err(err),
-        };
-        // Inject with retry: if the spawn was concurrent (MeerkatAlreadyExists),
-        // the member may still be pending. Retry with backoff.
-        let max_retries = if was_concurrent { 10 } else { 1 };
-        let mut last_err = None;
-        for attempt in 0..max_retries {
-            if attempt > 0 {
-                tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
-            }
-            match self
-                .mob_runtime
-                .inject_and_subscribe(&member_id_str, message.clone())
-                .await
-            {
-                Ok(subscription) => return Ok(subscription),
-                Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_)))
-                    if was_concurrent =>
-                {
-                    last_err = Some(MobRuntimeError::Mob(
-                        meerkat_mob::MobError::MeerkatNotFound(
-                            meerkat_mob::MeerkatId::from(member_id_str.as_str()),
-                        ),
-                    ));
-                    continue;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-        Err(last_err.unwrap_or_else(|| {
-            MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(
-                meerkat_mob::MeerkatId::from(member_id_str.as_str()),
-            ))
-        }))
     }
 
     pub fn module_is_running(&self) -> bool {
@@ -1168,133 +1017,11 @@ impl UnifiedRuntime {
         console_frontend_router()
     }
 
-    pub fn build_interaction_sse_router(&self) -> Router {
-        use crate::http_sse::{interaction_sse_router_full, InteractionSseEnsureInjectFn};
-        let runtime = self.interaction_sse_runtime();
-        let inject_fn = {
-            let runtime = runtime.clone();
-            Arc::new(move |member_id: String, message: String| {
-                let runtime = runtime.clone();
-                Box::pin(async move { runtime.inject_and_subscribe(&member_id, message).await })
-                    as crate::http_sse::InteractionSseInjectFuture
-            })
-        };
-        let ensure_runtime = self.mob_runtime.clone();
-        let post_spawn = self.post_spawn_hook.clone();
-        let ensure_fn: InteractionSseEnsureInjectFn = Arc::new(
-            move |params: crate::http_sse::EnsureInjectParams| {
-                let runtime = ensure_runtime.clone();
-                let post_spawn = post_spawn.clone();
-                Box::pin(async move {
-                    // Inject-first: try inject, spawn only if member doesn't exist.
-                    match runtime
-                        .inject_and_subscribe(&params.member_id, params.message.clone())
-                        .await
-                    {
-                        Ok(sub) => return Ok(sub),
-                        Err(MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(_))) => {}
-                        Err(other) => return Err(other),
-                    }
-                    // Validate profile supports inject BEFORE spawning.
-                    let profile_name = meerkat_mob::ProfileName::from(params.profile.as_str());
-                    {
-                        let handle = runtime.handle();
-                        let definition = handle.definition();
-                        let profile = definition.profiles.get(&profile_name).ok_or_else(|| {
-                            MobRuntimeError::Mob(meerkat_mob::MobError::ProfileNotFound(
-                                profile_name.clone(),
-                            ))
-                        })?;
-                        if !profile.external_addressable {
-                            return Err(MobRuntimeError::Mob(
-                                meerkat_mob::MobError::NotExternallyAddressable(
-                                    meerkat_mob::MeerkatId::from(params.member_id.as_str()),
-                                ),
-                            ));
-                        }
-                        if profile.runtime_mode != meerkat_mob::MobRuntimeMode::AutonomousHost {
-                            return Err(MobRuntimeError::Mob(
-                                meerkat_mob::MobError::UnsupportedForMode {
-                                    mode: profile.runtime_mode,
-                                    reason: "inject_and_subscribe requires autonomous_host mode"
-                                        .into(),
-                                },
-                            ));
-                        }
-                    }
-                    let mid = meerkat_mob::MeerkatId::from(params.member_id.as_str());
-                    let resume_session_id = params
-                        .resume_session_id
-                        .as_deref()
-                        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
-                    let additional_instructions = params.additional_instructions.and_then(|v| {
-                        if v.is_empty() { None } else { Some(v) }
-                    });
-                    let spec = SpawnMemberSpec {
-                        profile_name: meerkat_mob::ProfileName::from(params.profile.as_str()),
-                        meerkat_id: mid,
-                        initial_message: None,
-                        runtime_mode: None,
-                        backend: None,
-                        context: params.context,
-                        labels: params.labels,
-                        resume_session_id,
-                        additional_instructions,
-                    };
-                    let was_concurrent = match runtime.spawn(spec).await {
-                        Ok(_) => {
-                            if let Some(hook) = &post_spawn {
-                                hook(vec![params.member_id.clone()]).await;
-                            }
-                            false
-                        }
-                        Err(MobRuntimeError::Mob(
-                            meerkat_mob::MobError::MeerkatAlreadyExists(_),
-                        )) => true,
-                        Err(err) => return Err(err),
-                    };
-                    // Retry inject with backoff if spawn was concurrent (may still be pending)
-                    let max_retries: u64 = if was_concurrent { 10 } else { 1 };
-                    let mut last_err = None;
-                    for attempt in 0..max_retries {
-                        if attempt > 0 {
-                            tokio::time::sleep(Duration::from_millis(100 * attempt)).await;
-                        }
-                        match runtime
-                            .inject_and_subscribe(&params.member_id, params.message.clone())
-                            .await
-                        {
-                            Ok(sub) => return Ok(sub),
-                            Err(MobRuntimeError::Mob(
-                                meerkat_mob::MobError::MeerkatNotFound(_),
-                            )) if was_concurrent => {
-                                last_err = Some(MobRuntimeError::Mob(
-                                    meerkat_mob::MobError::MeerkatNotFound(
-                                        meerkat_mob::MeerkatId::from(params.member_id.as_str()),
-                                    ),
-                                ));
-                                continue;
-                            }
-                            Err(err) => return Err(err),
-                        }
-                    }
-                    Err(last_err.unwrap_or_else(|| {
-                        MobRuntimeError::Mob(meerkat_mob::MobError::MeerkatNotFound(
-                            meerkat_mob::MeerkatId::from(params.member_id.as_str()),
-                        ))
-                    }))
-                })
-            },
-        );
-        interaction_sse_router_full(inject_fn, Some(ensure_fn), DEFAULT_KEEP_ALIVE_INTERVAL)
-    }
-
     pub fn build_reference_app_router(&self, decisions: RuntimeDecisionState) -> Router {
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
             .merge(self.build_console_json_router(decisions))
-            .merge(self.build_interaction_sse_router())
     }
 
     pub async fn serve(
@@ -1397,10 +1124,6 @@ impl UnifiedRuntime {
             .collect()
     }
 
-    fn interaction_sse_runtime(&self) -> UnifiedInteractionSseRuntime {
-        UnifiedInteractionSseRuntime::new(self.mob_runtime.clone())
-    }
-
     pub fn subscribe_events(
         &mut self,
         request: SubscribeRequest,
@@ -1428,15 +1151,14 @@ impl UnifiedRuntime {
 
             let injection_result = self
                 .mob_runtime
-                .inject_and_subscribe(
+                .send_message(
                     &runtime_injection.member_id,
                     runtime_injection.message.clone(),
                 )
                 .await;
 
             match injection_result {
-                Ok(subscription) => {
-                    let interaction_id = subscription.interaction_id;
+                Ok(()) => {
                     self.module_runtime.append_normalized_event(EventEnvelope {
                         event_id: format!("{}-executed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
@@ -1449,14 +1171,12 @@ impl UnifiedRuntime {
                                 "claim_key": dispatch.claim_key.clone(),
                                 "member_id": runtime_injection.member_id,
                                 "message": runtime_injection.message,
-                                "interaction_id": interaction_id,
                             }),
                         }),
                     })?;
                 }
                 Err(error) => {
-                    let error = UnifiedRuntimeInjectionError::Mob(error);
-                    dispatch.runtime_injection_error = Some(error.to_string());
+                    dispatch.runtime_injection_error = Some(format!("mob injection failed: {error}"));
                     self.module_runtime.append_normalized_event(EventEnvelope {
                         event_id: format!("{}-failed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
@@ -1469,8 +1189,8 @@ impl UnifiedRuntime {
                                 "claim_key": dispatch.claim_key.clone(),
                                 "member_id": runtime_injection.member_id,
                                 "message": runtime_injection.message,
-                                "error_kind": error.kind(),
-                                "error": error.to_string(),
+                                "error_kind": "mob_runtime",
+                                "error": format!("mob injection failed: {error}"),
                             }),
                         }),
                     })?;

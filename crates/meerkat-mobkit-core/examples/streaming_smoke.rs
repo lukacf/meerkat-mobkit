@@ -51,21 +51,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("STREAM_SMOKE: spawned + wired lead-1 <-> worker-1");
 
-    // 1) Interaction-scoped stream (inject_and_subscribe)
-    let mut interaction = handle
-        .inject_and_subscribe(
+    // 1) Per-agent session event stream
+    let mut agent_stream = handle
+        .subscribe_agent_events(&MeerkatId::from("lead-1"))
+        .await?;
+    println!("STREAM_SMOKE: subscribed to lead-1 agent events");
+
+    // 2) Send a message (fire-and-forget)
+    handle
+        .send_message(
             MeerkatId::from("lead-1"),
             "Give a short plan for smoke-testing a Rust CLI and delegate one concrete task to worker-1."
                 .to_string(),
         )
         .await?;
-    println!("STREAM_SMOKE: interaction_id={}", interaction.id);
-
-    // 2) Per-agent session event stream
-    let mut agent_stream = handle
-        .subscribe_agent_events(&MeerkatId::from("lead-1"))
-        .await?;
-    println!("STREAM_SMOKE: subscribed to lead-1 agent events");
+    println!("STREAM_SMOKE: message sent to lead-1");
 
     // 3) Mob-wide merged attributed event stream
     let mut mob_router = handle.subscribe_mob_events();
@@ -73,45 +73,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
     let mut seen_terminal = false;
-    let mut interaction_count = 0_u32;
     let mut agent_count = 0_u32;
     let mut mob_count = 0_u32;
 
     while tokio::time::Instant::now() < deadline && !seen_terminal {
         tokio::select! {
-            maybe_evt = interaction.events.recv() => {
-                if let Some(evt) = maybe_evt {
-                    interaction_count += 1;
-                    match evt {
-                        AgentEvent::TextDelta { delta } => {
-                            println!("INTERACTION text_delta: {}", delta.replace('\n', " "));
-                        }
-                        AgentEvent::TextComplete { content } => {
-                            println!("INTERACTION text_complete: {}", content.replace('\n', " "));
-                        }
-                        AgentEvent::ToolCallRequested { name, .. } => {
-                            println!("INTERACTION tool_call_requested: {name}");
-                        }
-                        AgentEvent::ToolResultReceived { name, is_error, .. } => {
-                            println!("INTERACTION tool_result: name={name} is_error={is_error}");
-                        }
-                        AgentEvent::InteractionComplete { result, .. } => {
-                            println!("INTERACTION complete: {}", result.replace('\n', " "));
-                            seen_terminal = true;
-                        }
-                        AgentEvent::InteractionFailed { error, .. } => {
-                            println!("INTERACTION failed: {error}");
-                            seen_terminal = true;
-                        }
-                        other => {
-                            println!("INTERACTION other: {:?}", other);
-                        }
-                    }
-                }
-            }
             maybe_agent_evt = agent_stream.next() => {
                 if let Some(envelope) = maybe_agent_evt {
                     agent_count += 1;
+                    match &envelope.payload {
+                        AgentEvent::InteractionComplete { .. } | AgentEvent::InteractionFailed { .. } => {
+                            seen_terminal = true;
+                        }
+                        _ => {}
+                    }
                     println!(
                         "AGENT_STREAM {} seq={} source={} payload={:?}",
                         envelope.event_id,
@@ -138,8 +113,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "STREAM_SMOKE: counts interaction={} agent_stream={} mob_router={}",
-        interaction_count, agent_count, mob_count
+        "STREAM_SMOKE: counts agent_stream={} mob_router={}",
+        agent_count, mob_count
     );
 
     mob_router.cancel();

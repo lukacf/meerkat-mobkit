@@ -95,25 +95,6 @@ Returns the list of loaded modules.
 
 ---
 
-## Interaction endpoint
-
-### `POST /interactions/stream`
-
-Send a message to a mob member and receive the response as an SSE stream. See the [SSE API](/api/sse) for details.
-
-**Request body:**
-
-```json
-{
-  "member_id": "lead-1",
-  "message": "What is the current status?"
-}
-```
-
-**Response:** `text/event-stream` (SSE)
-
----
-
 ## Authentication
 
 When `ConsolePolicy.require_app_auth` is `true`, all endpoints require a valid JWT token in the `Authorization` header:

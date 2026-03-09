@@ -14,7 +14,11 @@ class TestNewSymbolsExist:
         "SpawnResult", "SpawnMemberResult", "SubscribeResult",
         "KeepAliveConfig", "EventEnvelope",
         "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult", "ToolCaller",
-        "MobEvent", "AgentEvent", "InteractionEvent", "EventStream",
+        "Event", "MobEvent", "AgentEvent", "EventStream",
+        "RunStarted", "RunCompleted", "RunFailed",
+        "TurnStarted", "TextDelta", "TextComplete",
+        "ToolCallRequested", "ToolResultReceived", "TurnCompleted",
+        "ToolExecutionStarted", "ToolExecutionCompleted", "UnknownEvent",
         "auth", "memory", "session_store",
     ])
     def test_symbol_exists(self, name):
@@ -31,6 +35,7 @@ class TestLegacySymbolsRemoved:
         "create_http_transport",
         "PersistentTransport",
         "create_persistent_transport",
+        "InteractionEvent",
         "SseEvent",
         "SseEventStream",
         "parse_sse_stream",

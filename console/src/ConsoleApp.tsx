@@ -1,7 +1,7 @@
 import React from "react";
 import { normalizeAgents } from "./lib/agents";
 import { errorMessage } from "./lib/errors";
-import { fetchJson, sendInteraction } from "./lib/network";
+import { fetchJson, sendMessage } from "./lib/network";
 import { ActivityPanel } from "./panels/ActivityPanel";
 import { AgentSidebarPanel } from "./panels/AgentSidebarPanel";
 import { ChatInspectorPanel } from "./panels/ChatInspectorPanel";
@@ -91,9 +91,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     setError("");
     try {
-      const frames = await sendInteraction(baseUrl, submittedMemberId, trimmedMessage);
-      setInspectorFrames(frames);
-      setActivityFrames((previous) => [...frames, ...previous].slice(0, 64));
+      await sendMessage(baseUrl, submittedMemberId, trimmedMessage);
       setMessage("");
     } catch (submitError) {
       setError(errorMessage(submitError));

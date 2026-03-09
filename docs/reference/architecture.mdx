@@ -149,13 +149,12 @@ The supervisor manages module processes with a simple state machine:
 
 ## HTTP composition
 
-The runtime composes three Axum router layers:
+The runtime composes two Axum router layers:
 
 | Layer | Routes | Purpose |
 |-------|--------|---------|
 | Frontend | `/console`, `/console/assets/*` | Static HTML + JS |
 | JSON API | `/console/experience`, `/console/modules` | Runtime state |
-| SSE | `/interactions/stream` | Agent interaction |
 
 Routers are merged into a single `axum::Router` served on the configured port.
 

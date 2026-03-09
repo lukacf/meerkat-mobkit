@@ -30,9 +30,13 @@
       }
     },
     "sse": {
-      "interaction_stream": {
-        "method": "POST",
-        "path": "/interactions/stream"
+      "agent_events": {
+        "method": "GET",
+        "path": "/agents/:agent_id/events"
+      },
+      "mob_events": {
+        "method": "GET",
+        "path": "/mob/events"
       },
       "activity_feed_keep_alive_event": "keep-alive"
     }

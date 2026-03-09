@@ -13,7 +13,7 @@ MobKit is a companion to Meerkat for multi-agent applications. Meerkat remains r
 
 ## Meerkat Prerequisites (must exist in baseline)
 - MobEventRouter
-- inject_and_subscribe(id, msg)
+- send_message(id, msg)
 - subscribe_agent_events(id)
 - subscribe_all_agent_events()
 - SpawnPolicy trait

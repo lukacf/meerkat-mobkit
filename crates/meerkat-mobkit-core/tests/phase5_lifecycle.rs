@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::Command;
@@ -18,8 +17,7 @@ use meerkat_mobkit_core::{
     RuntimeOptions, ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
 };
 use serde_json::json;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
@@ -253,65 +251,6 @@ fn mcp_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
     env
 }
 
-async fn post_interactions_stream_raw(
-    address: SocketAddr,
-    request_body: String,
-    interaction_started_tx: oneshot::Sender<()>,
-    timeout: Duration,
-) -> String {
-    let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut stream = loop {
-        match TcpStream::connect(address).await {
-            Ok(stream) => break stream,
-            Err(error) => {
-                assert!(
-                    tokio::time::Instant::now() < connect_deadline,
-                    "failed to connect to unified runtime at {address}: {error}"
-                );
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }
-    };
-
-    let request = format!(
-        "POST /interactions/stream HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{request_body}",
-        request_body.len()
-    );
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .expect("write request");
-    stream.flush().await.expect("flush request");
-
-    let mut bytes = Vec::new();
-    let mut started_tx = Some(interaction_started_tx);
-    let start = tokio::time::Instant::now();
-    while start.elapsed() < timeout {
-        let mut chunk = [0_u8; 4096];
-        let remaining = timeout.saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, stream.read(&mut chunk)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(read)) => {
-                bytes.extend_from_slice(&chunk[..read]);
-                let body = String::from_utf8_lossy(&bytes);
-                if body.contains("event: interaction_started") {
-                    if let Some(tx) = started_tx.take() {
-                        let _ = tx.send(());
-                    }
-                }
-                if body.contains("event: interaction_started")
-                    && body.matches("event: ").count() >= 2
-                {
-                    break;
-                }
-            }
-            Ok(Err(error)) => panic!("read response failed: {error}"),
-            Err(_) => break,
-        }
-    }
-
-    String::from_utf8(bytes).expect("utf8 response")
-}
 
 #[tokio::test]
 async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and_shuts_down_ordered(
@@ -352,37 +291,11 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
         .await
         .expect("reconcile worker");
 
-    let app = runtime.build_reference_app_router(decision_state());
-    let listener = TcpListener::bind("127.0.0.1:0")
+    // Send a message to create activity while module crash/recovery proceeds.
+    runtime
+        .send_message("worker-1", "Keep this interaction open briefly while runtime work proceeds.".to_string())
         .await
-        .expect("bind listener");
-    let address = listener.local_addr().expect("listener address");
-    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = server_shutdown_rx.await;
-            })
-            .await
-    });
-
-    let request_body = json!({
-        "member_id": "worker-1",
-        "message": "Keep this interaction open briefly while runtime work proceeds."
-    })
-    .to_string();
-    let (interaction_started_tx, interaction_started_rx) = oneshot::channel::<()>();
-    let sse_task = tokio::spawn(post_interactions_stream_raw(
-        address,
-        request_body,
-        interaction_started_tx,
-        Duration::from_secs(20),
-    ));
-
-    tokio::time::timeout(Duration::from_secs(6), interaction_started_rx)
-        .await
-        .expect("interaction_started signal should arrive in time")
-        .expect("interaction_started channel should be open");
+        .expect("send_message should succeed");
 
     let added = runtime
         .reconcile_modules(vec!["forced-crash".to_string()], Duration::from_secs(1))
@@ -410,31 +323,6 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
             ModuleHealthState::Healthy,
         ]
     );
-
-    let response = tokio::time::timeout(Duration::from_secs(25), sse_task)
-        .await
-        .expect("SSE task should finish within timeout")
-        .expect("SSE task should join");
-    assert!(
-        response.starts_with("HTTP/1.1 200"),
-        "expected HTTP 200 response, got: {response}"
-    );
-    assert!(
-        response.contains("Content-Type: text/event-stream")
-            || response.contains("content-type: text/event-stream"),
-        "expected SSE content type, got: {response}"
-    );
-    assert!(response.contains("event: interaction_started"));
-    assert!(response.matches("event: ").count() >= 2);
-
-    server_shutdown_tx
-        .send(())
-        .expect("signal reference app shutdown");
-    tokio::time::timeout(Duration::from_secs(5), server)
-        .await
-        .expect("reference app should shut down")
-        .expect("reference app task should join")
-        .expect("reference app should shut down cleanly");
 
     let shutdown = runtime.shutdown().await;
     assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
@@ -549,7 +437,7 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind listener");
-        let address = listener.local_addr().expect("listener address");
+        let _address = listener.local_addr().expect("listener address");
         let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             axum::serve(listener, app)
@@ -559,29 +447,11 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
                 .await
         });
 
-        // Real-entrypoint proof for E2E-004: drive interaction streaming over HTTP.
-        let (interaction_started_tx, interaction_started_rx) = oneshot::channel::<()>();
-        let interaction_response = post_interactions_stream_raw(
-            address,
-            json!({
-                "member_id": "worker-1",
-                "message": "phase5 happy path interaction"
-            })
-            .to_string(),
-            interaction_started_tx,
-            Duration::from_secs(20),
-        )
-        .await;
-        tokio::time::timeout(Duration::from_secs(6), interaction_started_rx)
+        // Send a message (fire-and-forget) to drive agent activity.
+        runtime
+            .send_message("worker-1", "phase5 happy path interaction".to_string())
             .await
-            .expect("interaction_started signal should arrive in time")
-            .expect("interaction_started channel should be open");
-        assert!(
-            interaction_response.starts_with("HTTP/1.1 200"),
-            "expected HTTP 200 response, got: {interaction_response}"
-        );
-        assert!(interaction_response.contains("event: interaction_started"));
-        assert!(interaction_response.matches("event: ").count() >= 2);
+            .expect("send_message should succeed");
 
         let dispatch = runtime
             .dispatch_schedule_tick(

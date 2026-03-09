@@ -922,7 +922,8 @@ pub async fn handle_unified_rpc_json(
                     "mobkit/gating/pending",
                     "mobkit/gating/decide",
                     "mobkit/gating/audit",
-                    "mobkit/call_tool"
+                    "mobkit/call_tool",
+                    "mobkit/send_message"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),
@@ -1517,6 +1518,44 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: "Invalid params: module_id and tool required".to_string(),
+                    }),
+                },
+            }
+        }
+        "mobkit/send_message" => {
+            let member_id = request.params.get("member_id").and_then(Value::as_str);
+            let message = request.params.get("message").and_then(Value::as_str);
+
+            match (member_id, message) {
+                (Some(member_id), Some(message)) if !member_id.is_empty() && !message.is_empty() => {
+                    match runtime.send_message(member_id, message.to_string()).await {
+                        Ok(()) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::json!({
+                                "accepted": true,
+                                "member_id": member_id
+                            })),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("send_message failed: {err}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: member_id and message required".to_string(),
                     }),
                 },
             }

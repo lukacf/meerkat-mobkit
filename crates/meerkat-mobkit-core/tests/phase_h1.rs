@@ -267,30 +267,6 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         ])
     );
 
-    let sse_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/interactions/stream")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "member_id": "router",
-                        "message": "hello from phase h1"
-                    })
-                    .to_string(),
-                ))
-                .expect("sse request"),
-        )
-        .await
-        .expect("sse response");
-    assert_eq!(sse_response.status(), StatusCode::OK);
-    assert!(sse_response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream")));
-
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
 }
@@ -443,56 +419,19 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
         json!(selected_agent_id)
     );
 
-    let success_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/interactions/stream")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "member_id": selected_agent_id,
-                        "message": "cross-panel hello"
-                    })
-                    .to_string(),
-                ))
-                .expect("success request"),
-        )
+    // Sending to a known agent should succeed via send_message.
+    fixture
+        .runtime
+        .send_message(selected_agent_id, "cross-panel hello".to_string())
         .await
-        .expect("success response");
-    assert_eq!(success_response.status(), StatusCode::OK);
-    assert!(success_response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream")));
+        .expect("send_message to known agent should succeed");
 
-    let unknown_response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/interactions/stream")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({
-                        "member_id": "unknown-member-id",
-                        "message": "should fail"
-                    })
-                    .to_string(),
-                ))
-                .expect("unknown request"),
-        )
-        .await
-        .expect("unknown response");
-    let unknown_status = unknown_response.status();
-    let unknown_body = to_bytes(unknown_response.into_body(), 1024 * 1024)
-        .await
-        .expect("unknown body");
-    let unknown_json: Value = serde_json::from_slice(&unknown_body).expect("unknown json");
-
-    assert_eq!(unknown_status, StatusCode::NOT_FOUND);
-    assert_eq!(unknown_json, json!({ "error": "member_not_found" }));
+    // Sending to an unknown agent should fail.
+    let unknown_result = fixture
+        .runtime
+        .send_message("unknown-member-id", "should fail".to_string())
+        .await;
+    assert!(unknown_result.is_err(), "send_message to unknown agent should fail");
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());

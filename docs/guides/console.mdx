@@ -26,11 +26,11 @@ Lists all agents and mob members in the runtime. Click a member to select it for
 
 ### Activity feed
 
-Real-time event stream showing agent and module activity. Events are received via SSE from the `/interactions/stream` endpoint and displayed chronologically.
+Real-time event stream showing agent and module activity. Events are received via SSE from the `/mob/events` endpoint and displayed chronologically.
 
 ### Chat inspector
 
-Send messages to a selected agent and view responses. The inspector composes an `InjectSseRequest` with the selected `member_id` and message text:
+Send messages to a selected agent and view responses. The inspector sends a message via the `mobkit/send_message` RPC method with the selected `member_id` and message text:
 
 ```json
 {
@@ -88,20 +88,20 @@ interface ConsoleExperience {
 
 When the unified runtime is configured, the experience metadata includes live data from the Meerkat mob. Without a mob runtime, the console falls back to module-level information.
 
-## SSE interaction protocol
+## Messaging protocol
 
-The chat inspector communicates through the `/interactions/stream` endpoint:
+The chat inspector sends messages and observes responses through two separate channels:
 
 <Steps>
   <Step title="Send message">
-    POST to `/interactions/stream` with an `InjectSseRequest` body containing the target `member_id` and `message` text.
+    Call the `mobkit/send_message` RPC method with the target `member_id` and `message` text.
   </Step>
-  <Step title="Receive SSE stream">
-    The response is an SSE stream. Each frame contains:
+  <Step title="Observe responses">
+    Subscribe to agent events via the `/agents/:agent_id/events` SSE endpoint. Each frame contains:
 
     ```
-    id: frame-001
-    event: agent_event
+    id: lead-1:0
+    event: text_delta
     data: {"type": "text_delta", "delta": "The current status is..."}
     ```
   </Step>
@@ -109,17 +109,6 @@ The chat inspector communicates through the `/interactions/stream` endpoint:
     The server sends keep-alive frames every 15 seconds (configurable) to prevent connection timeout.
   </Step>
 </Steps>
-
-### SSE frame parsing
-
-The console client parses SSE frames using `parseSseFrames()`:
-
-```typescript
-const frames: ConsoleFrame[] = parseSseFrames(rawText);
-for (const frame of frames) {
-  console.log(frame.id, frame.event, frame.data);
-}
-```
 
 ## Console routes
 
@@ -129,7 +118,8 @@ for (const frame of frames) {
 | `/console/assets/console-app.js` | GET | React bundle (JavaScript) |
 | `/console/experience` | GET | Experience metadata (JSON) |
 | `/console/modules` | GET | Loaded modules list (JSON) |
-| `/interactions/stream` | POST | SSE event stream |
+| `/agents/:agent_id/events` | GET | Per-agent SSE event stream |
+| `/mob/events` | GET | Mob-wide SSE event stream |
 
 ## Authentication
 

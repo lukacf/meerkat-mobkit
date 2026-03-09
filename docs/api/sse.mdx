@@ -1,55 +1,53 @@
 ---
 title: "SSE API"
-description: "Server-Sent Events for real-time agent interactions and event streaming."
+description: "Server-Sent Events for real-time agent and mob event streaming."
 icon: "bolt"
 ---
 
-MobKit uses Server-Sent Events (SSE) for real-time communication between the console and the runtime. The SSE endpoint enables sending messages to agents and receiving streamed responses.
+MobKit uses Server-Sent Events (SSE) for real-time observation of agent and mob activity. Two endpoints provide per-agent and mob-wide event streams.
 
-## Endpoint
+## Per-agent event stream
 
 ```
-POST /interactions/stream
+GET /agents/:agent_id/events
 ```
 
-## Request
-
-Send a JSON body with the target member and message:
-
-```json
-{
-  "member_id": "lead-1",
-  "message": "Analyze the latest deployment metrics"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `member_id` | `string` | yes | Target mob member ID |
-| `message` | `string` | yes | Message text to send |
-
-## Response
-
-The response is an SSE stream (`Content-Type: text/event-stream`). Events are sent as the agent processes the message.
+Subscribe to events from a single agent. The response is an SSE stream (`Content-Type: text/event-stream`).
 
 ### Frame format
 
 ```
-id: frame-001
-event: agent_event
+id: lead-1:0
+event: text_delta
 data: {"type": "text_delta", "delta": "Analyzing the metrics now..."}
 
-id: frame-002
-event: agent_event
+id: lead-1:1
+event: tool_call
 data: {"type": "tool_call", "name": "query_metrics", "args": {...}}
 
-id: frame-003
-event: agent_event
-data: {"type": "text_delta", "delta": "The deployment shows a 12% latency increase."}
+id: lead-1:2
+event: interaction_complete
+data: {"type": "interaction_complete", "result": "Done."}
+```
 
-id: frame-004
-event: done
-data: {"type": "turn_complete"}
+## Mob-wide event stream
+
+```
+GET /mob/events
+```
+
+Subscribe to a merged stream of events from all agents in the mob.
+
+### Frame format
+
+```
+id: mob:0
+event: text_delta
+data: {"agent_id": "lead-1", "event": {"type": "text_delta", "delta": "..."}}
+
+id: mob:1
+event: tool_call
+data: {"agent_id": "worker-1", "event": {"type": "tool_call", "name": "search", "args": {}}}
 ```
 
 Each frame has:
@@ -57,17 +55,8 @@ Each frame has:
 | Field | Description |
 |-------|-------------|
 | `id` | Unique frame identifier |
-| `event` | Event type: `agent_event`, `module_event`, `done`, `error` |
-| `data` | JSON payload specific to the event type |
-
-### Event types
-
-| Event | Description |
-|-------|-------------|
-| `agent_event` | Agent response chunk (text delta, tool call, reasoning) |
-| `module_event` | Module-level event (health change, routing) |
-| `done` | Stream complete |
-| `error` | Error occurred during processing |
+| `event` | Event type from the agent event model |
+| `data` | JSON payload with agent attribution |
 
 ## Keep-alive
 
@@ -77,66 +66,19 @@ The server sends keep-alive frames at a configurable interval (default: 15 secon
 : keep-alive
 ```
 
-The keep-alive interval can be configured when constructing the SSE router:
+## Sending messages
 
-```rust
-interaction_sse_router_with_keep_alive_interval(
-    runtime,
-    Duration::from_secs(30),
-)
-```
-
-## Client-side parsing
-
-The console client uses `parseSseFrames()` to extract structured frames from the raw SSE text:
-
-```typescript
-import { parseSseFrames } from "./lib/network";
-
-const response = await fetch("/interactions/stream", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ member_id: "lead-1", message: "Status?" }),
-});
-
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
-
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-
-  const frames = parseSseFrames(decoder.decode(value));
-  for (const frame of frames) {
-    switch (frame.event) {
-      case "agent_event":
-        handleAgentEvent(frame.data);
-        break;
-      case "done":
-        handleComplete();
-        break;
-    }
-  }
-}
-```
+To send a message to an agent, use the `mobkit/send_message` RPC method (fire-and-forget) and observe responses via the SSE event streams above.
 
 ## Error handling
 
-If the target member does not exist or the message cannot be delivered, the stream returns an error frame:
+If the target agent does not exist, the SSE endpoint returns an HTTP error response:
 
-```
-event: error
-data: {"type": "member_not_found", "message": "No member with ID 'invalid-id'"}
-```
-
-Common error types:
-
-| Error type | Cause |
-|------------|-------|
-| `member_not_found` | Target member ID does not exist |
-| `session_error` | Meerkat session error |
-| `mob_error` | Mob runtime error |
-| `send_error` | Comms delivery failed |
+| Status | Cause |
+|--------|-------|
+| `400` | Empty or invalid agent ID |
+| `404` | Agent not found |
+| `500` | Internal server error |
 
 ## See also
 

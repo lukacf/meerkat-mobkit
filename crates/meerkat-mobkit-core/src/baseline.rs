@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_MEERKAT_REPO: &str = "/Users/luka/src/raik";
 pub const REQUIRED_MEERKAT_SYMBOLS: &[&str] = &[
     "MobEventRouter",
-    "inject_and_subscribe(id, msg)",
+    "send_message(id, msg)",
     "subscribe_agent_events(id)",
     "subscribe_all_agent_events()",
     "SpawnPolicy trait",
@@ -162,7 +162,7 @@ fn contains_symbol(content: &str, symbol: &str) -> bool {
                 || content.contains("fn find_by_label")
                 || content.contains(".find_by_label(")
         }
-        "inject_and_subscribe(id, msg)" => content.contains("inject_and_subscribe"),
+        "send_message(id, msg)" => content.contains("send_message"),
         "respawn(id, msg)" => content.contains("respawn("),
         _ => false,
     }

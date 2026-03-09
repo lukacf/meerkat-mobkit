@@ -220,16 +220,15 @@ fn build_console_experience_contract(
         "chat_inspector": {
             "panel_id": "console.chat_inspector",
             "title": "Chat Inspector",
-            "stream_route": "/interactions/stream",
-            "transport": "sse",
+            "send_method": "mobkit/send_message",
+            "observe_route": "/agents/:agent_id/events",
+            "transport": "rpc+sse",
             "request_contract": {
                 "member_id": "required target member id",
-                "message": "required user text to inject",
+                "message": "required user text to send",
             },
             "event_contract": {
-                "interaction_start_event": "interaction_started",
                 "agent_event_type_path": "type",
-                "ordered_by": "interaction_id + seq",
             }
         },
         "topology": {

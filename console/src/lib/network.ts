@@ -56,47 +56,29 @@ export async function fetchJson<T>(baseUrl: string, path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function sendInteraction(
+export async function sendMessage(
   baseUrl: string,
   memberId: string,
   message: string
-): Promise<ConsoleFrame[]> {
-  const response = await fetch(`${baseUrl}/interactions/stream`, {
+): Promise<void> {
+  const response = await fetch(`${baseUrl}/rpc`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ member_id: memberId, message }),
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: `send_message:${Date.now()}`,
+      method: "mobkit/send_message",
+      params: { member_id: memberId, message },
+    }),
   });
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`interaction request failed ${response.status}: ${text}`);
+    throw new Error(`send_message request failed ${response.status}: ${text}`);
   }
 
-  if (!response.body || typeof response.body.getReader !== "function") {
-    return parseSseFrames(await response.text());
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let text = "";
-  try {
-    while (!text.includes("\n\n")) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-      text += decoder.decode(value, { stream: true });
-      if (text.length > 16_384) {
-        break;
-      }
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch (_) {
-      // No-op: stream may already be closed.
-    }
-  }
-
-  return parseSseFrames(text);
 }

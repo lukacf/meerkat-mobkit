@@ -14,7 +14,6 @@ use meerkat_mobkit_core::{
     UnifiedRuntime, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
     UnifiedRuntimeReconcileError,
 };
-use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
@@ -116,59 +115,6 @@ fn trusted_oidc() -> TrustedOidcRuntimeConfig {
     }
 }
 
-async fn post_interactions_stream_raw(
-    address: SocketAddr,
-    request_body: &str,
-    timeout: Duration,
-) -> String {
-    let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    let mut stream = loop {
-        match TcpStream::connect(address).await {
-            Ok(stream) => break stream,
-            Err(error) => {
-                assert!(
-                    tokio::time::Instant::now() < connect_deadline,
-                    "failed to connect to unified runtime at {address}: {error}"
-                );
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        }
-    };
-
-    let request = format!(
-        "POST /interactions/stream HTTP/1.1\r\nHost: {address}\r\nContent-Type: application/json\r\nAccept: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{request_body}",
-        request_body.len()
-    );
-    stream
-        .write_all(request.as_bytes())
-        .await
-        .expect("write request");
-    stream.flush().await.expect("flush request");
-
-    let mut bytes = Vec::new();
-    let start = tokio::time::Instant::now();
-    while start.elapsed() < timeout {
-        let mut chunk = [0_u8; 4096];
-        let remaining = timeout.saturating_sub(start.elapsed());
-        match tokio::time::timeout(remaining, stream.read(&mut chunk)).await {
-            Ok(Ok(0)) => break,
-            Ok(Ok(read)) => {
-                bytes.extend_from_slice(&chunk[..read]);
-                let body = String::from_utf8_lossy(&bytes);
-                if body.contains("event: interaction_started")
-                    && body.matches("event: ").count() >= 2
-                {
-                    break;
-                }
-            }
-            Ok(Err(error)) => panic!("read response failed: {error}"),
-            Err(_) => break,
-        }
-    }
-
-    String::from_utf8(bytes).expect("utf8 response")
-}
-
 async fn get_raw(address: SocketAddr, path: &str, timeout: Duration) -> String {
     let connect_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     let mut stream = loop {
@@ -266,7 +212,6 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
     assert!(example_source.contains("UnifiedRuntime::builder()"));
     assert!(example_source.contains(".reconcile("));
     assert!(example_source.contains(".build_console_json_router("));
-    assert!(example_source.contains(".build_interaction_sse_router("));
     assert!(example_source.contains(".serve(listener, decisions)"));
     assert!(example_source.contains(".run(listener, decisions"));
     assert!(!example_source.contains("axum::serve("));
@@ -278,12 +223,10 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
 }
 
 #[test]
-fn sc_001_reference_app_router_proves_unified_owned_stream_ingress_path() {
+fn sc_001_reference_app_router_proves_unified_owned_console_path() {
     let unified_runtime_source = include_str!("../src/unified_runtime.rs");
     assert!(unified_runtime_source.contains(".merge(self.build_console_frontend_router())"));
-    assert!(unified_runtime_source.contains(".merge(self.build_interaction_sse_router())"));
-    assert!(unified_runtime_source.contains("interaction_sse_router_full"));
-    assert!(!unified_runtime_source.contains("interaction_sse_router(self.mob_runtime.clone())"));
+    assert!(!unified_runtime_source.contains("interaction_sse_router"));
 }
 
 #[tokio::test]
@@ -350,41 +293,6 @@ async fn req_002_router_builders_prove_console_and_sse_behavior() {
     let frontend_body_text = String::from_utf8(frontend_body.to_vec()).expect("utf8 frontend body");
     assert!(frontend_body_text.contains("/console/assets/console-app.js"));
 
-    let sse_router = runtime.build_interaction_sse_router();
-    let request_body = json!({
-        "member_id": "router",
-        "message": "hello from router builder test"
-    })
-    .to_string();
-    let sse_response = sse_router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/interactions/stream")
-                .header("content-type", "application/json")
-                .body(Body::from(request_body))
-                .expect("sse request"),
-        )
-        .await
-        .expect("sse response");
-    assert_eq!(sse_response.status(), StatusCode::OK);
-    assert!(sse_response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream")));
-
-    let sse_body = tokio::time::timeout(
-        Duration::from_secs(20),
-        to_bytes(sse_response.into_body(), 2 * 1024 * 1024),
-    )
-    .await
-    .expect("sse stream completed within timeout")
-    .expect("sse body");
-    let sse_body_text = String::from_utf8(sse_body.to_vec()).expect("utf8 sse body");
-    assert!(sse_body_text.contains("event: interaction_started"));
-    assert!(sse_body_text.matches("event: ").count() >= 2);
-
     let shutdown = runtime.shutdown().await;
     assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
     shutdown.mob_stop.expect("mob runtime should stop cleanly");
@@ -427,7 +335,7 @@ async fn req_002_serve_proves_reference_console_route_behavior() {
         "expected HTTP 200 response, got: {response}"
     );
     assert!(response.contains("\"contract_version\":\"0.1.0\""));
-    assert!(response.contains("\"stream_route\":\"/interactions/stream\""));
+    assert!(response.contains("\"send_method\":\"mobkit/send_message\""));
 
     let shutdown = runtime.shutdown().await;
     assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
@@ -478,26 +386,6 @@ async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
         "expected HTTP 200 response from /console/modules, got: {console_response}"
     );
     assert!(console_response.contains("\"modules\":[\"router\",\"delivery\"]"));
-
-    let request_body = json!({
-        "member_id": "router",
-        "message": "hello from phase2 e2e"
-    })
-    .to_string();
-    let response =
-        post_interactions_stream_raw(address, &request_body, Duration::from_secs(20)).await;
-
-    assert!(
-        response.starts_with("HTTP/1.1 200"),
-        "expected HTTP 200 response, got: {response}"
-    );
-    assert!(
-        response.contains("Content-Type: text/event-stream")
-            || response.contains("content-type: text/event-stream"),
-        "expected SSE content type, got: {response}"
-    );
-    assert!(response.contains("event: interaction_started"));
-    assert!(response.matches("event: ").count() >= 2);
 
     shutdown_tx.send(()).expect("signal runtime shutdown");
     let run_report = server.await.expect("server join");
