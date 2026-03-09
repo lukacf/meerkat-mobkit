@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod baseline;
+pub mod config_convention;
 pub mod decisions;
 pub mod governance;
 pub mod http_auth;
@@ -86,6 +87,7 @@ pub use types::{
     AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent,
     PreSpawnData, RestartPolicy, UnifiedEvent,
 };
+pub use config_convention::ConventionalPaths;
 pub use unified_runtime::{
     discovery_spec_to_spawn_spec, DesiredPeerEdge, DesiredPeerEdgeError, Discovery,
     EdgeDiscovery, EdgeReconcileFailure, PostReconcileHook, PostSpawnHook, PreSpawnContext,
