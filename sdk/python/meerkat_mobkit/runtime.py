@@ -319,8 +319,11 @@ class MobHandle:
         try:
             return await self.spawn(spec)
         except RpcError as exc:
-            # MeerkatAlreadyExists — member exists, which is what we wanted
-            if "AlreadyExists" in str(exc):
+            # Meerkat returns MeerkatAlreadyExists when the member is already
+            # in the roster or has a pending spawn. The Rust Debug format is
+            # 'MeerkatAlreadyExists(MeerkatId("..."))' which flows through
+            # the RPC error message as 'Invalid params: MeerkatAlreadyExists(...)'.
+            if exc.code == -32602 and "MeerkatAlreadyExists" in str(exc):
                 return SpawnResult.from_dict({
                     "accepted": True,
                     "module_id": "",
