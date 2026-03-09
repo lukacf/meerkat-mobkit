@@ -203,8 +203,7 @@ pub fn handle_mobkit_rpc_json(
                     "mobkit/gating/pending",
                     "mobkit/gating/decide",
                     "mobkit/gating/audit",
-                    "mobkit/call_tool",
-                    "mobkit/send_message"
+                    "mobkit/call_tool"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),

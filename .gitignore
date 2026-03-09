@@ -8,3 +8,4 @@ docs/rct/traceability.legacy-*.md
 *.pyc
 *.egg-info/
 sdk/python/build/
+.DS_Store
