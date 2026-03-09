@@ -884,6 +884,23 @@ impl UnifiedRuntime {
             .await
     }
 
+    /// Find members matching a label key-value pair.
+    pub async fn find_members(
+        &self,
+        label_key: &str,
+        label_value: &str,
+    ) -> Vec<MobMemberSnapshot> {
+        self.mob_runtime.find_members(label_key, label_value).await
+    }
+
+    /// Ensure a member exists, spawning from spec if missing. Idempotent.
+    pub async fn ensure_member(
+        &self,
+        spec: SpawnMemberSpec,
+    ) -> Result<MobMemberSnapshot, MobRuntimeError> {
+        self.mob_runtime.ensure_member(spec).await
+    }
+
     pub fn module_is_running(&self) -> bool {
         self.module_runtime.is_running()
     }

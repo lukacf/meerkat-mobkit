@@ -923,7 +923,9 @@ pub async fn handle_unified_rpc_json(
                     "mobkit/gating/decide",
                     "mobkit/gating/audit",
                     "mobkit/call_tool",
-                    "mobkit/send_message"
+                    "mobkit/send_message",
+                    "mobkit/find_members",
+                    "mobkit/ensure_member"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),
@@ -1556,6 +1558,88 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: "Invalid params: member_id and message required".to_string(),
+                    }),
+                },
+            }
+        }
+        "mobkit/find_members" => {
+            let label_key = request.params.get("label_key").and_then(Value::as_str);
+            let label_value = request.params.get("label_value").and_then(Value::as_str);
+
+            match (label_key, label_value) {
+                (Some(key), Some(value)) if !key.is_empty() => {
+                    let members = runtime.find_members(key, value).await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id.clone(),
+                        result: Some(serde_json::to_value(&members).unwrap_or(Value::Null)),
+                        error: None,
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: label_key and label_value required".to_string(),
+                    }),
+                },
+            }
+        }
+        "mobkit/ensure_member" => {
+            let profile = request.params.get("profile").and_then(Value::as_str);
+            let meerkat_id = request.params.get("meerkat_id").and_then(Value::as_str);
+
+            match (profile, meerkat_id) {
+                (Some(profile), Some(meerkat_id)) if !profile.is_empty() && !meerkat_id.is_empty() => {
+                    let labels = request.params.get("labels")
+                        .and_then(|v| serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone()).ok());
+                    let context = request.params.get("context").cloned();
+                    let resume_session_id = request.params.get("resume_session_id")
+                        .and_then(Value::as_str)
+                        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+                    let additional_instructions = request.params.get("additional_instructions")
+                        .and_then(Value::as_array)
+                        .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
+                        .and_then(|v| if v.is_empty() { None } else { Some(v) });
+
+                    let spec = meerkat_mob::SpawnMemberSpec {
+                        profile_name: meerkat_mob::ProfileName::from(profile),
+                        meerkat_id: meerkat_mob::MeerkatId::from(meerkat_id),
+                        initial_message: None,
+                        runtime_mode: None,
+                        backend: None,
+                        context,
+                        labels,
+                        resume_session_id,
+                        additional_instructions,
+                    };
+                    match runtime.ensure_member(spec).await {
+                        Ok(snapshot) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!("ensure_member failed: {err}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: profile and meerkat_id required".to_string(),
                     }),
                 },
             }

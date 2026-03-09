@@ -302,35 +302,56 @@ class MobHandle:
 
     async def ensure_member(
         self, member_id: str, profile: str, **kwargs: Any
-    ) -> SpawnResult:
+    ) -> dict[str, Any]:
         """Ensure a mob member exists, spawning it if missing.
 
-        Idempotent — if the member already exists, returns success without
-        error. Use before ``send()`` when handling first contact from an
-        unknown user (e.g. new Slack DM).
+        Idempotent — returns the member snapshot whether it was just spawned
+        or already existed. Use before ``send()`` when handling first contact
+        from an unknown user (e.g. new Slack DM).
 
         Args:
             member_id: Meerkat ID for the member.
             profile: Profile name from mob.toml to spawn with.
-            **kwargs: Optional fields passed to DiscoverySpec (labels, context,
-                      resume_session_id, additional_instructions).
+            **kwargs: Optional fields (labels, context, resume_session_id,
+                      additional_instructions).
+
+        Returns:
+            Member snapshot dict with meerkat_id, profile, state, labels, wired_to.
         """
-        spec = DiscoverySpec(profile=profile, meerkat_id=member_id, **kwargs)
-        try:
-            return await self.spawn(spec)
-        except RpcError as exc:
-            # Meerkat returns MeerkatAlreadyExists when the member is already
-            # in the roster or has a pending spawn. The Rust Debug format is
-            # 'MeerkatAlreadyExists(MeerkatId("..."))' which flows through
-            # the RPC error message as 'Invalid params: MeerkatAlreadyExists(...)'.
-            if exc.code == -32602 and "MeerkatAlreadyExists" in str(exc):
-                return SpawnResult.from_dict({
-                    "accepted": True,
-                    "module_id": "",
-                    "meerkat_id": member_id,
-                    "profile": profile,
-                })
-            raise
+        params: dict[str, Any] = {"profile": profile, "meerkat_id": member_id}
+        if "labels" in kwargs:
+            params["labels"] = kwargs["labels"]
+        if "context" in kwargs:
+            params["context"] = kwargs["context"]
+        if "resume_session_id" in kwargs:
+            params["resume_session_id"] = kwargs["resume_session_id"]
+        if "additional_instructions" in kwargs:
+            params["additional_instructions"] = kwargs["additional_instructions"]
+        return await self._runtime._rpc("mobkit/ensure_member", params)
+
+    async def find_members(
+        self, label_key: str, label_value: str
+    ) -> list[dict[str, Any]]:
+        """Find members matching a label key-value pair.
+
+        Returns a list of member snapshot dicts with meerkat_id, profile,
+        state, labels, and wired_to.
+
+        Example::
+
+            # Find all initiative agents
+            initiatives = await handle.find_members("agent_type", "initiative")
+
+            # Find the agent for a specific owner
+            agents = await handle.find_members("owner_id", "user-123")
+            if agents:
+                meerkat_id = agents[0]["meerkat_id"]
+        """
+        raw = await self._runtime._rpc(
+            "mobkit/find_members",
+            {"label_key": label_key, "label_value": label_value},
+        )
+        return raw if isinstance(raw, list) else []
 
     async def send(self, member_id: str, message: str) -> None:
         """Send a message to a mob member. Pure delivery, fire-and-forget."""
