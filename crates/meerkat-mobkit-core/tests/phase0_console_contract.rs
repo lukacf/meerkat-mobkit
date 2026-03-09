@@ -138,16 +138,16 @@ fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced(
     }
     assert!(modules_response.body["modules"].is_array());
 
-    let stream_path = artifact["surfaces"]["sse"]["interaction_stream"]["path"]
+    let agent_events_path = artifact["surfaces"]["sse"]["agent_events"]["path"]
         .as_str()
-        .expect("interaction stream path must be present");
+        .expect("agent events path must be present");
     let keep_alive_event = artifact["surfaces"]["sse"]["activity_feed_keep_alive_event"]
         .as_str()
         .expect("keep-alive event must be present");
 
     assert_eq!(
-        experience_response.body["chat_inspector"]["stream_route"],
-        json!(stream_path)
+        experience_response.body["chat_inspector"]["observe_route"],
+        json!(agent_events_path)
     );
     assert_eq!(
         experience_response.body["activity_feed"]["keep_alive"]["event"],

@@ -52,22 +52,6 @@ class AgentEvent:
         )
 
 
-@dataclass(frozen=True)
-class InteractionEvent:
-    """An event from an interaction stream (inject_and_subscribe)."""
-    event_id: str | None
-    event_type: str
-    data: str
-
-    @classmethod
-    def from_sse(cls, event: SseEvent) -> InteractionEvent:
-        return cls(
-            event_id=event.id,
-            event_type=event.event,
-            data=event.data,
-        )
-
-
 class EventStream:
     """Typed async iterator wrapping raw SSE events into domain events."""
 
@@ -79,6 +63,6 @@ class EventStream:
     def __aiter__(self) -> EventStream:
         return self
 
-    async def __anext__(self) -> MobEvent | AgentEvent | InteractionEvent:
+    async def __anext__(self) -> MobEvent | AgentEvent:
         event = await self._source.__anext__()
         return self._event_cls.from_sse(event, **self._kwargs)

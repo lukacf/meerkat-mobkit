@@ -12,7 +12,6 @@ _log = logging.getLogger("meerkat_mobkit")
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .errors import NotConnectedError, RpcError, TransportError
-from .events import InteractionEvent
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
@@ -102,7 +101,7 @@ class MobKitRuntime:
                     if not self._rust_http_base:
                         _log.warning(
                             "mobkit/init did not return http_base_url — "
-                            "SSE features (inject_and_subscribe, event streaming) unavailable"
+                            "SSE event streaming unavailable"
                         )
             except Exception:
                 if self._transport is not None and not self._transport.is_running():
@@ -296,10 +295,12 @@ class MobHandle:
         """
         return ToolCaller(self, module_id)
 
-    async def inject_and_subscribe(self, target: str, message: str) -> AsyncIterator[InteractionEvent]:
-        bridge = self._runtime.sse_bridge()
-        async for event in bridge.interaction_stream(target, message):
-            yield InteractionEvent.from_sse(event)
+    async def send_message(self, member_id: str, message: str) -> None:
+        """Send a message to a mob member (fire-and-forget)."""
+        await self._runtime._rpc(
+            "mobkit/send_message",
+            {"member_id": member_id, "message": message},
+        )
 
 
 class ToolCaller:
@@ -346,14 +347,6 @@ class SseBridge:
     async def mob_events(self) -> AsyncIterator[SseEvent]:
         url = f"{self._base_url()}/mob/events"
         async for event in self._stream_sse(url):
-            yield event
-
-    async def interaction_stream(
-        self, member_id: str, message: str
-    ) -> AsyncIterator[SseEvent]:
-        url = f"{self._base_url()}/interactions/stream"
-        body = json.dumps({"member_id": member_id, "message": message}).encode()
-        async for event in self._stream_sse(url, method="POST", body=body):
             yield event
 
     async def _stream_sse(
@@ -452,19 +445,6 @@ class AsgiApp:
         if path == "/mob/events" and method == "GET":
             bridge = self._runtime.sse_bridge()
             await self._proxy_sse(send, bridge.mob_events())
-            return
-
-        if path == "/interactions/stream" and method == "POST":
-            body = await _read_body(receive)
-            parsed = json.loads(body)
-            bridge = self._runtime.sse_bridge()
-            await self._proxy_sse(
-                send,
-                bridge.interaction_stream(
-                    parsed.get("member_id", ""),
-                    parsed.get("message", ""),
-                ),
-            )
             return
 
         if self._fallback_app is not None:

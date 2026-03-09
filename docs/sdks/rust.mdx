@@ -221,9 +221,6 @@ let frontend: Router = console_frontend_router();
 // Console JSON API
 let json_api: Router = console_json_router(decisions);
 let json_api: Router = console_json_router_with_runtime(decisions, mob_runtime);
-
-// Interaction SSE
-let sse: Router = interaction_sse_router(mob_runtime);
 ```
 
 ## See also

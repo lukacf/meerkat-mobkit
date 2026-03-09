@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use meerkat_client::LlmClient;
-use meerkat_core::AgentEvent;
 use meerkat_mob::{
     MeerkatId, MemberRef, MemberState, MobBuilder, MobDefinition, MobError, MobHandle,
     MobSessionService, MobState, MobStorage, SpawnMemberSpec,
@@ -99,11 +98,6 @@ impl Default for MobReconcileOptions {
     fn default() -> Self {
         Self { retire_stale: true }
     }
-}
-
-pub struct RealInteractionSubscription {
-    pub interaction_id: String,
-    pub events: tokio::sync::mpsc::Receiver<AgentEvent>,
 }
 
 #[derive(Clone)]
@@ -250,26 +244,21 @@ impl RealMobRuntime {
         self.handle.resume().await.map_err(Into::into)
     }
 
-    pub async fn inject_and_subscribe(
+    /// Send a message to a member (enforces external_addressable).
+    pub async fn send_message(
         &self,
         member_id: &str,
         message: String,
-    ) -> Result<RealInteractionSubscription, MobRuntimeError> {
+    ) -> Result<(), MobRuntimeError> {
         if member_id.trim().is_empty() {
             return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
         }
         if message.trim().is_empty() {
             return Err(MobRuntimeError::InvalidInput("message must not be empty"));
         }
-
-        let subscription = self
-            .handle
-            .inject_and_subscribe(MeerkatId::from(member_id), message)
-            .await?;
-
-        Ok(RealInteractionSubscription {
-            interaction_id: subscription.id.to_string(),
-            events: subscription.events,
-        })
+        self.handle
+            .send_message(MeerkatId::from(member_id), message)
+            .await
+            .map_err(Into::into)
     }
 }

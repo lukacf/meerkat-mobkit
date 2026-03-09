@@ -203,8 +203,8 @@ fn phase8_console_001_capability_driven_rendering_contract() {
         json!("console.chat_inspector")
     );
     assert_eq!(
-        allowed.body["chat_inspector"]["stream_route"],
-        json!("/interactions/stream")
+        allowed.body["chat_inspector"]["send_method"],
+        json!("mobkit/send_message")
     );
     assert_eq!(
         allowed.body["topology"]["panel_id"],

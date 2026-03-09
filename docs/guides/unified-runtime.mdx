@@ -105,11 +105,8 @@ let frontend = console_frontend_router();
 // Console JSON API (experience, modules)
 let json_api = console_json_router_with_runtime(decisions, mob_runtime.clone());
 
-// Interaction SSE (agent messaging)
-let sse = interaction_sse_router(mob_runtime);
-
 // Compose into a single app
-let app = frontend.merge(json_api).merge(sse);
+let app = frontend.merge(json_api);
 ```
 
 | Route | Method | Description |
@@ -118,7 +115,6 @@ let app = frontend.merge(json_api).merge(sse);
 | `/console/assets/console-app.js` | GET | React bundle |
 | `/console/experience` | GET | Experience metadata JSON |
 | `/console/modules` | GET | Loaded modules JSON |
-| `/interactions/stream` | POST | Send message, receive SSE stream |
 
 ## Error hierarchy
 

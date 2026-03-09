@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use meerkat::{build_ephemeral_service, AgentEvent, AgentFactory, Config};
 use meerkat_mob::{MeerkatId, MobBuilder, MobStorage, Prefab, ProfileName};
 
@@ -56,23 +57,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("REAL_SMOKE: spawned lead-1 + worker-1 and wired them");
 
-    let mut sub = handle
-        .inject_and_subscribe(
+    let mut agent_stream = handle
+        .subscribe_agent_events(&MeerkatId::from("lead-1"))
+        .await?;
+    handle
+        .send_message(
             MeerkatId::from("lead-1"),
             "Give a 2-sentence plan to implement a Rust CLI smoke test and mention one task to delegate to worker-1.".to_string(),
         )
         .await?;
-    println!("REAL_SMOKE: interaction started id={}", sub.id);
+    println!("REAL_SMOKE: message sent to lead-1");
 
     let mut final_result: Option<String> = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
 
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let evt = tokio::time::timeout(remaining.min(Duration::from_secs(5)), sub.events.recv())
+        let evt = tokio::time::timeout(remaining.min(Duration::from_secs(5)), agent_stream.next())
             .await
             .ok()
-            .flatten();
+            .flatten()
+            .map(|envelope| envelope.payload);
 
         let Some(evt) = evt else {
             continue;

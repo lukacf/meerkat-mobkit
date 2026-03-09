@@ -2,7 +2,7 @@
 import json
 
 from meerkat_mobkit._sse import SseEvent
-from meerkat_mobkit.events import AgentEvent, InteractionEvent, MobEvent
+from meerkat_mobkit.events import AgentEvent, MobEvent
 
 
 class TestMobEvent:
@@ -25,12 +25,3 @@ class TestAgentEvent:
         assert ev.agent_id == "agent-1"
         assert ev.event_type == "agent_event"
         assert ev.data == {"action": "speak"}
-
-
-class TestInteractionEvent:
-    def test_from_sse(self):
-        sse = SseEvent(id="ev-3", event="interaction", data="hello")
-        ev = InteractionEvent.from_sse(sse)
-        assert ev.event_id == "ev-3"
-        assert ev.event_type == "interaction"
-        assert ev.data == "hello"

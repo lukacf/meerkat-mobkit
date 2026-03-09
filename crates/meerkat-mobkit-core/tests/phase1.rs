@@ -5,14 +5,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
 use meerkat::{build_ephemeral_service, AgentFactory, Config};
 use meerkat_client::TestClient;
 use meerkat_core::{
     CommsRuntime, CreateSessionRequest, EventStream, RunResult, SessionError, SessionId,
     SessionQuery, SessionService, SessionServiceCommsExt, SessionSummary, SessionView,
-    StartTurnRequest, StreamError, SubscribableInjector,
+    StartTurnRequest, StreamError,
 };
 use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::{
@@ -30,7 +28,6 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tower::ServiceExt;
 
 fn shell_module(
     id: &str,
@@ -111,13 +108,6 @@ impl SessionService for CheckpointerCancelProbeSessionService {
 impl SessionServiceCommsExt for CheckpointerCancelProbeSessionService {
     async fn comms_runtime(&self, session_id: &SessionId) -> Option<Arc<dyn CommsRuntime>> {
         self.inner.comms_runtime(session_id).await
-    }
-
-    async fn event_injector(
-        &self,
-        session_id: &SessionId,
-    ) -> Option<Arc<dyn SubscribableInjector>> {
-        self.inner.event_injector(session_id).await
     }
 }
 
@@ -828,19 +818,14 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         .spawn(spawn_spec("worker", "worker-1"))
         .await
         .expect("spawn worker");
+    fixture
+        .runtime
+        .send_message("worker-1", "Reply with one sentence.".to_string())
+        .await
+        .expect("send_message should succeed");
+
     let ready_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let mut interaction = fixture
-            .runtime
-            .inject_and_subscribe("worker-1", "Reply with one sentence.".to_string())
-            .await
-            .expect("inject interaction");
-        let _first_event = tokio::time::timeout(Duration::from_secs(10), interaction.events.recv())
-            .await
-            .expect("first interaction event should arrive")
-            .expect("first interaction event should exist");
-        drop(interaction);
-
         let response = fixture
             .runtime
             .subscribe_events(meerkat_mobkit_core::runtime::SubscribeRequest {
@@ -1056,62 +1041,6 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
         _ => String::new(),
     };
     assert_eq!(error_kind, "mob_runtime");
-
-    let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
-}
-
-#[tokio::test]
-async fn choke_004_http_interactions_stream_uses_runtime_from_unified_owner() {
-    let config = MobKitConfig {
-        modules: vec![],
-        discovery: DiscoverySpec {
-            namespace: "phase1-unified".to_string(),
-            modules: vec![],
-        },
-        pre_spawn: vec![],
-    };
-
-    let mut fixture = build_unified_runtime_fixture(config).await;
-    fixture
-        .runtime
-        .spawn(spawn_spec("worker", "worker-1"))
-        .await
-        .expect("spawn worker");
-
-    let request_body = json!({
-        "member_id": "worker-1",
-        "message": "Reply in one sentence."
-    })
-    .to_string();
-    let request = Request::builder()
-        .method("POST")
-        .uri("/interactions/stream")
-        .header("content-type", "application/json")
-        .body(Body::from(request_body))
-        .expect("request");
-
-    let app = fixture
-        .runtime
-        .build_reference_app_router(reference_runtime_decision_state());
-    let response = app.oneshot(request).await.expect("response");
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/event-stream")));
-
-    let body = tokio::time::timeout(
-        Duration::from_secs(20),
-        to_bytes(response.into_body(), 2 * 1024 * 1024),
-    )
-    .await
-    .expect("sse stream completed")
-    .expect("read sse body");
-    let body_text = String::from_utf8(body.to_vec()).expect("utf8 body");
-    assert!(body_text.contains("event: interaction_started"));
-    assert!(body_text.contains("data: {\"interaction_id\":"));
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());

@@ -96,7 +96,7 @@ All `MobHandle` methods return typed dataclasses instead of raw dicts:
 | `resolve_routing(recipient)` | `RoutingResolution` | `recipient`, `route` |
 | `send_delivery(...)` | `DeliveryResult` | `delivered`, `delivery_id` |
 | `memory_query(query)` | `MemoryQueryResult` | `results` |
-| `inject_and_subscribe(target, message)` | `AsyncIterator[InteractionEvent]` | `event_id`, `event_type`, `data` |
+| `send_message(member_id, message)` | `None` | Fire-and-forget message delivery |
 
 ```python
 from meerkat_mobkit.types import StatusResult, SpawnResult, SubscribeResult
@@ -160,13 +160,15 @@ except RpcError as exc:
 Typed event classes for SSE streaming:
 
 ```python
-from meerkat_mobkit.events import MobEvent, AgentEvent, InteractionEvent, EventStream
+from meerkat_mobkit.events import MobEvent, AgentEvent, EventStream
 ```
 
 ```python
-# Interaction streaming returns typed events
-async for event in handle.inject_and_subscribe("agent-1", "Hello"):
-    print(event.event_type, event.data)
+# Send a message and observe responses via SSE bridge
+await handle.send_message("agent-1", "Hello")
+bridge = runtime.sse_bridge()
+async for event in bridge.agent_events("agent-1"):
+    print(event.event, event.data)
 ```
 
 ## Session agent builder

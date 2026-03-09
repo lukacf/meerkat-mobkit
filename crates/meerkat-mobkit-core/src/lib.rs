@@ -41,12 +41,12 @@ pub use http_console::{
 };
 pub use http_auth::{auth_middleware, with_auth_layer};
 pub use http_sse::{
-    agent_event_sse, agent_events_sse_router, interaction_sse_handler, interaction_sse_router,
-    mob_events_sse_router, AgentEventSubscribeFn, InjectSseRequest, MobEventSubscribeFn,
+    agent_event_sse, agent_events_sse_router,
+    mob_events_sse_router, AgentEventSubscribeFn, MobEventSubscribeFn,
 };
 pub use mob_handle_runtime::{
     MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot, MobReconcileOptions,
-    MobReconcileReport, MobRuntimeError, RealInteractionSubscription, RealMobRuntime,
+    MobReconcileReport, MobRuntimeError, RealMobRuntime,
 };
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{run_process_json_line, ProcessBoundaryError};

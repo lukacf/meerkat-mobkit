@@ -7,7 +7,7 @@ Usage::
     from meerkat_mobkit import SessionAgentBuilder, SessionBuildOptions
     from meerkat_mobkit.errors import MobKitError, RpcError, NotConnectedError
     from meerkat_mobkit.types import StatusResult, CapabilitiesResult
-    from meerkat_mobkit.events import MobEvent, AgentEvent, InteractionEvent
+    from meerkat_mobkit.events import MobEvent, AgentEvent
 
 Module authoring helpers are available via::
 
@@ -52,7 +52,7 @@ from .types import (
 )
 
 # Typed events
-from .events import AgentEvent, EventStream, InteractionEvent, MobEvent
+from .events import AgentEvent, EventStream, MobEvent
 
 # Config modules (importable as meerkat_mobkit.auth, etc.)
 from .config import auth, memory, session_store
@@ -93,7 +93,6 @@ __all__ = [
     # Typed events
     "MobEvent",
     "AgentEvent",
-    "InteractionEvent",
     "EventStream",
     # Config modules
     "auth",

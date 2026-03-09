@@ -93,7 +93,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         r#"{"method":"GET","path":"/console/modules","auth":null}"#,
     );
     let _console_router = runtime.build_console_json_router(decisions.clone());
-    let _interaction_router = runtime.build_interaction_sse_router();
 
     let listen_addr =
         std::env::var("MOBKIT_REF_ADDR").unwrap_or_else(|_| "127.0.0.1:3210".to_string());
@@ -102,9 +101,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("GET  /console");
     println!("GET  /console/experience");
     println!("GET  /console/modules");
-    println!(
-        "POST /interactions/stream with JSON: {{\"member_id\":\"router\",\"message\":\"hello\"}}"
-    );
     if std::env::var("MOBKIT_REF_HTTP_MODE").ok().as_deref() == Some("serve") {
         runtime.serve(listener, decisions).await?;
         return Ok(());
