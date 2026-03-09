@@ -78,6 +78,8 @@ pub struct MobMemberSnapshot {
     pub profile: String,
     pub state: String,
     pub wired_to: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -152,6 +154,7 @@ impl RealMobRuntime {
                         MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
                     },
                     wired_to,
+                    labels: entry.labels,
                 }
             })
             .collect()
@@ -260,5 +263,71 @@ impl RealMobRuntime {
             .send_message(MeerkatId::from(member_id), message)
             .await
             .map_err(Into::into)
+    }
+
+    /// Find members matching a label key-value pair.
+    pub async fn find_members(
+        &self,
+        label_key: &str,
+        label_value: &str,
+    ) -> Vec<MobMemberSnapshot> {
+        self.discover()
+            .await
+            .into_iter()
+            .filter(|m| m.labels.get(label_key).map_or(false, |v| v == label_value))
+            .collect()
+    }
+
+    /// Ensure a member exists, spawning from spec if missing.
+    ///
+    /// Idempotent — returns Ok if the member already exists.
+    pub async fn ensure_member(
+        &self,
+        spec: SpawnMemberSpec,
+    ) -> Result<MobMemberSnapshot, MobRuntimeError> {
+        let meerkat_id = spec.meerkat_id.clone();
+        // Check roster first
+        if let Some(entry) = self.handle.get_member(&meerkat_id).await {
+            let mut wired_to: Vec<String> =
+                entry.wired_to.into_iter().map(|p| p.to_string()).collect();
+            wired_to.sort();
+            return Ok(MobMemberSnapshot {
+                meerkat_id: entry.meerkat_id.to_string(),
+                profile: entry.profile.to_string(),
+                state: match entry.state {
+                    MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
+                    MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
+                },
+                wired_to,
+                labels: entry.labels,
+            });
+        }
+        // Spawn
+        match self.handle.spawn_spec(spec).await {
+            Ok(_member_ref) => {}
+            Err(MobError::MeerkatAlreadyExists(_)) => {
+                // Concurrent spawn — fine
+            }
+            Err(err) => return Err(err.into()),
+        }
+        // Return current state
+        let entry = self
+            .handle
+            .get_member(&meerkat_id)
+            .await
+            .ok_or(MobRuntimeError::Mob(MobError::MeerkatNotFound(meerkat_id)))?;
+        let mut wired_to: Vec<String> =
+            entry.wired_to.into_iter().map(|p| p.to_string()).collect();
+        wired_to.sort();
+        Ok(MobMemberSnapshot {
+            meerkat_id: entry.meerkat_id.to_string(),
+            profile: entry.profile.to_string(),
+            state: match entry.state {
+                MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
+                MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
+            },
+            wired_to,
+            labels: entry.labels,
+        })
     }
 }
