@@ -14,7 +14,11 @@ class TestNewSymbolsExist:
         "SpawnResult", "SpawnMemberResult", "SubscribeResult",
         "KeepAliveConfig", "EventEnvelope",
         "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult", "ToolCaller",
-        "MobEvent", "AgentEvent", "EventStream",
+        "Event", "MobEvent", "AgentEvent", "EventStream",
+        "RunStarted", "RunCompleted", "RunFailed",
+        "TurnStarted", "TextDelta", "TextComplete",
+        "ToolCallRequested", "ToolResultReceived", "TurnCompleted",
+        "ToolExecutionStarted", "ToolExecutionCompleted", "UnknownEvent",
         "auth", "memory", "session_store",
     ])
     def test_symbol_exists(self, name):

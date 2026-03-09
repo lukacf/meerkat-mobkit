@@ -1,56 +1,245 @@
-"""Typed event models for MobKit SDK streaming."""
+"""Typed event models for MobKit SDK streaming.
+
+Agent events are frozen dataclasses that support structural pattern matching::
+
+    async for event in handle.subscribe_agent("agent-1"):
+        match event:
+            case TextDelta(delta=chunk):
+                print(chunk, end="", flush=True)
+            case RunCompleted(result=text):
+                print(f"\\nDone: {text}")
+            case RunFailed(error=err):
+                print(f"Error: {err}")
+
+Mob events wrap agent events with source attribution::
+
+    async for event in handle.subscribe_mob():
+        print(f"[{event.member_id}] {event.event.event_type}")
+"""
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
 from ._sse import SseEvent
 
 
-@dataclass(frozen=True)
+# ---------------------------------------------------------------------------
+# Base event
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    """Base class for all agent events.
+
+    Subclasses are frozen dataclasses whose positional ``__match_args__``
+    enable clean structural pattern matching.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class RunStarted(Event):
+    """Agent run has started."""
+    session_id: str = ""
+    prompt: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RunCompleted(Event):
+    """Agent run completed successfully."""
+    session_id: str = ""
+    result: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RunFailed(Event):
+    """Agent run failed."""
+    session_id: str = ""
+    error: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Turn / LLM
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class TurnStarted(Event):
+    """A new LLM turn has begun."""
+    turn_number: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TextDelta(Event):
+    """An incremental text chunk from the LLM."""
+    delta: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class TextComplete(Event):
+    """Full assistant text for the current turn."""
+    content: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallRequested(Event):
+    """The LLM wants to invoke a tool."""
+    id: str = ""
+    name: str = ""
+    args: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class ToolResultReceived(Event):
+    """A tool result was fed back to the LLM."""
+    id: str = ""
+    name: str = ""
+    is_error: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TurnCompleted(Event):
+    """An LLM turn finished."""
+    stop_reason: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Tool execution
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionStarted(Event):
+    """A tool began executing."""
+    id: str = ""
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionCompleted(Event):
+    """A tool finished executing."""
+    id: str = ""
+    name: str = ""
+    result: str = ""
+    is_error: bool = False
+    duration_ms: int = 0
+
+
+# ---------------------------------------------------------------------------
+# Catch-all
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class UnknownEvent(Event):
+    """An event type not recognized by this SDK version."""
+    type: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Event map + parser
+# ---------------------------------------------------------------------------
+
+_EVENT_MAP: dict[str, type[Event]] = {
+    "run_started": RunStarted,
+    "run_completed": RunCompleted,
+    "run_failed": RunFailed,
+    "turn_started": TurnStarted,
+    "text_delta": TextDelta,
+    "text_complete": TextComplete,
+    "tool_call_requested": ToolCallRequested,
+    "tool_result_received": ToolResultReceived,
+    "turn_completed": TurnCompleted,
+    "tool_execution_started": ToolExecutionStarted,
+    "tool_execution_completed": ToolExecutionCompleted,
+}
+
+
+def parse_agent_event(raw: dict[str, Any]) -> Event:
+    """Parse a raw event dict into a typed :class:`Event`.
+
+    Unknown event types are returned as :class:`UnknownEvent` for
+    forward-compatibility with newer server versions.
+    """
+    event_type = raw.get("type", "")
+    cls = _EVENT_MAP.get(event_type)
+    if cls is None:
+        return UnknownEvent(type=event_type, data=raw)
+
+    kwargs: dict[str, Any] = {}
+    for f in cls.__dataclass_fields__:
+        if f in raw:
+            kwargs[f] = raw[f]
+    return cls(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Mob-level event (wraps agent event with source attribution)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
 class MobEvent:
-    """A mob-level event from the runtime."""
-    event_id: str
-    source: str
-    timestamp_ms: int
-    data: Any
+    """A mob-level attributed event from the runtime.
+
+    Wraps an agent :class:`Event` with the ``member_id`` of the agent
+    that produced it.
+    """
+    member_id: str
+    event: Event
+    timestamp_ms: int = 0
 
     @classmethod
-    def from_sse(cls, event: SseEvent) -> MobEvent:
+    def from_sse(cls, sse: SseEvent) -> MobEvent:
+        """Parse from a mob SSE event (attributed envelope)."""
         try:
-            parsed = json.loads(event.data)
+            raw = json.loads(sse.data)
         except (json.JSONDecodeError, TypeError):
-            parsed = event.data
+            raw = {}
+        # Mob events are attributed envelopes: {payload: {...}, member_id: "..."}
+        member_id = raw.get("member_id", raw.get("source", ""))
+        payload = raw.get("payload", raw)
+        event = parse_agent_event(payload) if isinstance(payload, dict) else UnknownEvent(data=raw)
         return cls(
-            event_id=event.id or "",
-            source=parsed.get("source", "") if isinstance(parsed, dict) else "",
-            timestamp_ms=parsed.get("timestamp_ms", 0) if isinstance(parsed, dict) else 0,
-            data=parsed,
+            member_id=member_id,
+            event=event,
+            timestamp_ms=raw.get("timestamp_ms", 0),
         )
 
 
-@dataclass(frozen=True)
+# ---------------------------------------------------------------------------
+# Agent-level event (typed wrapper for per-agent SSE stream)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
 class AgentEvent:
-    """A per-agent event from the runtime."""
-    event_id: str
-    agent_id: str
+    """A per-agent event from the runtime.
+
+    The ``event`` field contains the typed :class:`Event` subclass.
+    Use pattern matching on it::
+
+        match agent_event.event:
+            case TextDelta(delta=chunk): ...
+    """
     event_type: str
-    data: Any
+    event: Event
 
     @classmethod
-    def from_sse(cls, event: SseEvent, agent_id: str = "") -> AgentEvent:
+    def from_sse(cls, sse: SseEvent, agent_id: str = "") -> AgentEvent:
+        """Parse from an agent SSE event."""
         try:
-            parsed = json.loads(event.data)
+            raw = json.loads(sse.data)
         except (json.JSONDecodeError, TypeError):
-            parsed = event.data
-        return cls(
-            event_id=event.id or "",
-            agent_id=agent_id,
-            event_type=event.event,
-            data=parsed,
-        )
+            raw = {}
+        parsed = parse_agent_event(raw) if isinstance(raw, dict) else UnknownEvent()
+        return cls(event_type=sse.event, event=parsed)
 
+
+# ---------------------------------------------------------------------------
+# EventStream (generic typed async iterator)
+# ---------------------------------------------------------------------------
 
 class EventStream:
     """Typed async iterator wrapping raw SSE events into domain events."""

@@ -52,7 +52,24 @@ from .types import (
 )
 
 # Typed events
-from .events import AgentEvent, EventStream, MobEvent
+from .events import (
+    AgentEvent,
+    Event,
+    EventStream,
+    MobEvent,
+    RunCompleted,
+    RunFailed,
+    RunStarted,
+    TextComplete,
+    TextDelta,
+    ToolCallRequested,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+    ToolResultReceived,
+    TurnCompleted,
+    TurnStarted,
+    UnknownEvent,
+)
 
 # Config modules (importable as meerkat_mobkit.auth, etc.)
 from .config import auth, memory, session_store
@@ -91,9 +108,22 @@ __all__ = [
     "CallToolResult",
     "ToolCaller",
     # Typed events
+    "Event",
     "MobEvent",
     "AgentEvent",
     "EventStream",
+    "RunStarted",
+    "RunCompleted",
+    "RunFailed",
+    "TurnStarted",
+    "TextDelta",
+    "TextComplete",
+    "ToolCallRequested",
+    "ToolResultReceived",
+    "TurnCompleted",
+    "ToolExecutionStarted",
+    "ToolExecutionCompleted",
+    "UnknownEvent",
     # Config modules
     "auth",
     "memory",
