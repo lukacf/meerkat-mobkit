@@ -67,6 +67,9 @@ Observation is independent of delivery. Subscribe before or after sending — th
 status = await handle.status()
 print(status.running, status.loaded_modules)
 
+# Ensure a member exists (spawn if missing)
+await handle.ensure_member("user-123", profile="personal")
+
 # Re-run discovery and reconcile the roster
 result = await handle.reconcile(["routing", "delivery"])
 
@@ -76,6 +79,16 @@ result = await handle.call_tool("gmail", "gmail_search", {"query": "is:unread"})
 # Or bind a module for repeated calls
 gmail = handle.tool_caller("google-workspace")
 messages = await gmail("gmail_search", query="is:unread")
+```
+
+### Common pattern: new user first contact
+
+```python
+# Slack DM from a new user — ensure agent exists, then deliver
+await handle.ensure_member(user_id, profile="personal", labels={"owner": user_id})
+await handle.send(user_id, slack_message)
+async for event in handle.subscribe_agent(user_id):
+    forward_to_slack(event)
 ```
 
 ## Builder pattern

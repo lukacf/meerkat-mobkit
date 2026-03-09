@@ -300,6 +300,35 @@ class MobHandle:
     # Primary API — comms, observation, control plane
     # -----------------------------------------------------------------
 
+    async def ensure_member(
+        self, member_id: str, profile: str, **kwargs: Any
+    ) -> SpawnResult:
+        """Ensure a mob member exists, spawning it if missing.
+
+        Idempotent — if the member already exists, returns success without
+        error. Use before ``send()`` when handling first contact from an
+        unknown user (e.g. new Slack DM).
+
+        Args:
+            member_id: Meerkat ID for the member.
+            profile: Profile name from mob.toml to spawn with.
+            **kwargs: Optional fields passed to DiscoverySpec (labels, context,
+                      resume_session_id, additional_instructions).
+        """
+        spec = DiscoverySpec(profile=profile, meerkat_id=member_id, **kwargs)
+        try:
+            return await self.spawn(spec)
+        except RpcError as exc:
+            # MeerkatAlreadyExists — member exists, which is what we wanted
+            if "AlreadyExists" in str(exc):
+                return SpawnResult.from_dict({
+                    "accepted": True,
+                    "module_id": "",
+                    "meerkat_id": member_id,
+                    "profile": profile,
+                })
+            raise
+
     async def send(self, member_id: str, message: str) -> None:
         """Send a message to a mob member. Pure delivery, fire-and-forget."""
         await self._runtime._rpc(
