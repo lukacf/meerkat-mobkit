@@ -12,6 +12,7 @@ _log = logging.getLogger("meerkat_mobkit")
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .errors import NotConnectedError, RpcError, TransportError
+from .events import AgentEvent, MobEvent
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
 from .models import DiscoverySpec
@@ -295,12 +296,31 @@ class MobHandle:
         """
         return ToolCaller(self, module_id)
 
-    async def send_message(self, member_id: str, message: str) -> None:
-        """Send a message to a mob member (fire-and-forget)."""
+    # -----------------------------------------------------------------
+    # Primary API — comms, observation, control plane
+    # -----------------------------------------------------------------
+
+    async def send(self, member_id: str, message: str) -> None:
+        """Send a message to a mob member. Pure delivery, fire-and-forget."""
         await self._runtime._rpc(
             "mobkit/send_message",
             {"member_id": member_id, "message": message},
         )
+
+    # Alias for backward compatibility
+    send_message = send
+
+    async def subscribe_agent(self, member_id: str) -> AsyncIterator[AgentEvent]:
+        """Stream events for one agent. Pure observation."""
+        bridge = self._runtime.sse_bridge()
+        async for event in bridge.agent_events(member_id):
+            yield AgentEvent.from_sse(event, agent_id=member_id)
+
+    async def subscribe_mob(self) -> AsyncIterator[MobEvent]:
+        """Stream mob-wide events. Pure observation."""
+        bridge = self._runtime.sse_bridge()
+        async for event in bridge.mob_events():
+            yield MobEvent.from_sse(event)
 
 
 class ToolCaller:

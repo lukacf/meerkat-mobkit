@@ -5,8 +5,8 @@ icon: "python"
 ---
 
 The MobKit Python SDK provides a typed builder API for starting and managing
-MobKit runtimes, with typed return models, a structured error hierarchy, and
-streaming event support.
+MobKit runtimes. Apps own policy (who exists, who's wired, what tools they
+have). MobKit owns mechanism (spawn, wire, route, reconcile, persist, serve).
 
 ## Installation
 
@@ -23,11 +23,59 @@ from meerkat_mobkit import MobKit
 async def main():
     async with await MobKit.builder().mob("config/mob.toml").gateway("./mobkit-rpc").build() as rt:
         handle = rt.mob_handle()
-        status = await handle.status()
-        print("Running:", status.running)
-        print("Modules:", status.loaded_modules)
+
+        # Send a message (comms)
+        await handle.send("agent-1", "Hello")
+
+        # Watch what happens (observation)
+        async for event in handle.subscribe_agent("agent-1"):
+            print(event.event_type, event.data)
 
 asyncio.run(main())
+```
+
+## Primary API
+
+The app-facing surface has three categories. Each is a distinct concern — no method crosses categories.
+
+### Comms — deliver work to agents
+
+```python
+await handle.send("agent-1", "Review PR #42")
+```
+
+Fire-and-forget. The message enters the agent's inbox and is processed by the host loop.
+
+### Observation — watch what's happening
+
+```python
+# Stream one agent's events
+async for event in handle.subscribe_agent("agent-1"):
+    print(event.event_type, event.data)
+
+# Stream mob-wide events (all agents)
+async for event in handle.subscribe_mob():
+    print(event.source, event.data)
+```
+
+Observation is independent of delivery. Subscribe before or after sending — the stream is continuous.
+
+### Control plane — manage the runtime
+
+```python
+# Inspect runtime state
+status = await handle.status()
+print(status.running, status.loaded_modules)
+
+# Re-run discovery and reconcile the roster
+result = await handle.reconcile(["routing", "delivery"])
+
+# Call an MCP tool on a loaded module
+result = await handle.call_tool("gmail", "gmail_search", {"query": "is:unread"})
+
+# Or bind a module for repeated calls
+gmail = handle.tool_caller("google-workspace")
+messages = await gmail("gmail_search", query="is:unread")
 ```
 
 ## Builder pattern
@@ -64,8 +112,6 @@ rt = await (
 
 ## Runtime lifecycle
 
-The runtime supports both context-manager and explicit lifecycle patterns:
-
 ```python
 # Context manager (recommended)
 async with await MobKit.builder().mob("mob.toml").gateway("./mobkit-rpc").build() as rt:
@@ -81,51 +127,18 @@ finally:
     await rt.shutdown()
 ```
 
-## Typed return models
+## Session agent builder
 
-All `MobHandle` methods return typed dataclasses instead of raw dicts:
-
-| Method | Return type | Key fields |
-|--------|-------------|------------|
-| `status()` | `StatusResult` | `contract_version`, `running`, `loaded_modules` |
-| `capabilities()` | `CapabilitiesResult` | `contract_version`, `methods`, `loaded_modules` |
-| `reconcile(modules)` | `ReconcileResult` | `accepted`, `reconciled_modules`, `added` |
-| `spawn(spec: DiscoverySpec)` | `SpawnResult` | `accepted`, `module_id`, `meerkat_id`, `profile` |
-| `spawn_member(module_id)` | `SpawnResult` | `accepted`, `module_id` |
-| `subscribe_events(...)` | `SubscribeResult` | `scope`, `keep_alive: KeepAliveConfig`, `events: list[EventEnvelope]` |
-| `resolve_routing(recipient)` | `RoutingResolution` | `recipient`, `route` |
-| `send_delivery(...)` | `DeliveryResult` | `delivered`, `delivery_id` |
-| `memory_query(query)` | `MemoryQueryResult` | `results` |
-| `send_message(member_id, message)` | `None` | Fire-and-forget message delivery |
+Define how agents are built during session creation:
 
 ```python
-from meerkat_mobkit.types import StatusResult, SpawnResult, SubscribeResult
+from meerkat_mobkit import SessionAgentBuilder, SessionBuildOptions
 
-status = await handle.status()
-print(status.running)           # bool
-print(status.loaded_modules)    # list[str]
-print(status.contract_version)  # str
-
-# SubscribeResult has fully typed nested objects
-sub = await handle.subscribe_events(scope="mob")
-print(sub.keep_alive.interval_ms)  # int
-for env in sub.events:
-    print(env.event_id, env.source, env.timestamp_ms)
-```
-
-### SpawnResult
-
-`spawn(spec: DiscoverySpec)` and `spawn_member(module_id)` both return `SpawnResult`. The discovery-path spawn includes additional fields:
-
-```python
-from meerkat_mobkit import DiscoverySpec
-
-spec = DiscoverySpec(profile="assistant", meerkat_id="agent-1")
-result = await handle.spawn(spec)
-print(result.accepted)     # bool
-print(result.module_id)    # str
-print(result.meerkat_id)   # str | None (set for discovery spawns)
-print(result.profile)      # str | None (set for discovery spawns)
+class MyBuilder(SessionAgentBuilder):
+    async def build_agent(self, options: SessionBuildOptions) -> None:
+        options.profile_name = "assistant"
+        options.register_tool("search", my_search_handler)
+        options.register_tool("calculator", my_calc_handler)
 ```
 
 ## Error hierarchy
@@ -143,112 +156,20 @@ from meerkat_mobkit.errors import (
 )
 ```
 
-```python
-from meerkat_mobkit.errors import RpcError
+## Advanced API
 
-try:
-    await handle.spawn_member("")
-except RpcError as exc:
-    print(exc.code)         # -32602
-    print(str(exc))         # "Invalid params: module_id required"
-    print(exc.method)       # "mobkit/spawn_member"
-    print(exc.request_id)   # "mobkit/spawn_member:1"
-```
+These methods are available for power users and module-system internals.
+Most apps should use `send`, `subscribe_agent`/`subscribe_mob`, and `status`/`reconcile` instead.
 
-## Event streaming
-
-Typed event classes for SSE streaming:
-
-```python
-from meerkat_mobkit.events import MobEvent, AgentEvent, EventStream
-```
-
-```python
-# Send a message and observe responses via SSE bridge
-await handle.send_message("agent-1", "Hello")
-bridge = runtime.sse_bridge()
-async for event in bridge.agent_events("agent-1"):
-    print(event.event, event.data)
-```
-
-## Session agent builder
-
-Build agents with typed tool names:
-
-```python
-from meerkat_mobkit import SessionAgentBuilder, SessionBuildOptions
-
-class MyBuilder(SessionAgentBuilder):
-    async def build_agent(self, options: SessionBuildOptions) -> None:
-        options.profile_name = "assistant"
-        options.add_tools(["search", "calculator"])  # list[str] enforced
-```
-
-## Configuration helpers
-
-The SDK provides factory functions for common configuration objects:
-
-### Authentication
-
-```python
-from meerkat_mobkit import auth
-
-# Google OAuth
-google = auth.google(client_id="your-client-id.apps.googleusercontent.com")
-
-# JWT with shared secret
-jwt = auth.jwt(shared_secret="your-secret", issuer="my-app")
-
-rt = await MobKit.builder().auth(google).build()
-```
-
-### Memory
-
-```python
-from meerkat_mobkit import memory
-
-elephant = memory.elephant(
-    endpoint="http://localhost:8000",
-    space_id="my-space",
-)
-
-rt = await MobKit.builder().memory(elephant).build()
-```
-
-### Session store
-
-```python
-from meerkat_mobkit import session_store
-
-# Local JSON file store
-local = session_store.json(path="./sessions")
-
-# BigQuery production store
-bq = session_store.bigquery(dataset="my_dataset", table="sessions")
-```
-
-## Module authoring
-
-Module authoring helpers are available via `meerkat_mobkit.helpers`:
-
-```python
-from meerkat_mobkit.helpers import build_module_spec, define_module, define_module_tool
-
-spec = build_module_spec(
-    module_id="router",
-    command="python3",
-    args=["router.py"],
-    restart_policy="on_failure",
-)
-
-tool = define_module_tool(
-    name="resolve",
-    handler=resolve_handler,
-    description="Resolve routing destination",
-)
-
-module = define_module(spec=spec, tools=[tool])
-```
+| Method | Return type | Description |
+|--------|-------------|-------------|
+| `spawn(spec: DiscoverySpec)` | `SpawnResult` | Spawn a member from a discovery spec |
+| `spawn_member(module_id)` | `SpawnResult` | Spawn a member by module ID |
+| `capabilities()` | `CapabilitiesResult` | List available RPC methods |
+| `subscribe_events(scope, ...)` | `SubscribeResult` | Low-level event subscription |
+| `resolve_routing(recipient)` | `RoutingResolution` | Resolve delivery routing |
+| `send_delivery(...)` | `DeliveryResult` | Send via delivery module |
+| `memory_query(query)` | `MemoryQueryResult` | Query semantic memory |
 
 ## See also
 
