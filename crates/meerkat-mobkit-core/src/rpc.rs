@@ -925,7 +925,8 @@ pub async fn handle_unified_rpc_json(
                     "mobkit/call_tool",
                     "mobkit/send_message",
                     "mobkit/find_members",
-                    "mobkit/ensure_member"
+                    "mobkit/ensure_member",
+                    "mobkit/reconcile_edges"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),
@@ -1642,6 +1643,15 @@ pub async fn handle_unified_rpc_json(
                         message: "Invalid params: profile and meerkat_id required".to_string(),
                     }),
                 },
+            }
+        }
+        "mobkit/reconcile_edges" => {
+            let report = runtime.reconcile_edges().await;
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id.clone(),
+                result: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
+                error: None,
             }
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {

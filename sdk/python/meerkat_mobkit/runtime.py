@@ -353,6 +353,20 @@ class MobHandle:
         )
         return raw if isinstance(raw, list) else []
 
+    async def reconcile_edges(self) -> dict[str, Any]:
+        """Re-run edge discovery and reconcile dynamic peer edges.
+
+        Refreshes the active roster, runs the configured ``EdgeDiscovery``,
+        and applies wire/unwire operations to match the desired topology.
+
+        Returns the reconciliation report with desired, wired, unwired,
+        retained, preexisting, skipped, pruned, and failed edges.
+
+        Only useful if ``EdgeDiscovery`` was configured on the builder.
+        Returns an empty report if no edge discovery is configured.
+        """
+        return await self._runtime._rpc("mobkit/reconcile_edges")
+
     async def send(self, member_id: str, message: str) -> None:
         """Send a message to a mob member. Pure delivery, fire-and-forget."""
         await self._runtime._rpc(
