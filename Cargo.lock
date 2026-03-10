@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -2171,7 +2171,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-client"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2191,7 +2191,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-comms"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "base64",
@@ -2223,7 +2223,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-contracts"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "inventory",
  "meerkat-core",
@@ -2235,7 +2235,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-core"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2262,7 +2262,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-hooks"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2281,7 +2281,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mcp"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -2302,7 +2302,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mob"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -2360,7 +2360,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-session"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "futures",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-skills"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "gix",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-store"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "dirs",
@@ -2420,7 +2420,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-tools"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4737,8 +4737,8 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[patch.unused]]
 name = "meerkat-rest"
-version = "0.4.5"
+version = "0.4.6"
 
 [[patch.unused]]
 name = "meerkat-rpc"
-version = "0.4.5"
+version = "0.4.6"

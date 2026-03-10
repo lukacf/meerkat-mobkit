@@ -100,7 +100,7 @@ pub struct UnifiedRuntime {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
 
     // Fine-grained interior mutability
-    module_runtime: std::sync::Mutex<MobkitRuntimeHandle>,
+    module_runtime: tokio::sync::Mutex<MobkitRuntimeHandle>,
     managed_dynamic_edges: tokio::sync::RwLock<BTreeSet<(String, String)>>,
     shutting_down: AtomicBool,
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
@@ -135,7 +135,7 @@ impl UnifiedRuntime {
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             discovery: None,
             edge_discovery: None,
-            module_runtime: std::sync::Mutex::new(module_runtime),
+            module_runtime: tokio::sync::Mutex::new(module_runtime),
             managed_dynamic_edges: tokio::sync::RwLock::new(BTreeSet::new()),
             shutting_down: AtomicBool::new(false),
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
@@ -190,8 +190,8 @@ impl UnifiedRuntime {
     ///
     /// Inspect after `build()` to detect incomplete startup topology.
     /// Returns `None` if no edge discovery was configured.
-    pub fn bootstrap_edges_report(&self) -> Option<UnifiedRuntimeReconcileEdgesReport> {
-        self.bootstrap_edges_report.blocking_read().clone()
+    pub async fn bootstrap_edges_report(&self) -> Option<UnifiedRuntimeReconcileEdgesReport> {
+        self.bootstrap_edges_report.read().await.clone()
     }
 
     fn create_event_ingress(router: MobEventRouterHandle) -> MobEventIngress {

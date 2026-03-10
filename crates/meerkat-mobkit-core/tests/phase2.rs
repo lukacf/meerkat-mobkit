@@ -206,7 +206,7 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
         .await
         .expect("builder should return unified runtime");
     assert_eq!(runtime.status(), MobState::Running);
-    assert!(runtime.module_is_running());
+    assert!(runtime.module_is_running().await);
 
     let example_source = include_str!("../examples/library_mode_reference.rs");
     assert!(example_source.contains("UnifiedRuntime::builder()"));
@@ -425,10 +425,11 @@ async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded()
     assert!(
         runtime
             .loaded_modules()
+            .await
             .iter()
             .any(|module_id| module_id == "router"),
         "router should be loaded for reconcile routing test; got {:?}",
-        runtime.loaded_modules()
+        runtime.loaded_modules().await
     );
 
     let first_reconcile = runtime

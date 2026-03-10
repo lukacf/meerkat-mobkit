@@ -299,6 +299,7 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
 
     let added = runtime
         .reconcile_modules(vec!["forced-crash".to_string()], Duration::from_secs(1))
+        .await
         .expect("reconcile_modules should recover forced-crash module");
     assert_eq!(added, 1);
     assert_eq!(
@@ -310,6 +311,7 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
 
     let forced_crash_transitions = runtime
         .module_health_transitions()
+        .await
         .into_iter()
         .filter(|transition| transition.module_id == "forced-crash")
         .map(|transition| transition.to)
@@ -337,6 +339,7 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
     assert_eq!(
         runtime
             .module_lifecycle_events()
+            .await
             .iter()
             .map(|event| event.stage.clone())
             .collect::<Vec<_>>(),
@@ -403,9 +406,9 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
     });
 
     assert_eq!(runtime.status(), MobState::Running);
-    assert!(runtime.module_is_running());
+    assert!(tokio_runtime.block_on(runtime.module_is_running()));
     assert_eq!(
-        runtime.loaded_modules(),
+        tokio_runtime.block_on(runtime.loaded_modules()),
         vec![
             "delivery".to_string(),
             "router".to_string(),
@@ -470,7 +473,7 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         assert_eq!(dispatch.dispatched.len(), 1);
         assert!(dispatch.dispatched[0].runtime_injection.is_some());
         assert!(dispatch.dispatched[0].runtime_injection_error.is_none());
-        assert!(runtime.module_events().iter().any(|event| {
+        assert!(runtime.module_events().await.iter().any(|event| {
             matches!(
                 &event.event,
                 UnifiedEvent::Module(module_event)
@@ -489,24 +492,24 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
             .expect("reference app should shut down cleanly");
     });
 
-    let resolution = runtime
+    let resolution = tokio_runtime.block_on(runtime
         .resolve_routing(RoutingResolveRequest {
             recipient: "user@example.com".to_string(),
             channel: Some("transactional".to_string()),
             retry_max: Some(1),
             backoff_ms: Some(125),
             rate_limit_per_minute: Some(10),
-        })
+        }))
         .expect("routing resolve");
     assert_eq!(resolution.target_module, "delivery");
     assert_eq!(resolution.sink, "email");
 
-    let delivery = runtime
+    let delivery = tokio_runtime.block_on(runtime
         .send_delivery(DeliverySendRequest {
             resolution: resolution.clone(),
             payload: json!({"message":"phase5 lifecycle happy path"}),
             idempotency_key: Some("phase5-e2e-004".to_string()),
-        })
+        }))
         .expect("delivery send");
     assert_eq!(delivery.route_id, resolution.route_id);
     assert_eq!(delivery.status, "sent");
@@ -534,8 +537,8 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         .expect("mob runtime should stop cleanly at lifecycle end");
 
     assert_eq!(
-        runtime
-            .module_lifecycle_events()
+        tokio_runtime.block_on(runtime
+            .module_lifecycle_events())
             .iter()
             .map(|event| event.stage.clone())
             .collect::<Vec<_>>(),
