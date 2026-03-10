@@ -39,6 +39,8 @@ from .errors import (
 from .types import (
     CallToolResult,
     CapabilitiesResult,
+    ErrorCategory,
+    ErrorEvent,
     ReconcileEdgesReport,
     RediscoverReport,
     DeliveryResult,
@@ -108,6 +110,8 @@ __all__ = [
     "DeliveryResult",
     "MemoryQueryResult",
     "CallToolResult",
+    "ErrorCategory",
+    "ErrorEvent",
     "ReconcileEdgesReport",
     "RediscoverReport",
     "ToolCaller",

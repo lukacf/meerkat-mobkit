@@ -11,7 +11,7 @@ use super::types::{
     UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
 };
 use super::{
-    discovery_spec_to_spawn_spec, PostReconcileHook, PostSpawnHook, UnifiedRuntime,
+    discovery_spec_to_spawn_spec, ErrorHook, PostReconcileHook, PostSpawnHook, UnifiedRuntime,
     DEFAULT_DRAIN_TIMEOUT,
 };
 
@@ -24,6 +24,7 @@ pub struct UnifiedRuntimeBuilder {
     options: RuntimeOptions,
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
+    error_hook: Option<ErrorHook>,
     drain_timeout: Option<Duration>,
     discovery: Option<Box<dyn Discovery>>,
     pre_spawn_hook: Option<PreSpawnHook>,
@@ -63,6 +64,11 @@ impl UnifiedRuntimeBuilder {
 
     pub fn post_reconcile_hook(mut self, hook: PostReconcileHook) -> Self {
         self.post_reconcile_hook = Some(hook);
+        self
+    }
+
+    pub fn on_error(mut self, hook: ErrorHook) -> Self {
+        self.error_hook = Some(hook);
         self
     }
 
@@ -115,6 +121,7 @@ impl UnifiedRuntimeBuilder {
         let runtime = UnifiedRuntime {
             post_spawn_hook: self.post_spawn_hook,
             post_reconcile_hook: self.post_reconcile_hook,
+            error_hook: self.error_hook,
             drain_timeout: self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT),
             discovery: self.discovery,
             edge_discovery: self.edge_discovery,

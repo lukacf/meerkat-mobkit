@@ -222,3 +222,58 @@ pub struct ShutdownDrainReport {
     pub timed_out: bool,
     pub drain_duration_ms: u64,
 }
+
+/// Operational error event for alerting.
+///
+/// Fired via the `on_error` hook when runtime operations fail. Apps
+/// match on variants to decide alerting (Slack, PagerDuty, log, etc.).
+///
+/// Marked `#[non_exhaustive]` — new variants can be added without
+/// breaking downstream match arms (use a `_` wildcard).
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "category", rename_all = "snake_case")]
+pub enum ErrorEvent {
+    SpawnFailure {
+        member_id: String,
+        profile: String,
+        error: String,
+    },
+    ReconcileIncomplete {
+        failures: usize,
+        skipped: usize,
+    },
+    CheckpointFailure {
+        session_id: String,
+        error: String,
+    },
+    HostLoopCrash {
+        member_id: String,
+        error: String,
+    },
+    RediscoverFailure {
+        error: String,
+    },
+}
+
+impl Display for ErrorEvent {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SpawnFailure { member_id, error, .. } => {
+                write!(f, "spawn_failure: {member_id}: {error}")
+            }
+            Self::ReconcileIncomplete { failures, skipped } => {
+                write!(f, "reconcile_incomplete: {failures} failures, {skipped} skipped")
+            }
+            Self::CheckpointFailure { session_id, error } => {
+                write!(f, "checkpoint_failure: {session_id}: {error}")
+            }
+            Self::HostLoopCrash { member_id, error } => {
+                write!(f, "host_loop_crash: {member_id}: {error}")
+            }
+            Self::RediscoverFailure { error } => {
+                write!(f, "rediscover_failure: {error}")
+            }
+        }
+    }
+}

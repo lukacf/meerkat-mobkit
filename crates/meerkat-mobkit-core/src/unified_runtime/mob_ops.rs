@@ -17,11 +17,24 @@ impl UnifiedRuntime {
 
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
         let member_id = spec.meerkat_id.to_string();
-        let member_ref = self.mob_runtime.spawn(spec).await?;
-        if let Some(hook) = &self.post_spawn_hook {
-            hook(vec![member_id]).await;
+        let profile = spec.profile_name.to_string();
+        match self.mob_runtime.spawn(spec).await {
+            Ok(member_ref) => {
+                if let Some(hook) = &self.post_spawn_hook {
+                    hook(vec![member_id]).await;
+                }
+                Ok(member_ref)
+            }
+            Err(err) => {
+                self.fire_error(super::types::ErrorEvent::SpawnFailure {
+                    member_id,
+                    profile,
+                    error: format!("{err}"),
+                })
+                .await;
+                Err(err)
+            }
         }
-        Ok(member_ref)
     }
 
     pub async fn spawn_many(
