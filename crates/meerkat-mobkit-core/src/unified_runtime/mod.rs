@@ -203,11 +203,21 @@ impl UnifiedRuntime {
         self.bootstrap_edges_report.read().await.clone()
     }
 
+    /// Register an error hook after construction. Useful when the runtime
+    /// is built via `bootstrap()` rather than the builder.
+    pub fn set_error_hook(&mut self, hook: ErrorHook) {
+        self.error_hook = Some(hook);
+    }
+
     /// Fire an error event to the registered hook, if any.
-    /// Fire-and-forget — errors from the hook are silently ignored.
-    pub(crate) async fn fire_error(&self, event: ErrorEvent) {
+    /// Truly fire-and-forget — spawns a detached task so slow hooks
+    /// (HTTP to Slack, PagerDuty) never block the runtime operation.
+    pub(crate) fn fire_error(&self, event: ErrorEvent) {
         if let Some(ref hook) = self.error_hook {
-            let _ = hook(event).await;
+            let hook = hook.clone();
+            tokio::spawn(async move {
+                let _ = hook(event).await;
+            });
         }
     }
 

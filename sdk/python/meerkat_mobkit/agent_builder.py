@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Protocol, runtime_checkable
+import inspect
+import logging
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from .models import SessionBuildOptions
+from .types import ErrorEvent
+
+_log = logging.getLogger("meerkat_mobkit")
 
 
 @runtime_checkable
@@ -43,6 +48,7 @@ class CallbackDispatcher:
 
     def __init__(self) -> None:
         self._builder: SessionAgentBuilder | None = None
+        self._error_callback: Callable | None = None
         # Keyed by (scope_id, tool_name) to isolate concurrent sessions
         self._tool_handlers: dict[tuple[str, str], Any] = {}
         # Track scope_ids so we can clean up handlers when a scope is released
@@ -51,12 +57,26 @@ class CallbackDispatcher:
     def register_builder(self, builder: SessionAgentBuilder) -> None:
         self._builder = builder
 
+    def register_error_callback(self, callback: Callable) -> None:
+        self._error_callback = callback
+
     def release_scope(self, scope_id: str) -> None:
         """Remove all tool handlers for a scope. Call when a session ends."""
         for tool_name in self._scope_tools.pop(scope_id, []):
             self._tool_handlers.pop((scope_id, tool_name), None)
 
     async def handle_callback(self, method: str, params: dict[str, Any]) -> Any:
+        if method == "mobkit/on_error":
+            if self._error_callback is not None:
+                event = ErrorEvent.from_dict(params)
+                try:
+                    result = self._error_callback(event)
+                    if inspect.isawaitable(result):
+                        await result
+                except Exception as exc:
+                    _log.warning("error callback failed: %s", exc)
+            return None
+
         if method == "callback/build_agent":
             if self._builder is None:
                 raise ValueError("no SessionAgentBuilder registered")

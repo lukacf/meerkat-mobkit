@@ -34,6 +34,18 @@ impl UnifiedRuntime {
     ///
     /// Returns `None` if no `Discovery` is configured (nothing to rediscover).
     pub async fn rediscover(&self) -> Result<Option<RediscoverReport>, MobRuntimeError> {
+        match self.rediscover_inner().await {
+            Ok(report) => Ok(report),
+            Err(err) => {
+                self.fire_error(super::types::ErrorEvent::RediscoverFailure {
+                    error: format!("{err}"),
+                });
+                Err(err)
+            }
+        }
+    }
+
+    async fn rediscover_inner(&self) -> Result<Option<RediscoverReport>, MobRuntimeError> {
         let discovery = match &self.discovery {
             Some(d) => d,
             None => return Ok(None),

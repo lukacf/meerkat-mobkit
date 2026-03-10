@@ -104,8 +104,8 @@ class PersistentTransport:
                 _log.warning("transport: non-JSON line from subprocess: %s", line[:200])
                 continue
 
-            if "method" in msg and "id" in msg:
-                # Callback FROM Rust
+            if "method" in msg:
+                # Callback or notification FROM Rust
                 self._handle_callback(msg)
             elif "id" in msg:
                 # Response to a pending request
@@ -139,7 +139,7 @@ class PersistentTransport:
     def _dispatch_callback(self, msg: dict) -> None:
         method = msg.get("method", "")
         params = msg.get("params", {})
-        callback_id = msg.get("id")
+        callback_id = msg.get("id")  # None for notifications
         try:
             if self._loop is not None and self._loop.is_running():
                 future = asyncio.run_coroutine_threadsafe(
@@ -150,12 +150,19 @@ class PersistentTransport:
                 raise RuntimeError(
                     "PersistentTransport: no running event loop for callback dispatch"
                 )
+            # Notifications (no id) are fire-and-forget — no response sent
+            if callback_id is None:
+                return
             # Ensure result is JSON-serializable before building response.
             # Tools or other callback results may contain non-serializable objects;
             # sanitize them to strings to prevent json.dumps failures in _write_line.
             response = {"jsonrpc": "2.0", "id": callback_id, "result": _sanitize_for_json(result)}
             self._write_line(response)
         except Exception as exc:
+            # Notifications: log only, don't try to send error response
+            if callback_id is None:
+                _log.warning("notification dispatch error (%s): %s", method, exc)
+                return
             _log.warning("callback dispatch error: %s", exc)
             error_response = {
                 "jsonrpc": "2.0",

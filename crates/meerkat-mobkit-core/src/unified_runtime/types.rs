@@ -230,6 +230,15 @@ pub struct ShutdownDrainReport {
 ///
 /// Marked `#[non_exhaustive]` — new variants can be added without
 /// breaking downstream match arms (use a `_` wildcard).
+///
+/// **Wired fire points:**
+/// - `SpawnFailure` — `mob_ops.rs` spawn error path
+/// - `ReconcileIncomplete` — `edge_reconcile.rs` after `reconcile_edges`
+/// - `RediscoverFailure` — `lifecycle.rs` rediscover error path
+///
+/// **Planned (require upstream plumbing):**
+/// - `CheckpointFailure` — needs session store callback into UnifiedRuntime
+/// - `HostLoopCrash` — needs mob runtime to surface crashes via event channel
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "category", rename_all = "snake_case")]

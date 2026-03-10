@@ -30,8 +30,7 @@ impl UnifiedRuntime {
                     member_id,
                     profile,
                     error: format!("{err}"),
-                })
-                .await;
+                });
                 Err(err)
             }
         }

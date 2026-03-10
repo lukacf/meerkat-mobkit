@@ -107,6 +107,18 @@ impl StdioCallbackBridge {
         }
     }
 
+    /// Send a fire-and-forget notification to Python (no response expected).
+    fn notify(&self, method: &str, params: Value) {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        if let Ok(line) = serde_json::to_string(&notification) {
+            let _ = self.stdout_tx.try_send(line);
+        }
+    }
+
     /// Send a callback request to Python and wait for the response.
     async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self
@@ -544,7 +556,7 @@ external_addressable = true
         );
 
     let timeout = Duration::from_secs(30);
-    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
+    let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
         .await
         .unwrap_or_else(|e| {
             let error_response = json!({
@@ -557,6 +569,19 @@ external_addressable = true
             let _ = stdout.flush();
             std::process::exit(1);
         });
+
+    // 5b. Wire error hook — forwards ErrorEvents to Python as JSON-RPC notifications
+    {
+        let error_bridge = bridge.clone();
+        runtime.set_error_hook(Arc::new(move |event| {
+            let b = error_bridge.clone();
+            Box::pin(async move {
+                if let Ok(params) = serde_json::to_value(&event) {
+                    b.notify("mobkit/on_error", params);
+                }
+            })
+        }));
+    }
 
     // 6. Bind HTTP server on ephemeral port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

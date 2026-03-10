@@ -252,6 +252,9 @@ async fn error_hook_fires_on_spawn_failure() {
         .await;
     assert!(result.is_err(), "spawn should fail for nonexistent profile");
 
+    // Yield to let the fire-and-forget error hook task complete
+    tokio::task::yield_now().await;
+
     let captured = errors.lock().await;
     assert_eq!(captured.len(), 1, "error hook should fire once");
     match &captured[0] {

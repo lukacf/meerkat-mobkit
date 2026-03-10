@@ -56,8 +56,7 @@ impl UnifiedRuntime {
             self.fire_error(super::types::ErrorEvent::ReconcileIncomplete {
                 failures: report.failures.len(),
                 skipped: report.skipped_missing_members.len(),
-            })
-            .await;
+            });
         }
         report
     }
