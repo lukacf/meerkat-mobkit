@@ -90,11 +90,11 @@ pub use types::{
 pub use config_convention::ConventionalPaths;
 pub use unified_runtime::{
     discovery_spec_to_spawn_spec, DesiredPeerEdge, DesiredPeerEdgeError, Discovery, ErrorEvent,
-    ErrorHook, RediscoverReport, EdgeDiscovery, EdgeReconcileFailure, PostReconcileHook,
-    PostSpawnHook, PreSpawnContext, PreSpawnHook,
-    ShutdownDrainReport, UnifiedRuntime, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilder,
-    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
-    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
+    ErrorHook, EventLogConfig, EventLogStore, EventQuery, PersistedEvent, RediscoverReport,
+    EdgeDiscovery, EdgeReconcileFailure, PostReconcileHook, PostSpawnHook, PreSpawnContext,
+    PreSpawnHook, ShutdownDrainReport, UnifiedRuntime, UnifiedRuntimeBootstrapError,
+    UnifiedRuntimeBuilder, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
+    UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport,
     UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };

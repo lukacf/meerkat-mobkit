@@ -221,6 +221,53 @@ class ReconcileEdgesReport:
         )
 
 
+@dataclass(frozen=True)
+class PersistedEvent:
+    """A persisted operational event with monotonic ordering."""
+    id: str
+    seq: int
+    timestamp_ms: int
+    member_id: str | None
+    event: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PersistedEvent:
+        return cls(
+            id=data["id"],
+            seq=data["seq"],
+            timestamp_ms=data["timestamp_ms"],
+            member_id=data.get("member_id"),
+            event=data.get("event", {}),
+        )
+
+
+@dataclass
+class EventQuery:
+    """Query parameters for historical event retrieval."""
+    since_ms: int | None = None
+    until_ms: int | None = None
+    member_id: str | None = None
+    event_types: list[str] = field(default_factory=list)
+    limit: int | None = None
+    after_seq: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.since_ms is not None:
+            d["since_ms"] = self.since_ms
+        if self.until_ms is not None:
+            d["until_ms"] = self.until_ms
+        if self.member_id is not None:
+            d["member_id"] = self.member_id
+        if self.event_types:
+            d["event_types"] = self.event_types
+        if self.limit is not None:
+            d["limit"] = self.limit
+        if self.after_seq is not None:
+            d["after_seq"] = self.after_seq
+        return d
+
+
 class ErrorCategory(str, Enum):
     """Error event categories matching Rust's ErrorEvent variants."""
     SPAWN_FAILURE = "spawn_failure"

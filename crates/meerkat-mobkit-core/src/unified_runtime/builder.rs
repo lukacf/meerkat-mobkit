@@ -11,8 +11,8 @@ use super::types::{
     UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
 };
 use super::{
-    discovery_spec_to_spawn_spec, ErrorHook, PostReconcileHook, PostSpawnHook, UnifiedRuntime,
-    DEFAULT_DRAIN_TIMEOUT,
+    discovery_spec_to_spawn_spec, ErrorHook, EventLogConfig, PostReconcileHook, PostSpawnHook,
+    UnifiedRuntime, DEFAULT_DRAIN_TIMEOUT,
 };
 
 #[derive(Default)]
@@ -25,6 +25,7 @@ pub struct UnifiedRuntimeBuilder {
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
     error_hook: Option<ErrorHook>,
+    event_log_config: Option<EventLogConfig>,
     drain_timeout: Option<Duration>,
     discovery: Option<Box<dyn Discovery>>,
     pre_spawn_hook: Option<PreSpawnHook>,
@@ -69,6 +70,11 @@ impl UnifiedRuntimeBuilder {
 
     pub fn on_error(mut self, hook: ErrorHook) -> Self {
         self.error_hook = Some(hook);
+        self
+    }
+
+    pub fn event_log(mut self, config: EventLogConfig) -> Self {
+        self.event_log_config = Some(config);
         self
     }
 
@@ -154,6 +160,12 @@ impl UnifiedRuntimeBuilder {
         if runtime.edge_discovery.is_some() {
             let report = runtime.reconcile_edges().await;
             *runtime.bootstrap_edges_report.write().await = Some(report);
+        }
+
+        // Start event log ingestion if configured
+        let mut runtime = runtime;
+        if let Some(event_log_config) = self.event_log_config {
+            runtime.start_event_log(event_log_config);
         }
 
         Ok(runtime)

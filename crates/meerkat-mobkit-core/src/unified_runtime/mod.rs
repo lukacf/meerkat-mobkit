@@ -23,6 +23,7 @@ use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent
 pub mod builder;
 pub mod edge_reconcile;
 pub mod edge_types;
+pub mod event_log;
 pub mod http;
 pub mod lifecycle;
 pub mod mob_ops;
@@ -34,6 +35,7 @@ pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
 };
+pub use event_log::{EventLogConfig, EventLogStore, EventQuery, PersistedEvent};
 pub use types::{
     ErrorEvent, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
     UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
@@ -113,6 +115,7 @@ pub struct UnifiedRuntime {
     shutting_down: AtomicBool,
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
+    event_log: Option<event_log::EventLogHandle>,
 }
 
 enum MobEventIngress {
@@ -149,6 +152,7 @@ impl UnifiedRuntime {
             shutting_down: AtomicBool::new(false),
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
+            event_log: None,
         }
     }
 
@@ -207,6 +211,35 @@ impl UnifiedRuntime {
     /// is built via `bootstrap()` rather than the builder.
     pub fn set_error_hook(&mut self, hook: ErrorHook) {
         self.error_hook = Some(hook);
+    }
+
+    /// Start the event log ingestion engine. Must be called after
+    /// construction (the builder calls this automatically when event_log
+    /// config is provided).
+    pub(crate) fn start_event_log(&mut self, config: EventLogConfig) {
+        let handle = event_log::start_event_log(config, self.error_hook.clone());
+        self.event_log = Some(handle);
+    }
+
+    /// Query persisted operational events from the event log store.
+    ///
+    /// Returns `None` if no event log is configured.
+    pub async fn query_events(
+        &self,
+        query: EventQuery,
+    ) -> Option<Result<Vec<PersistedEvent>, Box<dyn std::error::Error + Send>>> {
+        if let Some(ref log) = self.event_log {
+            Some(log.query(query).await)
+        } else {
+            None
+        }
+    }
+
+    /// Ingest an event into the event log (if configured). Non-blocking.
+    pub(crate) fn ingest_event(&self, event: &EventEnvelope<UnifiedEvent>) {
+        if let Some(ref log) = self.event_log {
+            log.ingest(event.clone());
+        }
     }
 
     /// Fire an error event to the registered hook, if any.
