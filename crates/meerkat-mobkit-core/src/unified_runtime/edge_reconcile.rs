@@ -35,7 +35,7 @@ impl UnifiedRuntime {
             .reconcile_edges_from_members(active_snapshots)
             .await;
         // 5. Routing reconcile
-        let routing = self.reconcile_routing_wiring(active_member_ids)?;
+        let routing = self.reconcile_routing_wiring(active_member_ids).await?;
         let report = UnifiedRuntimeReconcileReport { mob, edges, routing };
         if let Some(hook) = &self.post_reconcile_hook {
             hook(report.clone()).await;
@@ -220,14 +220,14 @@ impl UnifiedRuntime {
         report
     }
 
-    pub(super) fn reconcile_routing_wiring(
+    pub(super) async fn reconcile_routing_wiring(
         &self,
         mut active_members: Vec<String>,
     ) -> Result<UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeReconcileError> {
         active_members.sort();
         active_members.dedup();
 
-        let mut rt = self.module_runtime.lock().unwrap_or_else(|e| e.into_inner());
+        let mut rt = self.module_runtime.lock().await;
         let router_module_loaded = rt
             .loaded_modules()
             .iter()

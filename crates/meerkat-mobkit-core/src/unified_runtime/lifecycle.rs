@@ -109,7 +109,7 @@ impl UnifiedRuntime {
         let mut drained_count = 0_usize;
         let drain_result = tokio::time::timeout(self.drain_timeout, async {
             loop {
-                if self.drain_mob_agent_events().is_err() {
+                if self.drain_mob_agent_events().await.is_err() {
                     break;
                 }
                 let ingress = self.mob_event_ingress.lock().await;
@@ -135,7 +135,7 @@ impl UnifiedRuntime {
         self.close_event_router().await;
 
         // Phase 3: Shutdown modules and mob
-        let module_shutdown = self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).shutdown();
+        let module_shutdown = self.module_runtime.lock().await.shutdown();
         let mob_stop = self.mob_runtime.stop().await;
         UnifiedRuntimeShutdownReport {
             drain,
@@ -144,7 +144,7 @@ impl UnifiedRuntime {
         }
     }
 
-    pub(super) fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
+    pub(super) async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
         let mut disconnected = false;
         let mut ingress_guard = self.mob_event_ingress.try_lock()
             .map_err(|_| UnifiedRuntimeError::RuntimeShuttingDown)?;
@@ -156,7 +156,7 @@ impl UnifiedRuntime {
         loop {
             match Self::try_recv_ingress_event(ingress) {
                 Some(Ok(unified_event)) => {
-                    self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).append_normalized_event(unified_event)?
+                    self.module_runtime.lock().await.append_normalized_event(unified_event)?
                 }
                 Some(Err(TryRecvError::Empty)) => break,
                 Some(Err(TryRecvError::Disconnected)) => {
@@ -208,7 +208,7 @@ impl UnifiedRuntime {
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err(UnifiedRuntimeError::RuntimeShuttingDown);
         }
-        let mut dispatch_report = self.dispatch_schedule_tick_blocking(schedules, tick_ms)?;
+        let mut dispatch_report = self.dispatch_schedule_tick_blocking(schedules, tick_ms).await?;
 
         for dispatch in &mut dispatch_report.dispatched {
             let Some(runtime_injection) = dispatch.runtime_injection.clone() else {
@@ -225,7 +225,7 @@ impl UnifiedRuntime {
 
             match injection_result {
                 Ok(()) => {
-                    self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).append_normalized_event(EventEnvelope {
+                    self.module_runtime.lock().await.append_normalized_event(EventEnvelope {
                         event_id: format!("{}-executed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
                         timestamp_ms: dispatch.tick_ms,
@@ -243,7 +243,7 @@ impl UnifiedRuntime {
                 }
                 Err(error) => {
                     dispatch.runtime_injection_error = Some(format!("mob injection failed: {error}"));
-                    self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).append_normalized_event(EventEnvelope {
+                    self.module_runtime.lock().await.append_normalized_event(EventEnvelope {
                         event_id: format!("{}-failed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
                         timestamp_ms: dispatch.tick_ms,
@@ -264,20 +264,21 @@ impl UnifiedRuntime {
             }
         }
 
-        self.drain_mob_agent_events()?;
+        self.drain_mob_agent_events().await?;
         Ok(dispatch_report)
     }
 
-    fn dispatch_schedule_tick_blocking(
+    async fn dispatch_schedule_tick_blocking(
         &self,
         schedules: &[ScheduleDefinition],
         tick_ms: u64,
     ) -> Result<ScheduleDispatchReport, UnifiedRuntimeError> {
+        let mut rt = self.module_runtime.lock().await;
+
         let dispatch_result = if tokio::runtime::Handle::try_current()
             .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread)
         {
             tokio::task::block_in_place(|| {
-                let mut rt = self.module_runtime.lock().unwrap_or_else(|e| e.into_inner());
                 Self::dispatch_schedule_tick_in_joined_thread(
                     &mut rt,
                     schedules,
@@ -285,7 +286,6 @@ impl UnifiedRuntime {
                 )
             })
         } else {
-            let mut rt = self.module_runtime.lock().unwrap_or_else(|e| e.into_inner());
             Self::dispatch_schedule_tick_in_joined_thread(
                 &mut rt,
                 schedules,

@@ -580,7 +580,7 @@ external_addressable = true
     });
 
     // 8. Send init response via stdout channel
-    let loaded_modules = runtime.loaded_modules();
+    let loaded_modules = runtime.loaded_modules().await;
     let init_response = json!({
         "jsonrpc": "2.0",
         "id": request_id,

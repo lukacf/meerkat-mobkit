@@ -46,13 +46,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     runtime.reconcile(reference_member_specs()).await?;
-    runtime.subscribe_events(SubscribeRequest::default())?;
+    runtime.subscribe_events(SubscribeRequest::default()).await?;
     let empty_schedules = Vec::<ScheduleDefinition>::new();
     runtime
         .dispatch_schedule_tick(&empty_schedules, 60_000)
         .await?;
-    let _ = runtime.reconcile_modules(Vec::new(), std::time::Duration::from_secs(1));
-    let loaded_modules = runtime.loaded_modules();
+    let _ = runtime.reconcile_modules(Vec::new(), std::time::Duration::from_secs(1)).await;
+    let loaded_modules = runtime.loaded_modules().await;
     if loaded_modules.iter().any(|module| module == "router")
         && loaded_modules.iter().any(|module| module == "delivery")
     {
@@ -63,13 +63,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 retry_max: Some(1),
                 backoff_ms: Some(250),
                 rate_limit_per_minute: Some(2),
-            })
+            }).await
         {
             let _ = runtime.send_delivery(meerkat_mobkit_core::runtime::DeliverySendRequest {
                 resolution,
                 payload: serde_json::json!({"message":"reference-app smoke"}),
                 idempotency_key: Some("reference-app-smoke".to_string()),
-            });
+            }).await;
         }
     }
 

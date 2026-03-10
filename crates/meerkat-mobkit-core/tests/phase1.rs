@@ -795,8 +795,8 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
 
     let fixture = build_unified_runtime_fixture(config).await;
     assert_eq!(fixture.runtime.status(), MobState::Running);
-    assert!(fixture.runtime.module_is_running());
-    assert_eq!(fixture.runtime.loaded_modules(), vec!["mod-a".to_string()]);
+    assert!(fixture.runtime.module_is_running().await);
+    assert_eq!(fixture.runtime.loaded_modules().await, vec!["mod-a".to_string()]);
 
     let shutdown = fixture.runtime.shutdown().await;
     assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
@@ -805,7 +805,7 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
         vec!["mod-a".to_string()]
     );
     assert!(shutdown.mob_stop.is_ok());
-    assert!(!fixture.runtime.module_is_running());
+    assert!(!fixture.runtime.module_is_running().await);
     assert_eq!(fixture.runtime.status(), MobState::Stopped);
 }
 
@@ -845,6 +845,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
                 last_event_id: None,
                 agent_id: None,
             })
+            .await
             .expect("subscribe should succeed");
         let has_agent = response.events.iter().any(|event| {
             matches!(&event.event, UnifiedEvent::Agent { agent_id, .. } if agent_id == "worker-1")
@@ -885,6 +886,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
                 last_event_id: None,
                 agent_id: None,
             })
+            .await
             .expect("subscribe should succeed");
         let has_module = response
             .events
@@ -961,7 +963,7 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
     assert!(dispatch.dispatched[0].runtime_injection.is_some());
     assert!(dispatch.dispatched[0].runtime_injection_error.is_none());
 
-    let merged = fixture.runtime.module_events();
+    let merged = fixture.runtime.module_events().await;
     let executed = merged
         .iter()
         .find(|event| {
@@ -1026,7 +1028,7 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
     assert!(dispatch.dispatched[0].runtime_injection.is_some());
     assert!(dispatch.dispatched[0].runtime_injection_error.is_some());
 
-    let merged = fixture.runtime.module_events();
+    let merged = fixture.runtime.module_events().await;
     let failed = merged
         .iter()
         .find(|event| {
@@ -1072,6 +1074,7 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
     let module_pid = fixture
         .runtime
         .module_events()
+        .await
         .iter()
         .find_map(|event| match &event.event {
             UnifiedEvent::Module(module) if module.module == "listener-mod" => {
@@ -1128,7 +1131,7 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
         vec!["listener-mod".to_string()]
     );
     assert!(shutdown.mob_stop.is_ok());
-    assert!(!fixture.runtime.module_is_running());
+    assert!(!fixture.runtime.module_is_running().await);
     assert_eq!(fixture.runtime.status(), MobState::Stopped);
 
     let kill_status = Command::new("sh")

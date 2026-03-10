@@ -877,10 +877,12 @@ pub async fn handle_unified_rpc_json(
     let response = match request.method.as_str() {
         "mobkit/status" => {
             let mob_state = runtime.status();
+            let is_running = runtime.module_is_running().await;
+            let loaded = runtime.loaded_modules().await;
             let mut result = serde_json::json!({
                 "contract_version": MOBKIT_CONTRACT_VERSION,
-                "running": runtime.module_is_running(),
-                "loaded_modules": runtime.loaded_modules(),
+                "running": is_running,
+                "loaded_modules": loaded,
                 "mob_state": format!("{mob_state:?}"),
             });
             if let Some(url) = http_base_url {
@@ -893,46 +895,49 @@ pub async fn handle_unified_rpc_json(
                 error: None,
             }
         }
-        "mobkit/capabilities" => JsonRpcResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id.clone(),
-            result: Some(serde_json::json!({
-                "contract_version": MOBKIT_CONTRACT_VERSION,
-                "runtime_type": "unified",
-                "methods": [
-                    "mobkit/init",
-                    "mobkit/status",
-                    "mobkit/capabilities",
-                    "mobkit/reconcile",
-                    "mobkit/spawn_member",
-                    "mobkit/scheduling/evaluate",
-                    "mobkit/scheduling/dispatch",
-                    "mobkit/routing/resolve",
-                    "mobkit/routing/routes/list",
-                    "mobkit/routing/routes/add",
-                    "mobkit/routing/routes/delete",
-                    "mobkit/delivery/send",
-                    "mobkit/delivery/history",
-                    "mobkit/events/subscribe",
-                    "mobkit/memory/stores",
-                    "mobkit/memory/index",
-                    "mobkit/memory/query",
-                    "mobkit/session_store/bigquery",
-                    "mobkit/gating/evaluate",
-                    "mobkit/gating/pending",
-                    "mobkit/gating/decide",
-                    "mobkit/gating/audit",
-                    "mobkit/call_tool",
-                    "mobkit/send_message",
-                    "mobkit/find_members",
-                    "mobkit/ensure_member",
-                    "mobkit/reconcile_edges",
-                    "mobkit/rediscover"
-                ],
-                "loaded_modules": runtime.loaded_modules()
-            })),
-            error: None,
-        },
+        "mobkit/capabilities" => {
+            let loaded = runtime.loaded_modules().await;
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id.clone(),
+                result: Some(serde_json::json!({
+                    "contract_version": MOBKIT_CONTRACT_VERSION,
+                    "runtime_type": "unified",
+                    "methods": [
+                        "mobkit/init",
+                        "mobkit/status",
+                        "mobkit/capabilities",
+                        "mobkit/reconcile",
+                        "mobkit/spawn_member",
+                        "mobkit/scheduling/evaluate",
+                        "mobkit/scheduling/dispatch",
+                        "mobkit/routing/resolve",
+                        "mobkit/routing/routes/list",
+                        "mobkit/routing/routes/add",
+                        "mobkit/routing/routes/delete",
+                        "mobkit/delivery/send",
+                        "mobkit/delivery/history",
+                        "mobkit/events/subscribe",
+                        "mobkit/memory/stores",
+                        "mobkit/memory/index",
+                        "mobkit/memory/query",
+                        "mobkit/session_store/bigquery",
+                        "mobkit/gating/evaluate",
+                        "mobkit/gating/pending",
+                        "mobkit/gating/decide",
+                        "mobkit/gating/audit",
+                        "mobkit/call_tool",
+                        "mobkit/send_message",
+                        "mobkit/find_members",
+                        "mobkit/ensure_member",
+                        "mobkit/reconcile_edges",
+                        "mobkit/rediscover"
+                    ],
+                    "loaded_modules": loaded
+                })),
+                error: None,
+            }
+        }
         "mobkit/reconcile" => {
             let modules = request
                 .params
@@ -946,7 +951,7 @@ pub async fn handle_unified_rpc_json(
                 })
                 .unwrap_or_default();
 
-            match runtime.reconcile_modules(modules.clone(), timeout) {
+            match runtime.reconcile_modules(modules.clone(), timeout).await {
                 Ok(added) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -987,7 +992,7 @@ pub async fn handle_unified_rpc_json(
                         }),
                     }
                 } else {
-                    match runtime.spawn_member(module_id, timeout) {
+                    match runtime.spawn_member(module_id, timeout).await {
                         Ok(()) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
                             id: response_id.clone(),
@@ -1055,26 +1060,28 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/scheduling/evaluate" => match parse_scheduling_params(&request.params) {
-            Ok((schedules, tick_ms)) => match runtime.evaluate_schedule_tick(&schedules, tick_ms) {
-                Ok(evaluation) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!(
-                            "Invalid params: {}",
-                            format_schedule_validation_error(err)
-                        ),
-                    }),
-                },
-            },
+            Ok((schedules, tick_ms)) => {
+                match runtime.evaluate_schedule_tick(&schedules, tick_ms).await {
+                    Ok(evaluation) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id.clone(),
+                        result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(err) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id.clone(),
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!(
+                                "Invalid params: {}",
+                                format_schedule_validation_error(err)
+                            ),
+                        }),
+                    },
+                }
+            }
             Err(message) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1116,11 +1123,14 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/routing/resolve" => {
-            match parse_routing_resolve_params(&request.params).and_then(|resolve_request| {
-                runtime
+            let resolve_result = match parse_routing_resolve_params(&request.params) {
+                Ok(resolve_request) => runtime
                     .resolve_routing(resolve_request)
-                    .map_err(RoutingDeliveryParamsError::Routing)
-            }) {
+                    .await
+                    .map_err(RoutingDeliveryParamsError::Routing),
+                Err(e) => Err(e),
+            };
+            match resolve_result {
                 Ok(resolution) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -1139,14 +1149,17 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/routing/routes/list" => match parse_routing_routes_list_params(&request.params) {
-            Ok(()) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::json!({
-                    "routes": runtime.list_runtime_routes()
-                })),
-                error: None,
-            },
+            Ok(()) => {
+                let routes = runtime.list_runtime_routes().await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({
+                        "routes": routes
+                    })),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1157,34 +1170,41 @@ pub async fn handle_unified_rpc_json(
                 }),
             },
         },
-        "mobkit/routing/routes/add" => match parse_routing_route_add_params(&request.params)
-            .and_then(|route| {
-                runtime
+        "mobkit/routing/routes/add" => {
+            let add_result = match parse_routing_route_add_params(&request.params) {
+                Ok(route) => runtime
                     .add_runtime_route(route)
-                    .map_err(RoutingDeliveryParamsError::RouteMutation)
-            }) {
-            Ok(route) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::json!({ "route": route })),
-                error: None,
-            },
-            Err(err) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: None,
-                error: Some(JsonRpcError {
-                    code: -32602,
-                    message: format!("Invalid params: {}", err.message()),
-                }),
-            },
-        },
+                    .await
+                    .map_err(RoutingDeliveryParamsError::RouteMutation),
+                Err(e) => Err(e),
+            };
+            match add_result {
+                Ok(route) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({ "route": route })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {}", err.message()),
+                    }),
+                },
+            }
+        }
         "mobkit/routing/routes/delete" => {
-            match parse_routing_route_delete_params(&request.params).and_then(|route_key| {
-                runtime
+            let delete_result = match parse_routing_route_delete_params(&request.params) {
+                Ok(route_key) => runtime
                     .delete_runtime_route(&route_key)
-                    .map_err(RoutingDeliveryParamsError::RouteMutation)
-            }) {
+                    .await
+                    .map_err(RoutingDeliveryParamsError::RouteMutation),
+                Err(e) => Err(e),
+            };
+            match delete_result {
                 Ok(route) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -1203,11 +1223,14 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/delivery/send" => {
-            match parse_delivery_send_params(&request.params).and_then(|send_request| {
-                runtime
+            let send_result = match parse_delivery_send_params(&request.params) {
+                Ok(send_request) => runtime
                     .send_delivery(send_request)
-                    .map_err(RoutingDeliveryParamsError::Delivery)
-            }) {
+                    .await
+                    .map_err(RoutingDeliveryParamsError::Delivery),
+                Err(e) => Err(e),
+            };
+            match send_result {
                 Ok(record) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -1226,15 +1249,18 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/delivery/history" => match parse_delivery_history_params(&request.params) {
-            Ok(history_request) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(
-                    serde_json::to_value(runtime.delivery_history(history_request))
-                        .unwrap_or(Value::Null),
-                ),
-                error: None,
-            },
+            Ok(history_request) => {
+                let history = runtime.delivery_history(history_request).await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(
+                        serde_json::to_value(history)
+                            .unwrap_or(Value::Null),
+                    ),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1246,7 +1272,7 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/events/subscribe" => match parse_subscribe_request(&request.params) {
-            Ok(subscribe_request) => match runtime.subscribe_events(subscribe_request) {
+            Ok(subscribe_request) => match runtime.subscribe_events(subscribe_request).await {
                 Ok(subscribe_result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -1274,14 +1300,17 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/memory/stores" => match parse_memory_stores_params(&request.params) {
-            Ok(()) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::json!({
-                    "stores": runtime.memory_stores(),
-                })),
-                error: None,
-            },
+            Ok(()) => {
+                let stores = runtime.memory_stores().await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({
+                        "stores": stores,
+                    })),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1293,7 +1322,7 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/memory/index" => match parse_memory_index_params(&request.params) {
-            Ok(index_request) => match runtime.memory_index(index_request) {
+            Ok(index_request) => match runtime.memory_index(index_request).await {
                 Ok(indexed) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -1336,15 +1365,18 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/memory/query" => match parse_memory_query_params(&request.params) {
-            Ok(query_request) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(
-                    serde_json::to_value(runtime.memory_query(query_request))
-                        .unwrap_or(Value::Null),
-                ),
-                error: None,
-            },
+            Ok(query_request) => {
+                let query_result = runtime.memory_query(query_request).await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(
+                        serde_json::to_value(query_result)
+                            .unwrap_or(Value::Null),
+                    ),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1389,15 +1421,18 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/gating/evaluate" => match parse_gating_evaluate_params(&request.params) {
-            Ok(gating_request) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(
-                    serde_json::to_value(runtime.evaluate_gating_action(gating_request))
-                        .unwrap_or(Value::Null),
-                ),
-                error: None,
-            },
+            Ok(gating_request) => {
+                let gating_result = runtime.evaluate_gating_action(gating_request).await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(
+                        serde_json::to_value(gating_result)
+                            .unwrap_or(Value::Null),
+                    ),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1409,14 +1444,17 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/gating/pending" => match parse_gating_pending_params(&request.params) {
-            Ok(()) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::json!({
-                    "pending": runtime.list_gating_pending(),
-                })),
-                error: None,
-            },
+            Ok(()) => {
+                let pending = runtime.list_gating_pending().await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({
+                        "pending": pending,
+                    })),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1428,11 +1466,14 @@ pub async fn handle_unified_rpc_json(
             },
         },
         "mobkit/gating/decide" => {
-            match parse_gating_decide_params(&request.params).and_then(|decide_request| {
-                runtime
+            let decide_result = match parse_gating_decide_params(&request.params) {
+                Ok(decide_request) => runtime
                     .decide_gating_action(decide_request)
-                    .map_err(GatingParamsError::Decision)
-            }) {
+                    .await
+                    .map_err(GatingParamsError::Decision),
+                Err(e) => Err(e),
+            };
+            match decide_result {
                 Ok(result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
@@ -1451,14 +1492,17 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/gating/audit" => match parse_gating_audit_params(&request.params) {
-            Ok(limit) => JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::json!({
-                    "entries": runtime.gating_audit_entries(limit),
-                })),
-                error: None,
-            },
+            Ok(limit) => {
+                let entries = runtime.gating_audit_entries(limit).await;
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({
+                        "entries": entries,
+                    })),
+                    error: None,
+                }
+            }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id.clone(),
@@ -1483,7 +1527,7 @@ pub async fn handle_unified_rpc_json(
                             params: arguments,
                         },
                         timeout,
-                    );
+                    ).await;
                     match route {
                         Ok(response) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -1700,7 +1744,7 @@ pub async fn handle_unified_rpc_json(
                     params: request.params,
                 },
                 timeout,
-            );
+            ).await;
             match route {
                 Ok(response) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
