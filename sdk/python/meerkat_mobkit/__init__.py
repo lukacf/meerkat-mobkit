@@ -39,6 +39,7 @@ from .errors import (
 from .types import (
     CallToolResult,
     CapabilitiesResult,
+    ReconcileEdgesReport,
     DeliveryResult,
     EventEnvelope,
     KeepAliveConfig,
@@ -106,6 +107,7 @@ __all__ = [
     "DeliveryResult",
     "MemoryQueryResult",
     "CallToolResult",
+    "ReconcileEdgesReport",
     "ToolCaller",
     # Typed events
     "Event",
