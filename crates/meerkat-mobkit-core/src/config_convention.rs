@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 ///
 /// All paths are relative to the working directory. Fields are `Option` —
 /// `None` means the file was not found at the conventional location.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ConventionalPaths {
     /// Mob definition TOML (e.g. `config/mob.toml`).
     pub mob_toml: Option<PathBuf>,
@@ -68,54 +68,12 @@ impl ConventionalPaths {
             schedule_files.push(p);
         }
 
-        let result = Self {
+        Self {
             mob_toml,
             gating_toml,
             routing_toml,
             schedule_files,
-        };
-
-        // Log what was discovered
-        if let Some(ref p) = result.mob_toml {
-            eprintln!("config: mob definition at {}", p.display());
         }
-        if let Some(ref p) = result.gating_toml {
-            eprintln!("config: gating rules at {}", p.display());
-        }
-        if let Some(ref p) = result.routing_toml {
-            eprintln!("config: routing at {}", p.display());
-        }
-        for p in &result.schedule_files {
-            eprintln!("config: schedule file at {}", p.display());
-        }
-
-        result
-    }
-
-    /// Read and parse the mob definition TOML.
-    ///
-    /// Returns `None` if `mob_toml` is not set.
-    pub fn read_mob_definition(&self) -> Result<Option<meerkat_mob::MobDefinition>, String> {
-        let path = match &self.mob_toml {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        let definition = meerkat_mob::MobDefinition::from_toml(&content)
-            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?;
-        Ok(Some(definition))
-    }
-
-    /// Read a TOML file as a string, if the path is set.
-    pub fn read_toml(&self, path: &Option<PathBuf>) -> Result<Option<String>, String> {
-        let path = match path {
-            Some(p) => p,
-            None => return Ok(None),
-        };
-        std::fs::read_to_string(path)
-            .map(Some)
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))
     }
 
     /// Collect schedule file paths as strings (for module args).
