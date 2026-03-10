@@ -224,7 +224,7 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
 
 #[test]
 fn sc_001_reference_app_router_proves_unified_owned_console_path() {
-    let unified_runtime_source = include_str!("../src/unified_runtime.rs");
+    let unified_runtime_source = include_str!("../src/unified_runtime/http.rs");
     assert!(unified_runtime_source.contains(".merge(self.build_console_frontend_router())"));
     assert!(!unified_runtime_source.contains("interaction_sse_router"));
 }

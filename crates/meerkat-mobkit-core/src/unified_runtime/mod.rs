@@ -1,0 +1,242 @@
+use std::collections::BTreeSet;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
+
+use meerkat_core::event::agent_event_type;
+use meerkat_mob::{
+    AttributedEvent, MeerkatId, MobEventRouterHandle, SpawnMemberSpec,
+};
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::task::JoinHandle;
+
+use crate::mob_handle_runtime::{
+    MobBootstrapSpec, RealMobRuntime,
+};
+use crate::runtime::{
+    start_mobkit_runtime_with_options, MobkitRuntimeHandle, RuntimeOptions,
+};
+use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
+
+pub mod builder;
+pub mod edge_reconcile;
+pub mod edge_types;
+pub mod http;
+pub mod lifecycle;
+pub mod mob_ops;
+pub mod module_ops;
+pub mod types;
+
+pub use builder::UnifiedRuntimeBuilder;
+pub use edge_types::{
+    DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
+    PreSpawnContext, PreSpawnHook,
+};
+pub use types::{
+    RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError,
+    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
+    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
+    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+};
+
+/// Called after members are spawned. Receives the list of spawned member IDs.
+pub type PostSpawnHook =
+    Arc<dyn Fn(Vec<String>) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// Called after reconcile completes. Receives the reconcile report.
+pub type PostReconcileHook = Arc<
+    dyn Fn(UnifiedRuntimeReconcileReport) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
+const ROSTER_ROUTE_CHANNEL: &str = "notification";
+const ROSTER_ROUTE_SINK: &str = "mob_member";
+const ROSTER_ROUTE_TARGET_MODULE: &str = "delivery";
+
+const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Map an [`AgentDiscoverySpec`] to a [`SpawnMemberSpec`] for spawning.
+///
+/// `additional_instructions` maps directly to `SpawnMemberSpec.additional_instructions`,
+/// which flows through Meerkat's build pipeline to `AgentBuildConfig.additional_instructions`.
+pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpec {
+    let resume_session_id = spec
+        .resume_session_id
+        .as_deref()
+        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+    let additional_instructions = if spec.additional_instructions.is_empty() {
+        None
+    } else {
+        Some(spec.additional_instructions.clone())
+    };
+    SpawnMemberSpec {
+        profile_name: meerkat_mob::ProfileName::from(spec.profile.as_str()),
+        meerkat_id: MeerkatId::from(spec.meerkat_id.as_str()),
+        initial_message: None,
+        runtime_mode: None,
+        backend: None,
+        context: spec.context.clone(),
+        labels: spec.labels.clone(),
+        resume_session_id,
+        additional_instructions,
+    }
+}
+
+pub struct UnifiedRuntime {
+    mob_runtime: RealMobRuntime,
+    module_runtime: MobkitRuntimeHandle,
+    mob_event_ingress: Option<MobEventIngress>,
+    shutting_down: bool,
+    post_spawn_hook: Option<PostSpawnHook>,
+    post_reconcile_hook: Option<PostReconcileHook>,
+    drain_timeout: Duration,
+    discovery: Option<Box<dyn Discovery>>,
+    edge_discovery: Option<Box<dyn EdgeDiscovery>>,
+    /// Dynamic edges managed by edge reconciliation. Only edges in this set
+    /// can be unwired by the reconciler — static/preexisting edges are safe.
+    managed_dynamic_edges: BTreeSet<(String, String)>,
+    /// Edge reconciliation report from bootstrap. Inspect after build() to
+    /// detect incomplete startup topology.
+    bootstrap_edges_report: Option<UnifiedRuntimeReconcileEdgesReport>,
+}
+
+enum MobEventIngress {
+    Pull(MobEventRouterHandle),
+    Forwarder(MobEventForwarder),
+}
+
+struct MobEventForwarder {
+    event_rx: Receiver<EventEnvelope<UnifiedEvent>>,
+    task: JoinHandle<()>,
+}
+
+impl UnifiedRuntime {
+    pub fn builder() -> UnifiedRuntimeBuilder {
+        UnifiedRuntimeBuilder::default()
+    }
+
+    pub(crate) fn from_parts(
+        mob_runtime: RealMobRuntime,
+        module_runtime: MobkitRuntimeHandle,
+    ) -> Self {
+        let mob_event_router = mob_runtime.handle().subscribe_mob_events();
+        let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
+        Self {
+            mob_runtime,
+            module_runtime,
+            mob_event_ingress,
+            shutting_down: false,
+            post_spawn_hook: None,
+            post_reconcile_hook: None,
+            drain_timeout: DEFAULT_DRAIN_TIMEOUT,
+            discovery: None,
+            edge_discovery: None,
+            managed_dynamic_edges: BTreeSet::new(),
+            bootstrap_edges_report: None,
+        }
+    }
+
+    pub async fn bootstrap(
+        mob_spec: MobBootstrapSpec,
+        module_config: MobKitConfig,
+        timeout: Duration,
+    ) -> Result<Self, UnifiedRuntimeBootstrapError> {
+        Self::bootstrap_with_options(
+            mob_spec,
+            module_config,
+            Vec::new(),
+            timeout,
+            RuntimeOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn bootstrap_with_options(
+        mob_spec: MobBootstrapSpec,
+        module_config: MobKitConfig,
+        module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
+        timeout: Duration,
+        options: RuntimeOptions,
+    ) -> Result<Self, UnifiedRuntimeBootstrapError> {
+        let mob_runtime = RealMobRuntime::bootstrap(mob_spec)
+            .await
+            .map_err(UnifiedRuntimeBootstrapError::Mob)?;
+        let module_start_result = std::thread::spawn(move || {
+            start_mobkit_runtime_with_options(module_config, module_agent_events, timeout, options)
+        })
+        .join();
+
+        match module_start_result {
+            Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime)),
+            Ok(Err(error)) => {
+                let startup_error = UnifiedRuntimeBootstrapError::Module(error);
+                Self::rollback_mob_runtime(mob_runtime, startup_error).await
+            }
+            Err(_) => {
+                let startup_error = UnifiedRuntimeBootstrapError::ModuleStartupThreadPanicked;
+                Self::rollback_mob_runtime(mob_runtime, startup_error).await
+            }
+        }
+    }
+
+    /// Bootstrap edge reconciliation report, if edge discovery was configured.
+    ///
+    /// Inspect after `build()` to detect incomplete startup topology.
+    /// Returns `None` if no edge discovery was configured.
+    pub fn bootstrap_edges_report(&self) -> Option<&UnifiedRuntimeReconcileEdgesReport> {
+        self.bootstrap_edges_report.as_ref()
+    }
+
+    fn create_event_ingress(router: MobEventRouterHandle) -> MobEventIngress {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return MobEventIngress::Pull(router);
+        };
+
+        // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
+        let task = handle.spawn(run_mob_event_forwarder(router, event_tx));
+        MobEventIngress::Forwarder(MobEventForwarder { event_rx, task })
+    }
+
+    async fn rollback_mob_runtime(
+        mob_runtime: RealMobRuntime,
+        startup_error: UnifiedRuntimeBootstrapError,
+    ) -> Result<Self, UnifiedRuntimeBootstrapError> {
+        match mob_runtime.stop().await {
+            Ok(()) => Err(startup_error),
+            Err(rollback_error) => Err(UnifiedRuntimeBootstrapError::ModuleStartupRollbackFailed {
+                startup_error: Box::new(startup_error),
+                rollback_error,
+            }),
+        }
+    }
+}
+
+async fn run_mob_event_forwarder(
+    mut router: MobEventRouterHandle,
+    event_tx: Sender<EventEnvelope<UnifiedEvent>>,
+) {
+    while let Some(attributed_event) = router.event_rx.recv().await {
+        if event_tx
+            .send(attributed_event_to_unified(attributed_event))
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+    router.cancel();
+}
+
+fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<UnifiedEvent> {
+    EventEnvelope {
+        event_id: format!("evt-agent-{}", attributed.envelope.event_id),
+        source: "agent".to_string(),
+        timestamp_ms: attributed.envelope.timestamp_ms,
+        event: UnifiedEvent::Agent {
+            agent_id: attributed.source.to_string(),
+            event_type: agent_event_type(&attributed.envelope.payload).to_string(),
+        },
+    }
+}
