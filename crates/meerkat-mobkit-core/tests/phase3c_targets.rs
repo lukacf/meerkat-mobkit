@@ -1851,7 +1851,8 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
         "mobkit/gating/evaluate",
         "mobkit/gating/pending",
         "mobkit/gating/decide",
-        "mobkit/gating/audit"
+        "mobkit/gating/audit",
+        "mobkit/call_tool"
     ]);
 
     assert_eq!(
