@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
 
@@ -87,8 +88,42 @@ class MobKitBuilder:
         return self
 
     async def build(self) -> MobKitRuntime:
+        self._apply_convention_defaults()
         from .runtime import MobKitRuntime
         return await MobKitRuntime._create(self._config)
+
+    def _apply_convention_defaults(self) -> None:
+        """Fill in conventional config paths when not explicitly set.
+
+        Convention (relative to cwd):
+        - config/gating.toml → gating config
+        - config/defaults/schedules.toml → default schedules
+        - deployment/routing.toml → routing config
+        - deployment/schedules.toml → deployment schedule overrides
+
+        Only checks when the corresponding builder method was NOT called.
+        Explicit paths always win. Files that don't exist are skipped.
+        """
+        if self._config.gating_config_path is None:
+            candidate = Path("config/gating.toml")
+            if candidate.is_file():
+                self._config.gating_config_path = str(candidate)
+
+        if self._config.routing_config_path is None:
+            candidate = Path("deployment/routing.toml")
+            if candidate.is_file():
+                self._config.routing_config_path = str(candidate)
+
+        if not self._config.scheduling_files:
+            files: list[str] = []
+            default = Path("config/defaults/schedules.toml")
+            if default.is_file():
+                files.append(str(default))
+            override = Path("deployment/schedules.toml")
+            if override.is_file():
+                files.append(str(override))
+            if files:
+                self._config.scheduling_files = files
 
 
 class MobKit:

@@ -174,3 +174,33 @@ class CallToolResult:
             tool=data.get("tool", ""),
             result=data.get("result"),
         )
+
+
+@dataclass(frozen=True)
+class ReconcileEdgesReport:
+    """Report from dynamic edge reconciliation."""
+    desired_edges: list[dict[str, Any]]
+    wired_edges: list[dict[str, Any]]
+    unwired_edges: list[dict[str, Any]]
+    retained_edges: list[dict[str, Any]]
+    preexisting_edges: list[dict[str, Any]]
+    skipped_missing_members: list[dict[str, Any]]
+    pruned_stale_managed_edges: list[dict[str, Any]]
+    failures: list[dict[str, Any]]
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.failures and not self.skipped_missing_members
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ReconcileEdgesReport:
+        return cls(
+            desired_edges=list(data.get("desired_edges", [])),
+            wired_edges=list(data.get("wired_edges", [])),
+            unwired_edges=list(data.get("unwired_edges", [])),
+            retained_edges=list(data.get("retained_edges", [])),
+            preexisting_edges=list(data.get("preexisting_edges", [])),
+            skipped_missing_members=list(data.get("skipped_missing_members", [])),
+            pruned_stale_managed_edges=list(data.get("pruned_stale_managed_edges", [])),
+            failures=list(data.get("failures", [])),
+        )
