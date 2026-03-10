@@ -23,6 +23,7 @@ from .types import (
     MemoryQueryResult,
     ReconcileEdgesReport,
     ReconcileResult,
+    RediscoverReport,
     RoutingResolution,
     SpawnResult,
     StatusResult,
@@ -354,20 +355,21 @@ class MobHandle:
         )
         return raw if isinstance(raw, list) else []
 
-    async def rediscover(self) -> dict[str, Any]:
+    async def rediscover(self) -> RediscoverReport | None:
         """Reset the mob and re-run discovery + edge reconciliation.
 
         Sequence: reset mob (retire all, clear state) → re-run Discovery →
         spawn discovered members → reconcile edges.
 
-        Returns a report with ``spawned`` (list of member IDs) and ``edges``
-        (edge reconciliation report). Returns ``{"status": "no_discovery_configured"}``
-        if no Discovery was configured on the builder.
+        Returns ``None`` if no Discovery was configured on the builder.
 
         Use for "nuke everything and start fresh" scenarios — e.g. a config
         reload, admin reset command, or recovery from a bad state.
         """
-        return await self._runtime._rpc("mobkit/rediscover")
+        raw = await self._runtime._rpc("mobkit/rediscover")
+        if isinstance(raw, dict) and "status" in raw:
+            return None
+        return RediscoverReport.from_dict(raw)
 
     async def reconcile_edges(self) -> ReconcileEdgesReport:
         """Re-run edge discovery and reconcile dynamic peer edges.

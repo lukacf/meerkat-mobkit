@@ -14,7 +14,7 @@ class TestNewSymbolsExist:
         "SpawnResult", "SpawnMemberResult", "SubscribeResult",
         "KeepAliveConfig", "EventEnvelope",
         "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult",
-        "ReconcileEdgesReport", "ToolCaller",
+        "ReconcileEdgesReport", "RediscoverReport", "ToolCaller",
         "Event", "MobEvent", "AgentEvent", "EventStream",
         "RunStarted", "RunCompleted", "RunFailed",
         "TurnStarted", "TextDelta", "TextComplete",
