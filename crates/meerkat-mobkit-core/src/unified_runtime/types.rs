@@ -235,10 +235,8 @@ pub struct ShutdownDrainReport {
 /// - `SpawnFailure` — `mob_ops.rs` spawn error path
 /// - `ReconcileIncomplete` — `edge_reconcile.rs` after `reconcile_edges`
 /// - `RediscoverFailure` — `lifecycle.rs` rediscover error path
-///
-/// **Planned (require upstream plumbing):**
-/// - `CheckpointFailure` — needs session store callback into UnifiedRuntime
-/// - `HostLoopCrash` — needs mob runtime to surface crashes via event channel
+/// - `HostLoopCrash` — `lifecycle.rs` detects `run_failed` agent events during drain
+/// - `CheckpointFailure` — via `run_periodic_gc_with_error_callback` in session store
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "category", rename_all = "snake_case")]

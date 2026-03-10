@@ -168,6 +168,19 @@ impl UnifiedRuntime {
         loop {
             match Self::try_recv_ingress_event(ingress) {
                 Some(Ok(unified_event)) => {
+                    // Detect agent run failures and fire HostLoopCrash
+                    if let crate::types::UnifiedEvent::Agent {
+                        ref agent_id,
+                        ref event_type,
+                    } = unified_event.event
+                    {
+                        if event_type == "run_failed" {
+                            self.fire_error(super::types::ErrorEvent::HostLoopCrash {
+                                member_id: agent_id.clone(),
+                                error: format!("agent run failed (event_id: {})", unified_event.event_id),
+                            });
+                        }
+                    }
                     self.module_runtime.lock().await.append_normalized_event(unified_event)?
                 }
                 Some(Err(TryRecvError::Empty)) => break,
