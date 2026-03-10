@@ -8,8 +8,9 @@ use std::time::Duration;
 use meerkat::{build_ephemeral_service, AgentFactory, Config};
 use meerkat_client::TestClient;
 use meerkat_core::{
-    CommsRuntime, CreateSessionRequest, EventStream, RunResult, SessionError, SessionId,
-    SessionQuery, SessionService, SessionServiceCommsExt, SessionSummary, SessionView,
+    AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, CreateSessionRequest,
+    EventStream, RunResult, SessionControlError, SessionError, SessionId, SessionQuery,
+    SessionService, SessionServiceCommsExt, SessionServiceControlExt, SessionSummary, SessionView,
     StartTurnRequest, StreamError,
 };
 use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
@@ -108,6 +109,17 @@ impl SessionService for CheckpointerCancelProbeSessionService {
 impl SessionServiceCommsExt for CheckpointerCancelProbeSessionService {
     async fn comms_runtime(&self, session_id: &SessionId) -> Option<Arc<dyn CommsRuntime>> {
         self.inner.comms_runtime(session_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionServiceControlExt for CheckpointerCancelProbeSessionService {
+    async fn append_system_context(
+        &self,
+        id: &SessionId,
+        req: AppendSystemContextRequest,
+    ) -> Result<AppendSystemContextResult, SessionControlError> {
+        self.inner.append_system_context(id, req).await
     }
 }
 
@@ -961,19 +973,14 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
             )
         })
         .expect("expected runtime.injection.executed event");
-    let interaction_id = match &executed.event {
-        UnifiedEvent::Module(module_event) => module_event
-            .payload
-            .get("interaction_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
+    // Verify the executed event contains the expected payload fields
+    match &executed.event {
+        UnifiedEvent::Module(module_event) => {
+            assert!(module_event.payload.get("member_id").is_some());
+            assert!(module_event.payload.get("message").is_some());
+        }
+        _ => panic!("expected Module event"),
     };
-    assert!(
-        !interaction_id.is_empty(),
-        "runtime.injection.executed should include interaction_id"
-    );
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
