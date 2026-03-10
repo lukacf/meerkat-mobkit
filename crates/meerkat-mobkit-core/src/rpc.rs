@@ -926,7 +926,8 @@ pub async fn handle_unified_rpc_json(
                     "mobkit/send_message",
                     "mobkit/find_members",
                     "mobkit/ensure_member",
-                    "mobkit/reconcile_edges"
+                    "mobkit/reconcile_edges",
+                    "mobkit/rediscover"
                 ],
                 "loaded_modules": runtime.loaded_modules()
             })),
@@ -1652,6 +1653,33 @@ pub async fn handle_unified_rpc_json(
                 id: response_id.clone(),
                 result: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
                 error: None,
+            }
+        }
+        "mobkit/rediscover" => {
+            match runtime.rediscover().await {
+                Ok(Some(report)) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Ok(None) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({
+                        "status": "no_discovery_configured"
+                    })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("rediscover failed: {err}"),
+                    }),
+                },
             }
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {

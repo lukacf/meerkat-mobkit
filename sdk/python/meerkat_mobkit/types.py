@@ -177,6 +177,20 @@ class CallToolResult:
 
 
 @dataclass(frozen=True)
+class RediscoverReport:
+    """Report from a rediscover operation (reset + re-run discovery)."""
+    spawned: list[str]
+    edges: ReconcileEdgesReport
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RediscoverReport:
+        return cls(
+            spawned=list(data.get("spawned", [])),
+            edges=ReconcileEdgesReport.from_dict(data.get("edges", {})),
+        )
+
+
+@dataclass(frozen=True)
 class ReconcileEdgesReport:
     """Report from dynamic edge reconciliation."""
     desired_edges: list[dict[str, Any]]

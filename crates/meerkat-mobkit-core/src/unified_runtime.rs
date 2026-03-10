@@ -392,6 +392,7 @@ impl UnifiedRuntimeBuilder {
         runtime.post_spawn_hook = self.post_spawn_hook;
         runtime.post_reconcile_hook = self.post_reconcile_hook;
         runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
+        runtime.discovery = self.discovery;
         runtime.edge_discovery = self.edge_discovery;
 
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
@@ -405,7 +406,7 @@ impl UnifiedRuntimeBuilder {
         } else {
             serde_json::Value::Null
         };
-        if let Some(discovery) = self.discovery {
+        if let Some(ref discovery) = runtime.discovery {
             let specs = discovery.discover(pre_spawn_context).await;
             let spawn_specs: Vec<SpawnMemberSpec> =
                 specs.iter().map(discovery_spec_to_spawn_spec).collect();
@@ -492,6 +493,15 @@ pub struct UnifiedRuntimeRunReport {
     pub shutdown: UnifiedRuntimeShutdownReport,
 }
 
+/// Report from a rediscover operation (reset + re-run discovery + reconcile edges).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RediscoverReport {
+    /// Number of members spawned by discovery.
+    pub spawned: Vec<String>,
+    /// Edge reconciliation report (if EdgeDiscovery is configured).
+    pub edges: UnifiedRuntimeReconcileEdgesReport,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnifiedRuntimeReconcileRoutingReport {
     pub router_module_loaded: bool,
@@ -543,6 +553,7 @@ pub struct UnifiedRuntime {
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
     drain_timeout: Duration,
+    discovery: Option<Box<dyn Discovery>>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     /// Dynamic edges managed by edge reconciliation. Only edges in this set
     /// can be unwired by the reconciler — static/preexisting edges are safe.
@@ -582,6 +593,7 @@ impl UnifiedRuntime {
             post_spawn_hook: None,
             post_reconcile_hook: None,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
+            discovery: None,
             edge_discovery: None,
             managed_dynamic_edges: BTreeSet::new(),
             bootstrap_edges_report: None,
@@ -899,6 +911,57 @@ impl UnifiedRuntime {
         spec: SpawnMemberSpec,
     ) -> Result<MobMemberSnapshot, MobRuntimeError> {
         self.mob_runtime.ensure_member(spec).await
+    }
+
+    /// Reset the mob and re-run discovery + edge reconciliation.
+    ///
+    /// Sequence:
+    /// 1. `MobHandle::reset()` — retires all members, clears projections,
+    ///    restarts MCP servers, returns mob to Running state
+    /// 2. Re-runs the stored `Discovery` (with `Value::Null` context since
+    ///    `PreSpawnHook` is consumed at boot and cannot be replayed)
+    /// 3. Spawns discovered members via `spawn_many`
+    /// 4. Clears managed dynamic edges (stale after reset)
+    /// 5. Runs edge reconciliation if `EdgeDiscovery` is configured
+    ///
+    /// Returns `None` if no `Discovery` is configured (nothing to rediscover).
+    pub async fn rediscover(&mut self) -> Result<Option<RediscoverReport>, MobRuntimeError> {
+        let discovery = match &self.discovery {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        // 1. Reset the mob — retires all, clears state, returns to Running
+        self.mob_runtime
+            .handle()
+            .reset()
+            .await
+            .map_err(MobRuntimeError::Mob)?;
+
+        // 2. Re-run discovery (no pre-spawn context — PreSpawnHook is FnOnce)
+        let specs = discovery.discover(serde_json::Value::Null).await;
+        let spawn_specs: Vec<SpawnMemberSpec> =
+            specs.iter().map(discovery_spec_to_spawn_spec).collect();
+        let spawned: Vec<String> = spawn_specs
+            .iter()
+            .map(|s| s.meerkat_id.to_string())
+            .collect();
+
+        // 3. Spawn discovered members
+        self.mob_runtime
+            .spawn_many(spawn_specs)
+            .await?;
+        if let Some(hook) = &self.post_spawn_hook {
+            hook(spawned.clone()).await;
+        }
+
+        // 4. Clear stale managed edges (old topology is gone after reset)
+        self.managed_dynamic_edges.clear();
+
+        // 5. Reconcile edges
+        let edges = self.reconcile_edges().await;
+
+        Ok(Some(RediscoverReport { spawned, edges }))
     }
 
     pub fn module_is_running(&self) -> bool {
