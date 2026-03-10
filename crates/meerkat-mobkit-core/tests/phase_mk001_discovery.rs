@@ -208,7 +208,7 @@ fn mk001_agent_discovery_spec_serde_minimal_omits_none_fields() {
 #[tokio::test]
 async fn mk007_spawn_many_spawns_multiple_agents() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::bootstrap(
+    let runtime = UnifiedRuntime::bootstrap(
         build_mob_spec(&temp_dir),
         empty_module_config(),
         Duration::from_secs(2),
@@ -253,7 +253,7 @@ async fn mk002_builder_with_discovery_spawns_discovered_agents() {
         ],
     };
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_mob_spec(&temp_dir))
         .module_config(empty_module_config())
         .timeout(Duration::from_secs(2))
@@ -309,7 +309,7 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
         }],
     };
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_mob_spec(&temp_dir))
         .module_config(empty_module_config())
         .timeout(Duration::from_secs(2))

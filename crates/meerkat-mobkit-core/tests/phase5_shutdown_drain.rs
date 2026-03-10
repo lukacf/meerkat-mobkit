@@ -53,7 +53,7 @@ fn member_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
 #[tokio::test]
 async fn shutdown_drain_completes_immediately_with_no_active_members() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::bootstrap(
+    let runtime = UnifiedRuntime::bootstrap(
         mob_spec(&temp_dir),
         empty_module_config("drain-no-active"),
         Duration::from_secs(2),
@@ -73,7 +73,7 @@ async fn shutdown_drain_completes_immediately_with_no_active_members() {
 #[tokio::test]
 async fn shutdown_drain_report_fields_populated_with_active_members() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(mob_spec(&temp_dir))
         .module_config(empty_module_config("drain-active"))
         .timeout(Duration::from_secs(2))
@@ -98,7 +98,7 @@ async fn shutdown_drain_report_fields_populated_with_active_members() {
 #[tokio::test]
 async fn shutdown_drain_uses_default_timeout_from_bootstrap() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::bootstrap(
+    let runtime = UnifiedRuntime::bootstrap(
         mob_spec(&temp_dir),
         empty_module_config("drain-default"),
         Duration::from_secs(2),
@@ -117,7 +117,7 @@ async fn shutdown_drain_uses_default_timeout_from_bootstrap() {
 #[tokio::test]
 async fn shutting_down_flag_prevents_new_dispatches_during_drain() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(mob_spec(&temp_dir))
         .module_config(empty_module_config("drain-flag"))
         .timeout(Duration::from_secs(2))

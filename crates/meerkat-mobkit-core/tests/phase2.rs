@@ -191,7 +191,7 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
         UnifiedRuntimeBuilderError::MissingRequiredField(UnifiedRuntimeBuilderField::ModuleConfig)
     ));
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![],
@@ -224,7 +224,7 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
 
 #[test]
 fn sc_001_reference_app_router_proves_unified_owned_console_path() {
-    let unified_runtime_source = include_str!("../src/unified_runtime.rs");
+    let unified_runtime_source = include_str!("../src/unified_runtime/http.rs");
     assert!(unified_runtime_source.contains(".merge(self.build_console_frontend_router())"));
     assert!(!unified_runtime_source.contains("interaction_sse_router"));
 }
@@ -232,7 +232,7 @@ fn sc_001_reference_app_router_proves_unified_owned_console_path() {
 #[tokio::test]
 async fn req_002_router_builders_prove_console_and_sse_behavior() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![],
@@ -301,7 +301,7 @@ async fn req_002_router_builders_prove_console_and_sse_behavior() {
 #[tokio::test]
 async fn req_002_serve_proves_reference_console_route_behavior() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![],
@@ -345,7 +345,7 @@ async fn req_002_serve_proves_reference_console_route_behavior() {
 #[tokio::test]
 async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![],
@@ -404,7 +404,7 @@ async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
 #[tokio::test]
 async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![shell_module(
@@ -472,7 +472,7 @@ async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded()
 #[tokio::test]
 async fn req_008_reconcile_route_mutation_failure_is_typed() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase2_mob_spec(&temp_dir))
         .module_config(MobKitConfig {
             modules: vec![shell_module(

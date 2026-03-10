@@ -8,8 +8,9 @@ use std::time::Duration;
 use meerkat::{build_ephemeral_service, AgentFactory, Config};
 use meerkat_client::TestClient;
 use meerkat_core::{
-    CommsRuntime, CreateSessionRequest, EventStream, RunResult, SessionError, SessionId,
-    SessionQuery, SessionService, SessionServiceCommsExt, SessionSummary, SessionView,
+    AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, CreateSessionRequest,
+    EventStream, RunResult, SessionControlError, SessionError, SessionId, SessionQuery,
+    SessionService, SessionServiceCommsExt, SessionServiceControlExt, SessionSummary, SessionView,
     StartTurnRequest, StreamError,
 };
 use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
@@ -108,6 +109,17 @@ impl SessionService for CheckpointerCancelProbeSessionService {
 impl SessionServiceCommsExt for CheckpointerCancelProbeSessionService {
     async fn comms_runtime(&self, session_id: &SessionId) -> Option<Arc<dyn CommsRuntime>> {
         self.inner.comms_runtime(session_id).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionServiceControlExt for CheckpointerCancelProbeSessionService {
+    async fn append_system_context(
+        &self,
+        id: &SessionId,
+        req: AppendSystemContextRequest,
+    ) -> Result<AppendSystemContextResult, SessionControlError> {
+        self.inner.append_system_context(id, req).await
     }
 }
 
@@ -781,7 +793,7 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
         pre_spawn: vec![],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     assert_eq!(fixture.runtime.status(), MobState::Running);
     assert!(fixture.runtime.module_is_running());
     assert_eq!(fixture.runtime.loaded_modules(), vec!["mod-a".to_string()]);
@@ -812,7 +824,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         pre_spawn: vec![],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -922,7 +934,7 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
         }],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -961,19 +973,14 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
             )
         })
         .expect("expected runtime.injection.executed event");
-    let interaction_id = match &executed.event {
-        UnifiedEvent::Module(module_event) => module_event
-            .payload
-            .get("interaction_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        _ => String::new(),
+    // Verify the executed event contains the expected payload fields
+    match &executed.event {
+        UnifiedEvent::Module(module_event) => {
+            assert!(module_event.payload.get("member_id").is_some());
+            assert!(module_event.payload.get("message").is_some());
+        }
+        _ => panic!("expected Module event"),
     };
-    assert!(
-        !interaction_id.is_empty(),
-        "runtime.injection.executed should include interaction_id"
-    );
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
@@ -998,7 +1005,7 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
         }],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     let dispatch = fixture
         .runtime
         .dispatch_schedule_tick(
@@ -1061,7 +1068,7 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
         pre_spawn: vec![],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     let module_pid = fixture
         .runtime
         .module_events()
