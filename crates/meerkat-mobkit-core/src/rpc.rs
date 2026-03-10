@@ -1606,17 +1606,22 @@ pub async fn handle_unified_rpc_json(
                         .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
                         .and_then(|v| if v.is_empty() { None } else { Some(v) });
 
-                    let spec = meerkat_mob::SpawnMemberSpec {
-                        profile_name: meerkat_mob::ProfileName::from(profile),
-                        meerkat_id: meerkat_mob::MeerkatId::from(meerkat_id),
-                        initial_message: None,
-                        runtime_mode: None,
-                        backend: None,
-                        context,
-                        labels,
-                        resume_session_id,
-                        additional_instructions,
-                    };
+                    let mut spec = meerkat_mob::SpawnMemberSpec::new(
+                        meerkat_mob::ProfileName::from(profile),
+                        meerkat_mob::MeerkatId::from(meerkat_id),
+                    );
+                    if let Some(context) = context {
+                        spec = spec.with_context(context);
+                    }
+                    if let Some(labels) = labels {
+                        spec = spec.with_labels(labels);
+                    }
+                    if let Some(sid) = resume_session_id {
+                        spec = spec.with_resume_session_id(sid);
+                    }
+                    if let Some(instructions) = additional_instructions {
+                        spec = spec.with_additional_instructions(instructions);
+                    }
                     match runtime.ensure_member(spec).await {
                         Ok(snapshot) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),

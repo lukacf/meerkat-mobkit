@@ -10,33 +10,42 @@ pub fn evaluate_schedules_at_tick(
 ) -> Result<ScheduleEvaluation, ScheduleValidationError> {
     validate_schedule_tick_ms_supported(tick_ms)?;
     validate_schedules(schedules)?;
-    let mut due_triggers = schedules
-        .iter()
-        .filter(|schedule| schedule.enabled)
-        .filter_map(|schedule| {
-            let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
-            let interval =
-                parse_schedule_interval(&schedule.interval).expect("validated schedule interval");
-            let timezone =
-                parse_schedule_timezone(&schedule.timezone).expect("validated schedule timezone");
-            let due_tick_ms = latest_due_tick_at_or_before(
-                &canonical_schedule_id,
-                &interval,
-                &timezone,
-                schedule.jitter_ms,
-                tick_ms,
-            )?;
-            if due_tick_ms != tick_ms {
-                return None;
-            }
-            Some(ScheduleTrigger {
-                schedule_id: canonical_schedule_id,
-                interval: schedule.interval.clone(),
-                timezone: schedule.timezone.clone(),
-                due_tick_ms,
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut due_triggers = Vec::new();
+    for schedule in schedules.iter().filter(|s| s.enabled) {
+        let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
+        let interval =
+            parse_schedule_interval(&schedule.interval).ok_or_else(|| {
+                ScheduleValidationError::InvalidInterval {
+                    schedule_id: canonical_schedule_id.clone(),
+                    interval: schedule.interval.clone(),
+                }
+            })?;
+        let timezone =
+            parse_schedule_timezone(&schedule.timezone).ok_or_else(|| {
+                ScheduleValidationError::InvalidTimezone {
+                    schedule_id: canonical_schedule_id.clone(),
+                    timezone: schedule.timezone.clone(),
+                }
+            })?;
+        let Some(due_tick_ms) = latest_due_tick_at_or_before(
+            &canonical_schedule_id,
+            &interval,
+            &timezone,
+            schedule.jitter_ms,
+            tick_ms,
+        ) else {
+            continue;
+        };
+        if due_tick_ms != tick_ms {
+            continue;
+        }
+        due_triggers.push(ScheduleTrigger {
+            schedule_id: canonical_schedule_id,
+            interval: schedule.interval.clone(),
+            timezone: schedule.timezone.clone(),
+            due_tick_ms,
+        });
+    }
 
     due_triggers.sort_by(|left, right| {
         left.due_tick_ms
@@ -179,38 +188,43 @@ impl MobkitRuntimeHandle {
         validate_schedules(schedules)?;
         self.prune_schedule_claims(tick_ms);
         self.prune_scheduling_last_due_ticks(tick_ms);
-        let mut due_triggers = schedules
-            .iter()
-            .filter(|schedule| schedule.enabled)
-            .filter_map(|schedule| {
-                let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
-                let interval = parse_schedule_interval(&schedule.interval)
-                    .expect("validated schedule interval");
-                let timezone = parse_schedule_timezone(&schedule.timezone)
-                    .expect("validated schedule timezone");
-                let due_tick_ms = latest_due_tick_at_or_before(
-                    &canonical_schedule_id,
-                    &interval,
-                    &timezone,
-                    schedule.jitter_ms,
-                    tick_ms,
-                )?;
-                let last_due_tick = self
-                    .scheduling_last_due_ticks
-                    .get(&canonical_schedule_id)
-                    .copied();
-                if schedule.catch_up {
-                    if last_due_tick.is_some_and(|last| last >= due_tick_ms) {
-                        return None;
-                    }
-                } else if last_due_tick
-                    .is_some_and(|last| last >= due_tick_ms && due_tick_ms != tick_ms)
-                {
-                    return None;
+        let mut due_triggers = Vec::new();
+        for schedule in schedules.iter().filter(|s| s.enabled) {
+            let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
+            let interval = parse_schedule_interval(&schedule.interval)
+                .ok_or_else(|| ScheduleValidationError::InvalidInterval {
+                    schedule_id: canonical_schedule_id.clone(),
+                    interval: schedule.interval.clone(),
+                })?;
+            let timezone = parse_schedule_timezone(&schedule.timezone)
+                .ok_or_else(|| ScheduleValidationError::InvalidTimezone {
+                    schedule_id: canonical_schedule_id.clone(),
+                    timezone: schedule.timezone.clone(),
+                })?;
+            let Some(due_tick_ms) = latest_due_tick_at_or_before(
+                &canonical_schedule_id,
+                &interval,
+                &timezone,
+                schedule.jitter_ms,
+                tick_ms,
+            ) else {
+                continue;
+            };
+            let last_due_tick = self
+                .scheduling_last_due_ticks
+                .get(&canonical_schedule_id)
+                .copied();
+            if schedule.catch_up {
+                if last_due_tick.is_some_and(|last| last >= due_tick_ms) {
+                    continue;
                 }
-                Some((schedule, canonical_schedule_id, due_tick_ms))
-            })
-            .collect::<Vec<_>>();
+            } else if last_due_tick
+                .is_some_and(|last| last >= due_tick_ms && due_tick_ms != tick_ms)
+            {
+                continue;
+            }
+            due_triggers.push((schedule, canonical_schedule_id, due_tick_ms));
+        }
         due_triggers.sort_by(
             |(left_schedule, left_schedule_id, left_due_tick),
              (right_schedule, right_schedule_id, right_due_tick)| {

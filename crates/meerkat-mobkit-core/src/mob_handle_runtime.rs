@@ -262,6 +262,7 @@ impl RealMobRuntime {
         self.handle
             .send_message(MeerkatId::from(member_id), message)
             .await
+            .map(|_session_id| ())
             .map_err(Into::into)
     }
 

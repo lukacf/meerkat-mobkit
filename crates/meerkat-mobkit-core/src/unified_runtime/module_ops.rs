@@ -18,11 +18,11 @@ use super::UnifiedRuntime;
 
 impl UnifiedRuntime {
     pub fn module_is_running(&self) -> bool {
-        self.module_runtime.lock().unwrap().is_running()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).is_running()
     }
 
     pub fn loaded_modules(&self) -> Vec<String> {
-        self.module_runtime.lock().unwrap().loaded_modules()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).loaded_modules()
     }
 
     pub fn reconcile_modules(
@@ -30,21 +30,21 @@ impl UnifiedRuntime {
         modules: Vec<String>,
         timeout: Duration,
     ) -> Result<usize, RuntimeMutationError> {
-        self.module_runtime.lock().unwrap().reconcile_modules(modules, timeout)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).reconcile_modules(modules, timeout)
     }
 
     pub fn resolve_routing(
         &self,
         request: RoutingResolveRequest,
     ) -> Result<RoutingResolution, RoutingResolveError> {
-        self.module_runtime.lock().unwrap().resolve_routing(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).resolve_routing(request)
     }
 
     pub fn send_delivery(
         &self,
         request: DeliverySendRequest,
     ) -> Result<DeliveryRecord, DeliverySendError> {
-        self.module_runtime.lock().unwrap().send_delivery(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).send_delivery(request)
     }
 
     pub fn evaluate_schedule_tick(
@@ -52,66 +52,66 @@ impl UnifiedRuntime {
         schedules: &[ScheduleDefinition],
         tick_ms: u64,
     ) -> Result<ScheduleEvaluation, ScheduleValidationError> {
-        self.module_runtime.lock().unwrap().evaluate_schedule_tick(schedules, tick_ms)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).evaluate_schedule_tick(schedules, tick_ms)
     }
 
     pub fn list_runtime_routes(&self) -> Vec<RuntimeRoute> {
-        self.module_runtime.lock().unwrap().list_runtime_routes()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).list_runtime_routes()
     }
 
     pub fn add_runtime_route(
         &self,
         route: RuntimeRoute,
     ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
-        self.module_runtime.lock().unwrap().add_runtime_route(route)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).add_runtime_route(route)
     }
 
     pub fn delete_runtime_route(
         &self,
         route_key: &str,
     ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
-        self.module_runtime.lock().unwrap().delete_runtime_route(route_key)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).delete_runtime_route(route_key)
     }
 
     pub fn delivery_history(&self, request: DeliveryHistoryRequest) -> DeliveryHistoryResponse {
-        self.module_runtime.lock().unwrap().delivery_history(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).delivery_history(request)
     }
 
     pub fn memory_stores(&self) -> Vec<MemoryStoreInfo> {
-        self.module_runtime.lock().unwrap().memory_stores()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).memory_stores()
     }
 
     pub fn memory_index(
         &self,
         request: MemoryIndexRequest,
     ) -> Result<MemoryIndexResult, MemoryIndexError> {
-        self.module_runtime.lock().unwrap().memory_index(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).memory_index(request)
     }
 
     pub fn memory_query(&self, request: MemoryQueryRequest) -> MemoryQueryResult {
-        self.module_runtime.lock().unwrap().memory_query(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).memory_query(request)
     }
 
     pub fn evaluate_gating_action(
         &self,
         request: GatingEvaluateRequest,
     ) -> GatingEvaluateResult {
-        self.module_runtime.lock().unwrap().evaluate_gating_action(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).evaluate_gating_action(request)
     }
 
     pub fn list_gating_pending(&self) -> Vec<GatingPendingEntry> {
-        self.module_runtime.lock().unwrap().list_gating_pending()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).list_gating_pending()
     }
 
     pub fn decide_gating_action(
         &self,
         request: GatingDecideRequest,
     ) -> Result<GatingDecisionResult, GatingDecideError> {
-        self.module_runtime.lock().unwrap().decide_gating_action(request)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).decide_gating_action(request)
     }
 
     pub fn gating_audit_entries(&self, limit: usize) -> Vec<GatingAuditEntry> {
-        self.module_runtime.lock().unwrap().gating_audit_entries(limit)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).gating_audit_entries(limit)
     }
 
     pub fn spawn_member(
@@ -119,7 +119,7 @@ impl UnifiedRuntime {
         module_id: &str,
         timeout: Duration,
     ) -> Result<(), RuntimeMutationError> {
-        self.module_runtime.lock().unwrap().spawn_member(module_id, timeout)
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).spawn_member(module_id, timeout)
     }
 
     pub fn route_module_call(
@@ -127,20 +127,20 @@ impl UnifiedRuntime {
         request: &ModuleRouteRequest,
         timeout: Duration,
     ) -> Result<ModuleRouteResponse, ModuleRouteError> {
-        let rt = self.module_runtime.lock().unwrap();
+        let rt = self.module_runtime.lock().unwrap_or_else(|e| e.into_inner());
         route_module_call(&rt, request, timeout)
     }
 
     pub fn module_lifecycle_events(&self) -> Vec<LifecycleEvent> {
-        self.module_runtime.lock().unwrap().lifecycle_events.clone()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).lifecycle_events.clone()
     }
 
     pub fn module_health_transitions(&self) -> Vec<ModuleHealthTransition> {
-        self.module_runtime.lock().unwrap().supervisor_report.transitions.clone()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).supervisor_report.transitions.clone()
     }
 
     pub fn module_events(&self) -> Vec<EventEnvelope<UnifiedEvent>> {
-        self.module_runtime.lock().unwrap().merged_events().to_vec()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner()).merged_events().to_vec()
     }
 
     pub fn subscribe_events(
@@ -148,7 +148,7 @@ impl UnifiedRuntime {
         request: SubscribeRequest,
     ) -> Result<SubscribeResponse, UnifiedRuntimeError> {
         self.drain_mob_agent_events()?;
-        self.module_runtime.lock().unwrap()
+        self.module_runtime.lock().unwrap_or_else(|e| e.into_inner())
             .subscribe_events(request)
             .map_err(UnifiedRuntimeError::Subscribe)
     }

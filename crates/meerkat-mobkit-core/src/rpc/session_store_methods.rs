@@ -175,6 +175,7 @@ pub(super) fn run_bigquery_session_store_request(
     match request.operation {
         BigQuerySessionStoreOperation::StreamInsert => {
             block_on_bq(store.stream_insert_rows(&request.rows))
+                .and_then(|inner| inner)
                 .map_err(BigQuerySessionStoreRpcError::Store)?;
             Ok(serde_json::json!({
                 "operation": "stream_insert_rows",
@@ -184,6 +185,7 @@ pub(super) fn run_bigquery_session_store_request(
         }
         BigQuerySessionStoreOperation::ReadAll => {
             let rows = block_on_bq(store.read_rows())
+                .and_then(|inner| inner)
                 .map_err(BigQuerySessionStoreRpcError::Store)?;
             Ok(serde_json::json!({
                 "operation": "read_rows",
@@ -192,6 +194,7 @@ pub(super) fn run_bigquery_session_store_request(
         }
         BigQuerySessionStoreOperation::ReadLatest => {
             let rows = block_on_bq(store.read_latest_rows())
+                .and_then(|inner| inner)
                 .map_err(BigQuerySessionStoreRpcError::Store)?;
             Ok(serde_json::json!({
                 "operation": "read_latest_rows",
@@ -200,6 +203,7 @@ pub(super) fn run_bigquery_session_store_request(
         }
         BigQuerySessionStoreOperation::ReadLive => {
             let rows = block_on_bq(store.read_live_rows())
+                .and_then(|inner| inner)
                 .map_err(BigQuerySessionStoreRpcError::Store)?;
             Ok(serde_json::json!({
                 "operation": "read_live_rows",
@@ -212,20 +216,30 @@ pub(super) fn run_bigquery_session_store_request(
 /// Run an async BQ future from a synchronous RPC context.
 /// Spawns a dedicated thread with its own tokio runtime to avoid
 /// nesting runtimes when the RPC handler runs inside an existing one.
-fn block_on_bq<F: std::future::Future + Send>(future: F) -> F::Output
+fn block_on_bq<F: std::future::Future + Send>(
+    future: F,
+) -> Result<F::Output, BigQuerySessionStoreError>
 where
     F::Output: Send,
 {
     std::thread::scope(|s| {
         s.spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
+            let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("create async runtime for BQ")
-                .block_on(future)
+                .map_err(|err| {
+                    BigQuerySessionStoreError::Io(format!(
+                        "failed to create async runtime for BigQuery: {err}"
+                    ))
+                })?;
+            Ok(rt.block_on(future))
         })
         .join()
-        .expect("BQ async thread panicked")
+        .map_err(|_| {
+            BigQuerySessionStoreError::Io(
+                "BigQuery async worker thread panicked".to_string(),
+            )
+        })?
     })
 }
 
