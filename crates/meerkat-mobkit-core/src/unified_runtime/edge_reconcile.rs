@@ -227,7 +227,7 @@ impl UnifiedRuntime {
         active_members.sort();
         active_members.dedup();
 
-        let mut rt = self.module_runtime.lock().unwrap();
+        let mut rt = self.module_runtime.lock().unwrap_or_else(|e| e.into_inner());
         let router_module_loaded = rt
             .loaded_modules()
             .iter()

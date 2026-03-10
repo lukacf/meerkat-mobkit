@@ -624,10 +624,16 @@ pub fn run_periodic_gc(
     config: BigQueryGcConfig,
 ) -> impl FnOnce() {
     move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("create async runtime for BQ GC");
+        {
+            Ok(rt) => rt,
+            Err(err) => {
+                eprintln!("[mobkit-gc] failed to create async runtime for BQ GC: {err}");
+                return;
+            }
+        };
         loop {
             std::thread::sleep(config.interval);
             match rt.block_on(adapter.gc_superseded_rows()) {

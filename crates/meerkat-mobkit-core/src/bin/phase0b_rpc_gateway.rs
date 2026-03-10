@@ -396,7 +396,7 @@ async fn run_persistent() {
                 "id": null,
                 "error": { "code": -32700, "message": format!("Parse error: {e}") }
             });
-            println!("{}", serde_json::to_string(&error_response).unwrap());
+            println!("{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
             std::process::exit(1);
         }
     };
@@ -412,7 +412,7 @@ async fn run_persistent() {
             "id": request_id,
             "error": { "code": -32600, "message": format!("Expected mobkit/init, got {method}") }
         });
-        println!("{}", serde_json::to_string(&error_response).unwrap());
+        println!("{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
         std::process::exit(1);
     }
 
@@ -442,7 +442,7 @@ external_addressable = true
             "id": request_id,
             "error": { "code": -32602, "message": format!("Invalid mob_config TOML: {e}") }
         });
-        println!("{}", serde_json::to_string(&error_response).unwrap());
+        println!("{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
         std::process::exit(1);
     });
 
@@ -553,7 +553,7 @@ external_addressable = true
                 "error": { "code": -32603, "message": format!("Runtime bootstrap failed: {e}") }
             });
             let mut stdout = std::io::stdout().lock();
-            let _ = writeln!(stdout, "{}", serde_json::to_string(&error_response).unwrap());
+            let _ = writeln!(stdout, "{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
             let _ = stdout.flush();
             std::process::exit(1);
         });
@@ -590,7 +590,7 @@ external_addressable = true
         }
     });
     let _ = stdout_tx
-        .send(serde_json::to_string(&init_response).unwrap())
+        .send(serde_json::to_string(&init_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()))
         .await;
 
     // 9. RPC dispatch loop: process queued requests from the stdin reader task

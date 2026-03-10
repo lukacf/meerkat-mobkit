@@ -71,17 +71,23 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
     } else {
         Some(spec.additional_instructions.clone())
     };
-    SpawnMemberSpec {
-        profile_name: meerkat_mob::ProfileName::from(spec.profile.as_str()),
-        meerkat_id: MeerkatId::from(spec.meerkat_id.as_str()),
-        initial_message: None,
-        runtime_mode: None,
-        backend: None,
-        context: spec.context.clone(),
-        labels: spec.labels.clone(),
-        resume_session_id,
-        additional_instructions,
+    let mut spawn = SpawnMemberSpec::new(
+        meerkat_mob::ProfileName::from(spec.profile.as_str()),
+        MeerkatId::from(spec.meerkat_id.as_str()),
+    );
+    if let Some(context) = spec.context.clone() {
+        spawn = spawn.with_context(context);
     }
+    if let Some(labels) = spec.labels.clone() {
+        spawn = spawn.with_labels(labels);
+    }
+    if let Some(sid) = resume_session_id {
+        spawn = spawn.with_resume_session_id(sid);
+    }
+    if let Some(instructions) = additional_instructions {
+        spawn = spawn.with_additional_instructions(instructions);
+    }
+    spawn
 }
 
 pub struct UnifiedRuntime {

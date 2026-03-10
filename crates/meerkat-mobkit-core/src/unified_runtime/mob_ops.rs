@@ -76,17 +76,11 @@ impl UnifiedRuntime {
         meerkat_id: &str,
         labels: BTreeMap<String, String>,
     ) -> Result<MobMemberSnapshot, MobRuntimeError> {
-        let spec = SpawnMemberSpec {
-            profile_name: meerkat_mob::ProfileName::from(profile),
-            meerkat_id: meerkat_mob::MeerkatId::from(meerkat_id),
-            initial_message: None,
-            runtime_mode: None,
-            backend: None,
-            context: None,
-            labels: Some(labels),
-            resume_session_id: None,
-            additional_instructions: None,
-        };
+        let spec = SpawnMemberSpec::new(
+            meerkat_mob::ProfileName::from(profile),
+            meerkat_mob::MeerkatId::from(meerkat_id),
+        )
+        .with_labels(labels);
         self.ensure_member(spec).await
     }
 }
