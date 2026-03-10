@@ -931,7 +931,8 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/find_members",
                         "mobkit/ensure_member",
                         "mobkit/reconcile_edges",
-                        "mobkit/rediscover"
+                        "mobkit/rediscover",
+                        "mobkit/query_events"
                     ],
                     "loaded_modules": loaded
                 })),
@@ -1728,6 +1729,36 @@ pub async fn handle_unified_rpc_json(
                         code: -32000,
                         message: format!("rediscover failed: {err}"),
                     }),
+                },
+            }
+        }
+        "mobkit/query_events" => {
+            let query: crate::unified_runtime::EventQuery =
+                serde_json::from_value(request.params).unwrap_or_default();
+            match runtime.query_events(query).await {
+                Some(Ok(events)) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::to_value(&events).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Some(Err(err)) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("query_events failed: {err}"),
+                    }),
+                },
+                None => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: Some(serde_json::json!({
+                        "status": "no_event_log_configured",
+                        "events": []
+                    })),
+                    error: None,
                 },
             }
         }

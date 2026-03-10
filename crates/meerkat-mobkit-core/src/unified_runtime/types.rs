@@ -261,6 +261,9 @@ pub enum ErrorEvent {
     RediscoverFailure {
         error: String,
     },
+    EventLogFlushFailure {
+        error: String,
+    },
 }
 
 impl Display for ErrorEvent {
@@ -280,6 +283,9 @@ impl Display for ErrorEvent {
             }
             Self::RediscoverFailure { error } => {
                 write!(f, "rediscover_failure: {error}")
+            }
+            Self::EventLogFlushFailure { error } => {
+                write!(f, "event_log_flush_failure: {error}")
             }
         }
     }

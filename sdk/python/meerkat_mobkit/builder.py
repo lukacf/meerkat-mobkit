@@ -14,6 +14,7 @@ class MobKitBuilderConfig:
     discovery_callback: Any | None = None
     pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
+    event_log: Any | None = None
     gating_config_path: str | None = None
     routing_config_path: str | None = None
     scheduling_files: list[str] = field(default_factory=list)
@@ -56,6 +57,16 @@ class MobKitBuilder:
 
     def pre_spawn(self, callback: Any) -> MobKitBuilder:
         self._config.pre_spawn_callback = callback
+        return self
+
+    def event_log(self, *, storage: Any, **kwargs: Any) -> MobKitBuilder:
+        """Configure persistent event log.
+
+        Args:
+            storage: An EventLogStore implementation for the app's backend.
+            **kwargs: Additional config (batch_size, flush_interval_ms, filter).
+        """
+        self._config.event_log = {"storage": storage, **kwargs}
         return self
 
     def on_error(self, callback: Callable[..., Any] | Callable[..., Awaitable[Any]]) -> MobKitBuilder:

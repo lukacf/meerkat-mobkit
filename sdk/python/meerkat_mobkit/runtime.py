@@ -392,6 +392,36 @@ class MobHandle:
             {"member_id": member_id, "message": message},
         )
 
+    async def query_events(
+        self,
+        *,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        member_id: str | None = None,
+        event_types: list[str] | None = None,
+        limit: int | None = None,
+        after_seq: int | None = None,
+    ) -> list[PersistedEvent]:
+        """Query persisted operational events from the event log.
+
+        Returns an empty list if no event log is configured.
+        """
+        from .types import EventQuery, PersistedEvent
+        query = EventQuery(
+            since_ms=since_ms,
+            until_ms=until_ms,
+            member_id=member_id,
+            event_types=event_types or [],
+            limit=limit,
+            after_seq=after_seq,
+        )
+        raw = await self._runtime._rpc("mobkit/query_events", query.to_dict())
+        if isinstance(raw, dict) and raw.get("status") == "no_event_log_configured":
+            return []
+        if isinstance(raw, list):
+            return [PersistedEvent.from_dict(e) for e in raw]
+        return []
+
     # Alias for backward compatibility
     send_message = send
 

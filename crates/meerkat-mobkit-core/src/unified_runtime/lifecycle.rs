@@ -181,6 +181,8 @@ impl UnifiedRuntime {
                             });
                         }
                     }
+                    // Ingest into event log (non-blocking, buffered)
+                    self.ingest_event(&unified_event);
                     self.module_runtime.lock().await.append_normalized_event(unified_event)?
                 }
                 Some(Err(TryRecvError::Empty)) => break,
