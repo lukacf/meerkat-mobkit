@@ -15,7 +15,7 @@ use super::{UnifiedRuntime, ROSTER_ROUTE_CHANNEL, ROSTER_ROUTE_PREFIX, ROSTER_RO
 
 impl UnifiedRuntime {
     pub async fn reconcile(
-        &mut self,
+        &self,
         desired_specs: Vec<SpawnMemberSpec>,
     ) -> Result<UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileError> {
         // 1. Member reconcile
@@ -48,14 +48,14 @@ impl UnifiedRuntime {
     /// Refreshes the roster, runs edge discovery if configured, diffs
     /// desired vs managed edges, and calls wire/unwire as needed.
     pub async fn reconcile_edges(
-        &mut self,
+        &self,
     ) -> UnifiedRuntimeReconcileEdgesReport {
         let active_members = self.mob_runtime.discover().await;
         self.reconcile_edges_from_members(active_members).await
     }
 
     pub(super) async fn reconcile_edges_from_members(
-        &mut self,
+        &self,
         active_members: Vec<MobMemberSnapshot>,
     ) -> UnifiedRuntimeReconcileEdgesReport {
         let edge_discovery = match &self.edge_discovery {
@@ -99,6 +99,10 @@ impl UnifiedRuntime {
             ..Default::default()
         };
 
+        // Write lock for managed_dynamic_edges — held across awaits
+        // because wire/unwire must be serialized with edge set mutations.
+        let mut managed_edges = self.managed_dynamic_edges.write().await;
+
         // Classify desired edges
         for (a, b) in &desired {
             // Skip if either endpoint is missing from the active roster
@@ -109,7 +113,7 @@ impl UnifiedRuntime {
                 continue;
             }
             let key = (a.clone(), b.clone());
-            if self.managed_dynamic_edges.contains(&key) {
+            if managed_edges.contains(&key) {
                 // Managed by us — check if the actual edge still exists in the
                 // mob graph. If an out-of-band unwire() removed it, re-wire.
                 if current_edges.contains(&key) {
@@ -148,7 +152,7 @@ impl UnifiedRuntime {
                 let mid_b = MeerkatId::from(b.as_str());
                 match self.mob_runtime.handle().wire(mid_a, mid_b).await {
                     Ok(()) => {
-                        self.managed_dynamic_edges.insert(key);
+                        managed_edges.insert(key);
                         if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
                             report.wired_edges.push(edge);
                         }
@@ -167,8 +171,7 @@ impl UnifiedRuntime {
         }
 
         // Unwire managed edges that are no longer desired
-        let to_unwire: Vec<(String, String)> = self
-            .managed_dynamic_edges
+        let to_unwire: Vec<(String, String)> = managed_edges
             .iter()
             .filter(|key| !desired.contains(*key))
             .cloned()
@@ -178,7 +181,7 @@ impl UnifiedRuntime {
             let key = (a.clone(), b.clone());
             // If either endpoint is gone, just prune from managed set
             if !active_ids.contains(&a) || !active_ids.contains(&b) {
-                self.managed_dynamic_edges.remove(&key);
+                managed_edges.remove(&key);
                 if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                     report.pruned_stale_managed_edges.push(edge);
                 }
@@ -187,7 +190,7 @@ impl UnifiedRuntime {
             // If the edge is already gone from the mob graph (out-of-band
             // unwire/reset), just drop ownership — don't attempt unwire.
             if !current_edges.contains(&key) {
-                self.managed_dynamic_edges.remove(&key);
+                managed_edges.remove(&key);
                 if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                     report.pruned_stale_managed_edges.push(edge);
                 }
@@ -197,7 +200,7 @@ impl UnifiedRuntime {
             let mid_b = MeerkatId::from(b.as_str());
             match self.mob_runtime.handle().unwire(mid_a, mid_b).await {
                 Ok(()) => {
-                    self.managed_dynamic_edges.remove(&key);
+                    managed_edges.remove(&key);
                     if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                         report.unwired_edges.push(edge);
                     }
@@ -218,14 +221,14 @@ impl UnifiedRuntime {
     }
 
     pub(super) fn reconcile_routing_wiring(
-        &mut self,
+        &self,
         mut active_members: Vec<String>,
     ) -> Result<UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeReconcileError> {
         active_members.sort();
         active_members.dedup();
 
-        let router_module_loaded = self
-            .module_runtime
+        let mut rt = self.module_runtime.lock().unwrap();
+        let router_module_loaded = rt
             .loaded_modules()
             .iter()
             .any(|module_id| module_id == "router");
@@ -233,11 +236,15 @@ impl UnifiedRuntime {
         let mut removed_route_keys = Vec::new();
 
         if router_module_loaded {
-            let managed_routes = self.managed_roster_routes();
+            let managed_routes: Vec<RuntimeRoute> = rt
+                .list_runtime_routes()
+                .into_iter()
+                .filter(|route| route.route_key.starts_with(ROSTER_ROUTE_PREFIX))
+                .collect();
             let active_member_set = active_members.iter().cloned().collect::<BTreeSet<_>>();
             for route in &managed_routes {
                 if !active_member_set.contains(&route.recipient) {
-                    self.module_runtime
+                    rt
                         .delete_runtime_route(&route.route_key)
                         .map_err(UnifiedRuntimeReconcileError::RouteMutation)?;
                     removed_route_keys.push(route.route_key.clone());
@@ -253,7 +260,7 @@ impl UnifiedRuntime {
                     continue;
                 }
                 let route_key = format!("{ROSTER_ROUTE_PREFIX}{member_id}");
-                self.module_runtime
+                rt
                     .add_runtime_route(RuntimeRoute {
                         route_key: route_key.clone(),
                         recipient: member_id.clone(),
@@ -278,13 +285,5 @@ impl UnifiedRuntime {
             added_route_keys,
             removed_route_keys,
         })
-    }
-
-    fn managed_roster_routes(&self) -> Vec<RuntimeRoute> {
-        self.module_runtime
-            .list_runtime_routes()
-            .into_iter()
-            .filter(|route| route.route_key.starts_with(ROSTER_ROUTE_PREFIX))
-            .collect()
     }
 }

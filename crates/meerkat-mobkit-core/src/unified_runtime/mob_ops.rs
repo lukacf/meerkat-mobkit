@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use meerkat_mob::{MemberRef, MobHandle, MobState, SpawnMemberSpec};
 
 use crate::mob_handle_runtime::{MobMemberSnapshot, MobRuntimeError};
@@ -62,5 +64,29 @@ impl UnifiedRuntime {
         spec: SpawnMemberSpec,
     ) -> Result<MobMemberSnapshot, MobRuntimeError> {
         self.mob_runtime.ensure_member(spec).await
+    }
+
+    /// Ensure a member exists with the given labels, spawning if missing.
+    ///
+    /// Convenience wrapper: builds a `SpawnMemberSpec` from profile, meerkat_id,
+    /// and labels, then delegates to `ensure_member`.
+    pub async fn ensure_member_by_label(
+        &self,
+        profile: &str,
+        meerkat_id: &str,
+        labels: BTreeMap<String, String>,
+    ) -> Result<MobMemberSnapshot, MobRuntimeError> {
+        let spec = SpawnMemberSpec {
+            profile_name: meerkat_mob::ProfileName::from(profile),
+            meerkat_id: meerkat_mob::MeerkatId::from(meerkat_id),
+            initial_message: None,
+            runtime_mode: None,
+            backend: None,
+            context: None,
+            labels: Some(labels),
+            resume_session_id: None,
+            additional_instructions: None,
+        };
+        self.ensure_member(spec).await
     }
 }

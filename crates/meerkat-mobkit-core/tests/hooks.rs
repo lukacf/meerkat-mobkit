@@ -80,7 +80,7 @@ async fn post_spawn_hook_receives_spawned_member_id() {
         })
     });
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_mob_spec(&temp_dir))
         .module_config(empty_module_config())
         .timeout(Duration::from_secs(2))
@@ -121,7 +121,7 @@ async fn post_reconcile_hook_receives_reconcile_report() {
         })
     });
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_mob_spec(&temp_dir))
         .module_config(empty_module_config())
         .timeout(Duration::from_secs(2))
@@ -159,7 +159,7 @@ async fn post_reconcile_hook_receives_reconcile_report() {
 #[tokio::test]
 async fn mob_handle_returns_working_handle() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_mob_spec(&temp_dir))
         .module_config(empty_module_config())
         .timeout(Duration::from_secs(2))
@@ -189,7 +189,7 @@ async fn mob_handle_returns_working_handle() {
 #[tokio::test]
 async fn no_hook_still_works() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_mob_spec(&temp_dir))
         .module_config(empty_module_config())
         .timeout(Duration::from_secs(2))

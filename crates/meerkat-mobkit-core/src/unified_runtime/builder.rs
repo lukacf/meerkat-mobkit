@@ -102,7 +102,7 @@ impl UnifiedRuntimeBuilder {
             .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
                 UnifiedRuntimeBuilderField::Timeout,
             ))?;
-        let mut runtime = UnifiedRuntime::bootstrap_with_options(
+        let runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
@@ -111,11 +111,15 @@ impl UnifiedRuntimeBuilder {
         )
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
-        runtime.post_spawn_hook = self.post_spawn_hook;
-        runtime.post_reconcile_hook = self.post_reconcile_hook;
-        runtime.drain_timeout = self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT);
-        runtime.discovery = self.discovery;
-        runtime.edge_discovery = self.edge_discovery;
+        // Set immutable outer fields by rebuilding the struct
+        let runtime = UnifiedRuntime {
+            post_spawn_hook: self.post_spawn_hook,
+            post_reconcile_hook: self.post_reconcile_hook,
+            drain_timeout: self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT),
+            discovery: self.discovery,
+            edge_discovery: self.edge_discovery,
+            ..runtime
+        };
 
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
             hook()
@@ -142,7 +146,7 @@ impl UnifiedRuntimeBuilder {
         // Run initial edge reconciliation after spawn completes
         if runtime.edge_discovery.is_some() {
             let report = runtime.reconcile_edges().await;
-            runtime.bootstrap_edges_report = Some(report);
+            *runtime.bootstrap_edges_report.write().await = Some(report);
         }
 
         Ok(runtime)

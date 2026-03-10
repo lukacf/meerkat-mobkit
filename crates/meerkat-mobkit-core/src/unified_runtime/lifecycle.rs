@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use meerkat_mob::SpawnMemberSpec;
@@ -32,7 +33,7 @@ impl UnifiedRuntime {
     /// 5. Runs edge reconciliation if `EdgeDiscovery` is configured
     ///
     /// Returns `None` if no `Discovery` is configured (nothing to rediscover).
-    pub async fn rediscover(&mut self) -> Result<Option<RediscoverReport>, MobRuntimeError> {
+    pub async fn rediscover(&self) -> Result<Option<RediscoverReport>, MobRuntimeError> {
         let discovery = match &self.discovery {
             Some(d) => d,
             None => return Ok(None),
@@ -63,7 +64,7 @@ impl UnifiedRuntime {
         }
 
         // 4. Clear stale managed edges (old topology is gone after reset)
-        self.managed_dynamic_edges.clear();
+        self.managed_dynamic_edges.write().await.clear();
 
         // 5. Reconcile edges
         let edges = self.reconcile_edges().await;
@@ -72,7 +73,7 @@ impl UnifiedRuntime {
     }
 
     pub async fn run<F>(
-        &mut self,
+        &self,
         listener: tokio::net::TcpListener,
         decisions: RuntimeDecisionState,
         shutdown_signal: F,
@@ -100,17 +101,22 @@ impl UnifiedRuntime {
         axum::serve(listener, app).await
     }
 
-    pub async fn shutdown(&mut self) -> UnifiedRuntimeShutdownReport {
-        self.shutting_down = true;
+    pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
+        self.shutting_down.store(true, Ordering::SeqCst);
 
         // Phase 1: Drain in-flight events
         let drain_start = std::time::Instant::now();
         let mut drained_count = 0_usize;
         let drain_result = tokio::time::timeout(self.drain_timeout, async {
             loop {
-                if self.drain_mob_agent_events().is_err() || self.mob_event_ingress.is_none() {
+                if self.drain_mob_agent_events().is_err() {
                     break;
                 }
+                let ingress = self.mob_event_ingress.lock().await;
+                if ingress.is_none() {
+                    break;
+                }
+                drop(ingress);
                 drained_count += 1;
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 if drained_count > 1 {
@@ -129,7 +135,7 @@ impl UnifiedRuntime {
         self.close_event_router().await;
 
         // Phase 3: Shutdown modules and mob
-        let module_shutdown = self.module_runtime.shutdown();
+        let module_shutdown = self.module_runtime.lock().unwrap().shutdown();
         let mob_stop = self.mob_runtime.stop().await;
         UnifiedRuntimeShutdownReport {
             drain,
@@ -138,16 +144,19 @@ impl UnifiedRuntime {
         }
     }
 
-    pub(super) fn drain_mob_agent_events(&mut self) -> Result<(), UnifiedRuntimeError> {
+    pub(super) fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
         let mut disconnected = false;
-        if self.mob_event_ingress.is_none() {
-            return Ok(());
-        }
+        let mut ingress_guard = self.mob_event_ingress.try_lock()
+            .map_err(|_| UnifiedRuntimeError::RuntimeShuttingDown)?;
+        let ingress = match ingress_guard.as_mut() {
+            Some(i) => i,
+            None => return Ok(()),
+        };
 
         loop {
-            match self.try_recv_ingress_event() {
+            match Self::try_recv_ingress_event(ingress) {
                 Some(Ok(unified_event)) => {
-                    self.module_runtime.append_normalized_event(unified_event)?
+                    self.module_runtime.lock().unwrap().append_normalized_event(unified_event)?
                 }
                 Some(Err(TryRecvError::Empty)) => break,
                 Some(Err(TryRecvError::Disconnected)) => {
@@ -159,14 +168,15 @@ impl UnifiedRuntime {
         }
 
         if disconnected {
-            self.mob_event_ingress = None;
+            *ingress_guard = None;
         }
 
         Ok(())
     }
 
-    pub(super) async fn close_event_router(&mut self) {
-        match self.mob_event_ingress.take() {
+    pub(super) async fn close_event_router(&self) {
+        let ingress = self.mob_event_ingress.lock().await.take();
+        match ingress {
             Some(MobEventIngress::Pull(router)) => {
                 router.cancel();
             }
@@ -180,9 +190,8 @@ impl UnifiedRuntime {
     }
 
     fn try_recv_ingress_event(
-        &mut self,
+        ingress: &mut MobEventIngress,
     ) -> Option<Result<EventEnvelope<UnifiedEvent>, TryRecvError>> {
-        let ingress = self.mob_event_ingress.as_mut()?;
         Some(match ingress {
             MobEventIngress::Pull(router) => {
                 router.event_rx.try_recv().map(super::attributed_event_to_unified)
@@ -192,11 +201,11 @@ impl UnifiedRuntime {
     }
 
     pub async fn dispatch_schedule_tick(
-        &mut self,
+        &self,
         schedules: &[ScheduleDefinition],
         tick_ms: u64,
     ) -> Result<ScheduleDispatchReport, UnifiedRuntimeError> {
-        if self.shutting_down {
+        if self.shutting_down.load(Ordering::SeqCst) {
             return Err(UnifiedRuntimeError::RuntimeShuttingDown);
         }
         let mut dispatch_report = self.dispatch_schedule_tick_blocking(schedules, tick_ms)?;
@@ -216,7 +225,7 @@ impl UnifiedRuntime {
 
             match injection_result {
                 Ok(()) => {
-                    self.module_runtime.append_normalized_event(EventEnvelope {
+                    self.module_runtime.lock().unwrap().append_normalized_event(EventEnvelope {
                         event_id: format!("{}-executed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
                         timestamp_ms: dispatch.tick_ms,
@@ -234,7 +243,7 @@ impl UnifiedRuntime {
                 }
                 Err(error) => {
                     dispatch.runtime_injection_error = Some(format!("mob injection failed: {error}"));
-                    self.module_runtime.append_normalized_event(EventEnvelope {
+                    self.module_runtime.lock().unwrap().append_normalized_event(EventEnvelope {
                         event_id: format!("{}-failed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
                         timestamp_ms: dispatch.tick_ms,
@@ -260,7 +269,7 @@ impl UnifiedRuntime {
     }
 
     fn dispatch_schedule_tick_blocking(
-        &mut self,
+        &self,
         schedules: &[ScheduleDefinition],
         tick_ms: u64,
     ) -> Result<ScheduleDispatchReport, UnifiedRuntimeError> {
@@ -268,15 +277,17 @@ impl UnifiedRuntime {
             .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread)
         {
             tokio::task::block_in_place(|| {
+                let mut rt = self.module_runtime.lock().unwrap();
                 Self::dispatch_schedule_tick_in_joined_thread(
-                    &mut self.module_runtime,
+                    &mut rt,
                     schedules,
                     tick_ms,
                 )
             })
         } else {
+            let mut rt = self.module_runtime.lock().unwrap();
             Self::dispatch_schedule_tick_in_joined_thread(
-                &mut self.module_runtime,
+                &mut rt,
                 schedules,
                 tick_ms,
             )

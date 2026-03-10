@@ -259,7 +259,7 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
     let state_file = temp_dir.path().join("forced-crash-attempts.txt");
     let crash_script = forced_crash_then_ready_script("forced-crash", &state_file, 2);
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(build_phase5_mob_spec(
             &temp_dir,
             Arc::new(DelayedTestClient::new(Duration::from_millis(350))),
@@ -392,7 +392,7 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         .enable_all()
         .build()
         .expect("build tokio runtime");
-    let mut runtime = tokio_runtime.block_on(async {
+    let runtime = tokio_runtime.block_on(async {
         UnifiedRuntime::bootstrap(
             build_phase5_mob_spec(&temp_dir, Arc::new(TestClient::default())),
             module_config,

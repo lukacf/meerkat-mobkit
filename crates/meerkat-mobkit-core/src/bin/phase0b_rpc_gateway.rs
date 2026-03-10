@@ -544,7 +544,7 @@ external_addressable = true
         );
 
     let timeout = Duration::from_secs(30);
-    let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
+    let runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
         .await
         .unwrap_or_else(|e| {
             let error_response = json!({
@@ -604,7 +604,7 @@ external_addressable = true
                 _ = tokio::signal::ctrl_c() => break,
             };
             let response = handle_unified_rpc_json(
-                &mut runtime,
+                &runtime,
                 &request_line,
                 timeout,
                 Some(&http_base_url),

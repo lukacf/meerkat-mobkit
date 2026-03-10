@@ -816,7 +816,7 @@ pub fn handle_mobkit_rpc_json(
 }
 
 pub async fn handle_unified_rpc_json(
-    runtime: &mut UnifiedRuntime,
+    runtime: &UnifiedRuntime,
     request_json: &str,
     timeout: Duration,
     http_base_url: Option<&str>,

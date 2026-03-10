@@ -781,7 +781,7 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
         pre_spawn: vec![],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     assert_eq!(fixture.runtime.status(), MobState::Running);
     assert!(fixture.runtime.module_is_running());
     assert_eq!(fixture.runtime.loaded_modules(), vec!["mod-a".to_string()]);
@@ -812,7 +812,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         pre_spawn: vec![],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -922,7 +922,7 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
         }],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     fixture
         .runtime
         .spawn(spawn_spec("worker", "worker-1"))
@@ -998,7 +998,7 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
         }],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     let dispatch = fixture
         .runtime
         .dispatch_schedule_tick(
@@ -1061,7 +1061,7 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
         pre_spawn: vec![],
     };
 
-    let mut fixture = build_unified_runtime_fixture(config).await;
+    let fixture = build_unified_runtime_fixture(config).await;
     let module_pid = fixture
         .runtime
         .module_events()

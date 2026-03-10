@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use meerkat_core::event::agent_event_type;
@@ -84,21 +85,20 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
 }
 
 pub struct UnifiedRuntime {
+    // Immutable after construction — &self access
     mob_runtime: RealMobRuntime,
-    module_runtime: MobkitRuntimeHandle,
-    mob_event_ingress: Option<MobEventIngress>,
-    shutting_down: bool,
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
     drain_timeout: Duration,
     discovery: Option<Box<dyn Discovery>>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
-    /// Dynamic edges managed by edge reconciliation. Only edges in this set
-    /// can be unwired by the reconciler — static/preexisting edges are safe.
-    managed_dynamic_edges: BTreeSet<(String, String)>,
-    /// Edge reconciliation report from bootstrap. Inspect after build() to
-    /// detect incomplete startup topology.
-    bootstrap_edges_report: Option<UnifiedRuntimeReconcileEdgesReport>,
+
+    // Fine-grained interior mutability
+    module_runtime: std::sync::Mutex<MobkitRuntimeHandle>,
+    managed_dynamic_edges: tokio::sync::RwLock<BTreeSet<(String, String)>>,
+    shutting_down: AtomicBool,
+    mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
+    bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
 }
 
 enum MobEventIngress {
@@ -124,16 +124,16 @@ impl UnifiedRuntime {
         let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
         Self {
             mob_runtime,
-            module_runtime,
-            mob_event_ingress,
-            shutting_down: false,
             post_spawn_hook: None,
             post_reconcile_hook: None,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             discovery: None,
             edge_discovery: None,
-            managed_dynamic_edges: BTreeSet::new(),
-            bootstrap_edges_report: None,
+            module_runtime: std::sync::Mutex::new(module_runtime),
+            managed_dynamic_edges: tokio::sync::RwLock::new(BTreeSet::new()),
+            shutting_down: AtomicBool::new(false),
+            mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
+            bootstrap_edges_report: tokio::sync::RwLock::new(None),
         }
     }
 
@@ -184,8 +184,8 @@ impl UnifiedRuntime {
     ///
     /// Inspect after `build()` to detect incomplete startup topology.
     /// Returns `None` if no edge discovery was configured.
-    pub fn bootstrap_edges_report(&self) -> Option<&UnifiedRuntimeReconcileEdgesReport> {
-        self.bootstrap_edges_report.as_ref()
+    pub fn bootstrap_edges_report(&self) -> Option<UnifiedRuntimeReconcileEdgesReport> {
+        self.bootstrap_edges_report.blocking_read().clone()
     }
 
     fn create_event_ingress(router: MobEventRouterHandle) -> MobEventIngress {

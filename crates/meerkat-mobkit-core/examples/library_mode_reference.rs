@@ -24,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         profile.model = "gpt-5.2".to_string();
     }
 
-    let mut runtime = UnifiedRuntime::builder()
+    let runtime = UnifiedRuntime::builder()
         .mob_spec(
             MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
                 .with_options(MobBootstrapOptions {
