@@ -6,7 +6,7 @@ use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mob::MobHandle;
 use meerkat_mobkit_core::{
-    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+    DiscoverySpec, ErrorEvent, ErrorHook, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
     PostReconcileHook, PostSpawnHook, UnifiedRuntime, UnifiedRuntimeReconcileReport,
 };
 use tokio::sync::Mutex;
@@ -214,6 +214,61 @@ async fn no_hook_still_works() {
 
     assert_eq!(report.mob.spawned.len(), 1);
     assert!(report.mob.spawned.contains(&"no-hook-worker-2".to_string()));
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn error_hook_fires_on_spawn_failure() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let errors: Arc<Mutex<Vec<ErrorEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = errors.clone();
+
+    let hook: ErrorHook = Arc::new(move |event| {
+        let captured = captured.clone();
+        Box::pin(async move {
+            captured.lock().await.push(event);
+        })
+    });
+
+    let runtime = UnifiedRuntime::builder()
+        .mob_spec(build_mob_spec(&temp_dir))
+        .module_config(empty_module_config())
+        .timeout(Duration::from_secs(2))
+        .on_error(hook)
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    // Spawn with a non-existent profile to trigger a failure
+    let result = runtime
+        .spawn(SpawnMemberSpec::from_wire(
+            "nonexistent-profile".to_string(),
+            "error-hook-agent".to_string(),
+            None,
+            None,
+            None,
+        ))
+        .await;
+    assert!(result.is_err(), "spawn should fail for nonexistent profile");
+
+    // Yield to let the fire-and-forget error hook task complete
+    tokio::task::yield_now().await;
+
+    let captured = errors.lock().await;
+    assert_eq!(captured.len(), 1, "error hook should fire once");
+    match &captured[0] {
+        ErrorEvent::SpawnFailure {
+            member_id,
+            profile,
+            error,
+        } => {
+            assert_eq!(member_id, "error-hook-agent");
+            assert_eq!(profile, "nonexistent-profile");
+            assert!(!error.is_empty(), "error message should not be empty");
+        }
+        other => panic!("expected SpawnFailure, got {other:?}"),
+    }
 
     runtime.shutdown().await;
 }

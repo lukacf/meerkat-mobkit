@@ -91,6 +91,8 @@ class MobKitRuntime:
                 self._config.session_builder, SessionAgentBuilder
             ):
                 self._dispatcher.register_builder(self._config.session_builder)
+            if self._config.error_callback is not None:
+                self._dispatcher.register_error_callback(self._config.error_callback)
             self._transport.set_callback_handler(self._dispatcher.handle_callback)
             self._transport.start()
             if not self._transport.is_running():

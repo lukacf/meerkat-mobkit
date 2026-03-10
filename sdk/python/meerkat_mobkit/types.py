@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
 
@@ -218,3 +219,55 @@ class ReconcileEdgesReport:
             pruned_stale_managed_edges=list(data.get("pruned_stale_managed_edges", [])),
             failures=list(data.get("failures", [])),
         )
+
+
+class ErrorCategory(str, Enum):
+    """Error event categories matching Rust's ErrorEvent variants."""
+    SPAWN_FAILURE = "spawn_failure"
+    RECONCILE_INCOMPLETE = "reconcile_incomplete"
+    CHECKPOINT_FAILURE = "checkpoint_failure"
+    HOST_LOOP_CRASH = "host_loop_crash"
+    REDISCOVER_FAILURE = "rediscover_failure"
+
+
+@dataclass(frozen=True)
+class ErrorEvent:
+    """Operational error event for alerting.
+
+    Matches Rust's ``ErrorEvent`` enum. The ``category`` field corresponds
+    to the enum variant, and ``context`` carries the variant's fields.
+
+    Usage::
+
+        async def on_error(event: ErrorEvent):
+            if event.category == ErrorCategory.SPAWN_FAILURE:
+                member_id = event.context["member_id"]
+                await alerts.send(f"spawn failed: {member_id}: {event.message}")
+    """
+    category: str
+    message: str
+    context: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ErrorEvent:
+        category = data.get("category", "unknown")
+        context = {k: v for k, v in data.items() if k != "category"}
+        # Build a human-readable message from the context
+        error = context.get("error", "")
+        member_id = context.get("member_id", "")
+        if category == "spawn_failure":
+            message = f"{member_id}: {error}" if member_id else error
+        elif category == "reconcile_incomplete":
+            failures = context.get("failures", 0)
+            skipped = context.get("skipped", 0)
+            message = f"{failures} failures, {skipped} skipped"
+        elif category == "checkpoint_failure":
+            session_id = context.get("session_id", "")
+            message = f"{session_id}: {error}" if session_id else error
+        elif category == "host_loop_crash":
+            message = f"{member_id}: {error}" if member_id else error
+        elif category == "rediscover_failure":
+            message = error
+        else:
+            message = str(data)
+        return cls(category=category, message=message, context=context)

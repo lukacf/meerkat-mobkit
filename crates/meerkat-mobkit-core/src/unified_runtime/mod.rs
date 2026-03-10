@@ -35,10 +35,11 @@ pub use edge_types::{
     PreSpawnContext, PreSpawnHook,
 };
 pub use types::{
-    RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError,
-    UnifiedRuntimeBuilderField, UnifiedRuntimeError, UnifiedRuntimeReconcileEdgesReport,
-    UnifiedRuntimeReconcileError, UnifiedRuntimeReconcileReport,
-    UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    ErrorEvent, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
+    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
+    UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
+    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport,
+    UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
 };
 
 /// Called after members are spawned. Receives the list of spawned member IDs.
@@ -48,6 +49,12 @@ pub type PostSpawnHook =
 /// Called after reconcile completes. Receives the reconcile report.
 pub type PostReconcileHook = Arc<
     dyn Fn(UnifiedRuntimeReconcileReport) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+/// Called when a runtime operation fails. Fire-and-forget — the hook's
+/// result is not checked and a failing hook cannot break the runtime.
+pub type ErrorHook = Arc<
+    dyn Fn(ErrorEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
 >;
 
 const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
@@ -95,6 +102,7 @@ pub struct UnifiedRuntime {
     mob_runtime: RealMobRuntime,
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
+    error_hook: Option<ErrorHook>,
     drain_timeout: Duration,
     discovery: Option<Box<dyn Discovery>>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
@@ -132,6 +140,7 @@ impl UnifiedRuntime {
             mob_runtime,
             post_spawn_hook: None,
             post_reconcile_hook: None,
+            error_hook: None,
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             discovery: None,
             edge_discovery: None,
@@ -192,6 +201,24 @@ impl UnifiedRuntime {
     /// Returns `None` if no edge discovery was configured.
     pub async fn bootstrap_edges_report(&self) -> Option<UnifiedRuntimeReconcileEdgesReport> {
         self.bootstrap_edges_report.read().await.clone()
+    }
+
+    /// Register an error hook after construction. Useful when the runtime
+    /// is built via `bootstrap()` rather than the builder.
+    pub fn set_error_hook(&mut self, hook: ErrorHook) {
+        self.error_hook = Some(hook);
+    }
+
+    /// Fire an error event to the registered hook, if any.
+    /// Truly fire-and-forget — spawns a detached task so slow hooks
+    /// (HTTP to Slack, PagerDuty) never block the runtime operation.
+    pub(crate) fn fire_error(&self, event: ErrorEvent) {
+        if let Some(ref hook) = self.error_hook {
+            let hook = hook.clone();
+            tokio::spawn(async move {
+                let _ = hook(event).await;
+            });
+        }
     }
 
     fn create_event_ingress(router: MobEventRouterHandle) -> MobEventIngress {

@@ -62,6 +62,7 @@ pub use scheduling::evaluate_schedules_at_tick;
 pub use routing::WILDCARD_ROUTE;
 pub use session_store::{
     materialize_latest_session_rows, materialize_live_session_rows, run_periodic_gc,
+    run_periodic_gc_with_error_callback, GcErrorCallback,
     session_store_contracts, BigQueryGcConfig, BigQuerySessionStoreAdapter,
     BigQuerySessionStoreError, JsonFileSessionStore, JsonFileSessionStoreError,
     JsonStoreLockRecord, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,

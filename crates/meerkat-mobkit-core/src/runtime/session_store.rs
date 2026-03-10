@@ -619,9 +619,20 @@ impl Default for BigQueryGcConfig {
     }
 }
 
+/// Callback for GC error reporting. Receives the error message.
+pub type GcErrorCallback = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+
 pub fn run_periodic_gc(
     adapter: BigQuerySessionStoreAdapter,
     config: BigQueryGcConfig,
+) -> impl FnOnce() {
+    run_periodic_gc_with_error_callback(adapter, config, None)
+}
+
+pub fn run_periodic_gc_with_error_callback(
+    adapter: BigQuerySessionStoreAdapter,
+    config: BigQueryGcConfig,
+    on_error: Option<GcErrorCallback>,
 ) -> impl FnOnce() {
     move || {
         let rt = match tokio::runtime::Builder::new_current_thread()
@@ -630,7 +641,11 @@ pub fn run_periodic_gc(
         {
             Ok(rt) => rt,
             Err(err) => {
-                eprintln!("[mobkit-gc] failed to create async runtime for BQ GC: {err}");
+                let msg = format!("failed to create async runtime for BQ GC: {err}");
+                eprintln!("[mobkit-gc] {msg}");
+                if let Some(ref cb) = on_error {
+                    cb(msg);
+                }
                 return;
             }
         };
@@ -643,7 +658,11 @@ pub fn run_periodic_gc(
                     }
                 }
                 Err(err) => {
-                    eprintln!("[mobkit-gc] gc_superseded_rows failed: {err:?}");
+                    let msg = format!("gc_superseded_rows failed: {err:?}");
+                    eprintln!("[mobkit-gc] {msg}");
+                    if let Some(ref cb) = on_error {
+                        cb(msg);
+                    }
                 }
             }
         }

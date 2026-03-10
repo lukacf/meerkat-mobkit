@@ -51,7 +51,14 @@ impl UnifiedRuntime {
         &self,
     ) -> UnifiedRuntimeReconcileEdgesReport {
         let active_members = self.mob_runtime.discover().await;
-        self.reconcile_edges_from_members(active_members).await
+        let report = self.reconcile_edges_from_members(active_members).await;
+        if !report.is_complete() {
+            self.fire_error(super::types::ErrorEvent::ReconcileIncomplete {
+                failures: report.failures.len(),
+                skipped: report.skipped_missing_members.len(),
+            });
+        }
+        report
     }
 
     pub(super) async fn reconcile_edges_from_members(
