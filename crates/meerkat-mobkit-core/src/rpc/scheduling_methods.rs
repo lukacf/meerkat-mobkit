@@ -1,3 +1,5 @@
+//! Parameter parsing for scheduling RPC methods.
+
 use super::*;
 
 pub(super) fn parse_scheduling_params(

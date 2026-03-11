@@ -1,3 +1,5 @@
+//! Event normalization and transport — line parsing, source validation, and envelope construction.
+
 use super::*;
 
 pub fn normalize_event_line(line: &str) -> Result<EventEnvelope<UnifiedEvent>, NormalizationError> {

@@ -1,3 +1,5 @@
+//! Parameter parsing for event subscription RPC methods.
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

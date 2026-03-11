@@ -1,3 +1,5 @@
+//! Runtime bootstrap — config resolution, module startup, and event loop initialization.
+
 use super::*;
 
 pub fn start_mobkit_runtime(

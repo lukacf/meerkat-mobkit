@@ -1,3 +1,5 @@
+//! Phase 0 binary — validates governance policies before runtime startup.
+
 use std::{
     fs,
     io::ErrorKind,

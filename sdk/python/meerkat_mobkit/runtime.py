@@ -241,10 +241,12 @@ class MobHandle:
         self._runtime = runtime
 
     async def status(self) -> StatusResult:
+        """Return the current runtime status."""
         raw = await self._runtime._rpc("mobkit/status")
         return StatusResult.from_dict(raw)
 
     async def capabilities(self) -> CapabilitiesResult:
+        """Return the runtime's advertised capabilities."""
         raw = await self._runtime._rpc("mobkit/capabilities")
         return CapabilitiesResult.from_dict(raw)
 
@@ -259,6 +261,7 @@ class MobHandle:
         return SpawnResult.from_dict(raw)
 
     async def reconcile(self, modules: list[str]) -> ReconcileResult:
+        """Reconcile the mob to match the given module list."""
         raw = await self._runtime._rpc("mobkit/reconcile", {"modules": modules})
         return ReconcileResult.from_dict(raw)
 
@@ -268,6 +271,7 @@ class MobHandle:
         last_event_id: str | None = None,
         agent_id: str | None = None,
     ) -> SubscribeResult:
+        """Subscribe to runtime events with an optional scope filter."""
         params: dict[str, Any] = {"scope": scope}
         if last_event_id is not None:
             params["last_event_id"] = last_event_id
@@ -277,16 +281,19 @@ class MobHandle:
         return SubscribeResult.from_dict(raw)
 
     async def resolve_routing(self, recipient: str, **kwargs: Any) -> RoutingResolution:
+        """Resolve a routing target for the given recipient."""
         raw = await self._runtime._rpc(
             "mobkit/routing/resolve", {"recipient": recipient, **kwargs}
         )
         return RoutingResolution.from_dict(raw)
 
     async def send_delivery(self, **kwargs: Any) -> DeliveryResult:
+        """Send a delivery payload through the routing layer."""
         raw = await self._runtime._rpc("mobkit/delivery/send", kwargs)
         return DeliveryResult.from_dict(raw)
 
     async def memory_query(self, query: str, **kwargs: Any) -> MemoryQueryResult:
+        """Query a memory store by natural-language assertion."""
         raw = await self._runtime._rpc("mobkit/memory/query", {"query": query, **kwargs})
         return MemoryQueryResult.from_dict(raw)
 
@@ -459,7 +466,7 @@ class MobHandle:
     # -----------------------------------------------------------------
 
     async def list_routes(self) -> list[RuntimeRouteResult]:
-        """List all configured routes."""
+        """List all configured runtime routes."""
         raw = await self._runtime._rpc("mobkit/routing/routes/list")
         routes = raw.get("routes", []) if isinstance(raw, dict) else []
         return [RuntimeRouteResult.from_dict(r) for r in routes]
@@ -486,7 +493,7 @@ class MobHandle:
         return RuntimeRouteResult.from_dict(route_data)
 
     async def delete_route(self, route_key: str) -> RuntimeRouteResult:
-        """Delete a route by key."""
+        """Delete a route by key. Returns the deleted route."""
         raw = await self._runtime._rpc("mobkit/routing/routes/delete", {"route_key": route_key})
         deleted_data = raw.get("deleted", raw) if isinstance(raw, dict) else raw
         return RuntimeRouteResult.from_dict(deleted_data)
@@ -501,7 +508,7 @@ class MobHandle:
         sink: str | None = None,
         limit: int = 20,
     ) -> DeliveryHistoryResult:
-        """Query delivery history."""
+        """Query delivery history with optional recipient/sink filters."""
         params: dict[str, Any] = {"limit": limit}
         if recipient is not None:
             params["recipient"] = recipient
@@ -520,13 +527,13 @@ class MobHandle:
         actor_id: str,
         **kwargs: Any,
     ) -> GatingEvaluateResult:
-        """Evaluate an action against gating policies."""
+        """Evaluate an action against configured gating policies."""
         params: dict[str, Any] = {"action": action, "actor_id": actor_id, **kwargs}
         raw = await self._runtime._rpc("mobkit/gating/evaluate", params)
         return GatingEvaluateResult.from_dict(raw)
 
     async def gating_pending(self) -> list[GatingPendingEntry]:
-        """List pending gating decisions."""
+        """List gating decisions awaiting approval."""
         raw = await self._runtime._rpc("mobkit/gating/pending")
         entries = raw.get("pending", []) if isinstance(raw, dict) else []
         return [GatingPendingEntry.from_dict(e) for e in entries]
@@ -538,7 +545,7 @@ class MobHandle:
         approver_id: str,
         **kwargs: Any,
     ) -> GatingDecisionResult:
-        """Decide on a pending gating action (approve/reject)."""
+        """Approve or reject a pending gating action."""
         params: dict[str, Any] = {
             "pending_id": pending_id,
             "decision": decision,
@@ -559,7 +566,7 @@ class MobHandle:
     # -----------------------------------------------------------------
 
     async def memory_stores(self) -> list[MemoryStoreInfo]:
-        """List available memory stores."""
+        """List available memory stores with record counts."""
         raw = await self._runtime._rpc("mobkit/memory/stores")
         stores = raw.get("stores", []) if isinstance(raw, dict) else []
         return [MemoryStoreInfo.from_dict(s) for s in stores]

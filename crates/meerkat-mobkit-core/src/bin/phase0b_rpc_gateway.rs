@@ -1,3 +1,5 @@
+//! Phase 0b binary — JSON-RPC gateway bridging SDK clients to the unified runtime.
+
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;

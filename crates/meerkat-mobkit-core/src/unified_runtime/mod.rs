@@ -1,3 +1,5 @@
+//! Unified runtime — combines mob lifecycle, module management, and operational subsystems.
+
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;

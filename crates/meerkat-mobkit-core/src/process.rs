@@ -1,3 +1,5 @@
+//! Process boundary types for gateway binary communication.
+
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
@@ -12,6 +14,21 @@ pub enum ProcessBoundaryError {
     EmptyOutput,
     InvalidJsonLine,
 }
+
+impl std::fmt::Display for ProcessBoundaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SpawnFailed(msg) => write!(f, "spawn failed: {msg}"),
+            Self::MissingStdout => write!(f, "missing stdout handle"),
+            Self::Io(msg) => write!(f, "I/O error: {msg}"),
+            Self::Timeout { timeout_ms } => write!(f, "timed out after {timeout_ms}ms"),
+            Self::EmptyOutput => write!(f, "empty output"),
+            Self::InvalidJsonLine => write!(f, "invalid JSON line"),
+        }
+    }
+}
+
+impl std::error::Error for ProcessBoundaryError {}
 
 pub fn run_process_json_line(
     command: &str,

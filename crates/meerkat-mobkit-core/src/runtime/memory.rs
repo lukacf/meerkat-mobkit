@@ -1,3 +1,5 @@
+//! Memory subsystem — Elephant-backed store adapter and query execution.
+
 use super::*;
 
 impl ElephantMemoryStoreAdapter {

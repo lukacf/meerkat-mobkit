@@ -1,3 +1,5 @@
+//! Runtime subsystem types — routing, delivery, gating, memory, scheduling, and session persistence.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -83,11 +85,47 @@ pub enum NormalizationError {
     SourceMismatch { expected: &'static str, got: String },
 }
 
+impl std::fmt::Display for NormalizationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidJson => write!(f, "invalid JSON"),
+            Self::InvalidSchema => write!(f, "invalid schema"),
+            Self::MissingField(field) => write!(f, "missing field: {field}"),
+            Self::InvalidFieldType(field) => write!(f, "invalid field type: {field}"),
+            Self::SourceMismatch { expected, got } => {
+                write!(f, "source mismatch: expected {expected}, got {got}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NormalizationError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeBoundaryError {
     Process(ProcessBoundaryError),
     Normalize(NormalizationError),
     Mcp(McpBoundaryError),
+}
+
+impl std::fmt::Display for RuntimeBoundaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Process(err) => write!(f, "process boundary: {err}"),
+            Self::Normalize(err) => write!(f, "normalization: {err}"),
+            Self::Mcp(err) => write!(f, "MCP boundary: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeBoundaryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Process(err) => Some(err),
+            Self::Normalize(err) => Some(err),
+            Self::Mcp(err) => Some(err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,11 +178,62 @@ pub enum McpBoundaryError {
     },
 }
 
+impl std::fmt::Display for McpBoundaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RuntimeUnavailable(msg) => write!(f, "runtime unavailable: {msg}"),
+            Self::McpRequired { module_id, flow } => {
+                write!(f, "MCP required for module {module_id} flow {flow}")
+            }
+            Self::Timeout { module_id, operation, timeout_ms } => {
+                write!(f, "timeout for module {module_id} operation {operation} after {timeout_ms}ms")
+            }
+            Self::ConnectionFailed { module_id, reason } => {
+                write!(f, "connection failed for module {module_id}: {reason}")
+            }
+            Self::ToolListFailed { module_id, reason } => {
+                write!(f, "tool list failed for module {module_id}: {reason}")
+            }
+            Self::ToolNotFound { module_id, tool, available_tools } => {
+                write!(f, "tool {tool} not found for module {module_id} (available: {})", available_tools.join(", "))
+            }
+            Self::ToolCallFailed { module_id, tool, reason } => {
+                write!(f, "tool call {tool} failed for module {module_id}: {reason}")
+            }
+            Self::CloseFailed { module_id, reason } => {
+                write!(f, "close failed for module {module_id}: {reason}")
+            }
+            Self::OperationFailedWithCloseFailure { primary, close } => {
+                write!(f, "operation failed: {primary}; close also failed: {close}")
+            }
+            Self::InvalidToolPayload { module_id, tool, reason } => {
+                write!(f, "invalid tool payload for module {module_id} tool {tool}: {reason}")
+            }
+            Self::InvalidJsonResponse { module_id, tool, response } => {
+                write!(f, "invalid JSON response for module {module_id} tool {tool}: {response}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for McpBoundaryError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigResolutionError {
     ModuleNotConfigured(String),
     ModuleNotDiscovered(String),
 }
+
+impl std::fmt::Display for ConfigResolutionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ModuleNotConfigured(id) => write!(f, "module not configured: {id}"),
+            Self::ModuleNotDiscovered(id) => write!(f, "module not discovered: {id}"),
+        }
+    }
+}
+
+impl std::error::Error for ConfigResolutionError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeFromConfigError {
@@ -152,10 +241,46 @@ pub enum RuntimeFromConfigError {
     Runtime(RuntimeBoundaryError),
 }
 
+impl std::fmt::Display for RuntimeFromConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Config(err) => write!(f, "config resolution: {err}"),
+            Self::Runtime(err) => write!(f, "runtime boundary: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeFromConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config(err) => Some(err),
+            Self::Runtime(err) => Some(err),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcRuntimeError {
     Process(ProcessBoundaryError),
     Capabilities(RpcCapabilitiesError),
+}
+
+impl std::fmt::Display for RpcRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Process(err) => write!(f, "process boundary: {err}"),
+            Self::Capabilities(err) => write!(f, "capabilities: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for RpcRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Process(err) => Some(err),
+            Self::Capabilities(err) => Some(err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,15 +292,71 @@ pub enum BaselineRuntimeError {
     Baseline(BaselineVerificationError),
 }
 
+impl std::fmt::Display for BaselineRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Process(err) => write!(f, "process boundary: {err}"),
+            Self::InvalidRepoPathJson => write!(f, "invalid repo path JSON"),
+            Self::MissingRepoRoot => write!(f, "missing repo root"),
+            Self::InvalidRepoRoot => write!(f, "invalid repo root"),
+            Self::Baseline(err) => write!(f, "baseline verification: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for BaselineRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Process(err) => Some(err),
+            Self::Baseline(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MobkitRuntimeError {
     Config(ConfigResolutionError),
     MemoryBackend(ElephantMemoryStoreError),
 }
 
+impl std::fmt::Display for MobkitRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Config(err) => write!(f, "config resolution: {err}"),
+            Self::MemoryBackend(err) => write!(f, "memory backend: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for MobkitRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config(err) => Some(err),
+            Self::MemoryBackend(err) => Some(err),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecisionRuntimeError {
     Policy(DecisionPolicyError),
+}
+
+impl std::fmt::Display for DecisionRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Policy(err) => write!(f, "decision policy: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for DecisionRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Policy(err) => Some(err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -215,6 +396,20 @@ pub enum ElephantMemoryStoreError {
     InvalidStoreData(String),
     ExternalCallFailed(String),
 }
+
+impl std::fmt::Display for ElephantMemoryStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConfig(msg) => write!(f, "invalid config: {msg}"),
+            Self::Io(msg) => write!(f, "I/O error: {msg}"),
+            Self::Serialize(msg) => write!(f, "serialization error: {msg}"),
+            Self::InvalidStoreData(msg) => write!(f, "invalid store data: {msg}"),
+            Self::ExternalCallFailed(msg) => write!(f, "external call failed: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for ElephantMemoryStoreError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ElephantMemoryBackendConfig {
@@ -540,6 +735,29 @@ pub enum MemoryIndexError {
     BackendPersistFailed(ElephantMemoryStoreError),
 }
 
+impl std::fmt::Display for MemoryIndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EntityRequired => write!(f, "entity is required"),
+            Self::TopicRequired => write!(f, "topic is required"),
+            Self::UnsupportedStore(store) => write!(f, "unsupported store: {store}"),
+            Self::FactRequiredWhenConflictUnset => {
+                write!(f, "fact is required when conflict is unset")
+            }
+            Self::BackendPersistFailed(err) => write!(f, "backend persist failed: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for MemoryIndexError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BackendPersistFailed(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GatingRiskTier {
@@ -662,6 +880,20 @@ pub enum GatingDecideError {
     ApproverMismatch { expected: String, provided: String },
 }
 
+impl std::fmt::Display for GatingDecideError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownPendingId(id) => write!(f, "unknown pending id: {id}"),
+            Self::SelfApprovalForbidden => write!(f, "self-approval is forbidden"),
+            Self::ApproverMismatch { expected, provided } => {
+                write!(f, "approver mismatch: expected {expected}, got {provided}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GatingDecideError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeliveryIdempotencyEntry {
     delivery_id: String,
@@ -774,6 +1006,24 @@ pub enum ScheduleValidationError {
     },
 }
 
+impl std::fmt::Display for ScheduleValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyScheduleId => write!(f, "empty schedule id"),
+            Self::DuplicateScheduleId(id) => write!(f, "duplicate schedule id: {id}"),
+            Self::InvalidTickMs(ms) => write!(f, "invalid tick ms: {ms}"),
+            Self::InvalidInterval { schedule_id, interval } => {
+                write!(f, "invalid interval for schedule {schedule_id}: {interval}")
+            }
+            Self::InvalidTimezone { schedule_id, timezone } => {
+                write!(f, "invalid timezone for schedule {schedule_id}: {timezone}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ScheduleValidationError {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleRouteRequest {
     pub module_id: String,
@@ -795,6 +1045,25 @@ pub enum ModuleRouteError {
     UnexpectedRouteResponse,
 }
 
+impl std::fmt::Display for ModuleRouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnloadedModule(id) => write!(f, "unloaded module: {id}"),
+            Self::ModuleRuntime(err) => write!(f, "module runtime: {err}"),
+            Self::UnexpectedRouteResponse => write!(f, "unexpected route response"),
+        }
+    }
+}
+
+impl std::error::Error for ModuleRouteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ModuleRuntime(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RoutingResolveError {
     RouterModuleNotLoaded,
@@ -804,6 +1073,31 @@ pub enum RoutingResolveError {
     InvalidRateLimitPerMinute,
     RetryMaxExceedsCap { provided: u32, cap: u32 },
     RouterBoundary(RuntimeBoundaryError),
+}
+
+impl std::fmt::Display for RoutingResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RouterModuleNotLoaded => write!(f, "router module not loaded"),
+            Self::DeliveryModuleNotLoaded => write!(f, "delivery module not loaded"),
+            Self::EmptyRecipient => write!(f, "empty recipient"),
+            Self::InvalidChannel => write!(f, "invalid channel"),
+            Self::InvalidRateLimitPerMinute => write!(f, "invalid rate limit per minute"),
+            Self::RetryMaxExceedsCap { provided, cap } => {
+                write!(f, "retry max {provided} exceeds cap {cap}")
+            }
+            Self::RouterBoundary(err) => write!(f, "router boundary: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for RoutingResolveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::RouterBoundary(err) => Some(err),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -825,6 +1119,35 @@ pub enum DeliverySendError {
     DeliveryBoundary(RuntimeBoundaryError),
 }
 
+impl std::fmt::Display for DeliverySendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DeliveryModuleNotLoaded => write!(f, "delivery module not loaded"),
+            Self::InvalidRouteTarget(target) => write!(f, "invalid route target: {target}"),
+            Self::InvalidRouteId => write!(f, "invalid route id"),
+            Self::UnknownRouteId(id) => write!(f, "unknown route id: {id}"),
+            Self::ForgedResolution => write!(f, "forged resolution"),
+            Self::InvalidRecipient => write!(f, "invalid recipient"),
+            Self::InvalidSink => write!(f, "invalid sink"),
+            Self::InvalidIdempotencyKey => write!(f, "invalid idempotency key"),
+            Self::IdempotencyPayloadMismatch => write!(f, "idempotency payload mismatch"),
+            Self::RateLimited { sink, window_start_ms, limit } => {
+                write!(f, "rate limited on sink {sink} (window {window_start_ms}ms, limit {limit})")
+            }
+            Self::DeliveryBoundary(err) => write!(f, "delivery boundary: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for DeliverySendError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::DeliveryBoundary(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeRouteMutationError {
     EmptyRouteKey,
@@ -837,6 +1160,25 @@ pub enum RuntimeRouteMutationError {
     RouteNotFound(String),
 }
 
+impl std::fmt::Display for RuntimeRouteMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyRouteKey => write!(f, "empty route key"),
+            Self::EmptyRecipient => write!(f, "empty recipient"),
+            Self::InvalidChannel => write!(f, "invalid channel"),
+            Self::EmptySink => write!(f, "empty sink"),
+            Self::EmptyTargetModule => write!(f, "empty target module"),
+            Self::InvalidRateLimitPerMinute => write!(f, "invalid rate limit per minute"),
+            Self::RetryMaxExceedsCap { provided, cap } => {
+                write!(f, "retry max {provided} exceeds cap {cap}")
+            }
+            Self::RouteNotFound(key) => write!(f, "route not found: {key}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeRouteMutationError {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcRouteError {
     InvalidRequest,
@@ -845,10 +1187,49 @@ pub enum RpcRouteError {
     InvalidResponse,
 }
 
+impl std::fmt::Display for RpcRouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRequest => write!(f, "invalid request"),
+            Self::BoundaryProcess(err) => write!(f, "boundary process: {err}"),
+            Self::Route(err) => write!(f, "route: {err}"),
+            Self::InvalidResponse => write!(f, "invalid response"),
+        }
+    }
+}
+
+impl std::error::Error for RpcRouteError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BoundaryProcess(err) => Some(err),
+            Self::Route(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeMutationError {
     Config(ConfigResolutionError),
     Runtime(RuntimeBoundaryError),
+}
+
+impl std::fmt::Display for RuntimeMutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Config(err) => write!(f, "config resolution: {err}"),
+            Self::Runtime(err) => write!(f, "runtime boundary: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeMutationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Config(err) => Some(err),
+            Self::Runtime(err) => Some(err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -883,6 +1264,19 @@ pub enum SubscribeError {
     MissingAgentId,
     InvalidAgentId,
 }
+
+impl std::fmt::Display for SubscribeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyCheckpoint => write!(f, "empty checkpoint"),
+            Self::UnknownCheckpoint(id) => write!(f, "unknown checkpoint: {id}"),
+            Self::MissingAgentId => write!(f, "missing agent id"),
+            Self::InvalidAgentId => write!(f, "invalid agent id"),
+        }
+    }
+}
+
+impl std::error::Error for SubscribeError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribeKeepAlive {

@@ -1,8 +1,11 @@
+//! Core type definitions shared across the MobKit runtime.
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Timestamped wrapper around an event payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {
     pub event_id: String,
@@ -11,6 +14,7 @@ pub struct EventEnvelope<T> {
     pub event: T,
 }
 
+/// A runtime event from either an agent or a module.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnifiedEvent {
@@ -21,6 +25,7 @@ pub enum UnifiedEvent {
     Module(ModuleEvent),
 }
 
+/// An event originating from a loaded MCP module.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleEvent {
     pub module: String,
@@ -28,6 +33,7 @@ pub struct ModuleEvent {
     pub payload: Value,
 }
 
+/// Configuration for a single MCP module to be loaded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleConfig {
     pub id: String,
@@ -36,6 +42,7 @@ pub struct ModuleConfig {
     pub restart_policy: RestartPolicy,
 }
 
+/// Policy controlling automatic module restart behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RestartPolicy {
@@ -44,6 +51,7 @@ pub enum RestartPolicy {
     Always,
 }
 
+/// Specification for module discovery at startup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoverySpec {
     pub namespace: String,
@@ -74,12 +82,14 @@ pub struct AgentDiscoverySpec {
     pub resume_session_id: Option<String>,
 }
 
+/// Pre-spawn context passed to modules during discovery.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreSpawnData {
     pub module_id: String,
     pub env: Vec<(String, String)>,
 }
 
+/// Top-level configuration for a MobKit runtime instance.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MobKitConfig {
     pub modules: Vec<ModuleConfig>,

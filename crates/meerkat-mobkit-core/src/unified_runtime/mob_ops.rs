@@ -1,3 +1,5 @@
+//! Mob member operations — spawn, reconcile, roster queries, and member lifecycle.
+
 use std::collections::BTreeMap;
 
 use meerkat_mob::{MemberRef, MobHandle, MobState, SpawnMemberSpec};

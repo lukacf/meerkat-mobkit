@@ -1,3 +1,5 @@
+//! Server-Sent Events (SSE) streaming endpoints for agent and mob observation.
+
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;

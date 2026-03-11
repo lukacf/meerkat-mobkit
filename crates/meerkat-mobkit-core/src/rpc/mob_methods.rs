@@ -1,3 +1,5 @@
+//! RPC handler implementations for mob member operations.
+
 use serde_json::Value;
 
 use crate::unified_runtime::UnifiedRuntime;

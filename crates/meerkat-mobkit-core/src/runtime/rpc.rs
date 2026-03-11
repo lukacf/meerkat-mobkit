@@ -1,3 +1,5 @@
+//! RPC capability boundary probing for module discovery.
+
 use super::*;
 
 pub fn run_rpc_capabilities_boundary_once(

@@ -1,3 +1,5 @@
+//! Module process boundary — MCP connections, environment setup, and tool probing.
+
 use std::collections::HashMap;
 use std::time::Duration;
 

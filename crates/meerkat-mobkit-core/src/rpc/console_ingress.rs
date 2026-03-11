@@ -1,3 +1,5 @@
+//! Console ingress handler for admin REST API forwarding.
+
 use super::*;
 
 pub fn handle_console_ingress_json(decisions: &RuntimeDecisionState, request_json: &str) -> String {

@@ -1,3 +1,5 @@
+//! Error types, hook definitions, and report structures for the unified runtime.
+
 use std::fmt::{Display, Formatter};
 
 use serde::{Deserialize, Serialize};

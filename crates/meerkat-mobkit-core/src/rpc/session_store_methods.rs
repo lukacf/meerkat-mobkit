@@ -1,3 +1,5 @@
+//! Parameter parsing for session store RPC methods.
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

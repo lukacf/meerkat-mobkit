@@ -1,3 +1,5 @@
+//! Gating subsystem — policy evaluation, audit logging, and module-backed decisions.
+
 use super::module_boundary::{
     call_module_mcp_tool_json, mcp_required_error, module_uses_mcp, CORE_MODULE_MCP_TIMEOUT,
     MEMORY_CONFLICT_READ_MCP_TOOL,

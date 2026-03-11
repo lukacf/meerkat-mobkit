@@ -1,3 +1,5 @@
+//! Baseline runtime configuration and module bootstrapping.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +33,25 @@ pub enum BaselineVerificationError {
     RepoUnreadable(PathBuf),
     MissingSymbols(BaselineVerificationReport),
 }
+
+impl std::fmt::Display for BaselineVerificationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RepoMissing(path) => write!(f, "repo missing: {}", path.display()),
+            Self::RepoUnreadable(path) => write!(f, "repo unreadable: {}", path.display()),
+            Self::MissingSymbols(report) => {
+                write!(
+                    f,
+                    "missing symbols in {}: {}",
+                    report.repo_root.display(),
+                    report.missing_symbols.join(", ")
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BaselineVerificationError {}
 
 pub fn verify_meerkat_baseline_symbols(
     explicit_repo_root: Option<&Path>,

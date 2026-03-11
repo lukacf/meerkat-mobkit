@@ -1,3 +1,5 @@
+//! HTTP routes for the admin console REST API.
+
 use axum::extract::State;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::IntoResponse;

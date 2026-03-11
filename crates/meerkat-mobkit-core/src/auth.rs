@@ -1,3 +1,5 @@
+//! JWT validation, JWKS caching, and OIDC discovery for API authentication.
+
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

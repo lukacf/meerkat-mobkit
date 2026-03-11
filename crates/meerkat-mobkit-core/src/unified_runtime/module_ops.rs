@@ -1,3 +1,5 @@
+//! Module lifecycle operations — registration, health checks, and capability probing.
+
 use std::time::Duration;
 
 use crate::runtime::{

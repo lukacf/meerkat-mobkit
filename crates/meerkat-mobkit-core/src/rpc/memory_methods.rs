@@ -1,3 +1,5 @@
+//! Parameter parsing for memory RPC methods.
+
 use super::*;
 
 const MEMORY_SUPPORTED_STORES: [&str; 5] = [
