@@ -272,3 +272,127 @@ async fn error_hook_fires_on_spawn_failure() {
 
     runtime.shutdown().await;
 }
+
+#[tokio::test]
+async fn list_members_returns_roster() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = UnifiedRuntime::builder()
+        .mob_spec(build_mob_spec(&temp_dir))
+        .module_config(empty_module_config())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("worker", "roster-a"))
+        .await
+        .expect("spawn roster-a");
+    runtime
+        .spawn(spawn_spec("worker", "roster-b"))
+        .await
+        .expect("spawn roster-b");
+
+    let members = runtime.list_members().await;
+    assert_eq!(members.len(), 2, "should list both members");
+    let ids: Vec<&str> = members.iter().map(|m| m.meerkat_id.as_str()).collect();
+    assert!(ids.contains(&"roster-a"), "should contain roster-a");
+    assert!(ids.contains(&"roster-b"), "should contain roster-b");
+
+    for m in &members {
+        assert_eq!(m.profile, "worker");
+        assert_eq!(m.state, "active");
+    }
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_member_returns_snapshot_or_none() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = UnifiedRuntime::builder()
+        .mob_spec(build_mob_spec(&temp_dir))
+        .module_config(empty_module_config())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("worker", "get-member-1"))
+        .await
+        .expect("spawn get-member-1");
+
+    let found = runtime.get_member("get-member-1").await;
+    assert!(found.is_some(), "should find spawned member");
+    let snapshot = found.unwrap();
+    assert_eq!(snapshot.meerkat_id, "get-member-1");
+    assert_eq!(snapshot.profile, "worker");
+    assert_eq!(snapshot.state, "active");
+
+    let not_found = runtime.get_member("nonexistent").await;
+    assert!(not_found.is_none(), "should return None for unknown member");
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn retire_member_transitions_state() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = UnifiedRuntime::builder()
+        .mob_spec(build_mob_spec(&temp_dir))
+        .module_config(empty_module_config())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("worker", "retire-me"))
+        .await
+        .expect("spawn retire-me");
+
+    runtime
+        .retire_member("retire-me")
+        .await
+        .expect("retire should succeed");
+
+    // After retire, the member either shows as "retiring" (if it has active
+    // work to drain) or is already gone (idle member disposes immediately).
+    let members = runtime.list_members().await;
+    let retired = members.iter().find(|m| m.meerkat_id == "retire-me");
+    match retired {
+        Some(m) => assert_eq!(m.state, "retiring", "if still visible, state should be retiring"),
+        None => {} // idle member was immediately disposed — acceptable
+    }
+
+    runtime.shutdown().await;
+}
+
+#[tokio::test]
+async fn respawn_member_replaces_member() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let runtime = UnifiedRuntime::builder()
+        .mob_spec(build_mob_spec(&temp_dir))
+        .module_config(empty_module_config())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build unified runtime");
+
+    runtime
+        .spawn(spawn_spec("worker", "respawn-me"))
+        .await
+        .expect("spawn respawn-me");
+
+    runtime
+        .respawn_member("respawn-me")
+        .await
+        .expect("respawn should succeed");
+
+    // After respawn, the member should still exist in the roster
+    let found = runtime.get_member("respawn-me").await;
+    assert!(found.is_some(), "member should still exist after respawn");
+
+    runtime.shutdown().await;
+}

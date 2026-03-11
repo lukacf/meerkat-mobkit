@@ -4,7 +4,7 @@ use std::sync::Arc;
 use meerkat_client::LlmClient;
 use meerkat_mob::{
     MeerkatId, MemberRef, MemberState, MobBuilder, MobDefinition, MobError, MobHandle,
-    MobSessionService, MobState, MobStorage, SpawnMemberSpec,
+    MobSessionService, MobState, MobStorage, RosterEntry, SpawnMemberSpec,
 };
 use serde::{Deserialize, Serialize};
 
@@ -102,6 +102,21 @@ impl Default for MobReconcileOptions {
     }
 }
 
+fn snapshot_from_entry(entry: RosterEntry) -> MobMemberSnapshot {
+    let mut wired_to: Vec<String> = entry.wired_to.into_iter().map(|p| p.to_string()).collect();
+    wired_to.sort();
+    MobMemberSnapshot {
+        meerkat_id: entry.meerkat_id.to_string(),
+        profile: entry.profile.to_string(),
+        state: match entry.state {
+            MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
+            MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
+        },
+        wired_to,
+        labels: entry.labels,
+    }
+}
+
 #[derive(Clone)]
 pub struct RealMobRuntime {
     handle: MobHandle,
@@ -139,25 +154,35 @@ impl RealMobRuntime {
             .list_all_members()
             .await
             .into_iter()
-            .map(|entry| {
-                let mut wired_to = entry
-                    .wired_to
-                    .into_iter()
-                    .map(|peer_id| peer_id.to_string())
-                    .collect::<Vec<_>>();
-                wired_to.sort();
-                MobMemberSnapshot {
-                    meerkat_id: entry.meerkat_id.to_string(),
-                    profile: entry.profile.to_string(),
-                    state: match entry.state {
-                        MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
-                        MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
-                    },
-                    wired_to,
-                    labels: entry.labels,
-                }
-            })
+            .map(snapshot_from_entry)
             .collect()
+    }
+
+    pub async fn get_member(&self, member_id: &str) -> Option<MobMemberSnapshot> {
+        self.handle
+            .get_member(&MeerkatId::from(member_id))
+            .await
+            .map(snapshot_from_entry)
+    }
+
+    pub async fn retire_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
+        if member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
+        }
+        self.handle
+            .retire(MeerkatId::from(member_id))
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn respawn_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
+        if member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
+        }
+        self.handle
+            .respawn(MeerkatId::from(member_id), None)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
@@ -289,19 +314,7 @@ impl RealMobRuntime {
         let meerkat_id = spec.meerkat_id.clone();
         // Check roster first
         if let Some(entry) = self.handle.get_member(&meerkat_id).await {
-            let mut wired_to: Vec<String> =
-                entry.wired_to.into_iter().map(|p| p.to_string()).collect();
-            wired_to.sort();
-            return Ok(MobMemberSnapshot {
-                meerkat_id: entry.meerkat_id.to_string(),
-                profile: entry.profile.to_string(),
-                state: match entry.state {
-                    MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
-                    MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
-                },
-                wired_to,
-                labels: entry.labels,
-            });
+            return Ok(snapshot_from_entry(entry));
         }
         // Spawn
         match self.handle.spawn_spec(spec).await {
@@ -317,18 +330,6 @@ impl RealMobRuntime {
             .get_member(&meerkat_id)
             .await
             .ok_or(MobRuntimeError::Mob(MobError::MeerkatNotFound(meerkat_id)))?;
-        let mut wired_to: Vec<String> =
-            entry.wired_to.into_iter().map(|p| p.to_string()).collect();
-        wired_to.sort();
-        Ok(MobMemberSnapshot {
-            meerkat_id: entry.meerkat_id.to_string(),
-            profile: entry.profile.to_string(),
-            state: match entry.state {
-                MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
-                MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
-            },
-            wired_to,
-            labels: entry.labels,
-        })
+        Ok(snapshot_from_entry(entry))
     }
 }
