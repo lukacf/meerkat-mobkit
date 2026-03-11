@@ -315,7 +315,7 @@ class MobHandle:
 
     async def ensure_member(
         self, member_id: str, profile: str, **kwargs: Any
-    ) -> dict[str, Any]:
+    ) -> MemberSnapshot:
         """Ensure a mob member exists, spawning it if missing.
 
         Idempotent — returns the member snapshot whether it was just spawned
@@ -327,9 +327,6 @@ class MobHandle:
             profile: Profile name from mob.toml to spawn with.
             **kwargs: Optional fields (labels, context, resume_session_id,
                       additional_instructions).
-
-        Returns:
-            Member snapshot dict with meerkat_id, profile, state, labels, wired_to.
         """
         params: dict[str, Any] = {"profile": profile, "meerkat_id": member_id}
         if "labels" in kwargs:
@@ -340,15 +337,13 @@ class MobHandle:
             params["resume_session_id"] = kwargs["resume_session_id"]
         if "additional_instructions" in kwargs:
             params["additional_instructions"] = kwargs["additional_instructions"]
-        return await self._runtime._rpc("mobkit/ensure_member", params)
+        raw = await self._runtime._rpc("mobkit/ensure_member", params)
+        return MemberSnapshot.from_dict(raw)
 
     async def find_members(
         self, label_key: str, label_value: str
-    ) -> list[dict[str, Any]]:
+    ) -> list[MemberSnapshot]:
         """Find members matching a label key-value pair.
-
-        Returns a list of member snapshot dicts with meerkat_id, profile,
-        state, labels, and wired_to.
 
         Example::
 
@@ -358,13 +353,15 @@ class MobHandle:
             # Find the agent for a specific owner
             agents = await handle.find_members("owner_id", "user-123")
             if agents:
-                meerkat_id = agents[0]["meerkat_id"]
+                meerkat_id = agents[0].meerkat_id
         """
         raw = await self._runtime._rpc(
             "mobkit/find_members",
             {"label_key": label_key, "label_value": label_value},
         )
-        return raw if isinstance(raw, list) else []
+        if isinstance(raw, list):
+            return [MemberSnapshot.from_dict(m) for m in raw]
+        return []
 
     async def rediscover(self) -> RediscoverReport | None:
         """Reset the mob and re-run discovery + edge reconciliation.

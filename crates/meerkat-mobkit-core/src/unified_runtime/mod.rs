@@ -35,7 +35,7 @@ pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
 };
-pub use event_log::{EventLogConfig, EventLogStore, EventQuery, PersistedEvent};
+pub use event_log::{EventLogConfig, EventLogError, EventLogStore, EventQuery, PersistedEvent};
 pub use types::{
     ErrorEvent, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
     UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
@@ -227,7 +227,7 @@ impl UnifiedRuntime {
     pub async fn query_events(
         &self,
         query: EventQuery,
-    ) -> Option<Result<Vec<PersistedEvent>, Box<dyn std::error::Error + Send>>> {
+    ) -> Option<Result<Vec<PersistedEvent>, EventLogError>> {
         if let Some(ref log) = self.event_log {
             Some(log.query(query).await)
         } else {

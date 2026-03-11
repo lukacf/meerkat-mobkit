@@ -193,11 +193,12 @@ impl RealMobRuntime {
         &self,
         specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<MemberRef>, MobRuntimeError> {
-        let mut refs = Vec::with_capacity(specs.len());
-        for spec in specs {
-            refs.push(self.handle.spawn_spec(spec).await?);
-        }
-        Ok(refs)
+        let futs = specs
+            .into_iter()
+            .map(|spec| self.handle.spawn_spec(spec));
+        futures::future::try_join_all(futs)
+            .await
+            .map_err(Into::into)
     }
 
     pub async fn reconcile(
@@ -300,7 +301,7 @@ impl RealMobRuntime {
         self.discover()
             .await
             .into_iter()
-            .filter(|m| m.labels.get(label_key).map_or(false, |v| v == label_value))
+            .filter(|m| m.labels.get(label_key).is_some_and(|v| v == label_value))
             .collect()
     }
 

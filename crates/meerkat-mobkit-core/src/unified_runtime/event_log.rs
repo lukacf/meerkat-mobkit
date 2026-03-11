@@ -9,6 +9,12 @@ use tokio::sync::mpsc;
 
 use crate::types::{EventEnvelope, UnifiedEvent};
 
+/// Boxed error type returned by [`EventLogStore`] methods.
+pub type EventLogError = Box<dyn std::error::Error + Send>;
+
+/// Optional event filter predicate.
+type EventFilter = Box<dyn Fn(&UnifiedEvent) -> bool + Send + Sync>;
+
 // ---------------------------------------------------------------------------
 // Persisted event model
 // ---------------------------------------------------------------------------
@@ -74,13 +80,13 @@ pub trait EventLogStore: Send + Sync {
     fn append_batch(
         &self,
         events: Vec<PersistedEvent>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), EventLogError>> + Send + '_>>;
 
     /// Query historical events matching the given criteria.
     fn query(
         &self,
         query: EventQuery,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PersistedEvent>, Box<dyn std::error::Error + Send>>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PersistedEvent>, EventLogError>> + Send + '_>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -93,7 +99,7 @@ pub struct EventLogConfig {
     pub store: Box<dyn EventLogStore>,
     /// Optional filter — return `true` to persist, `false` to skip.
     /// If `None`, all events are persisted.
-    pub filter: Option<Box<dyn Fn(&UnifiedEvent) -> bool + Send + Sync>>,
+    pub filter: Option<EventFilter>,
     /// Number of events to buffer before flushing to storage.
     /// Default: 64.
     pub batch_size: usize,
@@ -120,14 +126,14 @@ impl EventLogStore for NullEventLogStore {
     fn append_batch(
         &self,
         _events: Vec<PersistedEvent>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Box<dyn std::error::Error + Send>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), EventLogError>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
     fn query(
         &self,
         _query: EventQuery,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PersistedEvent>, Box<dyn std::error::Error + Send>>> + Send + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PersistedEvent>, EventLogError>> + Send + '_>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 }
@@ -149,7 +155,7 @@ impl EventLogHandle {
     pub async fn query(
         &self,
         query: EventQuery,
-    ) -> Result<Vec<PersistedEvent>, Box<dyn std::error::Error + Send>> {
+    ) -> Result<Vec<PersistedEvent>, EventLogError> {
         self.store.query(query).await
     }
 
@@ -193,7 +199,7 @@ async fn run_flush_loop(
     mut rx: mpsc::Receiver<EventEnvelope<UnifiedEvent>>,
     store: Arc<dyn EventLogStore>,
     seq: Arc<AtomicU64>,
-    filter: Option<Box<dyn Fn(&UnifiedEvent) -> bool + Send + Sync>>,
+    filter: Option<EventFilter>,
     batch_size: usize,
     flush_interval: Duration,
     error_hook: Option<super::ErrorHook>,
