@@ -20,6 +20,7 @@ use crate::unified_runtime::UnifiedRuntime;
 mod console_ingress;
 mod gating_methods;
 mod memory_methods;
+mod mob_methods;
 mod routing_delivery_methods;
 mod scheduling_methods;
 mod session_store_methods;
@@ -1576,303 +1577,34 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/send_message" => {
-            let member_id = request.params.get("member_id").and_then(Value::as_str);
-            let message = request.params.get("message").and_then(Value::as_str);
-
-            match (member_id, message) {
-                (Some(member_id), Some(message)) if !member_id.is_empty() && !message.is_empty() => {
-                    match runtime.send_message(member_id, message.to_string()).await {
-                        Ok(()) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: Some(serde_json::json!({
-                                "accepted": true,
-                                "member_id": member_id
-                            })),
-                            error: None,
-                        },
-                        Err(err) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32000,
-                                message: format!("send_message failed: {err}"),
-                            }),
-                        },
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: member_id and message required".to_string(),
-                    }),
-                },
-            }
+            mob_methods::handle_send_message(runtime, response_id.clone(), &request.params).await
         }
         "mobkit/find_members" => {
-            let label_key = request.params.get("label_key").and_then(Value::as_str);
-            let label_value = request.params.get("label_value").and_then(Value::as_str);
-
-            match (label_key, label_value) {
-                (Some(key), Some(value)) if !key.is_empty() => {
-                    let members = runtime.find_members(key, value).await;
-                    JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
-                        result: Some(serde_json::to_value(&members).unwrap_or(Value::Null)),
-                        error: None,
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: label_key and label_value required".to_string(),
-                    }),
-                },
-            }
+            mob_methods::handle_find_members(runtime, response_id.clone(), &request.params).await
         }
         "mobkit/ensure_member" => {
-            let profile = request.params.get("profile").and_then(Value::as_str);
-            let meerkat_id = request.params.get("meerkat_id").and_then(Value::as_str);
-
-            match (profile, meerkat_id) {
-                (Some(profile), Some(meerkat_id)) if !profile.is_empty() && !meerkat_id.is_empty() => {
-                    let labels = request.params.get("labels")
-                        .and_then(|v| serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone()).ok());
-                    let context = request.params.get("context").cloned();
-                    let resume_session_id = request.params.get("resume_session_id")
-                        .and_then(Value::as_str)
-                        .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
-                    let additional_instructions = request.params.get("additional_instructions")
-                        .and_then(Value::as_array)
-                        .map(|arr| arr.iter().filter_map(Value::as_str).map(String::from).collect::<Vec<_>>())
-                        .and_then(|v| if v.is_empty() { None } else { Some(v) });
-
-                    let mut spec = meerkat_mob::SpawnMemberSpec::new(
-                        meerkat_mob::ProfileName::from(profile),
-                        meerkat_mob::MeerkatId::from(meerkat_id),
-                    );
-                    if let Some(context) = context {
-                        spec = spec.with_context(context);
-                    }
-                    if let Some(labels) = labels {
-                        spec = spec.with_labels(labels);
-                    }
-                    if let Some(sid) = resume_session_id {
-                        spec = spec.with_resume_session_id(sid);
-                    }
-                    if let Some(instructions) = additional_instructions {
-                        spec = spec.with_additional_instructions(instructions);
-                    }
-                    match runtime.ensure_member(spec).await {
-                        Ok(snapshot) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
-                            error: None,
-                        },
-                        Err(err) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32602,
-                                message: format!("ensure_member failed: {err}"),
-                            }),
-                        },
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: profile and meerkat_id required".to_string(),
-                    }),
-                },
-            }
+            mob_methods::handle_ensure_member(runtime, response_id.clone(), &request.params).await
         }
         "mobkit/list_members" => {
-            let members = runtime.list_members().await;
-            JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::to_value(&members).unwrap_or(Value::Null)),
-                error: None,
-            }
+            mob_methods::handle_list_members(runtime, response_id.clone()).await
         }
         "mobkit/get_member" => {
-            let member_id = request.params.get("member_id").and_then(Value::as_str);
-            match member_id {
-                Some(mid) if !mid.is_empty() => {
-                    match runtime.get_member(mid).await {
-                        Some(snapshot) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
-                            error: None,
-                        },
-                        None => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32602,
-                                message: format!("member not found: {mid}"),
-                            }),
-                        },
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: member_id required".to_string(),
-                    }),
-                },
-            }
+            mob_methods::handle_get_member(runtime, response_id.clone(), &request.params).await
         }
         "mobkit/retire_member" => {
-            let member_id = request.params.get("member_id").and_then(Value::as_str);
-            match member_id {
-                Some(mid) if !mid.is_empty() => {
-                    match runtime.retire_member(mid).await {
-                        Ok(()) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: Some(serde_json::json!({"accepted": true})),
-                            error: None,
-                        },
-                        Err(err) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32000,
-                                message: format!("retire_member failed: {err}"),
-                            }),
-                        },
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: member_id required".to_string(),
-                    }),
-                },
-            }
+            mob_methods::handle_retire_member(runtime, response_id.clone(), &request.params).await
         }
         "mobkit/respawn_member" => {
-            let member_id = request.params.get("member_id").and_then(Value::as_str);
-            match member_id {
-                Some(mid) if !mid.is_empty() => {
-                    match runtime.respawn_member(mid).await {
-                        Ok(()) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: Some(serde_json::json!({"accepted": true})),
-                            error: None,
-                        },
-                        Err(err) => JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32000,
-                                message: format!("respawn_member failed: {err}"),
-                            }),
-                        },
-                    }
-                }
-                _ => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: "Invalid params: member_id required".to_string(),
-                    }),
-                },
-            }
+            mob_methods::handle_respawn_member(runtime, response_id.clone(), &request.params).await
         }
         "mobkit/reconcile_edges" => {
-            let report = runtime.reconcile_edges().await;
-            JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
-                result: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
-                error: None,
-            }
+            mob_methods::handle_reconcile_edges(runtime, response_id.clone()).await
         }
         "mobkit/rediscover" => {
-            match runtime.rediscover().await {
-                Ok(Some(report)) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: Some(serde_json::to_value(&report).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Ok(None) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: Some(serde_json::json!({
-                        "status": "no_discovery_configured"
-                    })),
-                    error: None,
-                },
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32000,
-                        message: format!("rediscover failed: {err}"),
-                    }),
-                },
-            }
+            mob_methods::handle_rediscover(runtime, response_id.clone()).await
         }
         "mobkit/query_events" => {
-            let query: crate::unified_runtime::EventQuery =
-                serde_json::from_value(request.params).unwrap_or_default();
-            match runtime.query_events(query).await {
-                Some(Ok(events)) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: Some(serde_json::to_value(&events).unwrap_or(Value::Null)),
-                    error: None,
-                },
-                Some(Err(err)) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32000,
-                        message: format!("query_events failed: {err}"),
-                    }),
-                },
-                None => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
-                    result: Some(serde_json::json!({
-                        "status": "no_event_log_configured",
-                        "events": []
-                    })),
-                    error: None,
-                },
-            }
+            mob_methods::handle_query_events(runtime, response_id.clone(), request.params).await
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method

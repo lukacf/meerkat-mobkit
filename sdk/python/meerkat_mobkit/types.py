@@ -308,9 +308,17 @@ class EventQuery:
         return d
 
 
+MEMBER_STATE_ACTIVE: str = "active"
+MEMBER_STATE_RETIRING: str = "retiring"
+
+
 @dataclass(frozen=True)
 class MemberSnapshot:
-    """Snapshot of a mob member from the roster."""
+    """Snapshot of a mob member from the roster.
+
+    The ``state`` field is one of :data:`MEMBER_STATE_ACTIVE` or
+    :data:`MEMBER_STATE_RETIRING`.
+    """
     meerkat_id: str
     profile: str
     state: str
@@ -508,18 +516,18 @@ class ErrorEvent:
         # Build a human-readable message from the context
         error = context.get("error", "")
         member_id = context.get("member_id", "")
-        if category == "spawn_failure":
+        if category == ErrorCategory.SPAWN_FAILURE:
             message = f"{member_id}: {error}" if member_id else error
-        elif category == "reconcile_incomplete":
+        elif category == ErrorCategory.RECONCILE_INCOMPLETE:
             failures = context.get("failures", 0)
             skipped = context.get("skipped", 0)
             message = f"{failures} failures, {skipped} skipped"
-        elif category == "checkpoint_failure":
+        elif category == ErrorCategory.CHECKPOINT_FAILURE:
             session_id = context.get("session_id", "")
             message = f"{session_id}: {error}" if session_id else error
-        elif category == "host_loop_crash":
+        elif category == ErrorCategory.HOST_LOOP_CRASH:
             message = f"{member_id}: {error}" if member_id else error
-        elif category == "rediscover_failure":
+        elif category == ErrorCategory.REDISCOVER_FAILURE:
             message = error
         else:
             message = str(data)
