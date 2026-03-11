@@ -930,6 +930,10 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/send_message",
                         "mobkit/find_members",
                         "mobkit/ensure_member",
+                        "mobkit/list_members",
+                        "mobkit/get_member",
+                        "mobkit/retire_member",
+                        "mobkit/respawn_member",
                         "mobkit/reconcile_edges",
                         "mobkit/rediscover",
                         "mobkit/query_events"
@@ -1692,6 +1696,114 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: "Invalid params: profile and meerkat_id required".to_string(),
+                    }),
+                },
+            }
+        }
+        "mobkit/list_members" => {
+            let members = runtime.list_members().await;
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id.clone(),
+                result: Some(serde_json::to_value(&members).unwrap_or(Value::Null)),
+                error: None,
+            }
+        }
+        "mobkit/get_member" => {
+            let member_id = request.params.get("member_id").and_then(Value::as_str);
+            match member_id {
+                Some(mid) if !mid.is_empty() => {
+                    match runtime.get_member(mid).await {
+                        Some(snapshot) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                            error: None,
+                        },
+                        None => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!("member not found: {mid}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: member_id required".to_string(),
+                    }),
+                },
+            }
+        }
+        "mobkit/retire_member" => {
+            let member_id = request.params.get("member_id").and_then(Value::as_str);
+            match member_id {
+                Some(mid) if !mid.is_empty() => {
+                    match runtime.retire_member(mid).await {
+                        Ok(()) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::json!({"accepted": true})),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("retire_member failed: {err}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: member_id required".to_string(),
+                    }),
+                },
+            }
+        }
+        "mobkit/respawn_member" => {
+            let member_id = request.params.get("member_id").and_then(Value::as_str);
+            match member_id {
+                Some(mid) if !mid.is_empty() => {
+                    match runtime.respawn_member(mid).await {
+                        Ok(()) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: Some(serde_json::json!({"accepted": true})),
+                            error: None,
+                        },
+                        Err(err) => JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id.clone(),
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32000,
+                                message: format!("respawn_member failed: {err}"),
+                            }),
+                        },
+                    }
+                }
+                _ => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id.clone(),
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: member_id required".to_string(),
                     }),
                 },
             }

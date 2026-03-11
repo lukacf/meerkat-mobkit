@@ -308,6 +308,172 @@ class EventQuery:
         return d
 
 
+@dataclass(frozen=True)
+class MemberSnapshot:
+    """Snapshot of a mob member from the roster."""
+    meerkat_id: str
+    profile: str
+    state: str
+    wired_to: list[str]
+    labels: dict[str, str]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemberSnapshot:
+        return cls(
+            meerkat_id=data["meerkat_id"],
+            profile=data["profile"],
+            state=data["state"],
+            wired_to=list(data.get("wired_to", [])),
+            labels=dict(data.get("labels", {})),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeRouteResult:
+    """A runtime route entry."""
+    route_key: str
+    recipient: str
+    channel: str | None
+    sink: str
+    target_module: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuntimeRouteResult:
+        return cls(
+            route_key=data["route_key"],
+            recipient=data["recipient"],
+            channel=data.get("channel"),
+            sink=data["sink"],
+            target_module=data["target_module"],
+        )
+
+
+@dataclass(frozen=True)
+class DeliveryHistoryResult:
+    """Result of a delivery history query."""
+    deliveries: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> DeliveryHistoryResult:
+        return cls(deliveries=list(data.get("deliveries", [])))
+
+
+@dataclass(frozen=True)
+class GatingEvaluateResult:
+    """Result of a gating evaluation."""
+    action_id: str
+    action: str
+    actor_id: str
+    risk_tier: str | None
+    outcome: str
+    pending_id: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GatingEvaluateResult:
+        return cls(
+            action_id=data["action_id"],
+            action=data["action"],
+            actor_id=data["actor_id"],
+            risk_tier=data.get("risk_tier"),
+            outcome=data["outcome"],
+            pending_id=data.get("pending_id"),
+        )
+
+
+@dataclass(frozen=True)
+class GatingDecisionResult:
+    """Result of a gating decision."""
+    pending_id: str
+    action_id: str
+    decision: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GatingDecisionResult:
+        return cls(
+            pending_id=data["pending_id"],
+            action_id=data["action_id"],
+            decision=data["decision"],
+        )
+
+
+@dataclass(frozen=True)
+class GatingAuditEntry:
+    """An entry in the gating audit log."""
+    audit_id: str
+    timestamp_ms: int
+    event_type: str
+    action_id: str
+    actor_id: str
+    risk_tier: str | None
+    outcome: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GatingAuditEntry:
+        return cls(
+            audit_id=data["audit_id"],
+            timestamp_ms=data["timestamp_ms"],
+            event_type=data["event_type"],
+            action_id=data["action_id"],
+            actor_id=data["actor_id"],
+            risk_tier=data.get("risk_tier"),
+            outcome=data["outcome"],
+        )
+
+
+@dataclass(frozen=True)
+class GatingPendingEntry:
+    """A pending gating decision awaiting approval."""
+    pending_id: str
+    action_id: str
+    action: str
+    actor_id: str
+    risk_tier: str | None
+    created_at_ms: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GatingPendingEntry:
+        return cls(
+            pending_id=data["pending_id"],
+            action_id=data["action_id"],
+            action=data["action"],
+            actor_id=data["actor_id"],
+            risk_tier=data.get("risk_tier"),
+            created_at_ms=data.get("created_at_ms", 0),
+        )
+
+
+@dataclass(frozen=True)
+class MemoryStoreInfo:
+    """Information about a memory store."""
+    store: str
+    record_count: int
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemoryStoreInfo:
+        return cls(
+            store=data["store"],
+            record_count=data.get("record_count", 0),
+        )
+
+
+@dataclass(frozen=True)
+class MemoryIndexResult:
+    """Result of a memory index operation."""
+    entity: str
+    topic: str
+    store: str
+    assertion_id: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemoryIndexResult:
+        return cls(
+            entity=data["entity"],
+            topic=data["topic"],
+            store=data["store"],
+            assertion_id=data.get("assertion_id"),
+        )
+
+
 class ErrorCategory(str, Enum):
     """Error event categories matching Rust's ErrorEvent variants."""
     SPAWN_FAILURE = "spawn_failure"

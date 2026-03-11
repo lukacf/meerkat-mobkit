@@ -19,12 +19,21 @@ from .models import DiscoverySpec
 from .types import (
     CallToolResult,
     CapabilitiesResult,
+    DeliveryHistoryResult,
     DeliveryResult,
+    GatingAuditEntry,
+    GatingDecisionResult,
+    GatingEvaluateResult,
+    GatingPendingEntry,
+    MemberSnapshot,
+    MemoryIndexResult,
     MemoryQueryResult,
+    MemoryStoreInfo,
     ReconcileEdgesReport,
     ReconcileResult,
     RediscoverReport,
     RoutingResolution,
+    RuntimeRouteResult,
     SpawnResult,
     StatusResult,
     SubscribeResult,
@@ -421,6 +430,157 @@ class MobHandle:
         if isinstance(raw, list):
             return [PersistedEvent.from_dict(e) for e in raw]
         return []
+
+    # -----------------------------------------------------------------
+    # Roster — member lifecycle
+    # -----------------------------------------------------------------
+
+    async def list_members(self) -> list[MemberSnapshot]:
+        """List all members in the mob roster (active + retiring)."""
+        raw = await self._runtime._rpc("mobkit/list_members")
+        if isinstance(raw, list):
+            return [MemberSnapshot.from_dict(m) for m in raw]
+        return []
+
+    async def get_member(self, member_id: str) -> MemberSnapshot:
+        """Get a single member snapshot by ID. Raises RpcError if not found."""
+        raw = await self._runtime._rpc("mobkit/get_member", {"member_id": member_id})
+        return MemberSnapshot.from_dict(raw)
+
+    async def retire_member(self, member_id: str) -> None:
+        """Retire a member (transition to retiring state)."""
+        await self._runtime._rpc("mobkit/retire_member", {"member_id": member_id})
+
+    async def respawn_member(self, member_id: str) -> None:
+        """Respawn a member (replace with fresh instance)."""
+        await self._runtime._rpc("mobkit/respawn_member", {"member_id": member_id})
+
+    # -----------------------------------------------------------------
+    # Routing — route management
+    # -----------------------------------------------------------------
+
+    async def list_routes(self) -> list[RuntimeRouteResult]:
+        """List all configured routes."""
+        raw = await self._runtime._rpc("mobkit/routing/routes/list")
+        routes = raw.get("routes", []) if isinstance(raw, dict) else []
+        return [RuntimeRouteResult.from_dict(r) for r in routes]
+
+    async def add_route(
+        self,
+        route_key: str,
+        recipient: str,
+        sink: str,
+        target_module: str,
+        channel: str | None = None,
+    ) -> RuntimeRouteResult:
+        """Add or update a route. Overwrites on duplicate route_key."""
+        params: dict[str, Any] = {
+            "route_key": route_key,
+            "recipient": recipient,
+            "sink": sink,
+            "target_module": target_module,
+        }
+        if channel is not None:
+            params["channel"] = channel
+        raw = await self._runtime._rpc("mobkit/routing/routes/add", params)
+        route_data = raw.get("route", raw) if isinstance(raw, dict) else raw
+        return RuntimeRouteResult.from_dict(route_data)
+
+    async def delete_route(self, route_key: str) -> RuntimeRouteResult:
+        """Delete a route by key."""
+        raw = await self._runtime._rpc("mobkit/routing/routes/delete", {"route_key": route_key})
+        deleted_data = raw.get("deleted", raw) if isinstance(raw, dict) else raw
+        return RuntimeRouteResult.from_dict(deleted_data)
+
+    # -----------------------------------------------------------------
+    # Delivery — history
+    # -----------------------------------------------------------------
+
+    async def delivery_history(
+        self,
+        recipient: str | None = None,
+        sink: str | None = None,
+        limit: int = 20,
+    ) -> DeliveryHistoryResult:
+        """Query delivery history."""
+        params: dict[str, Any] = {"limit": limit}
+        if recipient is not None:
+            params["recipient"] = recipient
+        if sink is not None:
+            params["sink"] = sink
+        raw = await self._runtime._rpc("mobkit/delivery/history", params)
+        return DeliveryHistoryResult.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Gating — policy enforcement
+    # -----------------------------------------------------------------
+
+    async def gating_evaluate(
+        self,
+        action: str,
+        actor_id: str,
+        **kwargs: Any,
+    ) -> GatingEvaluateResult:
+        """Evaluate an action against gating policies."""
+        params: dict[str, Any] = {"action": action, "actor_id": actor_id, **kwargs}
+        raw = await self._runtime._rpc("mobkit/gating/evaluate", params)
+        return GatingEvaluateResult.from_dict(raw)
+
+    async def gating_pending(self) -> list[GatingPendingEntry]:
+        """List pending gating decisions."""
+        raw = await self._runtime._rpc("mobkit/gating/pending")
+        entries = raw.get("pending", []) if isinstance(raw, dict) else []
+        return [GatingPendingEntry.from_dict(e) for e in entries]
+
+    async def gating_decide(
+        self,
+        pending_id: str,
+        decision: str,
+        approver_id: str,
+        **kwargs: Any,
+    ) -> GatingDecisionResult:
+        """Decide on a pending gating action (approve/reject)."""
+        params: dict[str, Any] = {
+            "pending_id": pending_id,
+            "decision": decision,
+            "approver_id": approver_id,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/gating/decide", params)
+        return GatingDecisionResult.from_dict(raw)
+
+    async def gating_audit(self, limit: int = 100) -> list[GatingAuditEntry]:
+        """Query the gating audit log."""
+        raw = await self._runtime._rpc("mobkit/gating/audit", {"limit": limit})
+        entries = raw.get("entries", []) if isinstance(raw, dict) else []
+        return [GatingAuditEntry.from_dict(e) for e in entries]
+
+    # -----------------------------------------------------------------
+    # Memory — store management
+    # -----------------------------------------------------------------
+
+    async def memory_stores(self) -> list[MemoryStoreInfo]:
+        """List available memory stores."""
+        raw = await self._runtime._rpc("mobkit/memory/stores")
+        stores = raw.get("stores", []) if isinstance(raw, dict) else []
+        return [MemoryStoreInfo.from_dict(s) for s in stores]
+
+    async def memory_index(
+        self,
+        entity: str,
+        topic: str,
+        store: str,
+        **kwargs: Any,
+    ) -> MemoryIndexResult:
+        """Index an assertion into a memory store."""
+        params: dict[str, Any] = {
+            "entity": entity,
+            "topic": topic,
+            "store": store,
+            **kwargs,
+        }
+        raw = await self._runtime._rpc("mobkit/memory/index", params)
+        return MemoryIndexResult.from_dict(raw)
 
     # Alias for backward compatibility
     send_message = send

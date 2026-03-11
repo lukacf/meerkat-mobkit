@@ -78,6 +78,22 @@ impl UnifiedRuntime {
         self.mob_runtime.ensure_member(spec).await
     }
 
+    pub async fn list_members(&self) -> Vec<MobMemberSnapshot> {
+        self.mob_runtime.discover().await
+    }
+
+    pub async fn get_member(&self, member_id: &str) -> Option<MobMemberSnapshot> {
+        self.mob_runtime.get_member(member_id).await
+    }
+
+    pub async fn retire_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
+        self.mob_runtime.retire_member(member_id).await
+    }
+
+    pub async fn respawn_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
+        self.mob_runtime.respawn_member(member_id).await
+    }
+
     /// Ensure a member exists with the given labels, spawning if missing.
     ///
     /// Convenience wrapper: builds a `SpawnMemberSpec` from profile, meerkat_id,
