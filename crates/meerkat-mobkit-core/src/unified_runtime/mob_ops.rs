@@ -50,12 +50,12 @@ impl UnifiedRuntime {
         Ok(refs)
     }
 
-    /// Send a message to a mob member (fire-and-forget, no subscription).
+    /// Send a message to a mob member and return the accepting session ID.
     pub async fn send_message(
         &self,
         member_id: &str,
         message: String,
-    ) -> Result<(), MobRuntimeError> {
+    ) -> Result<String, MobRuntimeError> {
         self.mob_runtime
             .send_message(member_id, message)
             .await

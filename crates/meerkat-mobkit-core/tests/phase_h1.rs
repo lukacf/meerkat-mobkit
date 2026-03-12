@@ -7,6 +7,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use meerkat::{build_ephemeral_service, AgentFactory, Config};
 use meerkat_client::TestClient;
+use meerkat_core::SessionId;
 use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
 use meerkat_mobkit_core::{
     build_runtime_decision_state, console_json_router, handle_console_rest_json_route, AuthPolicy,
@@ -420,11 +421,12 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
     );
 
     // Sending to a known agent should succeed via send_message.
-    fixture
+    let session_id = fixture
         .runtime
         .send_message(selected_agent_id, "cross-panel hello".to_string())
         .await
         .expect("send_message to known agent should succeed");
+    SessionId::parse(&session_id).expect("send_message should return a valid session_id");
 
     // Sending to an unknown agent should fail.
     let unknown_result = fixture

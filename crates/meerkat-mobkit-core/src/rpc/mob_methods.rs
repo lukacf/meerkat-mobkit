@@ -15,12 +15,13 @@ pub(super) async fn handle_send_message(
     match (member_id, message) {
         (Some(member_id), Some(message)) if !member_id.is_empty() && !message.is_empty() => {
             match runtime.send_message(member_id, message.to_string()).await {
-                Ok(()) => JsonRpcResponse {
+                Ok(session_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: Some(serde_json::json!({
                         "accepted": true,
-                        "member_id": member_id
+                        "member_id": member_id,
+                        "session_id": session_id
                     })),
                     error: None,
                 },

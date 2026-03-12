@@ -26,7 +26,7 @@ Lists all agents and mob members in the runtime. Click a member to select it for
 
 ### Activity feed
 
-Real-time event stream showing agent and module activity. Events are received via SSE from the `/mob/events` endpoint and displayed chronologically.
+Real-time event stream showing agent and module activity. Events are sourced from the MobKit event subscription model and displayed chronologically.
 
 ### Chat inspector
 
@@ -39,7 +39,17 @@ Send messages to a selected agent and view responses. The inspector sends a mess
 }
 ```
 
-The response streams back as SSE frames, each containing an event type and JSON data payload.
+The request is accepted synchronously and returns the member session used for the interaction:
+
+```json
+{
+  "accepted": true,
+  "member_id": "lead-1",
+  "session_id": "0195c3f2-8f40-7f95-a5a7-cc4f7d90d3d1"
+}
+```
+
+The streamed interaction frames come back from `POST /interactions/stream`, each containing an event type and JSON data payload.
 
 ### Topology panel
 
@@ -94,13 +104,13 @@ The chat inspector sends messages and observes responses through two separate ch
 
 <Steps>
   <Step title="Send message">
-    Call the `mobkit/send_message` RPC method with the target `member_id` and `message` text.
+    Call the `mobkit/send_message` RPC method with the target `member_id` and `message` text. The response returns `accepted`, `member_id`, and the accepting `session_id`.
   </Step>
   <Step title="Observe responses">
-    Subscribe to agent events via the `/agents/:agent_id/events` SSE endpoint. Each frame contains:
+    Post to `/interactions/stream` with `member_id` and `message` to receive an SSE response stream. Each frame contains:
 
     ```
-    id: lead-1:0
+    id: evt-1
     event: text_delta
     data: {"type": "text_delta", "delta": "The current status is..."}
     ```
@@ -118,8 +128,7 @@ The chat inspector sends messages and observes responses through two separate ch
 | `/console/assets/console-app.js` | GET | React bundle (JavaScript) |
 | `/console/experience` | GET | Experience metadata (JSON) |
 | `/console/modules` | GET | Loaded modules list (JSON) |
-| `/agents/:agent_id/events` | GET | Per-agent SSE event stream |
-| `/mob/events` | GET | Mob-wide SSE event stream |
+| `/interactions/stream` | POST | Interaction-scoped SSE stream |
 
 ## Authentication
 

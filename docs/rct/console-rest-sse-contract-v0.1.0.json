@@ -31,8 +31,8 @@
     },
     "sse": {
       "agent_events": {
-        "method": "GET",
-        "path": "/agents/:agent_id/events"
+        "method": "POST",
+        "path": "/interactions/stream"
       },
       "mob_events": {
         "method": "GET",

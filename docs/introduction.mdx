@@ -3,7 +3,7 @@ title: "Introduction"
 description: "MobKit is a companion orchestration platform for the Meerkat multi-agent runtime. Startup orchestration, module system, admin tooling, and multi-language SDKs."
 ---
 
-MobKit is the operational layer that sits alongside [Meerkat](https://github.com/lukacf/meerkat). Meerkat owns agent construction, dispatch, prompt assembly, and the core agent loop. MobKit handles everything else: startup orchestration, module routing, operational subsystems, session persistence, and the admin console.
+MobKit is the operational layer that sits alongside [Meerkat](https://github.com/lukacf/meerkat). Meerkat owns agent construction, dispatch, prompt assembly, the canonical runtime and input lifecycle, and the core agent loop. MobKit builds on top of that runtime authority to provide startup orchestration, module routing, operational subsystems, session-store adapters, and the admin console.
 
 It's a single Rust crate with a React console, JSON-RPC protocol, and SDKs in TypeScript and Python.
 
@@ -13,7 +13,7 @@ It's a single Rust crate with a React console, JSON-RPC protocol, and SDKs in Ty
 - **Module system.** MCP-based modules for routing, delivery, scheduling, gating, and memory. Modules run as subprocesses and communicate over JSON-RPC or MCP tool calls.
 - **Operational subsystems.** Risk-based approval gates, message delivery with sink adapters, cron scheduling with timezone support, and Elephant-backed semantic memory -- all wired in as modules.
 - **Admin console.** React web UI embedded in the binary. Agent sidebar, activity feed, chat inspector, topology view, and health overview -- all powered by SSE streams.
-- **Session persistence.** JSON file store for local development, BigQuery adapter for production. Lock-based concurrency with stale lock recovery.
+- **Session-store adapters.** JSON file storage for local development and a BigQuery adapter for production-oriented pipelines. These complement Meerkat's own runtime-backed session durability and recovery model.
 - **Authentication.** JWT validation with OIDC discovery, JWKS key selection, and email allowlist enforcement. Google OAuth, GitHub OAuth, Generic OIDC, and Service Identity providers.
 - **Multi-language SDKs.** TypeScript and Python SDKs with contract parity tests against the Rust core.
 
@@ -21,13 +21,13 @@ It's a single Rust crate with a React console, JSON-RPC protocol, and SDKs in Ty
 
 | | Meerkat | MobKit |
 |---|---|---|
-| **Owns** | Agent loop, prompt assembly, tool dispatch, sessions, comms, mobs | Startup orchestration, module routing, operational subsystems |
+| **Owns** | Agent loop, prompt assembly, tool dispatch, sessions, runtime/input lifecycle, comms, mobs | Startup orchestration, module routing, operational subsystems |
 | **Interface** | Library crate, CLI, REST, RPC, MCP | Library crate, JSON-RPC, console UI |
 | **Modules** | MCP tool servers | MCP modules with supervision and routing |
-| **Persistence** | JSONL, redb session stores | JSON file store, BigQuery adapter |
+| **Persistence** | Runtime-backed session durability and recovery, JSONL/redb stores | JSON file session store and BigQuery adapter for MobKit-specific operational views |
 | **Auth** | API key isolation | JWT/OIDC validation, email allowlists |
 
-MobKit is not a replacement for Meerkat -- it's the companion that handles startup, operations, and administration while Meerkat handles the core agent runtime.
+MobKit is not a replacement for Meerkat -- it's the companion that handles startup, operations, and administration while Meerkat remains the single authority for session execution and lifecycle state.
 
 ## Explore the documentation
 
