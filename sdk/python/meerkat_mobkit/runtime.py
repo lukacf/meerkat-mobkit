@@ -34,6 +34,7 @@ from .types import (
     RediscoverReport,
     RoutingResolution,
     RuntimeRouteResult,
+    SendMessageResult,
     SpawnResult,
     StatusResult,
     SubscribeResult,
@@ -391,12 +392,13 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/reconcile_edges")
         return ReconcileEdgesReport.from_dict(raw)
 
-    async def send(self, member_id: str, message: str) -> None:
-        """Send a message to a mob member. Pure delivery, fire-and-forget."""
-        await self._runtime._rpc(
+    async def send(self, member_id: str, message: str) -> SendMessageResult:
+        """Send a message to a mob member and return the accepting session."""
+        raw = await self._runtime._rpc(
             "mobkit/send_message",
             {"member_id": member_id, "message": message},
         )
+        return SendMessageResult.from_dict(raw)
 
     async def query_events(
         self,
