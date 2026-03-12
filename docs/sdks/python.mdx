@@ -41,10 +41,12 @@ The app-facing surface has three categories. Each is a distinct concern — no m
 ### Comms — deliver work to agents
 
 ```python
-await handle.send("agent-1", "Review PR #42")
+result = await handle.send("agent-1", "Review PR #42")
+print(result.accepted, result.member_id, result.session_id)
 ```
 
-Fire-and-forget. The message enters the agent's inbox and is processed by the host loop.
+Returns a `SendMessageResult` with `accepted`, `member_id`, and `session_id` fields.
+The message enters the agent's inbox and is processed by the host loop.
 
 ### Observation — watch what's happening
 
@@ -68,7 +70,11 @@ status = await handle.status()
 print(status.running, status.loaded_modules)
 
 # Ensure a member exists (spawn if missing)
-await handle.ensure_member("user-123", profile="personal")
+snapshot = await handle.ensure_member("user-123", profile="personal")
+print(snapshot.meerkat_id, snapshot.state)
+
+# Find members by label
+members = await handle.find_members(labels={"owner": "user-123"})
 
 # Re-run discovery and reconcile the roster
 result = await handle.reconcile(["routing", "delivery"])
@@ -81,12 +87,41 @@ gmail = handle.tool_caller("google-workspace")
 messages = await gmail("gmail_search", query="is:unread")
 ```
 
+`ensure_member()` and `find_members()` both return typed `MemberSnapshot` objects
+(single and `list[MemberSnapshot]` respectively).
+
+### Roster — inspect and manage members
+
+```python
+# List the full roster
+members = await handle.list_members()
+for m in members:
+    print(f"{m.meerkat_id}: {m.state} ({m.profile})")
+
+# Inspect a specific member
+snapshot = await handle.get_member("agent-1")
+
+# Member lifecycle
+await handle.retire_member("agent-1")
+await handle.respawn_member("agent-1")
+```
+
+| Method | Return type | Description |
+|--------|-------------|-------------|
+| `list_members()` | `list[MemberSnapshot]` | List all members in the roster |
+| `get_member(member_id)` | `MemberSnapshot` | Get a single member by ID |
+| `retire_member(member_id)` | `None` | Retire a member (graceful shutdown) |
+| `respawn_member(member_id)` | `None` | Respawn a previously retired member |
+
+Member state is exposed via constants `MEMBER_STATE_ACTIVE` and `MEMBER_STATE_RETIRING`,
+importable from the top-level package.
+
 ### Common pattern: new user first contact
 
 ```python
 # Slack DM from a new user — ensure agent exists, then deliver
-await handle.ensure_member(user_id, profile="personal", labels={"owner": user_id})
-await handle.send(user_id, slack_message)
+snapshot = await handle.ensure_member(user_id, profile="personal", labels={"owner": user_id})
+result = await handle.send(user_id, slack_message)
 async for event in handle.subscribe_agent(user_id):
     forward_to_slack(event)
 ```
@@ -182,7 +217,56 @@ Most apps should use `send`, `subscribe_agent`/`subscribe_mob`, and `status`/`re
 | `subscribe_events(scope, ...)` | `SubscribeResult` | Low-level event subscription |
 | `resolve_routing(recipient)` | `RoutingResolution` | Resolve delivery routing |
 | `send_delivery(...)` | `DeliveryResult` | Send via delivery module |
+| `list_routes()` | `list[RuntimeRouteResult]` | List all registered routes |
+| `add_route(...)` | `RuntimeRouteResult` | Register a new route |
+| `delete_route(route_key)` | `RuntimeRouteResult` | Remove a route by key |
+| `delivery_history(...)` | `DeliveryHistoryResult` | Query past delivery records |
+| `gating_evaluate(...)` | `GatingEvaluateResult` | Evaluate a gating rule |
+| `gating_pending()` | `list[GatingPendingEntry]` | List pending gating decisions |
+| `gating_decide(...)` | `GatingDecisionResult` | Submit a gating decision |
+| `gating_audit(limit)` | `list[GatingAuditEntry]` | Retrieve gating audit log |
 | `memory_query(query)` | `MemoryQueryResult` | Query semantic memory |
+| `memory_stores()` | `list[MemoryStoreInfo]` | List available memory stores |
+| `memory_index(...)` | `MemoryIndexResult` | Index content into memory |
+
+## Public surface exports
+
+Everything below is importable directly from `meerkat_mobkit`:
+
+```python
+from meerkat_mobkit import (
+    # Builder + Runtime
+    MobKit, MobKitBuilder, MobKitRuntime,
+    # Data models
+    DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQuery,
+    # Agent builder
+    SessionAgentBuilder,
+    # Errors
+    MobKitError, TransportError, RpcError,
+    NotConnectedError, CapabilityUnavailableError, ContractMismatchError,
+    # Typed results
+    StatusResult, CapabilitiesResult, ReconcileResult,
+    SpawnResult, SpawnMemberResult,
+    SendMessageResult, SubscribeResult,
+    KeepAliveConfig, EventEnvelope,
+    RoutingResolution, DeliveryResult,
+    # Roster
+    MemberSnapshot, MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING,
+    # Routing & delivery
+    RuntimeRouteResult, DeliveryHistoryResult,
+    # Gating
+    GatingEvaluateResult, GatingDecisionResult,
+    GatingAuditEntry, GatingPendingEntry,
+    # Memory
+    MemoryQueryResult, MemoryStoreInfo, MemoryIndexResult,
+    # Events
+    MobEvent, AgentEvent, EventStream,
+    # Config modules
+    auth, memory, session_store,
+)
+```
+
+Module authoring helpers (`ModuleSpec`, `define_module`, etc.) live in `meerkat_mobkit.helpers` — not top-level.
 
 ## See also
 
