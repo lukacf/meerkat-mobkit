@@ -221,11 +221,16 @@ fn build_console_experience_contract(
             "panel_id": "console.chat_inspector",
             "title": "Chat Inspector",
             "send_method": "mobkit/send_message",
-            "observe_route": "/agents/:agent_id/events",
+            "observe_route": "/interactions/stream",
             "transport": "rpc+sse",
             "request_contract": {
                 "member_id": "required target member id",
                 "message": "required user text to send",
+            },
+            "response_contract": {
+                "accepted": "boolean request acceptance flag",
+                "member_id": "echoed target member id",
+                "session_id": "accepting Meerkat session id for correlation",
             },
             "event_contract": {
                 "agent_event_type_path": "type",

@@ -251,7 +251,7 @@ impl UnifiedRuntime {
                 .await;
 
             match injection_result {
-                Ok(()) => {
+                Ok(session_id) => {
                     self.module_runtime.lock().await.append_normalized_event(EventEnvelope {
                         event_id: format!("{}-executed", runtime_injection.injection_event_id),
                         source: "module".to_string(),
@@ -264,6 +264,7 @@ impl UnifiedRuntime {
                                 "claim_key": dispatch.claim_key.clone(),
                                 "member_id": runtime_injection.member_id,
                                 "message": runtime_injection.message,
+                                "session_id": session_id,
                             }),
                         }),
                     })?;

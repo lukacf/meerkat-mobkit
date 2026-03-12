@@ -1,62 +1,81 @@
 ---
 title: "SSE API"
-description: "Server-Sent Events for real-time agent and mob event streaming."
+description: "Server-Sent Events for real-time MobKit interaction and event subscription flows."
 icon: "bolt"
 ---
 
-MobKit uses Server-Sent Events (SSE) for real-time observation of agent and mob activity. Two endpoints provide per-agent and mob-wide event streams.
+MobKit uses Server-Sent Events (SSE) for two related real-time flows:
 
-## Per-agent event stream
+- interaction-scoped streaming through `POST /interactions/stream`
+- event subscription and replay through `mobkit/events/subscribe`
+
+## Interaction stream
 
 ```
-GET /agents/:agent_id/events
+POST /interactions/stream
 ```
 
-Subscribe to events from a single agent. The response is an SSE stream (`Content-Type: text/event-stream`).
+Start an interaction with a specific member and receive an SSE response stream (`Content-Type: text/event-stream`).
+
+### Request body
+
+```json
+{
+  "member_id": "lead-1",
+  "message": "Analyze the latest delivery failures."
+}
+```
 
 ### Frame format
 
 ```
-id: lead-1:0
+id: evt-1
 event: text_delta
 data: {"type": "text_delta", "delta": "Analyzing the metrics now..."}
 
-id: lead-1:1
+id: evt-2
 event: tool_call
 data: {"type": "tool_call", "name": "query_metrics", "args": {...}}
 
-id: lead-1:2
+id: evt-3
 event: interaction_complete
 data: {"type": "interaction_complete", "result": "Done."}
 ```
 
-## Mob-wide event stream
+## Event subscription
 
-```
-GET /mob/events
-```
+Use the `mobkit/events/subscribe` JSON-RPC method to request a point-in-time event snapshot plus replay frames.
 
-Subscribe to a merged stream of events from all agents in the mob.
+Example request:
 
-### Frame format
-
-```
-id: mob:0
-event: text_delta
-data: {"agent_id": "lead-1", "event": {"type": "text_delta", "delta": "..."}}
-
-id: mob:1
-event: tool_call
-data: {"agent_id": "worker-1", "event": {"type": "tool_call", "name": "search", "args": {}}}
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "sub-1",
+  "method": "mobkit/events/subscribe",
+  "params": {
+    "scope": "mob",
+    "last_event_id": "evt-42"
+  }
+}
 ```
 
-Each frame has:
+The response includes:
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique frame identifier |
-| `event` | Event type from the agent event model |
-| `data` | JSON payload with agent attribution |
+| `keep_alive.interval_ms` | Server keep-alive cadence |
+| `keep_alive.event` | Keep-alive event name |
+| `event_frames` | SSE-ready frames for replay |
+| `events` | Parsed event payloads |
+
+Supported scopes:
+
+| Scope | Notes |
+|-------|-------|
+| `mob` | Whole runtime |
+| `agent` | Requires `agent_id` |
+| `interaction` | Interaction-scoped replay |
 
 ## Keep-alive
 
@@ -68,16 +87,26 @@ The server sends keep-alive frames at a configurable interval (default: 15 secon
 
 ## Sending messages
 
-To send a message to an agent, use the `mobkit/send_message` RPC method (fire-and-forget) and observe responses via the SSE event streams above.
+To send a message to an agent, use the `mobkit/send_message` RPC method and capture the returned `session_id` for correlation:
+
+```json
+{
+  "accepted": true,
+  "member_id": "lead-1",
+  "session_id": "0195c3f2-8f40-7f95-a5a7-cc4f7d90d3d1"
+}
+```
+
+Then observe streamed responses via `POST /interactions/stream` and broader replayable event history via `mobkit/events/subscribe`.
 
 ## Error handling
 
-If the target agent does not exist, the SSE endpoint returns an HTTP error response:
+If the target member does not exist or the interaction request is malformed, the interaction endpoint returns an HTTP error response:
 
 | Status | Cause |
 |--------|-------|
-| `400` | Empty or invalid agent ID |
-| `404` | Agent not found |
+| `400` | Empty or invalid member ID / malformed body |
+| `404` | Member not found |
 | `500` | Internal server error |
 
 ## See also

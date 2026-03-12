@@ -2153,6 +2153,7 @@ version = "0.4.6"
 dependencies = [
  "async-trait",
  "futures",
+ "inventory",
  "meerkat-client",
  "meerkat-comms",
  "meerkat-contracts",
@@ -2308,17 +2309,17 @@ dependencies = [
  "chrono",
  "futures",
  "indexmap",
- "inventory",
  "jsonschema",
  "meerkat",
  "meerkat-client",
  "meerkat-comms",
  "meerkat-core",
+ "meerkat-runtime",
  "meerkat-session",
- "meerkat-skills",
  "redb",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -2359,6 +2360,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "meerkat-runtime"
+version = "0.4.6"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "indexmap",
+ "meerkat-core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio_with_wasm",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "meerkat-session"
 version = "0.4.6"
 dependencies = [
@@ -2368,11 +2387,13 @@ dependencies = [
  "inventory",
  "meerkat-contracts",
  "meerkat-core",
+ "meerkat-runtime",
  "meerkat-skills",
  "meerkat-store",
  "redb",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio_with_wasm",

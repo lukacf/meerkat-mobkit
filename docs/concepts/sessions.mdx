@@ -1,12 +1,16 @@
 ---
 title: "Sessions"
-description: "Session persistence with JSON file store, BigQuery adapter, lock-based concurrency, and stale lock recovery."
+description: "How MobKit's session-store adapters relate to Meerkat's canonical runtime-backed session lifecycle."
 icon: "database"
 ---
 
-MobKit provides session persistence for long-running agent workflows. Sessions capture the state of an agent's conversation, tool results, and operational context so that work can be resumed after restarts or failures.
+Meerkat owns the canonical session and runtime lifecycle: input acceptance, turn execution, deduplication, retire/reset semantics, and durable recovery. MobKit adds session-store adapters that support MobKit's operational workflows, console views, and integration surfaces.
 
-## Persistence backends
+<Note>
+This page describes MobKit-specific storage adapters. It does not replace Meerkat's own runtime-backed session durability model.
+</Note>
+
+## MobKit storage backends
 
 | Backend | Use case | Description |
 |---------|----------|-------------|
@@ -15,7 +19,7 @@ MobKit provides session persistence for long-running agent workflows. Sessions c
 
 ### JSON file store
 
-The default backend writes session state as JSON files to a local directory. Each session gets its own file, and concurrent access is managed through lock files.
+The default adapter writes session state snapshots as JSON files to a local directory. Each session gets its own file, and concurrent access is managed through lock files.
 
 ```rust
 JsonFileSessionStore {
@@ -29,7 +33,7 @@ JsonFileSessionStore {
 
 ### BigQuery adapter
 
-For production deployments, the BigQuery adapter writes session rows to a configured dataset and table:
+For production-oriented deployments, the BigQuery adapter writes session rows to a configured dataset and table:
 
 ```rust
 BigQuerySessionStoreAdapter {
@@ -78,7 +82,11 @@ MobKit provides two materialization functions for session inspection:
 - **`materialize_latest_session_rows`** -- returns the most recent row per session
 - **`materialize_live_session_rows`** -- returns rows for currently active sessions
 
-These power the console's session view and the RPC API's session introspection methods.
+These power MobKit's operational session inspection features and adapter-specific APIs.
+
+## Runtime correlation
+
+When MobKit accepts a `mobkit/send_message` request, the response includes the Meerkat `session_id` that accepted the message. Treat that value as the canonical correlation handle for follow-up inspection, debugging, and resume-aware flows.
 
 ## See also
 

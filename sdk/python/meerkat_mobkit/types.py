@@ -127,6 +127,21 @@ class SubscribeResult:
 
 
 @dataclass(frozen=True)
+class SendMessageResult:
+    accepted: bool
+    member_id: str
+    session_id: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SendMessageResult:
+        return cls(
+            accepted=data.get("accepted", False),
+            member_id=data.get("member_id", ""),
+            session_id=data.get("session_id", ""),
+        )
+
+
+@dataclass(frozen=True)
 class RoutingResolution:
     recipient: str
     route: dict[str, Any]

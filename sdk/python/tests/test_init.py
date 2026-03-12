@@ -11,7 +11,7 @@ class TestNewSymbolsExist:
         "MobKitError", "TransportError", "RpcError",
         "CapabilityUnavailableError", "ContractMismatchError", "NotConnectedError",
         "StatusResult", "CapabilitiesResult", "ReconcileResult",
-        "SpawnResult", "SpawnMemberResult", "SubscribeResult",
+        "SpawnResult", "SpawnMemberResult", "SendMessageResult", "SubscribeResult",
         "KeepAliveConfig", "EventEnvelope",
         "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult",
         "ReconcileEdgesReport", "RediscoverReport", "ToolCaller",

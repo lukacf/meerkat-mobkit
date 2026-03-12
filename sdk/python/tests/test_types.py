@@ -9,6 +9,7 @@ from meerkat_mobkit.types import (
     MemoryQueryResult,
     ReconcileResult,
     RoutingResolution,
+    SendMessageResult,
     SpawnMemberResult,
     SpawnResult,
     StatusResult,
@@ -128,6 +129,20 @@ class TestSubscribeResult:
         assert isinstance(r.events[0], EventEnvelope)
         assert r.events[0].event_id == "ev-2"
         assert r.events[0].event == {"kind": "init"}
+
+
+class TestSendMessageResult:
+    def test_from_dict(self):
+        r = SendMessageResult.from_dict(
+            {
+                "accepted": True,
+                "member_id": "lead-1",
+                "session_id": "s-1",
+            }
+        )
+        assert r.accepted is True
+        assert r.member_id == "lead-1"
+        assert r.session_id == "s-1"
 
 
 class TestRoutingResolution:

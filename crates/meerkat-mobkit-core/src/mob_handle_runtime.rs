@@ -273,12 +273,12 @@ impl RealMobRuntime {
         self.handle.resume().await.map_err(Into::into)
     }
 
-    /// Send a message to a member (enforces external_addressable).
+    /// Send a message to a member and return the accepting session ID.
     pub async fn send_message(
         &self,
         member_id: &str,
         message: String,
-    ) -> Result<(), MobRuntimeError> {
+    ) -> Result<String, MobRuntimeError> {
         if member_id.trim().is_empty() {
             return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
         }
@@ -288,7 +288,7 @@ impl RealMobRuntime {
         self.handle
             .send_message(MeerkatId::from(member_id), message)
             .await
-            .map(|_session_id| ())
+            .map(|session_id| session_id.to_string())
             .map_err(Into::into)
     }
 
