@@ -1,3 +1,5 @@
+//! Console ingress types and JSON request/response structures.
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

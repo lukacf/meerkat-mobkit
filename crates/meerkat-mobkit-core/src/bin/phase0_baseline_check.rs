@@ -1,3 +1,5 @@
+//! Phase 0 binary — verifies Meerkat baseline symbols before runtime startup.
+
 use std::{process, time::Duration};
 
 use meerkat_mobkit_core::run_meerkat_baseline_verification_once;

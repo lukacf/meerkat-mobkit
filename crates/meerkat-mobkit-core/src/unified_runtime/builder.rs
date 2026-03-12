@@ -1,3 +1,5 @@
+//! Builder for constructing a configured UnifiedRuntime instance.
+
 use std::time::Duration;
 
 use meerkat_mob::SpawnMemberSpec;

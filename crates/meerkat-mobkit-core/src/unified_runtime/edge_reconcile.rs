@@ -1,3 +1,5 @@
+//! Edge topology reconciliation for distributed runtime nodes.
+
 use std::collections::BTreeSet;
 
 use meerkat_mob::{MeerkatId, SpawnMemberSpec};

@@ -1,3 +1,5 @@
+//! Routing subsystem — destination resolution and module-backed routing dispatch.
+
 use super::module_boundary::{
     call_module_mcp_tool_json, call_module_mcp_tool_text, mcp_required_error, module_uses_mcp,
     CORE_MODULE_MCP_TIMEOUT, ROUTER_RESOLVE_MCP_TOOL,

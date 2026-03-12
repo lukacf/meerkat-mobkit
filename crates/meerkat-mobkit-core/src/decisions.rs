@@ -1,3 +1,5 @@
+//! Policy decision framework — auth, console access, metrics, and runtime ops.
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +28,44 @@ pub enum DecisionPolicyError {
     InvalidSupportMatrix(String),
     InvalidTrustedAuthConfig(String),
 }
+
+impl std::fmt::Display for DecisionPolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyBigQueryDataset => write!(f, "empty BigQuery dataset"),
+            Self::EmptyBigQueryTable => write!(f, "empty BigQuery table"),
+            Self::InvalidBigQueryName(name) => write!(f, "invalid BigQuery name: {name}"),
+            Self::TomlParse(msg) => write!(f, "TOML parse error: {msg}"),
+            Self::MissingModuleId => write!(f, "missing module id"),
+            Self::MissingModuleCommand => write!(f, "missing module command"),
+            Self::AuthProviderMismatch => write!(f, "auth provider mismatch"),
+            Self::AuthProviderNotSupported => write!(f, "auth provider not supported"),
+            Self::EmailNotAllowlisted => write!(f, "email not allowlisted"),
+            Self::InvalidServiceIdentity => write!(f, "invalid service identity"),
+            Self::ServiceIdentityNotAllowlisted => write!(f, "service identity not allowlisted"),
+            Self::ReplicaCountMustBeOne(count) => {
+                write!(f, "replica count must be 1, got {count}")
+            }
+            Self::SloTargetsNotSupportedV01 => {
+                write!(f, "SLO targets not supported in v0.1")
+            }
+            Self::MissingReleaseTarget(target) => {
+                write!(f, "missing release target: {target}")
+            }
+            Self::DuplicateReleaseTarget(target) => {
+                write!(f, "duplicate release target: {target}")
+            }
+            Self::InvalidSupportMatrix(matrix) => {
+                write!(f, "invalid support matrix: {matrix}")
+            }
+            Self::InvalidTrustedAuthConfig(msg) => {
+                write!(f, "invalid trusted auth config: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DecisionPolicyError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BigQueryNaming {

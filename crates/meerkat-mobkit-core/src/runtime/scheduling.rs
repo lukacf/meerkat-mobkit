@@ -1,3 +1,5 @@
+//! Scheduling subsystem — schedule dispatch, tick evaluation, and module-backed execution.
+
 use super::module_boundary::{
     call_module_mcp_tool_json, mcp_required_error, module_uses_mcp, CORE_MODULE_MCP_TIMEOUT,
     SCHEDULING_DISPATCH_MCP_TOOL,

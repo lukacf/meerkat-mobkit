@@ -1,3 +1,5 @@
+//! Phase C binary — MCP fixture server for integration testing.
+
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};

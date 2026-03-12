@@ -11,12 +11,13 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 try:
-    from meerkat_mobkit import MobkitAsyncTypedClient, MobkitRpcError
+    from meerkat_mobkit import MobKit, MobKitRuntime, RpcError
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from meerkat_mobkit import (  # type: ignore[no-redef]
-        MobkitAsyncTypedClient,
-        MobkitRpcError,
+        MobKit,
+        MobKitRuntime,
+        RpcError,
     )
 
 
@@ -51,17 +52,17 @@ def _required_gateway_bin() -> str:
     return gateway_bin
 
 
-def _client() -> MobkitAsyncTypedClient:
-    client = getattr(app.state, "mobkit_client", None)
-    if not isinstance(client, MobkitAsyncTypedClient):
-        raise RuntimeError("MobKit async client is not initialized")
-    return client
+def _runtime() -> MobKitRuntime:
+    rt = getattr(app.state, "mobkit_runtime", None)
+    if not isinstance(rt, MobKitRuntime):
+        raise RuntimeError("MobKit runtime is not initialized")
+    return rt
 
 
 async def _typed_call_result(awaitable: Any) -> tuple[Any | None, dict[str, Any] | None]:
     try:
         return await awaitable, None
-    except MobkitRpcError as exc:
+    except RpcError as exc:
         return None, {
             "code": exc.code,
             "message": str(exc),
@@ -76,7 +77,9 @@ async def _typed_call_result(awaitable: Any) -> tuple[Any | None, dict[str, Any]
 async def startup_event() -> None:
     gateway_bin = _required_gateway_bin()
     app.state.gateway_bin = gateway_bin
-    app.state.mobkit_client = MobkitAsyncTypedClient.from_gateway_bin(gateway_bin)
+    rt = await MobKit.builder().gateway(gateway_bin).build()
+    await rt.connect()
+    app.state.mobkit_runtime = rt
 
 
 @app.get("/healthz")
@@ -89,14 +92,10 @@ async def healthz() -> dict[str, Any]:
 
 @app.post("/rpc/status")
 async def rpc_status(payload: RpcRequestIdPayload) -> dict[str, Any]:
-    client = _client()
-    envelope = await client.rpc(payload.request_id, "mobkit/status", {})
-    typed_result, typed_error = await _typed_call_result(
-        client.status(f"{payload.request_id}-typed")
-    )
+    handle = _runtime().mob_handle()
+    typed_result, typed_error = await _typed_call_result(handle.status())
     return {
         "route": "mobkit/status",
-        "jsonrpc_envelope": envelope,
         "typed_result": typed_result,
         "typed_error": typed_error,
     }
@@ -104,14 +103,10 @@ async def rpc_status(payload: RpcRequestIdPayload) -> dict[str, Any]:
 
 @app.post("/rpc/capabilities")
 async def rpc_capabilities(payload: RpcRequestIdPayload) -> dict[str, Any]:
-    client = _client()
-    envelope = await client.rpc(payload.request_id, "mobkit/capabilities", {})
-    typed_result, typed_error = await _typed_call_result(
-        client.capabilities(f"{payload.request_id}-typed")
-    )
+    handle = _runtime().mob_handle()
+    typed_result, typed_error = await _typed_call_result(handle.capabilities())
     return {
         "route": "mobkit/capabilities",
-        "jsonrpc_envelope": envelope,
         "typed_result": typed_result,
         "typed_error": typed_error,
     }
@@ -119,16 +114,12 @@ async def rpc_capabilities(payload: RpcRequestIdPayload) -> dict[str, Any]:
 
 @app.post("/rpc/reconcile")
 async def rpc_reconcile(payload: ReconcilePayload) -> dict[str, Any]:
-    client = _client()
-    envelope = await client.rpc(
-        payload.request_id, "mobkit/reconcile", {"modules": payload.modules}
-    )
+    handle = _runtime().mob_handle()
     typed_result, typed_error = await _typed_call_result(
-        client.reconcile(payload.modules, f"{payload.request_id}-typed")
+        handle.reconcile(payload.modules)
     )
     return {
         "route": "mobkit/reconcile",
-        "jsonrpc_envelope": envelope,
         "typed_result": typed_result,
         "typed_error": typed_error,
     }
@@ -136,17 +127,12 @@ async def rpc_reconcile(payload: ReconcilePayload) -> dict[str, Any]:
 
 @app.post("/rpc/spawn_member")
 async def rpc_spawn_member(payload: SpawnMemberPayload) -> dict[str, Any]:
-    client = _client()
-    params: dict[str, Any] = {}
-    if payload.module_id is not None:
-        params["module_id"] = payload.module_id
-    envelope = await client.rpc(payload.request_id, "mobkit/spawn_member", params)
+    handle = _runtime().mob_handle()
     typed_result, typed_error = await _typed_call_result(
-        client.spawn_member(payload.module_id or "", f"{payload.request_id}-typed")
+        handle.spawn_member(payload.module_id or "")
     )
     return {
         "route": "mobkit/spawn_member",
-        "jsonrpc_envelope": envelope,
         "typed_result": typed_result,
         "typed_error": typed_error,
     }
@@ -154,20 +140,16 @@ async def rpc_spawn_member(payload: SpawnMemberPayload) -> dict[str, Any]:
 
 @app.post("/rpc/events/subscribe")
 async def rpc_events_subscribe(payload: EventsSubscribePayload) -> dict[str, Any]:
-    client = _client()
-    params: dict[str, Any] = {"scope": payload.scope}
-    if payload.last_event_id is not None:
-        params["last_event_id"] = payload.last_event_id
-    if payload.agent_id is not None:
-        params["agent_id"] = payload.agent_id
-
-    envelope = await client.rpc(payload.request_id, "mobkit/events/subscribe", params)
+    handle = _runtime().mob_handle()
     typed_result, typed_error = await _typed_call_result(
-        client.subscribe_events(params, f"{payload.request_id}-typed")
+        handle.subscribe_events(
+            scope=payload.scope,
+            last_event_id=payload.last_event_id,
+            agent_id=payload.agent_id,
+        )
     )
     return {
         "route": "mobkit/events/subscribe",
-        "jsonrpc_envelope": envelope,
         "typed_result": typed_result,
         "typed_error": typed_error,
     }
@@ -175,28 +157,12 @@ async def rpc_events_subscribe(payload: EventsSubscribePayload) -> dict[str, Any
 
 @app.get("/flow/reference")
 async def flow_reference() -> dict[str, Any]:
-    client = _client()
-    status = await client.rpc("h2-flow-status", "mobkit/status", {})
-    capabilities = await client.rpc("h2-flow-capabilities", "mobkit/capabilities", {})
-    reconcile = await client.rpc(
-        "h2-flow-reconcile", "mobkit/reconcile", {"modules": ["routing"]}
-    )
-    spawn_member = await client.rpc(
-        "h2-flow-spawn", "mobkit/spawn_member", {"module_id": "routing"}
-    )
-    events_subscribe = await client.rpc(
-        "h2-flow-events", "mobkit/events/subscribe", {"scope": "mob"}
-    )
-
-    typed = {
-        "status": await client.status("h2-flow-status-typed"),
-        "capabilities": await client.capabilities("h2-flow-capabilities-typed"),
-        "reconcile": await client.reconcile(["routing"], "h2-flow-reconcile-typed"),
-        "spawn_member": await client.spawn_member("routing", "h2-flow-spawn-typed"),
-        "events_subscribe": await client.subscribe_events(
-            {"scope": "mob"}, "h2-flow-events-typed"
-        ),
-    }
+    handle = _runtime().mob_handle()
+    status = await handle.status()
+    capabilities = await handle.capabilities()
+    reconcile = await handle.reconcile(["routing"])
+    spawn_member = await handle.spawn_member("routing")
+    events_subscribe = await handle.subscribe_events(scope="mob")
 
     return {
         "route": "h2-flow",
@@ -205,5 +171,4 @@ async def flow_reference() -> dict[str, Any]:
         "reconcile": reconcile,
         "spawn_member": spawn_member,
         "events_subscribe": events_subscribe,
-        "typed": typed,
     }

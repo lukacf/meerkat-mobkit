@@ -1,3 +1,5 @@
+//! Parameter parsing for routing and delivery RPC methods.
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

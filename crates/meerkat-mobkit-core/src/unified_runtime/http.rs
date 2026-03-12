@@ -1,3 +1,5 @@
+//! HTTP server and route assembly for the unified runtime.
+
 use axum::routing::get;
 use axum::Router;
 

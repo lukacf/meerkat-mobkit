@@ -1,3 +1,5 @@
+//! Mob member lifecycle management — bootstrap, spawn, reconcile, and roster queries.
+
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -8,9 +10,12 @@ use meerkat_mob::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Member state constant for active members.
 pub const MEMBER_STATE_ACTIVE: &str = "active";
+/// Member state constant for members transitioning to retired.
 pub const MEMBER_STATE_RETIRING: &str = "retiring";
 
+/// Options for bootstrapping a mob runtime.
 #[derive(Clone, Default)]
 pub struct MobBootstrapOptions {
     pub allow_ephemeral_sessions: bool,
@@ -18,6 +23,7 @@ pub struct MobBootstrapOptions {
     pub default_llm_client: Option<Arc<dyn LlmClient>>,
 }
 
+/// Specification for bootstrapping a mob runtime from a definition, storage, and session service.
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
     pub storage: MobStorage,
@@ -49,6 +55,7 @@ impl MobBootstrapSpec {
     }
 }
 
+/// Error returned by mob runtime operations.
 #[derive(Debug)]
 pub enum MobRuntimeError {
     Mob(MobError),
@@ -72,6 +79,7 @@ impl From<MobError> for MobRuntimeError {
     }
 }
 
+/// Point-in-time snapshot of a mob member's state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MobMemberSnapshot {
     pub meerkat_id: String,
@@ -82,6 +90,7 @@ pub struct MobMemberSnapshot {
     pub labels: std::collections::BTreeMap<String, String>,
 }
 
+/// Report from a reconcile operation showing desired, retained, spawned, and retired members.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct MobReconcileReport {
     pub desired: Vec<String>,
@@ -91,6 +100,7 @@ pub struct MobReconcileReport {
     pub retired: Vec<String>,
 }
 
+/// Options controlling reconciliation behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MobReconcileOptions {
     pub retire_stale: bool,
@@ -117,6 +127,7 @@ fn snapshot_from_entry(entry: RosterEntry) -> MobMemberSnapshot {
     }
 }
 
+/// Live mob runtime backed by a `MobHandle`.
 #[derive(Clone)]
 pub struct RealMobRuntime {
     handle: MobHandle,

@@ -1,3 +1,5 @@
+//! Governance validation for runtime configuration and deployment policies.
+
 use std::fmt;
 
 pub const STRICT_TRACEABILITY_STATUSES: &[&str] = &[

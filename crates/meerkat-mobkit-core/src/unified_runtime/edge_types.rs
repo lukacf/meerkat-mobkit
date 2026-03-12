@@ -1,3 +1,5 @@
+//! Edge discovery types and traits for distributed runtime topology.
+
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;

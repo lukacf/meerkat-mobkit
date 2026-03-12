@@ -1,3 +1,5 @@
+//! Persistent operational event log with buffered ingestion and pluggable storage.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -264,7 +266,7 @@ async fn flush_batch(
     let events = std::mem::take(batch);
     if let Err(err) = store.append_batch(events).await {
         // Fire-and-forget error reporting via the error hook
-        if let Some(ref hook) = error_hook {
+        if let Some(hook) = error_hook {
             let hook = hook.clone();
             let msg = format!("event log flush failed: {err}");
             tokio::spawn(async move {

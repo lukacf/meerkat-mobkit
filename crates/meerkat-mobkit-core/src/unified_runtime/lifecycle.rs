@@ -1,3 +1,5 @@
+//! Runtime lifecycle management — startup, shutdown, rediscovery, and periodic maintenance.
+
 use std::future::Future;
 use std::sync::atomic::Ordering;
 use std::time::Duration;

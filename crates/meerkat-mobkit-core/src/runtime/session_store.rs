@@ -1,3 +1,5 @@
+//! Session store subsystem — persistence backends and session lifecycle operations.
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

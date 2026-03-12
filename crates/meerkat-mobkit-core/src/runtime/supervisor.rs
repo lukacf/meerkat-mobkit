@@ -1,3 +1,5 @@
+//! Module supervisor — process lifecycle, health monitoring, and restart logic.
+
 use super::module_boundary::{module_env_with_extra, module_uses_mcp, probe_module_mcp_tools};
 use super::*;
 

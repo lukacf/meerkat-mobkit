@@ -1,3 +1,5 @@
+//! Wire protocol parsing for the gateway RPC transport.
+
 use serde::de::DeserializeOwned;
 
 use crate::types::{EventEnvelope, UnifiedEvent};
@@ -9,6 +11,19 @@ pub enum ProtocolParseError {
     UnexpectedEventKind,
     UnexpectedPayloadType,
 }
+
+impl std::fmt::Display for ProtocolParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidJson => write!(f, "invalid JSON"),
+            Self::InvalidSchema => write!(f, "invalid schema"),
+            Self::UnexpectedEventKind => write!(f, "unexpected event kind"),
+            Self::UnexpectedPayloadType => write!(f, "unexpected payload type"),
+        }
+    }
+}
+
+impl std::error::Error for ProtocolParseError {}
 
 pub fn parse_unified_event_line(
     line: &str,

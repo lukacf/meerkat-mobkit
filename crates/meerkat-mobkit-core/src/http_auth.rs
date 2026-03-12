@@ -1,3 +1,5 @@
+//! HTTP middleware for Bearer token authentication using JWT/JWKS.
+
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
