@@ -97,16 +97,4 @@ tag-message = "Release v{{version}}"
 publish = false
 push = true
 
-# Temporary: meerkat 0.4.7 has an include_str! that escapes the crate boundary.
-# Patching the full dependency tree to avoid type mismatches between local and
-# crates.io versions. Remove once meerkat 0.4.8 is published with the fix.
-[patch.crates-io]
-meerkat = { path = "/Users/luka/src/raik/meerkat" }
-meerkat-core = { path = "/Users/luka/src/raik/meerkat-core" }
-meerkat-client = { path = "/Users/luka/src/raik/meerkat-client" }
-meerkat-tools = { path = "/Users/luka/src/raik/meerkat-tools" }
-meerkat-session = { path = "/Users/luka/src/raik/meerkat-session" }
-meerkat-comms = { path = "/Users/luka/src/raik/meerkat-comms" }
-meerkat-mob = { path = "/Users/luka/src/raik/meerkat-mob" }
-meerkat-mcp = { path = "/Users/luka/src/raik/meerkat-mcp" }
 

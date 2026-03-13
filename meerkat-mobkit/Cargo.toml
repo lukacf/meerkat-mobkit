@@ -30,12 +30,12 @@ axum = { version = "0.7", features = ["json"] }
 async-stream = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 futures = "0.3"
-meerkat-core = "0.4.7"
-meerkat-client = "0.4.7"
-meerkat-mob = "0.4.7"
-meerkat-mcp = "0.4.7"
-meerkat = { version = "0.4.7", features = ["comms"] }
-meerkat-session = "0.4.7"
+meerkat-core = "0.4.8"
+meerkat-client = "0.4.8"
+meerkat-mob = "0.4.8"
+meerkat-mcp = "0.4.8"
+meerkat = { version = "0.4.8", features = ["comms"] }
+meerkat-session = "0.4.8"
 tempfile = "3"
 async-trait = "0.1"
 
