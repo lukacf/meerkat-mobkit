@@ -13,7 +13,8 @@
     clippy::clone_on_copy,
     clippy::manual_assert,
     clippy::unwrap_in_result,
-    clippy::useless_vec
+    clippy::useless_vec,
+    clippy::unnecessary_semicolon
 )]
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -26,8 +27,9 @@ use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::{
     AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, CreateSessionRequest,
-    EventStream, RunResult, SessionControlError, SessionError, SessionId, SessionQuery,
-    SessionService, SessionServiceCommsExt, SessionServiceControlExt, SessionSummary, SessionView,
+    EventStream, RunResult, SessionControlError, SessionError, SessionHistoryPage,
+    SessionHistoryQuery, SessionId, SessionQuery, SessionService, SessionServiceCommsExt,
+    SessionServiceControlExt, SessionServiceHistoryExt, SessionSummary, SessionView,
     StartTurnRequest, StreamError,
 };
 use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
@@ -136,6 +138,17 @@ impl SessionServiceControlExt for CheckpointerCancelProbeSessionService {
         req: AppendSystemContextRequest,
     ) -> Result<AppendSystemContextResult, SessionControlError> {
         self.inner.append_system_context(id, req).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionServiceHistoryExt for CheckpointerCancelProbeSessionService {
+    async fn read_history(
+        &self,
+        id: &SessionId,
+        query: SessionHistoryQuery,
+    ) -> Result<SessionHistoryPage, SessionError> {
+        self.inner.read_history(id, query).await
     }
 }
 
