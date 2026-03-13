@@ -1,7 +1,7 @@
 # MobKit
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![Rust: 1.85+](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust: 1.94+](https://img.shields.io/badge/rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 
 Companion orchestration platform for the
 [Meerkat](https://github.com/lukacf/meerkat) multi-agent runtime.
@@ -12,7 +12,7 @@ session persistence, and admin console.
 
 | Area | Path |
 |------|------|
-| Rust core | `crates/meerkat-mobkit-core/` |
+| Rust core | `meerkat-mobkit-core/` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | TypeScript SDK | `sdk/typescript/` |
 | Docs (Mintlify) | `docs/` |

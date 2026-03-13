@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/meerkat-mobkit-core"]
+members = ["meerkat-mobkit-core"]
 resolver = "2"
 
 [workspace.package]

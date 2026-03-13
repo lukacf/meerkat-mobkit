@@ -30,9 +30,9 @@ if echo "$CHANGED_FILES" | grep -qE '^Cargo\.(toml|lock)$'; then
   exit $?
 fi
 
-# Extract crate directories from changed file paths (crates/<name>/...)
+# Extract crate directories from changed file paths (<name>/...)
 CHANGED_CRATES=$(echo "$CHANGED_FILES" \
-  | sed -n 's|^\(crates/[^/]*\)/.*|\1|p' \
+  | sed -n 's|^\([^/]*\)/.*|\1|p' \
   | sort -u \
   | while read -r dir; do
       if [ -f "$dir/Cargo.toml" ]; then
