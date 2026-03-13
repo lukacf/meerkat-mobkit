@@ -3,10 +3,10 @@ use std::process::Command;
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    handle_mobkit_rpc_json, start_mobkit_runtime, DiscoverySpec, MobKitConfig, ModuleConfig,
-    PreSpawnData, RestartPolicy, UnifiedEvent,
+    DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData, RestartPolicy, UnifiedEvent,
+    handle_mobkit_rpc_json, start_mobkit_runtime,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
 const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";
@@ -821,9 +821,11 @@ fn phase10_rate_limit_cannot_be_bypassed_via_artificial_delivery_clock_advanceme
     assert_eq!(send_a_1["result"]["status"], json!("sent"));
     assert_eq!(send_b_1["result"]["status"], json!("sent"));
     assert_eq!(send_a_2["error"]["code"], json!(-32602));
-    assert!(send_a_2["error"]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("rate limit exceeded for sink 'email'")));
+    assert!(
+        send_a_2["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("rate limit exceeded for sink 'email'"))
+    );
 }
 
 #[test]

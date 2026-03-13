@@ -431,11 +431,7 @@ fn extract_uri_host(uri: &str) -> Option<&str> {
     let host = authority
         .split_once(':')
         .map_or(authority, |(hostname, _)| hostname);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host)
-    }
+    if host.is_empty() { None } else { Some(host) }
 }
 
 fn is_development_host(host: &str) -> bool {

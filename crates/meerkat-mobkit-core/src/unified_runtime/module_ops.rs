@@ -13,10 +13,10 @@ use crate::runtime::{
     SubscribeRequest, SubscribeResponse,
 };
 use crate::types::{EventEnvelope, UnifiedEvent};
-use crate::{route_module_call, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse};
+use crate::{ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse, route_module_call};
 
-use super::types::UnifiedRuntimeError;
 use super::UnifiedRuntime;
+use super::types::UnifiedRuntimeError;
 
 /// Run a blocking closure on a dedicated thread to isolate it from the
 /// tokio runtime. MCP boundary calls check `Handle::try_current()` and
@@ -30,7 +30,10 @@ where
     R: Send,
 {
     std::thread::scope(|scope| {
-        scope.spawn(f).join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+        scope
+            .spawn(f)
+            .join()
+            .unwrap_or_else(|e| std::panic::resume_unwind(e))
     })
 }
 
@@ -76,7 +79,10 @@ impl UnifiedRuntime {
         schedules: &[ScheduleDefinition],
         tick_ms: u64,
     ) -> Result<ScheduleEvaluation, ScheduleValidationError> {
-        self.module_runtime.lock().await.evaluate_schedule_tick(schedules, tick_ms)
+        self.module_runtime
+            .lock()
+            .await
+            .evaluate_schedule_tick(schedules, tick_ms)
     }
 
     pub async fn list_runtime_routes(&self) -> Vec<RuntimeRoute> {
@@ -94,10 +100,16 @@ impl UnifiedRuntime {
         &self,
         route_key: &str,
     ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
-        self.module_runtime.lock().await.delete_runtime_route(route_key)
+        self.module_runtime
+            .lock()
+            .await
+            .delete_runtime_route(route_key)
     }
 
-    pub async fn delivery_history(&self, request: DeliveryHistoryRequest) -> DeliveryHistoryResponse {
+    pub async fn delivery_history(
+        &self,
+        request: DeliveryHistoryRequest,
+    ) -> DeliveryHistoryResponse {
         self.module_runtime.lock().await.delivery_history(request)
     }
 
@@ -120,7 +132,10 @@ impl UnifiedRuntime {
         &self,
         request: GatingEvaluateRequest,
     ) -> GatingEvaluateResult {
-        self.module_runtime.lock().await.evaluate_gating_action(request)
+        self.module_runtime
+            .lock()
+            .await
+            .evaluate_gating_action(request)
     }
 
     pub async fn list_gating_pending(&self) -> Vec<GatingPendingEntry> {
@@ -131,7 +146,10 @@ impl UnifiedRuntime {
         &self,
         request: GatingDecideRequest,
     ) -> Result<GatingDecisionResult, GatingDecideError> {
-        self.module_runtime.lock().await.decide_gating_action(request)
+        self.module_runtime
+            .lock()
+            .await
+            .decide_gating_action(request)
     }
 
     pub async fn gating_audit_entries(&self, limit: usize) -> Vec<GatingAuditEntry> {
@@ -163,7 +181,12 @@ impl UnifiedRuntime {
     }
 
     pub async fn module_health_transitions(&self) -> Vec<ModuleHealthTransition> {
-        self.module_runtime.lock().await.supervisor_report.transitions.clone()
+        self.module_runtime
+            .lock()
+            .await
+            .supervisor_report
+            .transitions
+            .clone()
     }
 
     pub async fn module_events(&self) -> Vec<EventEnvelope<UnifiedEvent>> {
@@ -175,7 +198,9 @@ impl UnifiedRuntime {
         request: SubscribeRequest,
     ) -> Result<SubscribeResponse, UnifiedRuntimeError> {
         self.drain_mob_agent_events().await?;
-        self.module_runtime.lock().await
+        self.module_runtime
+            .lock()
+            .await
             .subscribe_events(request)
             .map_err(UnifiedRuntimeError::Subscribe)
     }

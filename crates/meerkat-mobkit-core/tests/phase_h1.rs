@@ -1,21 +1,21 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::to_bytes;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
 use axum::Router;
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use axum::body::Body;
+use axum::body::to_bytes;
+use axum::http::{Request, StatusCode};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
 use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, console_json_router, handle_console_rest_json_route, AuthPolicy,
-    BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec, MobBootstrapOptions,
-    MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state, console_json_router,
+    handle_console_rest_json_route,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -433,7 +433,10 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
         .runtime
         .send_message("unknown-member-id", "should fail".to_string())
         .await;
-    assert!(unknown_result.is_err(), "send_message to unknown agent should fail");
+    assert!(
+        unknown_result.is_err(),
+        "send_message to unknown agent should fail"
+    );
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());

@@ -13,8 +13,8 @@ use super::types::{
     UnifiedRuntimeBootstrapError, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
 };
 use super::{
-    discovery_spec_to_spawn_spec, ErrorHook, EventLogConfig, PostReconcileHook, PostSpawnHook,
-    UnifiedRuntime, DEFAULT_DRAIN_TIMEOUT,
+    DEFAULT_DRAIN_TIMEOUT, ErrorHook, EventLogConfig, PostReconcileHook, PostSpawnHook,
+    UnifiedRuntime, discovery_spec_to_spawn_spec,
 };
 
 #[derive(Default)]
@@ -137,13 +137,11 @@ impl UnifiedRuntimeBuilder {
         };
 
         let pre_spawn_context = if let Some(hook) = self.pre_spawn_hook {
-            hook()
-                .await
-                .map_err(|err| {
-                    UnifiedRuntimeBuilderError::Bootstrap(
-                        UnifiedRuntimeBootstrapError::PreSpawnHook(err.to_string()),
-                    )
-                })?
+            hook().await.map_err(|err| {
+                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::PreSpawnHook(
+                    err.to_string(),
+                ))
+            })?
         } else {
             serde_json::Value::Null
         };

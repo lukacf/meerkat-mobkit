@@ -5,7 +5,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const SERVER_VERSION: &str = "0.1.0";
@@ -325,21 +325,13 @@ fn should_hang(operation: &str, tool_name: Option<&str>) -> bool {
         .ok()
         .and_then(|raw| {
             let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(raw)
-            }
+            if trimmed.is_empty() { None } else { Some(raw) }
         })
         .or_else(|| {
             let path = env::var(HANG_ON_FILE_ENV).ok()?;
             let raw = fs::read_to_string(path).ok()?;
             let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(raw)
-            }
+            if trimmed.is_empty() { None } else { Some(raw) }
         });
     let Some(raw) = raw else {
         return false;

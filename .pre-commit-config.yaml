@@ -1,0 +1,85 @@
+# Pre-commit configuration for MobKit
+# Install: pip install pre-commit
+# Setup: pre-commit install && pre-commit install --hook-type pre-push
+
+default_stages: [pre-commit]
+
+repos:
+  # On commit: auto-format Rust code
+  - repo: local
+    hooks:
+      - id: cargo-fmt-fix
+        name: cargo fmt (auto-fix)
+        entry: cargo fmt --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # On push: secret detection
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        stages: [pre-push]
+
+  # On push: file hygiene checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-push]
+      - id: end-of-file-fixer
+        stages: [pre-push]
+      - id: check-yaml
+        stages: [pre-push]
+      - id: check-toml
+        stages: [pre-push]
+      - id: check-merge-conflict
+        stages: [pre-push]
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        stages: [pre-push]
+
+  # On push: formatting check
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # On push: full workspace clippy (compile check + lint)
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy (workspace)
+        entry: cargo clippy --workspace --all-targets -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # On push: workspace build check
+  - repo: local
+    hooks:
+      - id: cargo-build
+        name: cargo build (workspace)
+        entry: cargo build --workspace
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # On push: unit tests
+  - repo: local
+    hooks:
+      - id: cargo-test
+        name: workspace test gate
+        entry: cargo nextest run --workspace -E 'not test(phase0_governance)' --no-fail-fast
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]

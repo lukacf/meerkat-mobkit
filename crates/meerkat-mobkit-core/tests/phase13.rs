@@ -3,17 +3,17 @@ use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::{self, JoinHandle},
 };
 
 use meerkat_mobkit_core::{
-    handle_mobkit_rpc_json, start_mobkit_runtime, start_mobkit_runtime_with_options, DiscoverySpec,
-    ElephantMemoryBackendConfig, MemoryBackendConfig, MobKitConfig, RuntimeOptions,
+    DiscoverySpec, ElephantMemoryBackendConfig, MemoryBackendConfig, MobKitConfig, RuntimeOptions,
+    handle_mobkit_rpc_json, start_mobkit_runtime, start_mobkit_runtime_with_options,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tempfile::tempdir;
 
 fn parse_response(line: &str) -> Value {
@@ -441,10 +441,12 @@ fn phase13_elephant_memory_backend_persists_across_runtime_restart() {
         )
     );
     assert!(endpoint_server.hit_count() >= 3);
-    assert!(endpoint_server
-        .paths()
-        .iter()
-        .all(|path| path == "/v1/health"));
+    assert!(
+        endpoint_server
+            .paths()
+            .iter()
+            .all(|path| path == "/v1/health")
+    );
 }
 
 #[test]
@@ -500,10 +502,12 @@ fn phase13_elephant_memory_backend_endpoint_failure_maps_to_typed_rpc_error() {
     runtime.shutdown();
 
     assert_eq!(indexed["error"]["code"], json!(-32010));
-    assert!(indexed["error"]["message"]
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("Memory backend unavailable:"));
+    assert!(
+        indexed["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("Memory backend unavailable:")
+    );
     assert_eq!(
         (
             queried["result"]["assertions"].clone(),

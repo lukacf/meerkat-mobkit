@@ -116,6 +116,10 @@ pub trait Discovery: Send + Sync {
 /// This enables pre-spawn to produce data (resume maps, session queries, etc.) that
 /// discovery consumes, replacing the need for shared mutable side-channel state.
 pub type PreSpawnHook = Box<
-    dyn FnOnce() -> Pin<Box<dyn Future<Output = Result<PreSpawnContext, Box<dyn std::error::Error + Send>>> + Send>>
-        + Send,
+    dyn FnOnce() -> Pin<
+            Box<
+                dyn Future<Output = Result<PreSpawnContext, Box<dyn std::error::Error + Send>>>
+                    + Send,
+            >,
+        > + Send,
 >;

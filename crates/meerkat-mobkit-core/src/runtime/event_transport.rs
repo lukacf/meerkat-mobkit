@@ -85,7 +85,9 @@ impl MobkitRuntimeHandle {
             .iter()
             .filter(|event| event_matches_request(event, &request))
             .collect();
-        let skip = scoped_events.len().saturating_sub(SUBSCRIBE_REPLAY_EVENT_CAP);
+        let skip = scoped_events
+            .len()
+            .saturating_sub(SUBSCRIBE_REPLAY_EVENT_CAP);
         let bounded = &scoped_events[skip..];
 
         let replay_slice = match request.last_event_id.as_ref() {

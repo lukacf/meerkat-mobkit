@@ -2331,7 +2331,7 @@ dependencies = [
 
 [[package]]
 name = "meerkat-mobkit-core"
-version = "0.1.0"
+version = "0.4.6"
 dependencies = [
  "async-stream",
  "async-trait",

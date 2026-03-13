@@ -1,7 +1,7 @@
 //! HTTP routes for the admin console REST API.
 
 use axum::extract::State;
-use axum::http::{header, StatusCode, Uri};
+use axum::http::{StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -10,8 +10,8 @@ use serde_json::Value;
 
 use crate::mob_handle_runtime::RealMobRuntime;
 use crate::runtime::{
-    handle_console_rest_json_route_with_snapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest,
-    RuntimeDecisionState,
+    ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
+    handle_console_rest_json_route_with_snapshot,
 };
 
 #[derive(Clone)]

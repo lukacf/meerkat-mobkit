@@ -1,11 +1,11 @@
 use std::{process::Command, time::Duration};
 
 use meerkat_mobkit_core::{
-    parse_module_event_line, run_discovered_module_once, run_meerkat_baseline_verification_once,
-    run_module_boundary_once, run_rpc_capabilities_boundary_once, BaselineRuntimeError,
-    DiscoverySpec, MobKitConfig, ModuleConfig, NormalizationError, PreSpawnData,
-    ProcessBoundaryError, ProtocolParseError, RestartPolicy, RpcRuntimeError, RuntimeBoundaryError,
-    UnifiedEvent,
+    BaselineRuntimeError, DiscoverySpec, MobKitConfig, ModuleConfig, NormalizationError,
+    PreSpawnData, ProcessBoundaryError, ProtocolParseError, RestartPolicy, RpcRuntimeError,
+    RuntimeBoundaryError, UnifiedEvent, parse_module_event_line, run_discovered_module_once,
+    run_meerkat_baseline_verification_once, run_module_boundary_once,
+    run_rpc_capabilities_boundary_once,
 };
 use serde::Deserialize;
 use serde_json::json;

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::routing::get;
 use axum::{Extension, Router};
 use serde_json::json;
@@ -39,10 +39,7 @@ impl OidcMockServer {
             for (status, body) in responses {
                 let mut stream = wait_for_connection(&listener, Duration::from_secs(5));
                 let request_line = read_request_line(&mut stream);
-                thread_captured
-                    .lock()
-                    .expect("lock")
-                    .push(request_line);
+                thread_captured.lock().expect("lock").push(request_line);
                 let response = format!(
                     "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
@@ -74,7 +71,10 @@ fn wait_for_connection(listener: &TcpListener, timeout: Duration) -> TcpStream {
         match listener.accept() {
             Ok((stream, _)) => return stream,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(Instant::now() < deadline, "timed out waiting for connection");
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for connection"
+                );
                 thread::sleep(Duration::from_millis(5));
             }
             Err(e) => panic!("accept failed: {e}"),
@@ -101,7 +101,7 @@ fn json_body(value: &serde_json::Value) -> String {
 // ---------------------------------------------------------------------------
 
 fn build_hs256_token(secret: &[u8], kid: Option<&str>, claims: &serde_json::Value) -> String {
-    use jsonwebtoken::{encode, EncodingKey, Header};
+    use jsonwebtoken::{EncodingKey, Header, encode};
     let mut header = Header::new(jsonwebtoken::Algorithm::HS256);
     header.kid = kid.map(ToString::to_string);
     encode(&header, claims, &EncodingKey::from_secret(secret)).expect("encode test JWT")
@@ -112,8 +112,8 @@ fn hs256_secret() -> Vec<u8> {
 }
 
 fn hs256_jwk_json(secret: &[u8], kid: &str) -> serde_json::Value {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let k = URL_SAFE_NO_PAD.encode(secret);
     json!({
         "kty": "oct",
@@ -131,11 +131,7 @@ fn now_epoch() -> u64 {
 }
 
 /// Build a standard pair of discovery + JWKS response bodies.
-fn discovery_jwks_responses(
-    base_url: &str,
-    secret: &[u8],
-    kid: &str,
-) -> Vec<(u16, String)> {
+fn discovery_jwks_responses(base_url: &str, secret: &[u8], kid: &str) -> Vec<(u16, String)> {
     vec![
         (
             200,
@@ -191,9 +187,8 @@ async fn jwks_cache_refresh_and_validate_token() {
     });
     let token = build_hs256_token(&secret, Some("key-1"), &claims);
 
-    let mock = OidcMockServer::start(|base_url| {
-        discovery_jwks_responses(base_url, &secret, "key-1")
-    });
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
 
     let cache = make_cache_with_issuer(mock.base_url(), "https://test-issuer.example.com");
     let jwt = cache
@@ -270,9 +265,8 @@ async fn jwks_cache_kid_miss_triggers_refresh() {
 #[tokio::test]
 async fn jwks_cache_returns_error_on_invalid_token() {
     let secret = hs256_secret();
-    let mock = OidcMockServer::start(|base_url| {
-        discovery_jwks_responses(base_url, &secret, "key-1")
-    });
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
 
     let cache = make_cache(mock.base_url());
     let result = cache.validate_token("not.a.valid-token").await;
@@ -288,9 +282,8 @@ async fn jwks_cache_expired_token_rejected() {
     });
     let token = build_hs256_token(&secret, Some("key-1"), &claims);
 
-    let mock = OidcMockServer::start(|base_url| {
-        discovery_jwks_responses(base_url, &secret, "key-1")
-    });
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
 
     let cache = make_cache(mock.base_url());
     let result = cache.validate_token(&token).await;
@@ -316,9 +309,8 @@ fn build_test_app(cache: JwksCache) -> Router {
 #[tokio::test]
 async fn auth_middleware_returns_401_without_token() {
     let secret = hs256_secret();
-    let mock = OidcMockServer::start(|base_url| {
-        discovery_jwks_responses(base_url, &secret, "key-1")
-    });
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
 
     let app = build_test_app(make_cache(mock.base_url()));
 
@@ -381,9 +373,8 @@ async fn auth_middleware_passes_valid_token_and_injects_identity() {
     });
     let token = build_hs256_token(&secret, Some("key-1"), &claims);
 
-    let mock = OidcMockServer::start(|base_url| {
-        discovery_jwks_responses(base_url, &secret, "key-1")
-    });
+    let mock =
+        OidcMockServer::start(|base_url| discovery_jwks_responses(base_url, &secret, "key-1"));
 
     let app = build_test_app(make_cache(mock.base_url()));
 

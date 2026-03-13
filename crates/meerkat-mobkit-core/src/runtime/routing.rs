@@ -1,14 +1,18 @@
 //! Routing subsystem — destination resolution and module-backed routing dispatch.
 
 use super::module_boundary::{
-    call_module_mcp_tool_json, call_module_mcp_tool_text, mcp_required_error, module_uses_mcp,
-    CORE_MODULE_MCP_TIMEOUT, ROUTER_RESOLVE_MCP_TOOL,
+    CORE_MODULE_MCP_TIMEOUT, ROUTER_RESOLVE_MCP_TOOL, call_module_mcp_tool_json,
+    call_module_mcp_tool_text, mcp_required_error, module_uses_mcp,
 };
 use super::*;
 
 fn require_non_empty(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 const MCP_REQUIRED_CORE_MODULES: [&str; 4] = ["router", "delivery", "memory", "scheduling"];
@@ -183,10 +187,10 @@ impl MobkitRuntimeHandle {
         &mut self,
         route: RuntimeRoute,
     ) -> Result<RuntimeRoute, RuntimeRouteMutationError> {
-        let route_key = require_non_empty(&route.route_key)
-            .ok_or(RuntimeRouteMutationError::EmptyRouteKey)?;
-        let recipient = require_non_empty(&route.recipient)
-            .ok_or(RuntimeRouteMutationError::EmptyRecipient)?;
+        let route_key =
+            require_non_empty(&route.route_key).ok_or(RuntimeRouteMutationError::EmptyRouteKey)?;
+        let recipient =
+            require_non_empty(&route.recipient).ok_or(RuntimeRouteMutationError::EmptyRecipient)?;
         if route
             .channel
             .as_ref()
@@ -194,8 +198,7 @@ impl MobkitRuntimeHandle {
         {
             return Err(RuntimeRouteMutationError::InvalidChannel);
         }
-        let sink = require_non_empty(&route.sink)
-            .ok_or(RuntimeRouteMutationError::EmptySink)?;
+        let sink = require_non_empty(&route.sink).ok_or(RuntimeRouteMutationError::EmptySink)?;
         let target_module = require_non_empty(&route.target_module)
             .ok_or(RuntimeRouteMutationError::EmptyTargetModule)?;
         if route
@@ -250,12 +253,14 @@ impl MobkitRuntimeHandle {
             return Err(RoutingResolveError::DeliveryModuleNotLoaded);
         }
 
-        let recipient = require_non_empty(&request.recipient)
-            .ok_or(RoutingResolveError::EmptyRecipient)?;
+        let recipient =
+            require_non_empty(&request.recipient).ok_or(RoutingResolveError::EmptyRecipient)?;
         let request_value = serde_json::to_value(&request).unwrap_or(Value::Null);
 
         let channel = require_non_empty(
-            &request.channel.unwrap_or_else(|| "notification".to_string()),
+            &request
+                .channel
+                .unwrap_or_else(|| "notification".to_string()),
         )
         .ok_or(RoutingResolveError::InvalidChannel)?;
         let mut retry_max = request.retry_max.unwrap_or(1);

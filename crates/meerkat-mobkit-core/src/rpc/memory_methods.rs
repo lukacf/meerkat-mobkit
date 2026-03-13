@@ -39,9 +39,7 @@ impl MemoryParamsError {
 
     pub(super) fn message(&self) -> String {
         match self {
-            MemoryParamsError::ParamsMustBeObject => {
-                "params must be a JSON object".to_string()
-            }
+            MemoryParamsError::ParamsMustBeObject => "params must be a JSON object".to_string(),
             MemoryParamsError::EntityRequired => "entity must be a non-empty string".to_string(),
             MemoryParamsError::TopicRequired => "topic must be a non-empty string".to_string(),
             MemoryParamsError::StoreMustBeString => {
@@ -62,12 +60,8 @@ impl MemoryParamsError {
             MemoryParamsError::ConflictReasonMustBeString => {
                 "conflict_reason must be a string when provided".to_string()
             }
-            MemoryParamsError::EntityMustBeString => {
-                "entity filter must be a string".to_string()
-            }
-            MemoryParamsError::TopicMustBeString => {
-                "topic filter must be a string".to_string()
-            }
+            MemoryParamsError::EntityMustBeString => "entity filter must be a string".to_string(),
+            MemoryParamsError::TopicMustBeString => "topic filter must be a string".to_string(),
             MemoryParamsError::Index(MemoryIndexError::EntityRequired) => {
                 "entity must be a non-empty string".to_string()
             }

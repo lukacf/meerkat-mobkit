@@ -42,7 +42,7 @@ fn phase5_json_store_recovers_stale_lock_and_persists_rows() {
         updated_at_ms: 100,
         deleted: false,
         payload: json!({"step":"create"}),
-    ..Default::default()
+        ..Default::default()
     }];
     store
         .append_rows(&writes)
@@ -79,7 +79,7 @@ fn phase5_json_store_blocks_on_fresh_lock() {
             updated_at_ms: 200,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         }])
         .expect_err("fresh lock should block writer");
 
@@ -114,7 +114,7 @@ async fn phase5_json_store_does_not_evict_aged_lock_with_live_owner() {
             updated_at_ms: 250,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         }])
         .expect_err("aged lock with live owner should block writer");
 
@@ -138,28 +138,28 @@ async fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         },
     ];
     // read_latest_rows now uses server-side QUALIFY dedup; mock returns already-deduped rows
@@ -189,7 +189,8 @@ async fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
         .with_api_base_url(format!("{}/bigquery/v2", mock_server.base_url()));
 
     store
-        .stream_insert_rows(&writes).await
+        .stream_insert_rows(&writes)
+        .await
         .expect("insertAll should succeed");
     let latest = store.read_latest_rows().await.expect("query latest rows");
     let live = store.read_live_rows().await.expect("query live rows");
@@ -248,14 +249,14 @@ async fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
                 updated_at_ms: 2_000,
                 deleted: true,
                 payload: json!({}),
-            ..Default::default()
+                ..Default::default()
             },
             SessionPersistenceRow {
                 session_id: "s2".to_string(),
                 updated_at_ms: 3_000,
                 deleted: false,
                 payload: json!({"step":"update","version":2}),
-            ..Default::default()
+                ..Default::default()
             },
         ]
     );
@@ -266,7 +267,7 @@ async fn phase5_bigquery_adapter_process_path_and_dedup_tombstone_semantics() {
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         }]
     );
 }

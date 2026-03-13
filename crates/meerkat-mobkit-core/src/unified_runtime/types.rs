@@ -271,11 +271,16 @@ pub enum ErrorEvent {
 impl Display for ErrorEvent {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SpawnFailure { member_id, error, .. } => {
+            Self::SpawnFailure {
+                member_id, error, ..
+            } => {
                 write!(f, "spawn_failure: {member_id}: {error}")
             }
             Self::ReconcileIncomplete { failures, skipped } => {
-                write!(f, "reconcile_incomplete: {failures} failures, {skipped} skipped")
+                write!(
+                    f,
+                    "reconcile_incomplete: {failures} failures, {skipped} skipped"
+                )
             }
             Self::CheckpointFailure { session_id, error } => {
                 write!(f, "checkpoint_failure: {session_id}: {error}")

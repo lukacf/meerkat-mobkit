@@ -34,10 +34,9 @@ impl fmt::Display for GovernanceValidationError {
                 "invalid governance_state in {file}: expected {REQUIRED_GOVERNANCE_STATE}, found {found}"
             ),
             Self::NoTraceabilityRows => write!(f, "no traceability rows found"),
-            Self::InvalidTraceabilityStatus { line, status } => write!(
-                f,
-                "invalid traceability status at line {line}: {status}"
-            ),
+            Self::InvalidTraceabilityStatus { line, status } => {
+                write!(f, "invalid traceability status at line {line}: {status}")
+            }
             Self::MissingTraceabilityEvidence { line } => {
                 write!(f, "missing traceability evidence/link at line {line}")
             }

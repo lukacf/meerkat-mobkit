@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::StreamExt;
-use meerkat::{build_ephemeral_service, AgentEvent, AgentFactory, Config};
+use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
 use meerkat_mob::{MeerkatId, MobBuilder, MobStorage, Prefab, ProfileName};
 
 #[tokio::main]

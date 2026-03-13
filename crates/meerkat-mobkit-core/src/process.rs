@@ -178,7 +178,7 @@ where
 mod tests {
     use std::io;
 
-    use super::{cleanup_timeout_with_ops, ProcessBoundaryError};
+    use super::{ProcessBoundaryError, cleanup_timeout_with_ops};
 
     #[test]
     fn timeout_cleanup_handles_kill_race_without_type_drift() {

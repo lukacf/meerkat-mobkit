@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    route_module_call, route_module_call_rpc_json, route_module_call_rpc_subprocess,
-    start_mobkit_runtime, DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig,
-    ModuleRouteRequest, RestartPolicy, UnifiedEvent,
+    DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleRouteRequest, RestartPolicy,
+    UnifiedEvent, route_module_call, route_module_call_rpc_json, route_module_call_rpc_subprocess,
+    start_mobkit_runtime,
 };
 use serde_json::json;
 

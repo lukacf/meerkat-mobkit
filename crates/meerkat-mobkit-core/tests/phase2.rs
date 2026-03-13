@@ -2,17 +2,17 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, RestartPolicy,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeRouteMutationError, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField,
-    UnifiedRuntimeReconcileError,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, ModuleConfig, RestartPolicy, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, RuntimeRouteMutationError, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeReconcileError,
+    build_runtime_decision_state,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -282,11 +282,13 @@ async fn req_002_router_builders_prove_console_and_sse_behavior() {
         .await
         .expect("frontend response");
     assert_eq!(frontend_response.status(), StatusCode::OK);
-    assert!(frontend_response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.starts_with("text/html")));
+    assert!(
+        frontend_response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("text/html"))
+    );
     let frontend_body = to_bytes(frontend_response.into_body(), 1024 * 1024)
         .await
         .expect("frontend body");

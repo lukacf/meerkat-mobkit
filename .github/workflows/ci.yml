@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "ci/**", "feat/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-lint:
+    name: fmt-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: scripts/verify-version-parity.sh
+      - uses: taiki-e/install-action@cargo-machete
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo machete --with-metadata
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest run --workspace -E 'not test(phase0_governance)'
+
+  test-python:
+    name: test-python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  gate:
+    name: gate
+    if: always()
+    needs: [fmt-lint, test, test-python, audit]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        run: |
+          if [[ "${{ needs.fmt-lint.result }}" != "success" ||
+                "${{ needs.test.result }}" != "success" ||
+                "${{ needs.test-python.result }}" != "success" ||
+                "${{ needs.audit.result }}" != "success" ]]; then
+            echo "One or more jobs failed or were cancelled."
+            echo "  fmt-lint:     ${{ needs.fmt-lint.result }}"
+            echo "  test:         ${{ needs.test.result }}"
+            echo "  test-python:  ${{ needs.test-python.result }}"
+            echo "  audit:        ${{ needs.audit.result }}"
+            exit 1
+          fi

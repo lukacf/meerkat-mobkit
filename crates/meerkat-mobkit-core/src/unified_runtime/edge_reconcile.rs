@@ -8,12 +8,15 @@ use crate::mob_handle_runtime::MobMemberSnapshot;
 use crate::runtime::RuntimeRoute;
 
 use super::edge_types::DesiredPeerEdge;
+use super::edge_types::EdgeReconcileFailure;
 use super::types::{
     UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport,
 };
-use super::edge_types::EdgeReconcileFailure;
-use super::{UnifiedRuntime, ROSTER_ROUTE_CHANNEL, ROSTER_ROUTE_PREFIX, ROSTER_ROUTE_SINK, ROSTER_ROUTE_TARGET_MODULE};
+use super::{
+    ROSTER_ROUTE_CHANNEL, ROSTER_ROUTE_PREFIX, ROSTER_ROUTE_SINK, ROSTER_ROUTE_TARGET_MODULE,
+    UnifiedRuntime,
+};
 
 impl UnifiedRuntime {
     pub async fn reconcile(
@@ -33,12 +36,14 @@ impl UnifiedRuntime {
             .map(|m| m.meerkat_id.clone())
             .collect::<Vec<_>>();
         // 3 + 4. Edge discovery + dynamic edge reconcile
-        let edges = self
-            .reconcile_edges_from_members(active_snapshots)
-            .await;
+        let edges = self.reconcile_edges_from_members(active_snapshots).await;
         // 5. Routing reconcile
         let routing = self.reconcile_routing_wiring(active_member_ids).await?;
-        let report = UnifiedRuntimeReconcileReport { mob, edges, routing };
+        let report = UnifiedRuntimeReconcileReport {
+            mob,
+            edges,
+            routing,
+        };
         if let Some(hook) = &self.post_reconcile_hook {
             hook(report.clone()).await;
         }
@@ -49,9 +54,7 @@ impl UnifiedRuntime {
     ///
     /// Refreshes the roster, runs edge discovery if configured, diffs
     /// desired vs managed edges, and calls wire/unwire as needed.
-    pub async fn reconcile_edges(
-        &self,
-    ) -> UnifiedRuntimeReconcileEdgesReport {
+    pub async fn reconcile_edges(&self) -> UnifiedRuntimeReconcileEdgesReport {
         let active_members = self.mob_runtime.discover().await;
         let report = self.reconcile_edges_from_members(active_members).await;
         if !report.is_complete() {
@@ -253,8 +256,7 @@ impl UnifiedRuntime {
             let active_member_set = active_members.iter().cloned().collect::<BTreeSet<_>>();
             for route in &managed_routes {
                 if !active_member_set.contains(&route.recipient) {
-                    rt
-                        .delete_runtime_route(&route.route_key)
+                    rt.delete_runtime_route(&route.route_key)
                         .map_err(UnifiedRuntimeReconcileError::RouteMutation)?;
                     removed_route_keys.push(route.route_key.clone());
                 }
@@ -269,18 +271,17 @@ impl UnifiedRuntime {
                     continue;
                 }
                 let route_key = format!("{ROSTER_ROUTE_PREFIX}{member_id}");
-                rt
-                    .add_runtime_route(RuntimeRoute {
-                        route_key: route_key.clone(),
-                        recipient: member_id.clone(),
-                        channel: Some(ROSTER_ROUTE_CHANNEL.to_string()),
-                        sink: ROSTER_ROUTE_SINK.to_string(),
-                        target_module: ROSTER_ROUTE_TARGET_MODULE.to_string(),
-                        retry_max: None,
-                        backoff_ms: None,
-                        rate_limit_per_minute: None,
-                    })
-                    .map_err(UnifiedRuntimeReconcileError::RouteMutation)?;
+                rt.add_runtime_route(RuntimeRoute {
+                    route_key: route_key.clone(),
+                    recipient: member_id.clone(),
+                    channel: Some(ROSTER_ROUTE_CHANNEL.to_string()),
+                    sink: ROSTER_ROUTE_SINK.to_string(),
+                    target_module: ROSTER_ROUTE_TARGET_MODULE.to_string(),
+                    retry_max: None,
+                    backoff_ms: None,
+                    rate_limit_per_minute: None,
+                })
+                .map_err(UnifiedRuntimeReconcileError::RouteMutation)?;
                 added_route_keys.push(route_key);
             }
         }

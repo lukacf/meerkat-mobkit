@@ -9,16 +9,16 @@ use std::time::Duration;
 use async_stream::stream;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::StreamExt;
+use meerkat_core::AgentEvent;
 use meerkat_core::comms::EventStream;
 use meerkat_core::event::agent_event_type;
-use meerkat_core::AgentEvent;
 use meerkat_mob::MobEventRouterHandle;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::mob_handle_runtime::MobRuntimeError;
 use meerkat_core::comms::SendError;
@@ -78,8 +78,7 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
 pub type AgentEventSubscribeFuture =
     Pin<Box<dyn Future<Output = Result<EventStream, MobRuntimeError>> + Send>>;
 
-pub type AgentEventSubscribeFn =
-    Arc<dyn Fn(String) -> AgentEventSubscribeFuture + Send + Sync>;
+pub type AgentEventSubscribeFn = Arc<dyn Fn(String) -> AgentEventSubscribeFuture + Send + Sync>;
 
 #[derive(Clone)]
 struct AgentSseState {
@@ -98,7 +97,10 @@ async fn agent_events_sse_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let agent_id = agent_id.trim().to_string();
     if agent_id.is_empty() {
-        return Err(http_error(StatusCode::BAD_REQUEST, "agent_id must not be empty"));
+        return Err(http_error(
+            StatusCode::BAD_REQUEST,
+            "agent_id must not be empty",
+        ));
     }
 
     let event_stream = (state.subscribe_fn)(agent_id.clone())
@@ -133,8 +135,7 @@ async fn agent_events_sse_handler(
 // Tier 3: Mob-merged SSE  (MK-006)
 // ---------------------------------------------------------------------------
 
-pub type MobEventSubscribeFuture =
-    Pin<Box<dyn Future<Output = MobEventRouterHandle> + Send>>;
+pub type MobEventSubscribeFuture = Pin<Box<dyn Future<Output = MobEventRouterHandle> + Send>>;
 
 pub type MobEventSubscribeFn = Arc<dyn Fn() -> MobEventSubscribeFuture + Send + Sync>;
 

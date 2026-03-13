@@ -4,9 +4,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use meerkat_mobkit_core::{
-    start_mobkit_runtime_with_options, DiscoverySpec, LifecycleStage, MobKitConfig, ModuleConfig,
-    ModuleHealthState, ProcessBoundaryError, RestartPolicy, RuntimeBoundaryError,
-    RuntimeMutationError, RuntimeOptions, UnifiedEvent,
+    DiscoverySpec, LifecycleStage, MobKitConfig, ModuleConfig, ModuleHealthState,
+    ProcessBoundaryError, RestartPolicy, RuntimeBoundaryError, RuntimeMutationError,
+    RuntimeOptions, UnifiedEvent, start_mobkit_runtime_with_options,
 };
 
 fn shell_module(id: &str, script: &str, restart_policy: RestartPolicy) -> ModuleConfig {
@@ -299,9 +299,11 @@ fn phase_d_mutation_spawn_member_failure_surfaces_error_warning_and_transitions(
         matches!(error, RuntimeMutationError::Runtime(_)),
         "expected runtime error, got {error:?}"
     );
-    assert!(!runtime
-        .loaded_modules()
-        .contains(&"always-fail".to_string()));
+    assert!(
+        !runtime
+            .loaded_modules()
+            .contains(&"always-fail".to_string())
+    );
 
     let transitions = runtime
         .supervisor_report()

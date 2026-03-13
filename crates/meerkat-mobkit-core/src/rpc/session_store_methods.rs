@@ -238,9 +238,7 @@ where
         })
         .join()
         .map_err(|_| {
-            BigQuerySessionStoreError::Io(
-                "BigQuery async worker thread panicked".to_string(),
-            )
+            BigQuerySessionStoreError::Io("BigQuery async worker thread panicked".to_string())
         })?
     })
 }

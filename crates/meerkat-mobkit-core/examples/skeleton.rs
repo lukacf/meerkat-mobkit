@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    start_mobkit_runtime, DiscoverySpec, EventEnvelope, LifecycleStage, MobKitConfig, ModuleConfig,
-    RestartPolicy, UnifiedEvent,
+    DiscoverySpec, EventEnvelope, LifecycleStage, MobKitConfig, ModuleConfig, RestartPolicy,
+    UnifiedEvent, start_mobkit_runtime,
 };
 
 fn module(id: &str, script: &str) -> ModuleConfig {

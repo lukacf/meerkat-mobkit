@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use meerkat_mobkit_core::WILDCARD_ROUTE;
 use meerkat_mobkit_core::{
-    handle_mobkit_rpc_json, start_mobkit_runtime, DiscoverySpec, MobKitConfig, ModuleConfig,
-    PreSpawnData, RestartPolicy,
+    DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData, RestartPolicy, handle_mobkit_rpc_json,
+    start_mobkit_runtime,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
 const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";

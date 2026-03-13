@@ -58,17 +58,11 @@ impl UnifiedRuntime {
         member_id: &str,
         message: String,
     ) -> Result<String, MobRuntimeError> {
-        self.mob_runtime
-            .send_message(member_id, message)
-            .await
+        self.mob_runtime.send_message(member_id, message).await
     }
 
     /// Find members matching a label key-value pair.
-    pub async fn find_members(
-        &self,
-        label_key: &str,
-        label_value: &str,
-    ) -> Vec<MobMemberSnapshot> {
+    pub async fn find_members(&self, label_key: &str, label_value: &str) -> Vec<MobMemberSnapshot> {
         self.mob_runtime.find_members(label_key, label_value).await
     }
 

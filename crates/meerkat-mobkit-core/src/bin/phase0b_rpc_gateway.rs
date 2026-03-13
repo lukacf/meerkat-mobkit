@@ -6,23 +6,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    handle_mobkit_rpc_json, handle_unified_rpc_json, start_mobkit_runtime, AuthPolicy,
-    BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec,
-    MobKitConfig, ModuleConfig, ReleaseMetadata, RestartPolicy, RuntimeDecisionState,
-    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, ModuleConfig, ReleaseMetadata, RestartPolicy,
+    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    handle_mobkit_rpc_json, handle_unified_rpc_json, start_mobkit_runtime,
 };
 
 use async_trait::async_trait;
 use meerkat::{
-    AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService,
-    FactoryAgent, FactoryAgentBuilder, SessionAgentBuilder, SessionError,
+    AgentEvent, AgentFactory, Config, CreateSessionRequest, EphemeralSessionService, FactoryAgent,
+    FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
+use meerkat_core::AgentToolDispatcher;
 use meerkat_core::error::{AgentError, ToolError};
 use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
-use meerkat_core::AgentToolDispatcher;
 use meerkat_mob::{MobDefinition, MobStorage};
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use serde_json::{Value, json};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 fn minimal_decision_state() -> RuntimeDecisionState {
     RuntimeDecisionState {
@@ -155,7 +155,10 @@ impl StdioCallbackBridge {
                 if let Some(error) = value.get("error") {
                     Err(format!(
                         "callback error: {}",
-                        error.get("message").and_then(|m| m.as_str()).unwrap_or("unknown")
+                        error
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown")
                     ))
                 } else {
                     Ok(value.get("result").cloned().unwrap_or(Value::Null))
@@ -220,12 +223,11 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
     }
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolResult, ToolError> {
-        let args: Value = serde_json::from_str(call.args.get()).map_err(|e| {
-            ToolError::InvalidArguments {
+        let args: Value =
+            serde_json::from_str(call.args.get()).map_err(|e| ToolError::InvalidArguments {
                 name: call.name.to_string(),
                 reason: e.to_string(),
-            }
-        })?;
+            })?;
         let params = json!({
             "scope_id": self.scope_id,
             "tool": call.name,
@@ -319,10 +321,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 // Apply additional_instructions as system prompt extension
                 if let Some(instructions) = result.get("additional_instructions") {
                     if let Some(arr) = instructions.as_array() {
-                        let combined: Vec<&str> = arr
-                            .iter()
-                            .filter_map(|v| v.as_str())
-                            .collect();
+                        let combined: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
                         if !combined.is_empty() {
                             let extra = combined.join("\n");
                             modified_req.system_prompt = Some(match &modified_req.system_prompt {
@@ -352,9 +351,11 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                                 if let Some(name) = v.as_str() {
                                     tool_names.push(name.to_string());
                                 } else {
-                                    return Err(SessionError::Agent(AgentError::ToolError(format!(
-                                        "callback/build_agent: tools must be strings, got: {v}"
-                                    ))));
+                                    return Err(SessionError::Agent(AgentError::ToolError(
+                                        format!(
+                                            "callback/build_agent: tools must be strings, got: {v}"
+                                        ),
+                                    )));
                                 }
                             }
                             if !tool_names.is_empty() {
@@ -410,7 +411,11 @@ async fn run_persistent() {
                 "id": null,
                 "error": { "code": -32700, "message": format!("Parse error: {e}") }
             });
-            println!("{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
+            println!(
+                "{}",
+                serde_json::to_string(&error_response)
+                    .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+            );
             std::process::exit(1);
         }
     };
@@ -426,21 +431,19 @@ async fn run_persistent() {
             "id": request_id,
             "error": { "code": -32600, "message": format!("Expected mobkit/init, got {method}") }
         });
-        println!("{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
+        println!(
+            "{}",
+            serde_json::to_string(&error_response)
+                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+        );
         std::process::exit(1);
     }
 
-    let params = init_raw
-        .get("params")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let params = init_raw.get("params").cloned().unwrap_or_else(|| json!({}));
 
     // 2. Parse init params
-    let mob_config_toml = params
-        .get("mob_config")
-        .and_then(|v| v.as_str())
-        .unwrap_or(
-            r#"
+    let mob_config_toml = params.get("mob_config").and_then(|v| v.as_str()).unwrap_or(
+        r#"
 [mob]
 id = "persistent-gateway"
 
@@ -448,7 +451,7 @@ id = "persistent-gateway"
 model = "gpt-5.2"
 external_addressable = true
 "#,
-        );
+    );
 
     let definition = MobDefinition::from_toml(mob_config_toml).unwrap_or_else(|e| {
         let error_response = json!({
@@ -456,7 +459,11 @@ external_addressable = true
             "id": request_id,
             "error": { "code": -32602, "message": format!("Invalid mob_config TOML: {e}") }
         });
-        println!("{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
+        println!(
+            "{}",
+            serde_json::to_string(&error_response)
+                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+        );
         std::process::exit(1);
     });
 
@@ -548,14 +555,12 @@ external_addressable = true
     };
     let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
 
-    let mob_spec =
-        MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service).with_options(
-            MobBootstrapOptions {
-                allow_ephemeral_sessions: true,
-                notify_orchestrator_on_resume: true,
-                default_llm_client: None,
-            },
-        );
+    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: None,
+        });
 
     let timeout = Duration::from_secs(30);
     let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
@@ -567,7 +572,12 @@ external_addressable = true
                 "error": { "code": -32603, "message": format!("Runtime bootstrap failed: {e}") }
             });
             let mut stdout = std::io::stdout().lock();
-            let _ = writeln!(stdout, "{}", serde_json::to_string(&error_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()));
+            let _ = writeln!(
+                stdout,
+                "{}",
+                serde_json::to_string(&error_response)
+                    .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+            );
             let _ = stdout.flush();
             std::process::exit(1);
         });
@@ -617,7 +627,10 @@ external_addressable = true
         }
     });
     let _ = stdout_tx
-        .send(serde_json::to_string(&init_response).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()))
+        .send(
+            serde_json::to_string(&init_response)
+                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string()),
+        )
         .await;
 
     // 9. RPC dispatch loop: process queued requests from the stdin reader task
@@ -630,13 +643,9 @@ external_addressable = true
                 },
                 _ = tokio::signal::ctrl_c() => break,
             };
-            let response = handle_unified_rpc_json(
-                &runtime,
-                &request_line,
-                timeout,
-                Some(&http_base_url),
-            )
-            .await;
+            let response =
+                handle_unified_rpc_json(&runtime, &request_line, timeout, Some(&http_base_url))
+                    .await;
             if !response.is_empty() {
                 let _ = stdout_tx.send(response).await;
             }

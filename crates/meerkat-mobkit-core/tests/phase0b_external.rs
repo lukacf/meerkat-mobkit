@@ -2,12 +2,12 @@ use std::process::Command;
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, handle_console_rest_json_route, handle_mobkit_rpc_json,
-    route_module_call, run_discovered_module_once, start_mobkit_runtime, AuthPolicy, AuthProvider,
-    BigQueryNaming, ConsoleAccessRequest, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
-    JsonRpcResponse, MobKitConfig, ModuleConfig, ModuleRouteRequest, PreSpawnData, RestartPolicy,
-    RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedEvent,
-    MOBKIT_CONTRACT_VERSION,
+    AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
+    ConsoleRestJsonRequest, DiscoverySpec, JsonRpcResponse, MOBKIT_CONTRACT_VERSION, MobKitConfig,
+    ModuleConfig, ModuleRouteRequest, PreSpawnData, RestartPolicy, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedEvent, build_runtime_decision_state,
+    handle_console_rest_json_route, handle_mobkit_rpc_json, route_module_call,
+    run_discovered_module_once, start_mobkit_runtime,
 };
 use tempfile::TempDir;
 
@@ -665,9 +665,11 @@ fn p0b_t7_sdk_console_toolchain_and_payload_preflight() {
         .and_then(|result| result.get("methods"))
         .and_then(|value| value.as_array())
         .expect("capabilities methods");
-    assert!(methods
-        .iter()
-        .any(|method| method == "mobkit/events/subscribe"));
+    assert!(
+        methods
+            .iter()
+            .any(|method| method == "mobkit/events/subscribe")
+    );
 
     let python_request = run_shell(
         r#"

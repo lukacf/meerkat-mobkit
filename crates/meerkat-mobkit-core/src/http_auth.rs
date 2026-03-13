@@ -1,10 +1,10 @@
 //! HTTP middleware for Bearer token authentication using JWT/JWKS.
 
+use axum::Router;
 use axum::extract::Request;
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::Response;
-use axum::Router;
 
 use crate::auth::JwksCache;
 

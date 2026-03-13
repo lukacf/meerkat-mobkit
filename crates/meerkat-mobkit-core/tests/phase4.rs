@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    handle_mobkit_rpc_json, start_mobkit_runtime, DiscoverySpec, MobKitConfig, ModuleConfig,
-    PreSpawnData, RestartPolicy, MOBKIT_CONTRACT_VERSION,
+    DiscoverySpec, MOBKIT_CONTRACT_VERSION, MobKitConfig, ModuleConfig, PreSpawnData,
+    RestartPolicy, handle_mobkit_rpc_json, start_mobkit_runtime,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn shell_module(id: &str, script: &str) -> ModuleConfig {
     ModuleConfig {
@@ -69,22 +69,26 @@ fn rpc_001_builtins_status_capabilities_events_reconcile_and_spawn_member() {
         Duration::from_secs(1),
     ));
     assert_eq!(caps["result"]["contract_version"], MOBKIT_CONTRACT_VERSION);
-    assert!(caps["result"]["methods"]
-        .as_array()
-        .expect("methods array")
-        .iter()
-        .any(|method| method == "mobkit/reconcile"));
+    assert!(
+        caps["result"]["methods"]
+            .as_array()
+            .expect("methods array")
+            .iter()
+            .any(|method| method == "mobkit/reconcile")
+    );
 
     let events = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
         r#"{"jsonrpc":"2.0","id":"3","method":"mobkit/events/subscribe","params":{}}"#,
         Duration::from_secs(1),
     ));
-    assert!(events["result"]["events"]
-        .as_array()
-        .expect("events array")
-        .iter()
-        .any(|event| event["event_id"] == "evt-router"));
+    assert!(
+        events["result"]["events"]
+            .as_array()
+            .expect("events array")
+            .iter()
+            .any(|event| event["event_id"] == "evt-router")
+    );
 
     let reconcile = parse_response(&handle_mobkit_rpc_json(
         &mut runtime,
@@ -107,11 +111,13 @@ fn rpc_001_builtins_status_capabilities_events_reconcile_and_spawn_member() {
         r#"{"jsonrpc":"2.0","id":"6","method":"mobkit/events/subscribe","params":{}}"#,
         Duration::from_secs(1),
     ));
-    assert!(events_after_spawn["result"]["events"]
-        .as_array()
-        .expect("events array")
-        .iter()
-        .any(|event| event["event_id"] == "evt-delivery"));
+    assert!(
+        events_after_spawn["result"]["events"]
+            .as_array()
+            .expect("events array")
+            .iter()
+            .any(|event| event["event_id"] == "evt-delivery")
+    );
 }
 
 #[test]

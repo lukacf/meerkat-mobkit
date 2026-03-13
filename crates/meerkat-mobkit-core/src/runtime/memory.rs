@@ -185,11 +185,7 @@ impl MobkitRuntimeHandle {
 
     pub(super) fn canonical_memory_token(raw: &str) -> Option<String> {
         let token = raw.trim().to_ascii_lowercase();
-        if token.is_empty() {
-            None
-        } else {
-            Some(token)
-        }
+        if token.is_empty() { None } else { Some(token) }
     }
 
     pub(super) fn canonical_memory_store(raw: &str) -> Option<String> {

@@ -4,12 +4,11 @@ use chrono::{TimeZone, Utc};
 use meerkat_mobkit_core::rpc::MAX_SCHEDULES_PER_REQUEST;
 use meerkat_mobkit_core::runtime::ScheduleValidationError;
 use meerkat_mobkit_core::{
-    evaluate_schedules_at_tick, handle_mobkit_rpc_json, start_mobkit_runtime,
-    start_mobkit_runtime_with_options, DiscoverySpec, MobKitConfig, ModuleConfig,
-    ModuleHealthState, PreSpawnData, RestartPolicy, RuntimeOptions, ScheduleDefinition,
-    UnifiedEvent,
+    DiscoverySpec, MobKitConfig, ModuleConfig, ModuleHealthState, PreSpawnData, RestartPolicy,
+    RuntimeOptions, ScheduleDefinition, UnifiedEvent, evaluate_schedules_at_tick,
+    handle_mobkit_rpc_json, start_mobkit_runtime, start_mobkit_runtime_with_options,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn shell_module(id: &str, script: &str, restart_policy: RestartPolicy) -> ModuleConfig {
     ModuleConfig {

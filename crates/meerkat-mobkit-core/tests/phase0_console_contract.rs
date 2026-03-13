@@ -1,9 +1,9 @@
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, handle_console_rest_json_route, AuthPolicy, AuthProvider,
-    BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig,
+    AuthPolicy, AuthProvider, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state, handle_console_rest_json_route,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn release_json() -> String {
     include_str!("../../../docs/rct/release-targets.json").to_string()

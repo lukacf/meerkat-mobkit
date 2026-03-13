@@ -8,18 +8,12 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{
-    AttributedEvent, MeerkatId, MobEventRouterHandle, SpawnMemberSpec,
-};
+use meerkat_mob::{AttributedEvent, MeerkatId, MobEventRouterHandle, SpawnMemberSpec};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
-use crate::mob_handle_runtime::{
-    MobBootstrapSpec, RealMobRuntime,
-};
-use crate::runtime::{
-    start_mobkit_runtime_with_options, MobkitRuntimeHandle, RuntimeOptions,
-};
+use crate::mob_handle_runtime::{MobBootstrapSpec, RealMobRuntime};
+use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_with_options};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
 
 pub mod builder;
@@ -42,8 +36,8 @@ pub use types::{
     ErrorEvent, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
     UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,
     UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
-    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport,
-    UnifiedRuntimeRunReport, UnifiedRuntimeShutdownReport,
+    UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport, UnifiedRuntimeRunReport,
+    UnifiedRuntimeShutdownReport,
 };
 
 /// Called after members are spawned. Receives the list of spawned member IDs.
@@ -57,9 +51,8 @@ pub type PostReconcileHook = Arc<
 
 /// Called when a runtime operation fails. Fire-and-forget — the hook's
 /// result is not checked and a failing hook cannot break the runtime.
-pub type ErrorHook = Arc<
-    dyn Fn(ErrorEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
->;
+pub type ErrorHook =
+    Arc<dyn Fn(ErrorEvent) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 const ROSTER_ROUTE_PREFIX: &str = "mob.member.";
 const ROSTER_ROUTE_CHANNEL: &str = "notification";

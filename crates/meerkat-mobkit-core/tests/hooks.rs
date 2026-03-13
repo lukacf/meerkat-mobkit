@@ -1,10 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::{MobDefinition, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mob::MobHandle;
+use meerkat_mob::{MobDefinition, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::{
     DiscoverySpec, ErrorEvent, ErrorHook, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
     PostReconcileHook, PostSpawnHook, UnifiedRuntime, UnifiedRuntimeReconcileReport,
@@ -110,8 +110,7 @@ async fn post_spawn_hook_receives_spawned_member_id() {
 #[tokio::test]
 async fn post_reconcile_hook_receives_reconcile_report() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let reports: Arc<Mutex<Vec<UnifiedRuntimeReconcileReport>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let reports: Arc<Mutex<Vec<UnifiedRuntimeReconcileReport>>> = Arc::new(Mutex::new(Vec::new()));
     let captured = reports.clone();
 
     let hook: PostReconcileHook = Arc::new(move |report| {
@@ -362,7 +361,10 @@ async fn retire_member_transitions_state() {
     let members = runtime.list_members().await;
     let retired = members.iter().find(|m| m.meerkat_id == "retire-me");
     match retired {
-        Some(m) => assert_eq!(m.state, "retiring", "if still visible, state should be retiring"),
+        Some(m) => assert_eq!(
+            m.state, "retiring",
+            "if still visible, state should be retiring"
+        ),
         None => {} // idle member was immediately disposed — acceptable
     }
 

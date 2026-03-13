@@ -16,21 +16,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::auth::{
-    build_jwt_verification_key, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
-    select_jwk_for_token, validate_jwt_with_verification_key, JwtClaimsValidationConfig,
+    JwtClaimsValidationConfig, build_jwt_verification_key, inspect_jwt_header, parse_jwks_json,
+    parse_oidc_discovery_json, select_jwk_for_token, validate_jwt_with_verification_key,
 };
 use crate::baseline::{
-    verify_meerkat_baseline_symbols, BaselineVerificationError, BaselineVerificationReport,
+    BaselineVerificationError, BaselineVerificationReport, verify_meerkat_baseline_symbols,
 };
 use crate::decisions::{
-    enforce_console_route_access, load_trusted_mobkit_modules_from_toml,
-    parse_release_metadata_json, validate_bigquery_naming, validate_release_metadata,
-    validate_runtime_ops_policy, AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest,
-    ConsolePolicy, DecisionPolicyError, ReleaseMetadata, RuntimeOpsPolicy,
+    AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
+    DecisionPolicyError, ReleaseMetadata, RuntimeOpsPolicy, enforce_console_route_access,
+    load_trusted_mobkit_modules_from_toml, parse_release_metadata_json, validate_bigquery_naming,
+    validate_release_metadata, validate_runtime_ops_policy,
 };
-use crate::process::{run_process_json_line, ProcessBoundaryError};
+use crate::process::{ProcessBoundaryError, run_process_json_line};
 use crate::protocol::parse_unified_event_line;
-use crate::rpc::{parse_rpc_capabilities, RpcCapabilities, RpcCapabilitiesError};
+use crate::rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 use crate::types::{
     EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent, PreSpawnData, RestartPolicy,
     UnifiedEvent,
@@ -51,23 +51,23 @@ mod supervisor;
 
 pub use bootstrap::{start_mobkit_runtime, start_mobkit_runtime_with_options};
 pub use console_ingress::{
-    handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
     ConsoleLiveSnapshot, ConsoleRestJsonRequest, ConsoleRestJsonResponse,
+    handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
 };
 pub use event_transport::normalize_event_line;
+pub use routing::WILDCARD_ROUTE;
 pub use routing::route_module_call;
 pub use rpc::{
     route_module_call_rpc_json, route_module_call_rpc_subprocess,
     run_rpc_capabilities_boundary_once,
 };
 pub use scheduling::evaluate_schedules_at_tick;
-pub use routing::WILDCARD_ROUTE;
 pub use session_store::{
-    materialize_latest_session_rows, materialize_live_session_rows, run_periodic_gc,
-    run_periodic_gc_with_error_callback, GcErrorCallback,
-    session_store_contracts, BigQueryGcConfig, BigQuerySessionStoreAdapter,
-    BigQuerySessionStoreError, JsonFileSessionStore, JsonFileSessionStoreError,
-    JsonStoreLockRecord, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
+    BigQueryGcConfig, BigQuerySessionStoreAdapter, BigQuerySessionStoreError, GcErrorCallback,
+    JsonFileSessionStore, JsonFileSessionStoreError, JsonStoreLockRecord, SessionPersistenceRow,
+    SessionStoreContract, SessionStoreKind, materialize_latest_session_rows,
+    materialize_live_session_rows, run_periodic_gc, run_periodic_gc_with_error_callback,
+    session_store_contracts,
 };
 pub use supervisor::{run_discovered_module_once, run_module_boundary_once};
 
@@ -185,8 +185,15 @@ impl std::fmt::Display for McpBoundaryError {
             Self::McpRequired { module_id, flow } => {
                 write!(f, "MCP required for module {module_id} flow {flow}")
             }
-            Self::Timeout { module_id, operation, timeout_ms } => {
-                write!(f, "timeout for module {module_id} operation {operation} after {timeout_ms}ms")
+            Self::Timeout {
+                module_id,
+                operation,
+                timeout_ms,
+            } => {
+                write!(
+                    f,
+                    "timeout for module {module_id} operation {operation} after {timeout_ms}ms"
+                )
             }
             Self::ConnectionFailed { module_id, reason } => {
                 write!(f, "connection failed for module {module_id}: {reason}")
@@ -194,11 +201,26 @@ impl std::fmt::Display for McpBoundaryError {
             Self::ToolListFailed { module_id, reason } => {
                 write!(f, "tool list failed for module {module_id}: {reason}")
             }
-            Self::ToolNotFound { module_id, tool, available_tools } => {
-                write!(f, "tool {tool} not found for module {module_id} (available: {})", available_tools.join(", "))
+            Self::ToolNotFound {
+                module_id,
+                tool,
+                available_tools,
+            } => {
+                write!(
+                    f,
+                    "tool {tool} not found for module {module_id} (available: {})",
+                    available_tools.join(", ")
+                )
             }
-            Self::ToolCallFailed { module_id, tool, reason } => {
-                write!(f, "tool call {tool} failed for module {module_id}: {reason}")
+            Self::ToolCallFailed {
+                module_id,
+                tool,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "tool call {tool} failed for module {module_id}: {reason}"
+                )
             }
             Self::CloseFailed { module_id, reason } => {
                 write!(f, "close failed for module {module_id}: {reason}")
@@ -206,11 +228,25 @@ impl std::fmt::Display for McpBoundaryError {
             Self::OperationFailedWithCloseFailure { primary, close } => {
                 write!(f, "operation failed: {primary}; close also failed: {close}")
             }
-            Self::InvalidToolPayload { module_id, tool, reason } => {
-                write!(f, "invalid tool payload for module {module_id} tool {tool}: {reason}")
+            Self::InvalidToolPayload {
+                module_id,
+                tool,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "invalid tool payload for module {module_id} tool {tool}: {reason}"
+                )
             }
-            Self::InvalidJsonResponse { module_id, tool, response } => {
-                write!(f, "invalid JSON response for module {module_id} tool {tool}: {response}")
+            Self::InvalidJsonResponse {
+                module_id,
+                tool,
+                response,
+            } => {
+                write!(
+                    f,
+                    "invalid JSON response for module {module_id} tool {tool}: {response}"
+                )
             }
         }
     }
@@ -1012,10 +1048,16 @@ impl std::fmt::Display for ScheduleValidationError {
             Self::EmptyScheduleId => write!(f, "empty schedule id"),
             Self::DuplicateScheduleId(id) => write!(f, "duplicate schedule id: {id}"),
             Self::InvalidTickMs(ms) => write!(f, "invalid tick ms: {ms}"),
-            Self::InvalidInterval { schedule_id, interval } => {
+            Self::InvalidInterval {
+                schedule_id,
+                interval,
+            } => {
                 write!(f, "invalid interval for schedule {schedule_id}: {interval}")
             }
-            Self::InvalidTimezone { schedule_id, timezone } => {
+            Self::InvalidTimezone {
+                schedule_id,
+                timezone,
+            } => {
                 write!(f, "invalid timezone for schedule {schedule_id}: {timezone}")
             }
         }
@@ -1131,8 +1173,15 @@ impl std::fmt::Display for DeliverySendError {
             Self::InvalidSink => write!(f, "invalid sink"),
             Self::InvalidIdempotencyKey => write!(f, "invalid idempotency key"),
             Self::IdempotencyPayloadMismatch => write!(f, "idempotency payload mismatch"),
-            Self::RateLimited { sink, window_start_ms, limit } => {
-                write!(f, "rate limited on sink {sink} (window {window_start_ms}ms, limit {limit})")
+            Self::RateLimited {
+                sink,
+                window_start_ms,
+                limit,
+            } => {
+                write!(
+                    f,
+                    "rate limited on sink {sink} (window {window_start_ms}ms, limit {limit})"
+                )
             }
             Self::DeliveryBoundary(err) => write!(f, "delivery boundary: {err}"),
         }

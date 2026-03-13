@@ -4,8 +4,8 @@ use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use ring::signature::{self, RsaPublicKeyComponents, UnparsedPublicKey};
 use serde::{Deserialize, Serialize};
@@ -651,9 +651,7 @@ async fn fetch_json(client: &reqwest::Client, url: &str) -> Result<String, JwksC
         .map_err(|err| JwksCacheError::Http(format!("{err}")))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(JwksCacheError::Http(format!(
-            "HTTP {status} from {url}"
-        )));
+        return Err(JwksCacheError::Http(format!("HTTP {status} from {url}")));
     }
     response
         .text()

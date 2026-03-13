@@ -1,7 +1,7 @@
 //! HTTP server and route assembly for the unified runtime.
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
 use crate::runtime::RuntimeDecisionState;

@@ -2,19 +2,19 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, handle_console_rest_json_route, handle_mobkit_rpc_json,
-    route_module_call, session_store_contracts, start_mobkit_runtime, validate_jwt_locally,
     AuthPolicy, AuthProvider, BigQueryNaming, BigQuerySessionStoreAdapter, ConsoleAccessRequest,
     ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec, EventEnvelope, JsonFileSessionStore,
     JwtValidationConfig, MobKitConfig, ModuleConfig, ModuleRouteRequest, PreSpawnData,
     RestartPolicy, RuntimeDecisionInputs, RuntimeOpsPolicy, SessionPersistenceRow,
     SessionStoreContract, SessionStoreKind, TrustedOidcRuntimeConfig, UnifiedEvent,
+    build_runtime_decision_state, handle_console_rest_json_route, handle_mobkit_rpc_json,
+    route_module_call, session_store_contracts, start_mobkit_runtime, validate_jwt_locally,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::Sha256;
 use tempfile::tempdir;
 
@@ -1139,28 +1139,28 @@ async fn e2e_501_session_persistence_target_defined_red() {
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         },
     ];
     // read_live_rows uses server-side QUALIFY dedup + deleted=false filter
@@ -1194,7 +1194,8 @@ async fn e2e_501_session_persistence_target_defined_red() {
     .with_access_token("phase3c-token")
     .with_api_base_url(format!("{}/bigquery/v2", bq_server.base_url()));
     bq_store
-        .stream_insert_rows(&writes).await
+        .stream_insert_rows(&writes)
+        .await
         .expect("bigquery adapter issues insert command");
     let bq_live = bq_store
         .read_live_rows()
@@ -1660,7 +1661,7 @@ fn e2e_801_console_experience_target_defined_red() {
                 }
             ]),
             json!("mobkit/events/subscribe"),
-            json!(["mob","agent","interaction"]),
+            json!(["mob", "agent", "interaction"]),
             json!("keep-alive")
         ),
         "E2E-801: console route emits concrete capability-driven base/module panel schema and unified activity-feed contract"
@@ -1775,7 +1776,9 @@ fn e2e_1001_routing_delivery_flow_target_defined_red() {
             send_second["result"]["delivery_id"].clone(),
             history["result"]["deliveries"][0]["route_id"].clone(),
             history["result"]["deliveries"][0]["status"].clone(),
-            history["result"]["deliveries"].as_array().map_or(0, Vec::len),
+            history["result"]["deliveries"]
+                .as_array()
+                .map_or(0, Vec::len),
         ),
         (
             json!("email"),

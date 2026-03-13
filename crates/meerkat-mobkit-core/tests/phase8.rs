@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, handle_console_rest_json_route,
-    handle_console_rest_json_route_with_snapshot, handle_mobkit_rpc_json, start_mobkit_runtime,
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsoleLiveSnapshot,
     ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData,
     RestartPolicy, RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state, handle_console_rest_json_route,
+    handle_console_rest_json_route_with_snapshot, handle_mobkit_rpc_json, start_mobkit_runtime,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn shell_module(id: &str, script: &str) -> ModuleConfig {
     ModuleConfig {
@@ -225,10 +225,12 @@ fn phase8_console_001_capability_driven_rendering_contract() {
     );
     assert_eq!(
         allowed.body["topology"]["live_snapshot"]["node_count"],
-        json!(modules_response.body["modules"]
-            .as_array()
-            .expect("modules array")
-            .len())
+        json!(
+            modules_response.body["modules"]
+                .as_array()
+                .expect("modules array")
+                .len()
+        )
     );
     assert_eq!(
         allowed.body["health_overview"]["panel_id"],
@@ -245,10 +247,12 @@ fn phase8_console_001_capability_driven_rendering_contract() {
     );
     assert_eq!(
         allowed.body["health_overview"]["live_snapshot"]["loaded_module_count"],
-        json!(modules_response.body["modules"]
-            .as_array()
-            .expect("modules array")
-            .len())
+        json!(
+            modules_response.body["modules"]
+                .as_array()
+                .expect("modules array")
+                .len()
+        )
     );
 }
 
@@ -347,10 +351,12 @@ fn phase8_req_003_choke_104_unified_activity_feed_contract_over_events() {
         subscribed["result"]["events"][0]["event"]["event_type"],
         json!("response")
     );
-    assert!(subscribed["result"]["event_frames"][0]
-        .as_str()
-        .expect("event frame string")
-        .starts_with("id: evt-router\nevent: response\ndata: {"));
+    assert!(
+        subscribed["result"]["event_frames"][0]
+            .as_str()
+            .expect("event frame string")
+            .starts_with("id: evt-router\nevent: response\ndata: {")
+    );
 }
 
 #[test]

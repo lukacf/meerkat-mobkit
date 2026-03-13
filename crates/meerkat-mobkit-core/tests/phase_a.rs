@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
-use meerkat_mobkit_core::{
-    MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime,
-};
+use meerkat_mobkit_core::{MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime};
 use tempfile::TempDir;
 
 struct RuntimeFixture {
@@ -105,9 +103,11 @@ async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob
 
     let discovered_after_reconcile = fixture.runtime.discover().await;
     assert_eq!(discovered_after_reconcile.len(), 2);
-    assert!(discovered_after_reconcile
-        .iter()
-        .any(|member| member.meerkat_id == "worker-1"));
+    assert!(
+        discovered_after_reconcile
+            .iter()
+            .any(|member| member.meerkat_id == "worker-1")
+    );
 
     fixture.runtime.stop().await.expect("stop runtime");
     assert_eq!(fixture.runtime.status(), MobState::Stopped);
@@ -157,4 +157,3 @@ async fn phase_a_runtime_002_reconcile_retires_stale_members_by_default() {
         .await
         .expect("retire all");
 }
-

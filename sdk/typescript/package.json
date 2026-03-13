@@ -1,6 +1,6 @@
 {
   "name": "@meerkat/mobkit-sdk",
-  "version": "0.1.0",
+  "version": "0.4.6",
   "private": true,
   "description": "Minimal Meerkat MobKit TypeScript SDK artifacts for parity tests",
   "type": "commonjs",

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobStorage, Prefab, SpawnMemberSpec};
 use meerkat_mobkit_core::{

@@ -1,11 +1,11 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::{
     AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, CreateSessionRequest,
@@ -15,15 +15,14 @@ use meerkat_core::{
 };
 use meerkat_mob::{MobDefinition, MobId, MobSessionService, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, normalize_event_line, route_module_call,
-    route_module_call_rpc_json, route_module_call_rpc_subprocess, start_mobkit_runtime,
-    start_mobkit_runtime_with_options, AuthPolicy, BigQueryNaming, ConfigResolutionError,
-    ConsolePolicy, DiscoverySpec, EventEnvelope, LifecycleStage, MobBootstrapOptions,
-    MobBootstrapSpec, MobKitConfig, MobkitRuntimeError, ModuleConfig, ModuleHealthState,
-    ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse, NormalizationError, PreSpawnData,
-    RestartPolicy, RpcRouteError, RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeOptions,
-    ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
-    UnifiedRuntimeBootstrapError,
+    AuthPolicy, BigQueryNaming, ConfigResolutionError, ConsolePolicy, DiscoverySpec, EventEnvelope,
+    LifecycleStage, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobkitRuntimeError,
+    ModuleConfig, ModuleHealthState, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
+    NormalizationError, PreSpawnData, RestartPolicy, RpcRouteError, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, RuntimeOptions, ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent,
+    UnifiedRuntime, UnifiedRuntimeBootstrapError, build_runtime_decision_state,
+    normalize_event_line, route_module_call, route_module_call_rpc_json,
+    route_module_call_rpc_subprocess, start_mobkit_runtime, start_mobkit_runtime_with_options,
 };
 use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -796,7 +795,10 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
     let fixture = build_unified_runtime_fixture(config).await;
     assert_eq!(fixture.runtime.status(), MobState::Running);
     assert!(fixture.runtime.module_is_running().await);
-    assert_eq!(fixture.runtime.loaded_modules().await, vec!["mod-a".to_string()]);
+    assert_eq!(
+        fixture.runtime.loaded_modules().await,
+        vec!["mod-a".to_string()]
+    );
 
     let shutdown = fixture.runtime.shutdown().await;
     assert_eq!(shutdown.module_shutdown.orphan_processes, 0);
@@ -905,10 +907,12 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     };
 
-    assert!(subscribed
-        .events
-        .iter()
-        .any(|event| { matches!(&event.event, UnifiedEvent::Module(_)) }));
+    assert!(
+        subscribed
+            .events
+            .iter()
+            .any(|event| { matches!(&event.event, UnifiedEvent::Module(_)) })
+    );
     assert!(subscribed.events.iter().any(|event| {
         matches!(&event.event, UnifiedEvent::Agent { agent_id, .. } if agent_id == "worker-1")
     }));

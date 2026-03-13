@@ -398,12 +398,14 @@ impl BigQuerySessionStoreAdapter {
             "rows": request_rows,
         });
 
-        let response = self.send_json_request(
-            reqwest::Method::POST,
-            &endpoint,
-            &access_token,
-            Some(&request),
-        ).await?;
+        let response = self
+            .send_json_request(
+                reqwest::Method::POST,
+                &endpoint,
+                &access_token,
+                Some(&request),
+            )
+            .await?;
         if let Some(errors) = response.get("insertErrors").and_then(Value::as_array) {
             if !errors.is_empty() {
                 let detail = serde_json::to_string(errors)
@@ -437,7 +439,9 @@ impl BigQuerySessionStoreAdapter {
         self.execute_query(&query).await
     }
 
-    pub async fn read_live_rows(&self) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
+    pub async fn read_live_rows(
+        &self,
+    ) -> Result<Vec<SessionPersistenceRow>, BigQuerySessionStoreError> {
         let fq_table = self.fully_qualified_table()?;
         let query = format!(
             "SELECT session_id, updated_at_ms, deleted, payload, labels_json FROM (\
@@ -466,12 +470,14 @@ impl BigQuerySessionStoreAdapter {
             "useLegacySql": false,
             "maxResults": 10000,
         });
-        let response = self.send_json_request(
-            reqwest::Method::POST,
-            &endpoint,
-            &access_token,
-            Some(&request),
-        ).await?;
+        let response = self
+            .send_json_request(
+                reqwest::Method::POST,
+                &endpoint,
+                &access_token,
+                Some(&request),
+            )
+            .await?;
         parse_bigquery_query_rows(&response)
     }
 
@@ -490,7 +496,12 @@ impl BigQuerySessionStoreAdapter {
         );
         let request = serde_json::json!({ "query": query, "useLegacySql": false });
         let response = self
-            .send_json_request(reqwest::Method::POST, &endpoint, &access_token, Some(&request))
+            .send_json_request(
+                reqwest::Method::POST,
+                &endpoint,
+                &access_token,
+                Some(&request),
+            )
             .await?;
         let affected = response
             .get("numDmlAffectedRows")
@@ -507,8 +518,13 @@ impl BigQuerySessionStoreAdapter {
         let endpoint = format!("{}/projects/{project_id}/queries", self.api_base_url());
         let query = format!("TRUNCATE TABLE `{project_id}.{table_ref}`");
         let request = serde_json::json!({ "query": query, "useLegacySql": false });
-        self.send_json_request(reqwest::Method::POST, &endpoint, &access_token, Some(&request))
-            .await?;
+        self.send_json_request(
+            reqwest::Method::POST,
+            &endpoint,
+            &access_token,
+            Some(&request),
+        )
+        .await?;
         Ok(())
     }
 
@@ -571,7 +587,8 @@ impl BigQuerySessionStoreAdapter {
         access_token: &str,
         body: Option<&Value>,
     ) -> Result<Value, BigQuerySessionStoreError> {
-        let mut request = self.client
+        let mut request = self
+            .client
             .request(method, endpoint)
             .bearer_auth(access_token)
             .header("accept", "application/json");

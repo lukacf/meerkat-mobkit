@@ -1,8 +1,8 @@
 //! Scheduling subsystem — schedule dispatch, tick evaluation, and module-backed execution.
 
 use super::module_boundary::{
-    call_module_mcp_tool_json, mcp_required_error, module_uses_mcp, CORE_MODULE_MCP_TIMEOUT,
-    SCHEDULING_DISPATCH_MCP_TOOL,
+    CORE_MODULE_MCP_TIMEOUT, SCHEDULING_DISPATCH_MCP_TOOL, call_module_mcp_tool_json,
+    mcp_required_error, module_uses_mcp,
 };
 use super::*;
 
@@ -15,20 +15,18 @@ pub fn evaluate_schedules_at_tick(
     let mut due_triggers = Vec::new();
     for schedule in schedules.iter().filter(|s| s.enabled) {
         let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
-        let interval =
-            parse_schedule_interval(&schedule.interval).ok_or_else(|| {
-                ScheduleValidationError::InvalidInterval {
-                    schedule_id: canonical_schedule_id.clone(),
-                    interval: schedule.interval.clone(),
-                }
-            })?;
-        let timezone =
-            parse_schedule_timezone(&schedule.timezone).ok_or_else(|| {
-                ScheduleValidationError::InvalidTimezone {
-                    schedule_id: canonical_schedule_id.clone(),
-                    timezone: schedule.timezone.clone(),
-                }
-            })?;
+        let interval = parse_schedule_interval(&schedule.interval).ok_or_else(|| {
+            ScheduleValidationError::InvalidInterval {
+                schedule_id: canonical_schedule_id.clone(),
+                interval: schedule.interval.clone(),
+            }
+        })?;
+        let timezone = parse_schedule_timezone(&schedule.timezone).ok_or_else(|| {
+            ScheduleValidationError::InvalidTimezone {
+                schedule_id: canonical_schedule_id.clone(),
+                timezone: schedule.timezone.clone(),
+            }
+        })?;
         let Some(due_tick_ms) = latest_due_tick_at_or_before(
             &canonical_schedule_id,
             &interval,
@@ -193,16 +191,18 @@ impl MobkitRuntimeHandle {
         let mut due_triggers = Vec::new();
         for schedule in schedules.iter().filter(|s| s.enabled) {
             let canonical_schedule_id = canonical_schedule_id(&schedule.schedule_id);
-            let interval = parse_schedule_interval(&schedule.interval)
-                .ok_or_else(|| ScheduleValidationError::InvalidInterval {
+            let interval = parse_schedule_interval(&schedule.interval).ok_or_else(|| {
+                ScheduleValidationError::InvalidInterval {
                     schedule_id: canonical_schedule_id.clone(),
                     interval: schedule.interval.clone(),
-                })?;
-            let timezone = parse_schedule_timezone(&schedule.timezone)
-                .ok_or_else(|| ScheduleValidationError::InvalidTimezone {
+                }
+            })?;
+            let timezone = parse_schedule_timezone(&schedule.timezone).ok_or_else(|| {
+                ScheduleValidationError::InvalidTimezone {
                     schedule_id: canonical_schedule_id.clone(),
                     timezone: schedule.timezone.clone(),
-                })?;
+                }
+            })?;
             let Some(due_tick_ms) = latest_due_tick_at_or_before(
                 &canonical_schedule_id,
                 &interval,

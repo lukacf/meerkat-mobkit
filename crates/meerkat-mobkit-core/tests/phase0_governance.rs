@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use meerkat_mobkit_core::{
-    validate_governance_state, validate_phase0_governance_contracts,
-    validate_traceability_statuses, GovernanceValidationError,
+    GovernanceValidationError, validate_governance_state, validate_phase0_governance_contracts,
+    validate_traceability_statuses,
 };
 
 fn project_root() -> PathBuf {

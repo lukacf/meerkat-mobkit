@@ -86,11 +86,7 @@ impl ConventionalPaths {
 }
 
 fn check_file(path: PathBuf) -> Option<PathBuf> {
-    if path.is_file() {
-        Some(path)
-    } else {
-        None
-    }
+    if path.is_file() { Some(path) } else { None }
 }
 
 #[cfg(test)]
@@ -158,11 +154,7 @@ mod tests {
         fs::create_dir_all(config.join("defaults")).unwrap();
         fs::create_dir_all(&deployment).unwrap();
 
-        fs::write(
-            config.join("defaults").join("schedules.toml"),
-            "default",
-        )
-        .unwrap();
+        fs::write(config.join("defaults").join("schedules.toml"), "default").unwrap();
         fs::write(deployment.join("schedules.toml"), "override").unwrap();
 
         let paths = ConventionalPaths::discover(&config, &deployment);

@@ -204,9 +204,7 @@ impl RealMobRuntime {
         &self,
         specs: Vec<SpawnMemberSpec>,
     ) -> Result<Vec<MemberRef>, MobRuntimeError> {
-        let futs = specs
-            .into_iter()
-            .map(|spec| self.handle.spawn_spec(spec));
+        let futs = specs.into_iter().map(|spec| self.handle.spawn_spec(spec));
         futures::future::try_join_all(futs)
             .await
             .map_err(Into::into)
@@ -304,11 +302,7 @@ impl RealMobRuntime {
     }
 
     /// Find members matching a label key-value pair.
-    pub async fn find_members(
-        &self,
-        label_key: &str,
-        label_value: &str,
-    ) -> Vec<MobMemberSnapshot> {
+    pub async fn find_members(&self, label_key: &str, label_value: &str) -> Vec<MobMemberSnapshot> {
         self.discover()
             .await
             .into_iter()

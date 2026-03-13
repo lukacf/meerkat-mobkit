@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use meerkat_mobkit_core::{
+    ConfigResolutionError, DiscoverySpec, EventEnvelope, MobKitConfig, MockModuleProcess,
+    MockProcessError, ModuleConfig, ModuleEvent, NormalizationError, PreSpawnData,
+    ProtocolParseError, RestartPolicy, RpcCapabilitiesError, RuntimeFromConfigError, UnifiedEvent,
     normalize_event_line, parse_module_event_line, parse_rpc_capabilities,
-    parse_unified_event_line, run_discovered_module_once, ConfigResolutionError, DiscoverySpec,
-    EventEnvelope, MobKitConfig, MockModuleProcess, MockProcessError, ModuleConfig, ModuleEvent,
-    NormalizationError, PreSpawnData, ProtocolParseError, RestartPolicy, RpcCapabilitiesError,
-    RuntimeFromConfigError, UnifiedEvent,
+    parse_unified_event_line, run_discovered_module_once,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

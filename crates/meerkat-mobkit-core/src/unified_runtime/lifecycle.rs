@@ -11,8 +11,8 @@ use tokio::sync::mpsc::error::TryRecvError;
 
 use crate::mob_handle_runtime::MobRuntimeError;
 use crate::runtime::{
-    RuntimeDecisionState, ScheduleDefinition, ScheduleDispatchReport, ScheduleValidationError,
-    MobkitRuntimeHandle,
+    MobkitRuntimeHandle, RuntimeDecisionState, ScheduleDefinition, ScheduleDispatchReport,
+    ScheduleValidationError,
 };
 use crate::types::{EventEnvelope, ModuleEvent, UnifiedEvent};
 
@@ -20,7 +20,7 @@ use super::types::{
     RediscoverReport, ShutdownDrainReport, UnifiedRuntimeError, UnifiedRuntimeRunReport,
     UnifiedRuntimeShutdownReport,
 };
-use super::{discovery_spec_to_spawn_spec, MobEventIngress, UnifiedRuntime};
+use super::{MobEventIngress, UnifiedRuntime, discovery_spec_to_spawn_spec};
 
 impl UnifiedRuntime {
     /// Reset the mob and re-run discovery + edge reconciliation.
@@ -70,9 +70,7 @@ impl UnifiedRuntime {
             .collect();
 
         // 3. Spawn discovered members
-        self.mob_runtime
-            .spawn_many(spawn_specs)
-            .await?;
+        self.mob_runtime.spawn_many(spawn_specs).await?;
         if let Some(hook) = &self.post_spawn_hook {
             hook(spawned.clone()).await;
         }
@@ -160,7 +158,9 @@ impl UnifiedRuntime {
 
     pub(super) async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
         let mut disconnected = false;
-        let mut ingress_guard = self.mob_event_ingress.try_lock()
+        let mut ingress_guard = self
+            .mob_event_ingress
+            .try_lock()
             .map_err(|_| UnifiedRuntimeError::RuntimeShuttingDown)?;
         let ingress = match ingress_guard.as_mut() {
             Some(i) => i,
@@ -179,13 +179,19 @@ impl UnifiedRuntime {
                         if event_type == "run_failed" {
                             self.fire_error(super::types::ErrorEvent::HostLoopCrash {
                                 member_id: agent_id.clone(),
-                                error: format!("agent run failed (event_id: {})", unified_event.event_id),
+                                error: format!(
+                                    "agent run failed (event_id: {})",
+                                    unified_event.event_id
+                                ),
                             });
                         }
                     }
                     // Ingest into event log (non-blocking, buffered)
                     self.ingest_event(&unified_event);
-                    self.module_runtime.lock().await.append_normalized_event(unified_event)?
+                    self.module_runtime
+                        .lock()
+                        .await
+                        .append_normalized_event(unified_event)?
                 }
                 Some(Err(TryRecvError::Empty)) => break,
                 Some(Err(TryRecvError::Disconnected)) => {
@@ -222,9 +228,10 @@ impl UnifiedRuntime {
         ingress: &mut MobEventIngress,
     ) -> Option<Result<EventEnvelope<UnifiedEvent>, TryRecvError>> {
         Some(match ingress {
-            MobEventIngress::Pull(router) => {
-                router.event_rx.try_recv().map(super::attributed_event_to_unified)
-            }
+            MobEventIngress::Pull(router) => router
+                .event_rx
+                .try_recv()
+                .map(super::attributed_event_to_unified),
             MobEventIngress::Forwarder(forwarder) => forwarder.event_rx.try_recv(),
         })
     }
@@ -237,7 +244,9 @@ impl UnifiedRuntime {
         if self.shutting_down.load(Ordering::SeqCst) {
             return Err(UnifiedRuntimeError::RuntimeShuttingDown);
         }
-        let mut dispatch_report = self.dispatch_schedule_tick_blocking(schedules, tick_ms).await?;
+        let mut dispatch_report = self
+            .dispatch_schedule_tick_blocking(schedules, tick_ms)
+            .await?;
 
         for dispatch in &mut dispatch_report.dispatched {
             let Some(runtime_injection) = dispatch.runtime_injection.clone() else {
@@ -254,42 +263,49 @@ impl UnifiedRuntime {
 
             match injection_result {
                 Ok(session_id) => {
-                    self.module_runtime.lock().await.append_normalized_event(EventEnvelope {
-                        event_id: format!("{}-executed", runtime_injection.injection_event_id),
-                        source: "module".to_string(),
-                        timestamp_ms: dispatch.tick_ms,
-                        event: UnifiedEvent::Module(ModuleEvent {
-                            module: "runtime".to_string(),
-                            event_type: "runtime.injection.executed".to_string(),
-                            payload: json!({
-                                "schedule_id": dispatch.schedule_id.clone(),
-                                "claim_key": dispatch.claim_key.clone(),
-                                "member_id": runtime_injection.member_id,
-                                "message": runtime_injection.message,
-                                "session_id": session_id,
+                    self.module_runtime
+                        .lock()
+                        .await
+                        .append_normalized_event(EventEnvelope {
+                            event_id: format!("{}-executed", runtime_injection.injection_event_id),
+                            source: "module".to_string(),
+                            timestamp_ms: dispatch.tick_ms,
+                            event: UnifiedEvent::Module(ModuleEvent {
+                                module: "runtime".to_string(),
+                                event_type: "runtime.injection.executed".to_string(),
+                                payload: json!({
+                                    "schedule_id": dispatch.schedule_id.clone(),
+                                    "claim_key": dispatch.claim_key.clone(),
+                                    "member_id": runtime_injection.member_id,
+                                    "message": runtime_injection.message,
+                                    "session_id": session_id,
+                                }),
                             }),
-                        }),
-                    })?;
+                        })?;
                 }
                 Err(error) => {
-                    dispatch.runtime_injection_error = Some(format!("mob injection failed: {error}"));
-                    self.module_runtime.lock().await.append_normalized_event(EventEnvelope {
-                        event_id: format!("{}-failed", runtime_injection.injection_event_id),
-                        source: "module".to_string(),
-                        timestamp_ms: dispatch.tick_ms,
-                        event: UnifiedEvent::Module(ModuleEvent {
-                            module: "runtime".to_string(),
-                            event_type: "runtime.injection.failed".to_string(),
-                            payload: json!({
-                                "schedule_id": dispatch.schedule_id.clone(),
-                                "claim_key": dispatch.claim_key.clone(),
-                                "member_id": runtime_injection.member_id,
-                                "message": runtime_injection.message,
-                                "error_kind": "mob_runtime",
-                                "error": format!("mob injection failed: {error}"),
+                    dispatch.runtime_injection_error =
+                        Some(format!("mob injection failed: {error}"));
+                    self.module_runtime
+                        .lock()
+                        .await
+                        .append_normalized_event(EventEnvelope {
+                            event_id: format!("{}-failed", runtime_injection.injection_event_id),
+                            source: "module".to_string(),
+                            timestamp_ms: dispatch.tick_ms,
+                            event: UnifiedEvent::Module(ModuleEvent {
+                                module: "runtime".to_string(),
+                                event_type: "runtime.injection.failed".to_string(),
+                                payload: json!({
+                                    "schedule_id": dispatch.schedule_id.clone(),
+                                    "claim_key": dispatch.claim_key.clone(),
+                                    "member_id": runtime_injection.member_id,
+                                    "message": runtime_injection.message,
+                                    "error_kind": "mob_runtime",
+                                    "error": format!("mob injection failed: {error}"),
+                                }),
                             }),
-                        }),
-                    })?;
+                        })?;
                 }
             }
         }
@@ -309,18 +325,10 @@ impl UnifiedRuntime {
             .is_ok_and(|handle| handle.runtime_flavor() == RuntimeFlavor::MultiThread)
         {
             tokio::task::block_in_place(|| {
-                Self::dispatch_schedule_tick_in_joined_thread(
-                    &mut rt,
-                    schedules,
-                    tick_ms,
-                )
+                Self::dispatch_schedule_tick_in_joined_thread(&mut rt, schedules, tick_ms)
             })
         } else {
-            Self::dispatch_schedule_tick_in_joined_thread(
-                &mut rt,
-                schedules,
-                tick_ms,
-            )
+            Self::dispatch_schedule_tick_in_joined_thread(&mut rt, schedules, tick_ms)
         };
 
         dispatch_result

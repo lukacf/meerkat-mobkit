@@ -4,10 +4,10 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use meerkat_mobkit_core::{
-    handle_mobkit_rpc_json, start_mobkit_runtime, BigQuerySessionStoreAdapter,
-    BigQuerySessionStoreError, DiscoverySpec, MobKitConfig, SessionPersistenceRow,
+    BigQuerySessionStoreAdapter, BigQuerySessionStoreError, DiscoverySpec, MobKitConfig,
+    SessionPersistenceRow, handle_mobkit_rpc_json, start_mobkit_runtime,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[path = "support/bigquery_http_mock.rs"]
 mod bigquery_http_mock;
@@ -23,7 +23,7 @@ fn sample_write_rows() -> Vec<SessionPersistenceRow> {
         updated_at_ms: 10_000,
         deleted: false,
         payload: json!({"step":"create"}),
-    ..Default::default()
+        ..Default::default()
     }]
 }
 
@@ -64,28 +64,28 @@ async fn phase_f_contract_native_bigquery_transport_request_shape_and_query_pars
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         },
     ];
     // read_latest_rows now uses server-side QUALIFY dedup; mock returns already-deduped rows
@@ -115,10 +115,17 @@ async fn phase_f_contract_native_bigquery_transport_request_shape_and_query_pars
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     store
-        .stream_insert_rows(&writes).await
+        .stream_insert_rows(&writes)
+        .await
         .expect("insertAll contract call should succeed");
-    let latest = store.read_latest_rows().await.expect("read latest via query API");
-    let live = store.read_live_rows().await.expect("read live via query API");
+    let latest = store
+        .read_latest_rows()
+        .await
+        .expect("read latest via query API");
+    let live = store
+        .read_live_rows()
+        .await
+        .expect("read live via query API");
 
     assert_eq!(
         latest,
@@ -128,14 +135,14 @@ async fn phase_f_contract_native_bigquery_transport_request_shape_and_query_pars
                 updated_at_ms: 2_000,
                 deleted: true,
                 payload: json!({}),
-            ..Default::default()
+                ..Default::default()
             },
             SessionPersistenceRow {
                 session_id: "s2".to_string(),
                 updated_at_ms: 3_000,
                 deleted: false,
                 payload: json!({"step":"update","version":2}),
-            ..Default::default()
+                ..Default::default()
             },
         ]
     );
@@ -146,7 +153,7 @@ async fn phase_f_contract_native_bigquery_transport_request_shape_and_query_pars
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         }]
     );
 
@@ -289,14 +296,14 @@ fn phase_f_rpc_bigquery_stream_insert_rows_issues_insert_all_request() {
             updated_at_ms: 101,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "rpc-s1".to_string(),
             updated_at_ms: 202,
             deleted: true,
             payload: json!({}),
-        ..Default::default()
+            ..Default::default()
         },
     ];
 
@@ -439,15 +446,17 @@ fn phase_f_rpc_bigquery_read_rows_and_read_live_rows_semantics() {
 
     let requests = server.captured_requests();
     assert_eq!(requests.len(), 2);
-    assert!(requests
-        .iter()
-        .all(|request| request.path == "/bigquery/v2/projects/phase-f-project/queries"));
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.path == "/bigquery/v2/projects/phase-f-project/queries")
+    );
 }
 
 #[test]
 fn phase_f_rpc_bigquery_timeout_ms_propagates_to_store_http_timeout() {
     let server = MockHttpServer::start(vec![
-        MockHttpResponse::json(json!({})).with_delay(Duration::from_millis(200))
+        MockHttpResponse::json(json!({})).with_delay(Duration::from_millis(200)),
     ]);
     let mut runtime = start_phase_f_rpc_runtime();
 
@@ -594,13 +603,15 @@ async fn phase_f_bigquery_missing_project_or_token_configuration_returns_configu
     let missing_project =
         BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
             .with_access_token("phase-f-token")
-            .stream_insert_rows(&writes).await
+            .stream_insert_rows(&writes)
+            .await
             .expect_err("missing project_id should fail");
     assert_configuration_error_contains(missing_project, "missing BigQuery project_id");
 
     let missing_token = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
-        .stream_insert_rows(&writes).await
+        .stream_insert_rows(&writes)
+        .await
         .expect_err("missing access token should fail");
     assert_configuration_error_contains(missing_token, "missing BigQuery access token");
 }
@@ -618,7 +629,8 @@ async fn phase_f_bigquery_insert_all_row_level_errors_are_not_silently_accepted(
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     let err = store
-        .stream_insert_rows(&sample_write_rows()).await
+        .stream_insert_rows(&sample_write_rows())
+        .await
         .expect_err("insertErrors should bubble as API failure");
     assert_api_error_contains(err, "insertAll returned row errors");
 }
@@ -637,7 +649,8 @@ async fn phase_f_bigquery_non_success_http_statuses_surface_api_error() {
         .with_api_base_url(format!("{}/bigquery/v2", server.base_url()));
 
     let err = store
-        .stream_insert_rows(&sample_write_rows()).await
+        .stream_insert_rows(&sample_write_rows())
+        .await
         .expect_err("non-2xx status should fail");
     assert_api_error_contains(err, "status 503");
 }
@@ -655,7 +668,8 @@ async fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failure
             .with_access_token("phase-f-token")
             .with_api_base_url(format!("{}/bigquery/v2", malformed_rows_server.base_url()));
     let malformed_rows_err = malformed_rows_store
-        .read_rows().await
+        .read_rows()
+        .await
         .expect_err("query rows missing row.f should fail parsing");
     assert_invalid_query_error_contains(malformed_rows_err, "missing row.f cell array");
 
@@ -673,7 +687,8 @@ async fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failure
                 malformed_payload_server.base_url()
             ));
     let malformed_payload_err = malformed_payload_store
-        .read_rows().await
+        .read_rows()
+        .await
         .expect_err("invalid payload JSON should fail parsing");
     assert_invalid_query_error_contains(malformed_payload_err, "payload JSON parse failed");
 }
@@ -681,7 +696,7 @@ async fn phase_f_bigquery_malformed_query_rows_and_payloads_return_parse_failure
 #[tokio::test]
 async fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() {
     let timeout_server = MockHttpServer::start(vec![
-        MockHttpResponse::json(json!({})).with_delay(Duration::from_millis(200))
+        MockHttpResponse::json(json!({})).with_delay(Duration::from_millis(200)),
     ]);
     let timeout_store = BigQuerySessionStoreAdapter::new_native("phase_f_dataset", "phase_f_table")
         .with_project_id("phase-f-project")
@@ -690,7 +705,8 @@ async fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() 
         .with_http_timeout(Duration::from_millis(25));
     let timeout_started = Instant::now();
     let timeout_err = timeout_store
-        .stream_insert_rows(&sample_write_rows()).await
+        .stream_insert_rows(&sample_write_rows())
+        .await
         .expect_err("delayed response should trigger HTTP timeout");
     let timeout_elapsed = timeout_started.elapsed();
     assert!(
@@ -793,33 +809,34 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
             updated_at_ms: 1_000,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s1".to_string(),
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 1_500,
             deleted: false,
             payload: json!({"step":"create"}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         },
     ];
 
     store
-        .stream_insert_rows(&writes).await
+        .stream_insert_rows(&writes)
+        .await
         .expect("stream insert rows into real BigQuery table");
 
     let expected_latest = vec![
@@ -828,14 +845,14 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
             updated_at_ms: 2_000,
             deleted: true,
             payload: json!({}),
-        ..Default::default()
+            ..Default::default()
         },
         SessionPersistenceRow {
             session_id: "s2".to_string(),
             updated_at_ms: 3_000,
             deleted: false,
             payload: json!({"step":"update","version":2}),
-        ..Default::default()
+            ..Default::default()
         },
     ];
     let expected_live = vec![SessionPersistenceRow {
@@ -843,16 +860,18 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
         updated_at_ms: 3_000,
         deleted: false,
         payload: json!({"step":"update","version":2}),
-    ..Default::default()
+        ..Default::default()
     }];
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let latest = store
-            .read_latest_rows().await
+            .read_latest_rows()
+            .await
             .expect("query latest rows from real BigQuery");
         let live = store
-            .read_live_rows().await
+            .read_live_rows()
+            .await
             .expect("query live rows from real BigQuery");
         if latest == expected_latest && live == expected_live {
             break;
@@ -860,8 +879,7 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
         if Instant::now() >= deadline {
             panic!(
                 "BigQuery streaming rows did not converge to expected dedup+tombstone semantics within 60s.\nlatest={:?}\nlive={:?}",
-                latest,
-                live
+                latest, live
             );
         }
         thread::sleep(Duration::from_secs(2));

@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -154,10 +154,7 @@ pub(crate) struct EventLogHandle {
 
 impl EventLogHandle {
     /// Query the underlying store.
-    pub async fn query(
-        &self,
-        query: EventQuery,
-    ) -> Result<Vec<PersistedEvent>, EventLogError> {
+    pub async fn query(&self, query: EventQuery) -> Result<Vec<PersistedEvent>, EventLogError> {
         self.store.query(query).await
     }
 
@@ -270,9 +267,7 @@ async fn flush_batch(
             let hook = hook.clone();
             let msg = format!("event log flush failed: {err}");
             tokio::spawn(async move {
-                let _ = hook(super::types::ErrorEvent::EventLogFlushFailure {
-                    error: msg,
-                }).await;
+                let _ = hook(super::types::ErrorEvent::EventLogFlushFailure { error: msg }).await;
             });
         }
     }

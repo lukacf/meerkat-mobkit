@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobStorage, Prefab, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, handle_console_ingress_json, AuthPolicy, BigQueryNaming,
-    ConsolePolicy, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    PreSpawnData, RuntimeDecisionInputs, RuntimeOpsPolicy, ScheduleDefinition, SubscribeRequest,
-    TrustedOidcRuntimeConfig, UnifiedRuntime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, PreSpawnData, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    ScheduleDefinition, SubscribeRequest, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    build_runtime_decision_state, handle_console_ingress_json,
 };
 
 #[tokio::main]
@@ -46,30 +46,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     runtime.reconcile(reference_member_specs()).await?;
-    runtime.subscribe_events(SubscribeRequest::default()).await?;
+    runtime
+        .subscribe_events(SubscribeRequest::default())
+        .await?;
     let empty_schedules = Vec::<ScheduleDefinition>::new();
     runtime
         .dispatch_schedule_tick(&empty_schedules, 60_000)
         .await?;
-    let _ = runtime.reconcile_modules(Vec::new(), std::time::Duration::from_secs(1)).await;
+    let _ = runtime
+        .reconcile_modules(Vec::new(), std::time::Duration::from_secs(1))
+        .await;
     let loaded_modules = runtime.loaded_modules().await;
     if loaded_modules.iter().any(|module| module == "router")
         && loaded_modules.iter().any(|module| module == "delivery")
     {
-        if let Ok(resolution) =
-            runtime.resolve_routing(meerkat_mobkit_core::runtime::RoutingResolveRequest {
+        if let Ok(resolution) = runtime
+            .resolve_routing(meerkat_mobkit_core::runtime::RoutingResolveRequest {
                 recipient: "sample@example.com".to_string(),
                 channel: Some("transactional".to_string()),
                 retry_max: Some(1),
                 backoff_ms: Some(250),
                 rate_limit_per_minute: Some(2),
-            }).await
+            })
+            .await
         {
-            let _ = runtime.send_delivery(meerkat_mobkit_core::runtime::DeliverySendRequest {
-                resolution,
-                payload: serde_json::json!({"message":"reference-app smoke"}),
-                idempotency_key: Some("reference-app-smoke".to_string()),
-            }).await;
+            let _ = runtime
+                .send_delivery(meerkat_mobkit_core::runtime::DeliverySendRequest {
+                    resolution,
+                    payload: serde_json::json!({"message":"reference-app smoke"}),
+                    idempotency_key: Some("reference-app-smoke".to_string()),
+                })
+                .await;
         }
     }
 

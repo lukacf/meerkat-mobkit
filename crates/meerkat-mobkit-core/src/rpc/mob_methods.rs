@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::unified_runtime::UnifiedRuntime;
 
-use super::{JsonRpcError, JsonRpcResponse, JSONRPC_VERSION};
+use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
 pub(super) async fn handle_send_message(
     runtime: &UnifiedRuntime,
@@ -90,12 +90,9 @@ pub(super) async fn handle_ensure_member(
 
     match (profile, meerkat_id) {
         (Some(profile), Some(meerkat_id)) if !profile.is_empty() && !meerkat_id.is_empty() => {
-            let labels = params
-                .get("labels")
-                .and_then(|v| {
-                    serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone())
-                        .ok()
-                });
+            let labels = params.get("labels").and_then(|v| {
+                serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone()).ok()
+            });
             let context = params.get("context").cloned();
             let resume_session_id = params
                 .get("resume_session_id")

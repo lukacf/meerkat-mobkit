@@ -1,12 +1,12 @@
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, handle_console_rest_json_route, AuthPolicy, AuthProvider,
-    BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig,
+    AuthPolicy, AuthProvider, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    build_runtime_decision_state, handle_console_rest_json_route,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const RSA_A_PRIVATE_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDOsyz7rroGyhPq

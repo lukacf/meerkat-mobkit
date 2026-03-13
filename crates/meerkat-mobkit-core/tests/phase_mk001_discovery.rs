@@ -7,12 +7,12 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::{
-    discovery_spec_to_spawn_spec, AgentDiscoverySpec, Discovery, DiscoverySpec, MobBootstrapOptions,
-    MobBootstrapSpec, MobKitConfig, UnifiedRuntime,
+    AgentDiscoverySpec, Discovery, DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec,
+    MobKitConfig, UnifiedRuntime, discovery_spec_to_spawn_spec,
 };
 use serde_json::json;
 
@@ -30,9 +30,7 @@ impl Discovery for MockDiscovery {
     }
 }
 
-fn build_session_service(
-    temp_dir: &tempfile::TempDir,
-) -> Arc<dyn meerkat_mob::MobSessionService> {
+fn build_session_service(temp_dir: &tempfile::TempDir) -> Arc<dyn meerkat_mob::MobSessionService> {
     let session_path = temp_dir.path().join("sessions");
     std::fs::create_dir_all(&session_path).expect("session path");
     let factory = AgentFactory::new(&session_path).comms(true);
@@ -94,7 +92,10 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
 
     assert_eq!(spawn.profile_name.as_str(), "worker");
     assert_eq!(spawn.meerkat_id.as_str(), "agent-1");
-    assert!(spawn.initial_message.is_none(), "additional_instructions should not map to initial_message");
+    assert!(
+        spawn.initial_message.is_none(),
+        "additional_instructions should not map to initial_message"
+    );
     // additional_instructions maps directly to SpawnMemberSpec.additional_instructions
     assert_eq!(
         spawn.additional_instructions.as_deref(),
@@ -289,14 +290,13 @@ async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
     let hook_ran = Arc::new(AtomicBool::new(false));
     let hook_ran_clone = hook_ran.clone();
 
-    let hook: meerkat_mobkit_core::unified_runtime::PreSpawnHook =
-        Box::new(move || {
-            let flag = hook_ran_clone.clone();
-            Box::pin(async move {
-                flag.store(true, Ordering::SeqCst);
-                Ok(serde_json::Value::Null)
-            })
-        });
+    let hook: meerkat_mobkit_core::unified_runtime::PreSpawnHook = Box::new(move || {
+        let flag = hook_ran_clone.clone();
+        Box::pin(async move {
+            flag.store(true, Ordering::SeqCst);
+            Ok(serde_json::Value::Null)
+        })
+    });
 
     let discovery = MockDiscovery {
         specs: vec![AgentDiscoverySpec {

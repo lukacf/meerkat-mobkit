@@ -5,16 +5,16 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat::{build_ephemeral_service, AgentFactory, Config};
+use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
 use meerkat_core::StopReason;
 use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit_core::runtime::{DeliverySendRequest, RoutingResolveRequest};
 use meerkat_mobkit_core::{
-    build_runtime_decision_state, AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec,
-    LifecycleStage, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig,
-    ModuleHealthState, PreSpawnData, RestartPolicy, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    RuntimeOptions, ScheduleDefinition, TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, LifecycleStage, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, ModuleConfig, ModuleHealthState, PreSpawnData, RestartPolicy,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, RuntimeOptions, ScheduleDefinition,
+    TrustedOidcRuntimeConfig, UnifiedEvent, UnifiedRuntime, build_runtime_decision_state,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -251,10 +251,9 @@ fn mcp_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
     env
 }
 
-
 #[tokio::test]
-async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and_shuts_down_ordered(
-) {
+async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and_shuts_down_ordered()
+ {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let state_file = temp_dir.path().join("forced-crash-attempts.txt");
     let crash_script = forced_crash_then_ready_script("forced-crash", &state_file, 2);
@@ -293,7 +292,10 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
 
     // Send a message to create activity while module crash/recovery proceeds.
     runtime
-        .send_message("worker-1", "Keep this interaction open briefly while runtime work proceeds.".to_string())
+        .send_message(
+            "worker-1",
+            "Keep this interaction open briefly while runtime work proceeds.".to_string(),
+        )
         .await
         .expect("send_message should succeed");
 
@@ -492,8 +494,8 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
             .expect("reference app should shut down cleanly");
     });
 
-    let resolution = tokio_runtime.block_on(runtime
-        .resolve_routing(RoutingResolveRequest {
+    let resolution = tokio_runtime
+        .block_on(runtime.resolve_routing(RoutingResolveRequest {
             recipient: "user@example.com".to_string(),
             channel: Some("transactional".to_string()),
             retry_max: Some(1),
@@ -504,8 +506,8 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
     assert_eq!(resolution.target_module, "delivery");
     assert_eq!(resolution.sink, "email");
 
-    let delivery = tokio_runtime.block_on(runtime
-        .send_delivery(DeliverySendRequest {
+    let delivery = tokio_runtime
+        .block_on(runtime.send_delivery(DeliverySendRequest {
             resolution: resolution.clone(),
             payload: json!({"message":"phase5 lifecycle happy path"}),
             idempotency_key: Some("phase5-e2e-004".to_string()),
@@ -537,8 +539,8 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         .expect("mob runtime should stop cleanly at lifecycle end");
 
     assert_eq!(
-        tokio_runtime.block_on(runtime
-            .module_lifecycle_events())
+        tokio_runtime
+            .block_on(runtime.module_lifecycle_events())
             .iter()
             .map(|event| event.stage.clone())
             .collect::<Vec<_>>(),

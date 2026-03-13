@@ -7,15 +7,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::runtime::{
-    handle_console_rest_json_route, route_module_call, validate_schedules,
     BigQuerySessionStoreAdapter, BigQuerySessionStoreError, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
     ElephantMemoryStoreError, GatingDecideError, GatingDecideRequest, GatingDecision,
     GatingEvaluateRequest, GatingRiskTier, MemoryIndexError, MemoryIndexRequest,
     MemoryQueryRequest, MobkitRuntimeHandle, ModuleRouteError, ModuleRouteRequest,
-    RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState, RuntimeRoute,
-    RuntimeRouteMutationError, ScheduleDefinition, ScheduleValidationError, SessionPersistenceRow,
-    SubscribeError, SubscribeRequest, SubscribeScope, ROUTING_RETRY_MAX_CAP,
+    ROUTING_RETRY_MAX_CAP, RoutingResolveError, RoutingResolveRequest, RuntimeDecisionState,
+    RuntimeRoute, RuntimeRouteMutationError, ScheduleDefinition, ScheduleValidationError,
+    SessionPersistenceRow, SubscribeError, SubscribeRequest, SubscribeScope,
+    handle_console_rest_json_route, route_module_call, validate_schedules,
 };
 use crate::unified_runtime::UnifiedRuntime;
 
@@ -31,24 +31,24 @@ mod subscribe_methods;
 pub use console_ingress::handle_console_ingress_json;
 
 use gating_methods::{
-    parse_gating_audit_params, parse_gating_decide_params, parse_gating_evaluate_params,
-    parse_gating_pending_params, GatingParamsError,
+    GatingParamsError, parse_gating_audit_params, parse_gating_decide_params,
+    parse_gating_evaluate_params, parse_gating_pending_params,
 };
 use memory_methods::{
-    parse_memory_index_params, parse_memory_query_params, parse_memory_stores_params,
-    MemoryParamsError,
+    MemoryParamsError, parse_memory_index_params, parse_memory_query_params,
+    parse_memory_stores_params,
 };
 use routing_delivery_methods::{
-    parse_delivery_history_params, parse_delivery_send_params, parse_routing_resolve_params,
-    parse_routing_route_add_params, parse_routing_route_delete_params,
-    parse_routing_routes_list_params, RoutingDeliveryParamsError,
+    RoutingDeliveryParamsError, parse_delivery_history_params, parse_delivery_send_params,
+    parse_routing_resolve_params, parse_routing_route_add_params,
+    parse_routing_route_delete_params, parse_routing_routes_list_params,
 };
 use scheduling_methods::{format_schedule_validation_error, parse_scheduling_params};
 use session_store_methods::{
-    format_bigquery_store_error, parse_bigquery_session_store_params,
-    run_bigquery_session_store_request, BigQuerySessionStoreRpcError,
+    BigQuerySessionStoreRpcError, format_bigquery_store_error, parse_bigquery_session_store_params,
+    run_bigquery_session_store_request,
 };
-use subscribe_methods::{parse_subscribe_request, SubscribeParamsError};
+use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
 pub const MOBKIT_CONTRACT_VERSION: &str = "0.1.0";
@@ -713,7 +713,11 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/call_tool" => {
             let module_id = request.params.get("module_id").and_then(Value::as_str);
             let tool = request.params.get("tool").and_then(Value::as_str);
-            let arguments = request.params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let arguments = request
+                .params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
             match (module_id, tool) {
                 (Some(module_id), Some(tool)) if !module_id.is_empty() && !tool.is_empty() => {
@@ -1275,10 +1279,7 @@ pub async fn handle_unified_rpc_json(
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
-                    result: Some(
-                        serde_json::to_value(history)
-                            .unwrap_or(Value::Null),
-                    ),
+                    result: Some(serde_json::to_value(history).unwrap_or(Value::Null)),
                     error: None,
                 }
             }
@@ -1391,10 +1392,7 @@ pub async fn handle_unified_rpc_json(
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
-                    result: Some(
-                        serde_json::to_value(query_result)
-                            .unwrap_or(Value::Null),
-                    ),
+                    result: Some(serde_json::to_value(query_result).unwrap_or(Value::Null)),
                     error: None,
                 }
             }
@@ -1447,10 +1445,7 @@ pub async fn handle_unified_rpc_json(
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id.clone(),
-                    result: Some(
-                        serde_json::to_value(gating_result)
-                            .unwrap_or(Value::Null),
-                    ),
+                    result: Some(serde_json::to_value(gating_result).unwrap_or(Value::Null)),
                     error: None,
                 }
             }
@@ -1537,18 +1532,24 @@ pub async fn handle_unified_rpc_json(
         "mobkit/call_tool" => {
             let module_id = request.params.get("module_id").and_then(Value::as_str);
             let tool = request.params.get("tool").and_then(Value::as_str);
-            let arguments = request.params.get("arguments").cloned().unwrap_or(serde_json::json!({}));
+            let arguments = request
+                .params
+                .get("arguments")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
             match (module_id, tool) {
                 (Some(module_id), Some(tool)) if !module_id.is_empty() && !tool.is_empty() => {
-                    let route = runtime.route_module_call(
-                        &ModuleRouteRequest {
-                            module_id: module_id.to_string(),
-                            method: tool.to_string(),
-                            params: arguments,
-                        },
-                        timeout,
-                    ).await;
+                    let route = runtime
+                        .route_module_call(
+                            &ModuleRouteRequest {
+                                module_id: module_id.to_string(),
+                                method: tool.to_string(),
+                                params: arguments,
+                            },
+                            timeout,
+                        )
+                        .await;
                     match route {
                         Ok(response) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
@@ -1615,9 +1616,7 @@ pub async fn handle_unified_rpc_json(
         "mobkit/reconcile_edges" => {
             mob_methods::handle_reconcile_edges(runtime, response_id.clone()).await
         }
-        "mobkit/rediscover" => {
-            mob_methods::handle_rediscover(runtime, response_id.clone()).await
-        }
+        "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id.clone()).await,
         "mobkit/query_events" => {
             mob_methods::handle_query_events(runtime, response_id.clone(), request.params).await
         }
@@ -1627,14 +1626,16 @@ pub async fn handle_unified_rpc_json(
                 .next()
                 .map(ToString::to_string)
                 .unwrap_or_default();
-            let route = runtime.route_module_call(
-                &ModuleRouteRequest {
-                    module_id: module_id.clone(),
-                    method: method.to_string(),
-                    params: request.params,
-                },
-                timeout,
-            ).await;
+            let route = runtime
+                .route_module_call(
+                    &ModuleRouteRequest {
+                        module_id: module_id.clone(),
+                        method: method.to_string(),
+                        params: request.params,
+                    },
+                    timeout,
+                )
+                .await;
             match route {
                 Ok(response) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
