@@ -6,25 +6,26 @@ Companion orchestration platform for the [Meerkat](https://github.com/lukacf/mee
 
 | Area | Path |
 |------|------|
-| Rust core | `meerkat-mobkit/` |
+| Rust crate | `meerkat-mobkit/` |
 | Gateway binary | `meerkat-mobkit/src/bin/phase0b_rpc_gateway.rs` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | Python tests | `sdk/python/tests/` |
 | TypeScript SDK | `sdk/typescript/` |
 | Docs (Mintlify) | `docs/` |
 
-## Python SDK (v0.2.0)
+## Python SDK (v0.4.6)
 
 Package: `meerkat-mobkit` (import as `meerkat_mobkit`).
 
 Public surface — `__init__.py` exports:
-- **Builder/Runtime**: `MobKit`, `MobKitBuilder`, `MobKitRuntime`
+- **Builder/Runtime**: `MobKit`, `MobKitBuilder`, `MobKitRuntime`, `ToolCaller`
 - **Models**: `DiscoverySpec`, `PreSpawnData`, `SessionBuildOptions`, `SessionQuery`
 - **Protocol**: `SessionAgentBuilder`
 - **Errors**: `MobKitError`, `TransportError`, `RpcError`, `NotConnectedError`, `CapabilityUnavailableError`, `ContractMismatchError`
-- **Typed results**: `StatusResult`, `CapabilitiesResult`, `ReconcileResult`, `SpawnResult`, `SpawnMemberResult`, `SubscribeResult`, `KeepAliveConfig`, `EventEnvelope`, `RoutingResolution`, `DeliveryResult`, `MemoryQueryResult`
-- **Events**: `MobEvent`, `AgentEvent`, `InteractionEvent`, `EventStream`
+- **Typed results**: `StatusResult`, `CapabilitiesResult`, `ReconcileResult`, `SpawnResult`, `SpawnMemberResult`, `SendMessageResult`, `SubscribeResult`, `KeepAliveConfig`, `EventEnvelope`, `RoutingResolution`, `DeliveryResult`, `DeliveryHistoryResult`, `MemoryQueryResult`, `MemoryStoreInfo`, `MemoryIndexResult`, `MemberSnapshot`, `RuntimeRouteResult`, `GatingEvaluateResult`, `GatingDecisionResult`, `GatingAuditEntry`, `GatingPendingEntry`, `CallToolResult`
+- **Events**: `MobEvent`, `AgentEvent`, `EventStream`
 - **Config**: `auth`, `memory`, `session_store`
+- **Constants**: `MEMBER_STATE_ACTIVE`, `MEMBER_STATE_RETIRING`
 
 Module authoring helpers (`ModuleSpec`, `define_module`, etc.) live in `meerkat_mobkit.helpers` — not top-level.
 
@@ -39,6 +40,9 @@ cargo nextest run --workspace -E 'not test(phase0_governance)' --no-fail-fast
 
 # Python
 PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
+
+# Full CI
+make ci
 ```
 
 ## Branch conventions
