@@ -20,8 +20,8 @@ pub struct ConsoleJsonState {
     pub runtime: Option<RealMobRuntime>,
 }
 
-const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../../console/dist/index.html");
-const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../../console/dist/console-app.js");
+const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
+const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../console-dist/console-app.js");
 
 pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     console_json_router_with_state(ConsoleJsonState {
