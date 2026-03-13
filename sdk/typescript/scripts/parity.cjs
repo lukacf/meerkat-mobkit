@@ -5,7 +5,7 @@ const {
   MobkitTypedClient,
   buildConsoleModulesRoute,
   defineModuleSpec,
-} = require("../dist/index.js");
+} = require("../dist/index.cjs");
 
 const gatewayBin = process.env.MOBKIT_RPC_GATEWAY_BIN;
 if (!gatewayBin) {
