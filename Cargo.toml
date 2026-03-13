@@ -1,5 +1,5 @@
 [workspace]
-members = ["meerkat-mobkit-core"]
+members = ["meerkat-mobkit"]
 resolver = "2"
 
 [workspace.package]

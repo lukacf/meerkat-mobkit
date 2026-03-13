@@ -12,7 +12,7 @@ session persistence, and admin console.
 
 | Area | Path |
 |------|------|
-| Rust core | `meerkat-mobkit-core/` |
+| Rust core | `meerkat-mobkit/` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | TypeScript SDK | `sdk/typescript/` |
 | Docs (Mintlify) | `docs/` |

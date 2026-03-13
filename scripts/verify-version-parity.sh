@@ -14,7 +14,7 @@ green()  { printf '\033[0;32m%s\033[0m\n' "$*"; }
 
 CARGO_VER=$(cargo metadata --manifest-path "$ROOT/Cargo.toml" \
     --no-deps --format-version 1 \
-    | jq -r '.packages[] | select(.name == "meerkat-mobkit-core") | .version')
+    | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version')
 
 PY_VER=$(python3 -c "
 import pathlib
@@ -32,7 +32,7 @@ if [ -f "$ROOT/sdk/typescript/package.json" ]; then
 fi
 
 echo "Package versions:"
-echo "  Cargo (meerkat-mobkit-core):  $CARGO_VER"
+echo "  Cargo (meerkat-mobkit):  $CARGO_VER"
 echo "  Python SDK:                   $PY_VER"
 if [ -n "$TS_VER" ]; then
     echo "  TypeScript SDK:               $TS_VER"

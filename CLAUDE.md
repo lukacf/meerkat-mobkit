@@ -6,8 +6,8 @@ Companion orchestration platform for the [Meerkat](https://github.com/lukacf/mee
 
 | Area | Path |
 |------|------|
-| Rust core | `meerkat-mobkit-core/` |
-| Gateway binary | `meerkat-mobkit-core/src/bin/phase0b_rpc_gateway.rs` |
+| Rust core | `meerkat-mobkit/` |
+| Gateway binary | `meerkat-mobkit/src/bin/phase0b_rpc_gateway.rs` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | Python tests | `sdk/python/tests/` |
 | TypeScript SDK | `sdk/typescript/` |

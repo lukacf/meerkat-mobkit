@@ -62,12 +62,12 @@ repos:
         pass_filenames: false
         stages: [pre-push]
 
-  # On push: unit tests
+  # On push: unit tests only (integration tests run in CI)
   - repo: local
     hooks:
       - id: cargo-test
-        name: workspace test gate
-        entry: cargo nextest run --workspace -E 'not test(phase0_governance)' --no-fail-fast
+        name: workspace unit gate
+        entry: cargo nextest run --workspace --lib --no-fail-fast
         language: system
         types: [rust]
         pass_filenames: false

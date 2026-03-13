@@ -94,7 +94,7 @@ async function runSmoke() {
 
   const backend = spawn(
     "cargo",
-    ["run", "-p", "meerkat-mobkit-core", "--example", "library_mode_reference"],
+    ["run", "-p", "meerkat-mobkit", "--example", "library_mode_reference"],
     {
       cwd: repoRoot,
       env: { ...process.env, MOBKIT_REF_ADDR: addr },

@@ -12,7 +12,7 @@ if [ $# -ge 1 ]; then
 else
     VERSION=$(cargo metadata --manifest-path "$ROOT/Cargo.toml" \
         --no-deps --format-version 1 \
-        | jq -r '.packages[] | select(.name == "meerkat-mobkit-core") | .version')
+        | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version')
 fi
 
 echo "Bumping SDK versions to $VERSION"

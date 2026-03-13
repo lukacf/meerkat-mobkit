@@ -11,7 +11,7 @@ Version aligned with Meerkat v0.4.6.
 
 ### Added
 
-- Rust core orchestration engine (`meerkat-mobkit-core`)
+- Rust core orchestration engine (`meerkat-mobkit`)
   - Unified runtime with module loading, mob lifecycle, and RPC gateway
   - Roster API: list, get, retire, and respawn mob members
   - Routing engine with wildcard matching and retry policies
