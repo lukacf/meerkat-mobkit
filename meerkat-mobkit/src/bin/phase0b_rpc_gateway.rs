@@ -559,11 +559,13 @@ external_addressable = true
     });
 
     // 5. Build session service with callback bridge
-    // AgentFactory needs a working directory for agent scratch space even with
-    // EphemeralSessionService (sessions don't persist, but agents use the path
-    // during execution). temp_dir must outlive runtime — dropped after shutdown.
+    // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
+    // so agent-level persistence is not needed. This avoids failures on read-only
+    // filesystems (e.g., GKE containers) where the default JSONL store can't write.
     let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
-    let factory = AgentFactory::new(temp_dir.path()).comms(true);
+    let factory = AgentFactory::new(temp_dir.path())
+        .comms(true)
+        .session_store(Arc::new(meerkat::MemoryStore::new()));
     let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
     let callback_builder = StdioCallbackAgentBuilder {
         inner: inner_builder,

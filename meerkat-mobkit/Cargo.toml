@@ -16,6 +16,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -34,7 +35,7 @@ meerkat-core = "0.4.8"
 meerkat-client = "0.4.8"
 meerkat-mob = "0.4.8"
 meerkat-mcp = "0.4.8"
-meerkat = { version = "0.4.8", features = ["comms"] }
+meerkat = { version = "0.4.8", features = ["comms", "sub-agents", "skills", "mcp", "memory-store"] }
 meerkat-session = "0.4.8"
 tempfile = "3"
 async-trait = "0.1"
