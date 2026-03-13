@@ -12,7 +12,7 @@ homepage = "https://docs.rkat.ai"
 documentation = "https://docs.rkat.ai"
 keywords = ["agent", "llm", "ai", "meerkat", "orchestration"]
 categories = ["development-tools", "api-bindings"]
-rust-version = "1.85.0"
+rust-version = "1.94.0"
 description = "Companion orchestration platform for the Meerkat multi-agent runtime"
 
 [workspace.lints.rust]
