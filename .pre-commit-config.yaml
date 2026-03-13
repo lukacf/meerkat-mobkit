@@ -1,0 +1,74 @@
+# Pre-commit configuration for MobKit
+# Install: pip install pre-commit
+# Setup: pre-commit install && pre-commit install --hook-type pre-push
+
+default_stages: [pre-commit]
+
+repos:
+  # On commit: auto-format Rust code
+  - repo: local
+    hooks:
+      - id: cargo-fmt-fix
+        name: cargo fmt (auto-fix)
+        entry: cargo fmt --all
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+  # On push: secret detection
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        stages: [pre-push]
+
+  # On push: file hygiene checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+        stages: [pre-push]
+      - id: end-of-file-fixer
+        stages: [pre-push]
+      - id: check-yaml
+        stages: [pre-push]
+      - id: check-toml
+        stages: [pre-push]
+      - id: check-merge-conflict
+        stages: [pre-push]
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        stages: [pre-push]
+
+  # On push: formatting check
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # On push: clippy on changed crates only (falls back to workspace for root manifest changes)
+  - repo: local
+    hooks:
+      - id: cargo-clippy
+        name: cargo clippy (changed crates)
+        entry: scripts/pre-push-clippy.sh
+        language: script
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+  # On push: unit tests only (integration tests run in CI)
+  - repo: local
+    hooks:
+      - id: cargo-test
+        name: workspace unit gate
+        entry: cargo nextest run --workspace --lib --no-fail-fast
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]

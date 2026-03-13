@@ -1,18 +1,18 @@
 [workspace]
-members = ["crates/meerkat-mobkit-core"]
+members = ["meerkat-mobkit"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-version = "0.1.0"
+version = "0.4.6"
 authors = ["Luka Crnkovic-Friis"]
 repository = "https://github.com/lukacf/meerkat-mobkit"
 homepage = "https://docs.rkat.ai"
 documentation = "https://docs.rkat.ai"
 keywords = ["agent", "llm", "ai", "meerkat", "orchestration"]
 categories = ["development-tools", "api-bindings"]
-rust-version = "1.85.0"
+rust-version = "1.94.0"
 description = "Companion orchestration platform for the Meerkat multi-agent runtime"
 
 [workspace.lints.rust]
@@ -89,15 +89,10 @@ ref_option = "allow"
 multiple_crate_versions = "allow"
 cargo_common_metadata = "allow"
 
-[patch.crates-io]
-meerkat = { path = "/Users/luka/src/raik/meerkat" }
-meerkat-core = { path = "/Users/luka/src/raik/meerkat-core" }
-meerkat-client = { path = "/Users/luka/src/raik/meerkat-client" }
-meerkat-store = { path = "/Users/luka/src/raik/meerkat-store" }
-meerkat-tools = { path = "/Users/luka/src/raik/meerkat-tools" }
-meerkat-session = { path = "/Users/luka/src/raik/meerkat-session" }
-meerkat-comms = { path = "/Users/luka/src/raik/meerkat-comms" }
-meerkat-mob = { path = "/Users/luka/src/raik/meerkat-mob" }
-meerkat-rpc = { path = "/Users/luka/src/raik/meerkat-rpc" }
-meerkat-rest = { path = "/Users/luka/src/raik/meerkat-rest" }
-meerkat-mcp = { path = "/Users/luka/src/raik/meerkat-mcp" }
+[workspace.metadata.release]
+shared-version = true
+tag-name = "v{{version}}"
+pre-release-commit-message = "chore: release v{{version}}"
+tag-message = "Release v{{version}}"
+publish = false
+push = true

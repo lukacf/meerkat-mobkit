@@ -4,7 +4,7 @@ description: "Internal architecture, crate structure, module system design, and 
 icon: "layer-group"
 ---
 
-MobKit is a single Rust crate (`meerkat-mobkit-core`) with a React console, designed as a companion to the Meerkat multi-agent runtime. It handles the operational concerns that surround agent execution: startup, module supervision, delivery, scheduling, gating, memory, sessions, and administration.
+MobKit is a single Rust crate (`meerkat-mobkit`) with a React console, designed as a companion to the Meerkat multi-agent runtime. It handles the operational concerns that surround agent execution: startup, module supervision, delivery, scheduling, gating, memory, sessions, and administration.
 
 ## Design principles
 
@@ -54,7 +54,7 @@ graph TD
 MobKit is organized as a single crate with internal modules:
 
 ```
-meerkat-mobkit-core/src/
+meerkat-mobkit/src/
 ├── lib.rs                    # Public API exports (~92 items)
 ├── types.rs                  # Core data structures
 ├── auth.rs                   # JWT/OIDC validation

@@ -5,11 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - 2026-03-11
+## [0.4.6] - 2026-03-11
+
+Version aligned with Meerkat v0.4.6.
 
 ### Added
 
-- Rust core orchestration engine (`meerkat-mobkit-core`)
+- Rust core orchestration engine (`meerkat-mobkit`)
   - Unified runtime with module loading, mob lifecycle, and RPC gateway
   - Roster API: list, get, retire, and respawn mob members
   - Routing engine with wildcard matching and retry policies
