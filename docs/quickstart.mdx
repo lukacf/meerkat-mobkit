@@ -42,7 +42,7 @@ The fastest way to get a running system is `start_mobkit_runtime`. It takes a mo
 <Tabs>
   <Tab title="Rust">
     ```rust
-    use meerkat_mobkit_core::{
+    use meerkat_mobkit::{
         start_mobkit_runtime, MobKitConfig, ModuleConfig, DiscoverySpec,
         RestartPolicy, EventEnvelope, UnifiedEvent,
     };
@@ -108,7 +108,7 @@ The fastest way to get a running system is `start_mobkit_runtime`. It takes a mo
 For production deployments that combine a Meerkat mob with MobKit modules, use the `UnifiedRuntime` builder:
 
 ```rust
-use meerkat_mobkit_core::UnifiedRuntime;
+use meerkat_mobkit::UnifiedRuntime;
 
 let runtime = UnifiedRuntime::builder()
     .mob_spec(mob_spec)
