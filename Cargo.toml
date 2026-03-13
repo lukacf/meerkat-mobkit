@@ -96,5 +96,3 @@ pre-release-commit-message = "chore: release v{{version}}"
 tag-message = "Release v{{version}}"
 publish = false
 push = true
-
-
