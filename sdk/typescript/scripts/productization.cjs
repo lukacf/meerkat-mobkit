@@ -12,7 +12,7 @@ const {
   decorateModuleSpec,
   defineModuleTool,
   defineModule,
-} = require("../dist/index.js");
+} = require("../dist/index.cjs");
 
 const results = [];
 
