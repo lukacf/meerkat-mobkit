@@ -134,19 +134,57 @@ verify-version-parity: ## Verify version strings are in sync
 bump-sdk-versions: ## Bump SDK version strings
 	@scripts/bump-sdk-versions.sh
 
+verify-version: ## Verify Cargo.toml version matches git tag
+	@VERSION=$$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version'); \
+	TAG=$$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//'); \
+	if [ -z "$$TAG" ]; then \
+		echo "$(YELLOW)No tag found on current commit$(NC)"; \
+	elif [ "$$VERSION" != "$$TAG" ]; then \
+		echo "$(RED)Version mismatch: Cargo.toml has $$VERSION but tag is $$TAG$(NC)"; \
+		exit 1; \
+	else \
+		echo "$(GREEN)Version $$VERSION matches tag$(NC)"; \
+	fi
+
+publish-dry-run: ## Dry-run cargo publish
+	@echo "$(YELLOW)Dry-run cargo publish…$(NC)"
+	cargo publish -p meerkat-mobkit --dry-run
+	@echo "$(GREEN)Cargo dry-run succeeded.$(NC)"
+
 publish-dry-run-python: ## Dry-run Python package build + twine check
 	@echo "$(YELLOW)Building Python package (dry run)…$(NC)"
-	cd sdk/python && \
-		pip install --quiet build twine && \
+	@cd sdk/python && \
+		python3 -m pip install --quiet build twine && \
+		rm -rf dist && \
 		python3 -m build && \
-		twine check dist/* && \
+		python3 -m twine check dist/* && \
 		rm -rf dist build *.egg-info
 	@echo "$(GREEN)Python dry-run publish succeeded.$(NC)"
+
+publish-dry-run-typescript: ## Dry-run TypeScript SDK build + npm pack
+	@echo "$(YELLOW)Building TypeScript SDK (dry run)…$(NC)"
+	@cd sdk/typescript && \
+		npm install --ignore-scripts && \
+		npm run build && \
+		npm publish --access public --dry-run && \
+		rm -rf dist
+	@echo "$(GREEN)TypeScript dry-run publish succeeded.$(NC)"
 
 release-preflight: ci ## Pre-release checks (full CI + CHANGELOG)
 	@grep -q '\[Unreleased\]' CHANGELOG.md || \
 		(echo "$(RED)CHANGELOG.md missing [Unreleased] section$(NC)" && exit 1)
 	@echo "$(GREEN)Release preflight passed — ready to ship.$(NC)"
+
+release-preflight-smoke: ci-smoke ## Smoke pre-release checks
+	@grep -q '\[Unreleased\]' CHANGELOG.md || \
+		(echo "$(RED)CHANGELOG.md missing [Unreleased] section$(NC)" && exit 1)
+	@echo "$(GREEN)Smoke preflight passed.$(NC)"
+
+release-dry-run: release-preflight publish-dry-run publish-dry-run-python publish-dry-run-typescript ## Full dry-run release (no uploads)
+	@echo "$(GREEN)Full release dry-run passed.$(NC)"
+
+release-dry-run-smoke: release-preflight-smoke publish-dry-run publish-dry-run-python publish-dry-run-typescript ## Smoke dry-run release
+	@echo "$(GREEN)Smoke release dry-run passed.$(NC)"
 
 # ── help ──────────────────────────────────────────────────────
 

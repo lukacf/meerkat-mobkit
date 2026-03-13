@@ -3,6 +3,7 @@
 
 # MobKit internal
 .rct/
+.release-hook-done
 /.rct-legacy/
 /.rct-legacy-*/
 docs/rct/traceability.legacy-*.md
