@@ -406,14 +406,14 @@ impl BigQuerySessionStoreAdapter {
                 Some(&request),
             )
             .await?;
-        if let Some(errors) = response.get("insertErrors").and_then(Value::as_array) {
-            if !errors.is_empty() {
-                let detail = serde_json::to_string(errors)
-                    .unwrap_or_else(|_| "<serialize_error>".to_string());
-                return Err(BigQuerySessionStoreError::Api(format!(
-                    "BigQuery insertAll returned row errors: {detail}"
-                )));
-            }
+        if let Some(errors) = response.get("insertErrors").and_then(Value::as_array)
+            && !errors.is_empty()
+        {
+            let detail =
+                serde_json::to_string(errors).unwrap_or_else(|_| "<serialize_error>".to_string());
+            return Err(BigQuerySessionStoreError::Api(format!(
+                "BigQuery insertAll returned row errors: {detail}"
+            )));
         }
 
         Ok(())

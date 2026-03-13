@@ -92,7 +92,7 @@ pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceVa
             .trim_start_matches('|')
             .trim_end_matches('|')
             .split('|')
-            .map(|part| part.trim())
+            .map(str::trim)
             .collect::<Vec<_>>();
 
         if columns.is_empty()
@@ -150,7 +150,7 @@ pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceVa
 fn is_evidence_or_link_column(column: &str) -> bool {
     let normalized = column
         .chars()
-        .filter(|ch| ch.is_ascii_alphanumeric())
+        .filter(char::is_ascii_alphanumeric)
         .collect::<String>()
         .to_ascii_lowercase();
     normalized.contains("evidence") || normalized.contains("link")

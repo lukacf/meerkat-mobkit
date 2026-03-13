@@ -1,3 +1,20 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::uninlined_format_args,
+    clippy::collapsible_if,
+    clippy::redundant_clone,
+    clippy::needless_raw_string_hashes,
+    clippy::single_match,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pattern_matching,
+    clippy::ignored_unit_patterns,
+    clippy::clone_on_copy,
+    clippy::manual_assert,
+    clippy::unwrap_in_result,
+    clippy::useless_vec
+)]
 use meerkat_mobkit_core::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest,
     RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
@@ -6,7 +23,7 @@ use meerkat_mobkit_core::{
 use serde_json::{Value, json};
 
 fn release_json() -> String {
-    include_str!("../../../docs/rct/release-targets.json").to_string()
+    include_str!("../../docs/rct/release-targets.json").to_string()
 }
 
 fn trusted_oidc() -> TrustedOidcRuntimeConfig {
@@ -61,7 +78,7 @@ fn decision_state() -> meerkat_mobkit_core::RuntimeDecisionState {
 #[test]
 fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced() {
     let artifact: Value = serde_json::from_str(include_str!(
-        "../../../docs/rct/console-rest-sse-contract-v0.1.0.json"
+        "../../docs/rct/console-rest-sse-contract-v0.1.0.json"
     ))
     .expect("contract artifact json should parse");
 

@@ -1,3 +1,20 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::uninlined_format_args,
+    clippy::collapsible_if,
+    clippy::redundant_clone,
+    clippy::needless_raw_string_hashes,
+    clippy::single_match,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pattern_matching,
+    clippy::ignored_unit_patterns,
+    clippy::clone_on_copy,
+    clippy::manual_assert,
+    clippy::unwrap_in_result,
+    clippy::useless_vec
+)]
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -262,7 +279,7 @@ fn reference_runtime_decision_state() -> meerkat_mobkit_core::RuntimeDecisionSta
             require_app_auth: false,
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../../docs/rct/release-targets.json").to_string(),
+        release_metadata_json: include_str!("../../docs/rct/release-targets.json").to_string(),
     })
     .expect("build decision state")
 }

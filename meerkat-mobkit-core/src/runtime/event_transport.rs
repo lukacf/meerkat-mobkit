@@ -64,10 +64,10 @@ impl MobkitRuntimeHandle {
         &self,
         request: SubscribeRequest,
     ) -> Result<SubscribeResponse, SubscribeError> {
-        if let Some(checkpoint) = request.last_event_id.as_ref() {
-            if checkpoint.trim().is_empty() {
-                return Err(SubscribeError::EmptyCheckpoint);
-            }
+        if let Some(checkpoint) = request.last_event_id.as_ref()
+            && checkpoint.trim().is_empty()
+        {
+            return Err(SubscribeError::EmptyCheckpoint);
         }
 
         if matches!(request.scope, SubscribeScope::Agent) {

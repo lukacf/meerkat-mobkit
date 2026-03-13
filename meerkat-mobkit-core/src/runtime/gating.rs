@@ -166,7 +166,7 @@ impl MobkitRuntimeHandle {
                     detail: serde_json::json!({
                         "policy": "memory_conflict_context_required_v0_1",
                         "reason": "memory_conflict_context_missing",
-                        "action": action.clone(),
+                        "action": action,
                         "reference": {
                             "entity": entity,
                             "topic": topic,
@@ -236,7 +236,7 @@ impl MobkitRuntimeHandle {
                     detail: serde_json::json!({
                         "policy": "memory_conflict_block_v0_1",
                         "reason": "memory_conflict",
-                        "action": action.clone(),
+                        "action": action,
                         "reference": {
                             "entity": entity,
                             "topic": topic,
@@ -337,12 +337,12 @@ impl MobkitRuntimeHandle {
                                     resolution,
                                     payload: serde_json::json!({
                                         "kind": "gating_approval_request",
-                                        "pending_id": pending_id.clone(),
-                                        "action_id": action_id.clone(),
-                                        "action": action.clone(),
-                                        "actor_id": actor_id.clone(),
-                                        "risk_tier": risk_tier.clone(),
-                                        "requested_approver": requested_approver.clone(),
+                                        "pending_id": pending_id,
+                                        "action_id": action_id,
+                                        "action": action,
+                                        "actor_id": actor_id,
+                                        "risk_tier": risk_tier,
+                                        "requested_approver": requested_approver,
                                         "deadline_at_ms": created_at_ms.saturating_add(timeout_ms),
                                     }),
                                     idempotency_key: Some(format!("gating-approval-{pending_id}")),
@@ -406,11 +406,11 @@ impl MobkitRuntimeHandle {
                     risk_tier: risk_tier.clone(),
                     outcome: GatingOutcome::PendingApproval,
                     detail: serde_json::json!({
-                        "requested_approver": pending_entry.requested_approver.clone(),
-                        "approval_recipient": pending_entry.approval_recipient.clone(),
-                        "approval_channel": pending_entry.approval_channel.clone(),
-                        "approval_route_id": pending_entry.approval_route_id.clone(),
-                        "approval_delivery_id": pending_entry.approval_delivery_id.clone(),
+                        "requested_approver": pending_entry.requested_approver,
+                        "approval_recipient": pending_entry.approval_recipient,
+                        "approval_channel": pending_entry.approval_channel,
+                        "approval_route_id": pending_entry.approval_route_id,
+                        "approval_delivery_id": pending_entry.approval_delivery_id,
                         "approval_notification_error": approval_notification_error,
                         "deadline_at_ms": pending_entry.deadline_at_ms,
                         "action": action,
@@ -454,17 +454,18 @@ impl MobkitRuntimeHandle {
             .retain(|candidate| candidate != &pending_id);
 
         if matches!(decision, GatingDecision::Approve) && approver_id == pending_entry.actor_id {
-            self.upsert_gating_pending_entry(pending_entry.clone());
+            self.upsert_gating_pending_entry(pending_entry);
             return Err(GatingDecideError::SelfApprovalForbidden);
         }
-        if let Some(expected_approver) = pending_entry.requested_approver.as_deref() {
-            if expected_approver != approver_id {
-                self.upsert_gating_pending_entry(pending_entry.clone());
-                return Err(GatingDecideError::ApproverMismatch {
-                    expected: expected_approver.to_string(),
-                    provided: approver_id,
-                });
-            }
+        if let Some(expected_approver) = pending_entry.requested_approver.as_deref()
+            && expected_approver != approver_id
+        {
+            let expected = expected_approver.to_string();
+            self.upsert_gating_pending_entry(pending_entry);
+            return Err(GatingDecideError::ApproverMismatch {
+                expected,
+                provided: approver_id,
+            });
         }
 
         let (outcome, event_type) = match decision {
@@ -483,10 +484,10 @@ impl MobkitRuntimeHandle {
             outcome: outcome.clone(),
             detail: serde_json::json!({
                 "approver_id": approver_id,
-                "decision": decision.clone(),
-                "reason": reason.clone(),
-                "approval_route_id": pending_entry.approval_route_id.clone(),
-                "approval_delivery_id": pending_entry.approval_delivery_id.clone(),
+                "decision": decision,
+                "reason": reason,
+                "approval_route_id": pending_entry.approval_route_id,
+                "approval_delivery_id": pending_entry.approval_delivery_id,
             }),
         });
         Ok(GatingDecisionResult {

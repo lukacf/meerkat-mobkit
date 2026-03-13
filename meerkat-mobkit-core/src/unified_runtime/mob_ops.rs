@@ -44,10 +44,10 @@ impl UnifiedRuntime {
     ) -> Result<Vec<MemberRef>, MobRuntimeError> {
         let member_ids: Vec<String> = specs.iter().map(|s| s.meerkat_id.to_string()).collect();
         let refs = self.mob_runtime.spawn_many(specs).await?;
-        if !member_ids.is_empty() {
-            if let Some(hook) = &self.post_spawn_hook {
-                hook(member_ids).await;
-            }
+        if !member_ids.is_empty()
+            && let Some(hook) = &self.post_spawn_hook
+        {
+            hook(member_ids).await;
         }
         Ok(refs)
     }

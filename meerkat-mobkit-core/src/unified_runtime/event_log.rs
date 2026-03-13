@@ -212,10 +212,10 @@ async fn run_flush_loop(
             maybe_event = rx.recv() => {
                 match maybe_event {
                     Some(envelope) => {
-                        if let Some(ref f) = filter {
-                            if !f(&envelope.event) {
-                                continue;
-                            }
+                        if let Some(ref f) = filter
+                            && !f(&envelope.event)
+                        {
+                            continue;
                         }
                         let persisted = to_persisted(&seq, &envelope);
                         batch.push(persisted);
@@ -267,7 +267,7 @@ async fn flush_batch(
             let hook = hook.clone();
             let msg = format!("event log flush failed: {err}");
             tokio::spawn(async move {
-                let _ = hook(super::types::ErrorEvent::EventLogFlushFailure { error: msg }).await;
+                let () = hook(super::types::ErrorEvent::EventLogFlushFailure { error: msg }).await;
             });
         }
     }

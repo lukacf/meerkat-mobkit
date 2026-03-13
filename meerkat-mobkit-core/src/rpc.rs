@@ -184,7 +184,7 @@ pub fn handle_mobkit_rpc_json(
     let response = match request.method.as_str() {
         "mobkit/status" => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id.clone(),
+            id: response_id,
             result: Some(serde_json::json!({
                 "contract_version": MOBKIT_CONTRACT_VERSION,
                 "running": runtime.is_running(),
@@ -194,7 +194,7 @@ pub fn handle_mobkit_rpc_json(
         },
         "mobkit/capabilities" => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id.clone(),
+            id: response_id,
             result: Some(serde_json::json!({
                 "contract_version": MOBKIT_CONTRACT_VERSION,
                 "methods": [
@@ -241,7 +241,7 @@ pub fn handle_mobkit_rpc_json(
             match runtime.reconcile_modules(modules.clone(), timeout) {
                 Ok(added) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "accepted": true,
                         "reconciled_modules": modules,
@@ -251,7 +251,7 @@ pub fn handle_mobkit_rpc_json(
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -270,7 +270,7 @@ pub fn handle_mobkit_rpc_json(
             if module_id.is_empty() {
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -281,7 +281,7 @@ pub fn handle_mobkit_rpc_json(
                 match runtime.spawn_member(&module_id, timeout) {
                     Ok(()) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: Some(serde_json::json!({
                             "accepted": true,
                             "module_id": module_id
@@ -290,7 +290,7 @@ pub fn handle_mobkit_rpc_json(
                     },
                     Err(err) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
@@ -304,13 +304,13 @@ pub fn handle_mobkit_rpc_json(
             Ok((schedules, tick_ms)) => match runtime.evaluate_schedule_tick(&schedules, tick_ms) {
                 Ok(evaluation) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -323,7 +323,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(message) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -335,13 +335,13 @@ pub fn handle_mobkit_rpc_json(
             Ok((schedules, tick_ms)) => match runtime.dispatch_schedule_tick(&schedules, tick_ms) {
                 Ok(dispatch) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(dispatch).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -354,7 +354,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(message) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -370,13 +370,13 @@ pub fn handle_mobkit_rpc_json(
             }) {
                 Ok(resolution) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(resolution).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -388,7 +388,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/routing/routes/list" => match parse_routing_routes_list_params(&request.params) {
             Ok(()) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({
                     "routes": runtime.list_runtime_routes()
                 })),
@@ -396,7 +396,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -412,13 +412,13 @@ pub fn handle_mobkit_rpc_json(
             }) {
             Ok(route) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({ "route": route })),
                 error: None,
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -434,13 +434,13 @@ pub fn handle_mobkit_rpc_json(
             }) {
             Ok(route) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({ "deleted": route })),
                 error: None,
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -456,13 +456,13 @@ pub fn handle_mobkit_rpc_json(
             }) {
                 Ok(record) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(record).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -474,7 +474,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/delivery/history" => match parse_delivery_history_params(&request.params) {
             Ok(history_request) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(
                     serde_json::to_value(runtime.delivery_history(history_request))
                         .unwrap_or(Value::Null),
@@ -483,7 +483,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -499,13 +499,13 @@ pub fn handle_mobkit_rpc_json(
             }) {
                 Ok(subscribe_result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(subscribe_result).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -517,7 +517,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/memory/stores" => match parse_memory_stores_params(&request.params) {
             Ok(()) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({
                     "stores": runtime.memory_stores(),
                 })),
@@ -525,7 +525,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -537,13 +537,13 @@ pub fn handle_mobkit_rpc_json(
             Ok(index_request) => match runtime.memory_index(index_request) {
                 Ok(indexed) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(indexed).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(MemoryIndexError::BackendPersistFailed(error)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32010,
@@ -555,7 +555,7 @@ pub fn handle_mobkit_rpc_json(
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -568,7 +568,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -579,7 +579,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/memory/query" => match parse_memory_query_params(&request.params) {
             Ok(query_request) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(
                     serde_json::to_value(runtime.memory_query(query_request))
                         .unwrap_or(Value::Null),
@@ -588,7 +588,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -602,13 +602,13 @@ pub fn handle_mobkit_rpc_json(
             {
                 Ok(result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(result),
                     error: None,
                 },
                 Err(BigQuerySessionStoreRpcError::Params(message)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -617,7 +617,7 @@ pub fn handle_mobkit_rpc_json(
                 },
                 Err(BigQuerySessionStoreRpcError::Store(error)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32011,
@@ -632,7 +632,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/gating/evaluate" => match parse_gating_evaluate_params(&request.params) {
             Ok(gating_request) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(
                     serde_json::to_value(runtime.evaluate_gating_action(gating_request))
                         .unwrap_or(Value::Null),
@@ -641,7 +641,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -652,7 +652,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/gating/pending" => match parse_gating_pending_params(&request.params) {
             Ok(()) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({
                     "pending": runtime.list_gating_pending(),
                 })),
@@ -660,7 +660,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -676,13 +676,13 @@ pub fn handle_mobkit_rpc_json(
             }) {
                 Ok(result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(result).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -694,7 +694,7 @@ pub fn handle_mobkit_rpc_json(
         "mobkit/gating/audit" => match parse_gating_audit_params(&request.params) {
             Ok(limit) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({
                     "entries": runtime.gating_audit_entries(limit),
                 })),
@@ -702,7 +702,7 @@ pub fn handle_mobkit_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -733,7 +733,7 @@ pub fn handle_mobkit_rpc_json(
                     match route {
                         Ok(response) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: Some(serde_json::json!({
                                 "module_id": response.module_id,
                                 "tool": response.method,
@@ -743,7 +743,7 @@ pub fn handle_mobkit_rpc_json(
                         },
                         Err(ModuleRouteError::UnloadedModule(mid)) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: -32601,
@@ -752,7 +752,7 @@ pub fn handle_mobkit_rpc_json(
                         },
                         Err(err) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: -32000,
@@ -763,7 +763,7 @@ pub fn handle_mobkit_rpc_json(
                 }
                 _ => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -781,7 +781,7 @@ pub fn handle_mobkit_rpc_json(
             let route = route_module_call(
                 runtime,
                 &ModuleRouteRequest {
-                    module_id: module_id.clone(),
+                    module_id,
                     method: method.to_string(),
                     params: request.params,
                 },
@@ -790,7 +790,7 @@ pub fn handle_mobkit_rpc_json(
             match route {
                 Ok(response) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "module_id": response.module_id,
                         "method": response.method,
@@ -800,7 +800,7 @@ pub fn handle_mobkit_rpc_json(
                 },
                 Err(ModuleRouteError::UnloadedModule(module_id)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32601,
@@ -809,7 +809,7 @@ pub fn handle_mobkit_rpc_json(
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32000,
@@ -910,7 +910,7 @@ pub async fn handle_unified_rpc_json(
             }
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(result),
                 error: None,
             }
@@ -919,7 +919,7 @@ pub async fn handle_unified_rpc_json(
             let loaded = runtime.loaded_modules().await;
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: Some(serde_json::json!({
                     "contract_version": MOBKIT_CONTRACT_VERSION,
                     "runtime_type": "unified",
@@ -979,7 +979,7 @@ pub async fn handle_unified_rpc_json(
             match runtime.reconcile_modules(modules.clone(), timeout).await {
                 Ok(added) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "accepted": true,
                         "reconciled_modules": modules,
@@ -989,7 +989,7 @@ pub async fn handle_unified_rpc_json(
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1009,7 +1009,7 @@ pub async fn handle_unified_rpc_json(
                 if module_id.is_empty() {
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
@@ -1020,7 +1020,7 @@ pub async fn handle_unified_rpc_json(
                     match runtime.spawn_member(module_id, timeout).await {
                         Ok(()) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: Some(serde_json::json!({
                                 "accepted": true,
                                 "module_id": module_id
@@ -1029,7 +1029,7 @@ pub async fn handle_unified_rpc_json(
                         },
                         Err(err) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: -32602,
@@ -1054,7 +1054,7 @@ pub async fn handle_unified_rpc_json(
                 match runtime.spawn(spec).await {
                     Ok(_member_ref) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: Some(serde_json::json!({
                             "accepted": true,
                             "meerkat_id": meerkat_id
@@ -1063,7 +1063,7 @@ pub async fn handle_unified_rpc_json(
                     },
                     Err(err) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
@@ -1074,7 +1074,7 @@ pub async fn handle_unified_rpc_json(
             } else {
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1089,13 +1089,13 @@ pub async fn handle_unified_rpc_json(
                 match runtime.evaluate_schedule_tick(&schedules, tick_ms).await {
                     Ok(evaluation) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: Some(serde_json::to_value(evaluation).unwrap_or(Value::Null)),
                         error: None,
                     },
                     Err(err) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
@@ -1109,7 +1109,7 @@ pub async fn handle_unified_rpc_json(
             }
             Err(message) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1122,13 +1122,13 @@ pub async fn handle_unified_rpc_json(
                 match runtime.dispatch_schedule_tick(&schedules, tick_ms).await {
                     Ok(dispatch) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: Some(serde_json::to_value(dispatch).unwrap_or(Value::Null)),
                         error: None,
                     },
                     Err(err) => JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id.clone(),
+                        id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
@@ -1139,7 +1139,7 @@ pub async fn handle_unified_rpc_json(
             }
             Err(message) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1158,13 +1158,13 @@ pub async fn handle_unified_rpc_json(
             match resolve_result {
                 Ok(resolution) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(resolution).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1178,7 +1178,7 @@ pub async fn handle_unified_rpc_json(
                 let routes = runtime.list_runtime_routes().await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "routes": routes
                     })),
@@ -1187,7 +1187,7 @@ pub async fn handle_unified_rpc_json(
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1206,13 +1206,13 @@ pub async fn handle_unified_rpc_json(
             match add_result {
                 Ok(route) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({ "route": route })),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1232,13 +1232,13 @@ pub async fn handle_unified_rpc_json(
             match delete_result {
                 Ok(route) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({ "deleted": route })),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1258,13 +1258,13 @@ pub async fn handle_unified_rpc_json(
             match send_result {
                 Ok(record) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(record).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1278,14 +1278,14 @@ pub async fn handle_unified_rpc_json(
                 let history = runtime.delivery_history(history_request).await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(history).unwrap_or(Value::Null)),
                     error: None,
                 }
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1297,13 +1297,13 @@ pub async fn handle_unified_rpc_json(
             Ok(subscribe_request) => match runtime.subscribe_events(subscribe_request).await {
                 Ok(subscribe_result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(subscribe_result).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1313,7 +1313,7 @@ pub async fn handle_unified_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1326,7 +1326,7 @@ pub async fn handle_unified_rpc_json(
                 let stores = runtime.memory_stores().await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "stores": stores,
                     })),
@@ -1335,7 +1335,7 @@ pub async fn handle_unified_rpc_json(
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1347,13 +1347,13 @@ pub async fn handle_unified_rpc_json(
             Ok(index_request) => match runtime.memory_index(index_request).await {
                 Ok(indexed) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(indexed).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(MemoryIndexError::BackendPersistFailed(error)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32010,
@@ -1365,7 +1365,7 @@ pub async fn handle_unified_rpc_json(
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1378,7 +1378,7 @@ pub async fn handle_unified_rpc_json(
             },
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1391,14 +1391,14 @@ pub async fn handle_unified_rpc_json(
                 let query_result = runtime.memory_query(query_request).await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(query_result).unwrap_or(Value::Null)),
                     error: None,
                 }
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1412,13 +1412,13 @@ pub async fn handle_unified_rpc_json(
             {
                 Ok(result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(result),
                     error: None,
                 },
                 Err(BigQuerySessionStoreRpcError::Params(message)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1427,7 +1427,7 @@ pub async fn handle_unified_rpc_json(
                 },
                 Err(BigQuerySessionStoreRpcError::Store(error)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32011,
@@ -1444,14 +1444,14 @@ pub async fn handle_unified_rpc_json(
                 let gating_result = runtime.evaluate_gating_action(gating_request).await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(gating_result).unwrap_or(Value::Null)),
                     error: None,
                 }
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1464,7 +1464,7 @@ pub async fn handle_unified_rpc_json(
                 let pending = runtime.list_gating_pending().await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "pending": pending,
                     })),
@@ -1473,7 +1473,7 @@ pub async fn handle_unified_rpc_json(
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1492,13 +1492,13 @@ pub async fn handle_unified_rpc_json(
             match decide_result {
                 Ok(result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::to_value(result).unwrap_or(Value::Null)),
                     error: None,
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1512,7 +1512,7 @@ pub async fn handle_unified_rpc_json(
                 let entries = runtime.gating_audit_entries(limit).await;
                 JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "entries": entries,
                     })),
@@ -1521,7 +1521,7 @@ pub async fn handle_unified_rpc_json(
             }
             Err(err) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id.clone(),
+                id: response_id,
                 result: None,
                 error: Some(JsonRpcError {
                     code: -32602,
@@ -1553,7 +1553,7 @@ pub async fn handle_unified_rpc_json(
                     match route {
                         Ok(response) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: Some(serde_json::json!({
                                 "module_id": response.module_id,
                                 "tool": response.method,
@@ -1563,7 +1563,7 @@ pub async fn handle_unified_rpc_json(
                         },
                         Err(ModuleRouteError::UnloadedModule(mid)) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: -32601,
@@ -1572,7 +1572,7 @@ pub async fn handle_unified_rpc_json(
                         },
                         Err(err) => JsonRpcResponse {
                             jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id.clone(),
+                            id: response_id,
                             result: None,
                             error: Some(JsonRpcError {
                                 code: -32000,
@@ -1583,7 +1583,7 @@ pub async fn handle_unified_rpc_json(
                 }
                 _ => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32602,
@@ -1593,32 +1593,28 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/send_message" => {
-            mob_methods::handle_send_message(runtime, response_id.clone(), &request.params).await
+            mob_methods::handle_send_message(runtime, response_id, &request.params).await
         }
         "mobkit/find_members" => {
-            mob_methods::handle_find_members(runtime, response_id.clone(), &request.params).await
+            mob_methods::handle_find_members(runtime, response_id, &request.params).await
         }
         "mobkit/ensure_member" => {
-            mob_methods::handle_ensure_member(runtime, response_id.clone(), &request.params).await
+            mob_methods::handle_ensure_member(runtime, response_id, &request.params).await
         }
-        "mobkit/list_members" => {
-            mob_methods::handle_list_members(runtime, response_id.clone()).await
-        }
+        "mobkit/list_members" => mob_methods::handle_list_members(runtime, response_id).await,
         "mobkit/get_member" => {
-            mob_methods::handle_get_member(runtime, response_id.clone(), &request.params).await
+            mob_methods::handle_get_member(runtime, response_id, &request.params).await
         }
         "mobkit/retire_member" => {
-            mob_methods::handle_retire_member(runtime, response_id.clone(), &request.params).await
+            mob_methods::handle_retire_member(runtime, response_id, &request.params).await
         }
         "mobkit/respawn_member" => {
-            mob_methods::handle_respawn_member(runtime, response_id.clone(), &request.params).await
+            mob_methods::handle_respawn_member(runtime, response_id, &request.params).await
         }
-        "mobkit/reconcile_edges" => {
-            mob_methods::handle_reconcile_edges(runtime, response_id.clone()).await
-        }
-        "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id.clone()).await,
+        "mobkit/reconcile_edges" => mob_methods::handle_reconcile_edges(runtime, response_id).await,
+        "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
         "mobkit/query_events" => {
-            mob_methods::handle_query_events(runtime, response_id.clone(), request.params).await
+            mob_methods::handle_query_events(runtime, response_id, request.params).await
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method
@@ -1639,7 +1635,7 @@ pub async fn handle_unified_rpc_json(
             match route {
                 Ok(response) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: Some(serde_json::json!({
                         "module_id": response.module_id,
                         "method": response.method,
@@ -1649,7 +1645,7 @@ pub async fn handle_unified_rpc_json(
                 },
                 Err(ModuleRouteError::UnloadedModule(module_id)) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32601,
@@ -1658,7 +1654,7 @@ pub async fn handle_unified_rpc_json(
                 },
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id.clone(),
+                    id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
                         code: -32000,

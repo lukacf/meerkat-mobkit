@@ -359,7 +359,7 @@ impl MobkitRuntimeHandle {
         let route_sequence = self.next_routing_sequence();
         let route_id = format!("route-{route_sequence:06}");
         let resolution = RoutingResolution {
-            route_id: route_id.clone(),
+            route_id,
             recipient,
             channel: resolved_channel,
             sink,

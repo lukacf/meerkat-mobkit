@@ -130,20 +130,20 @@ impl MobkitRuntimeHandle {
         if !self.is_module_loaded("delivery") {
             return Err(DeliverySendError::DeliveryModuleNotLoaded);
         }
-        if let Some(idempotency_key) = request.idempotency_key.as_ref() {
-            if idempotency_key.trim().is_empty() {
-                return Err(DeliverySendError::InvalidIdempotencyKey);
-            }
+        if let Some(idempotency_key) = request.idempotency_key.as_ref()
+            && idempotency_key.trim().is_empty()
+        {
+            return Err(DeliverySendError::InvalidIdempotencyKey);
         }
 
-        if let Some(idempotency_key) = request.idempotency_key.as_deref() {
-            if let Some(existing) = self.replay_delivery_for_scoped_idempotency(
+        if let Some(idempotency_key) = request.idempotency_key.as_deref()
+            && let Some(existing) = self.replay_delivery_for_scoped_idempotency(
                 &request.resolution,
                 idempotency_key,
                 &request.payload,
-            )? {
-                return Ok(existing);
-            }
+            )?
+        {
+            return Ok(existing);
         }
 
         let trusted_resolution = self.trusted_resolution_for_delivery(&request.resolution)?;
@@ -259,12 +259,12 @@ impl MobkitRuntimeHandle {
             sink: trusted_resolution.sink.clone(),
             target_module: trusted_resolution.target_module.clone(),
             payload: request.payload.clone(),
-            status: status.clone(),
+            status,
             attempts,
             first_attempt_ms,
             final_attempt_ms,
             idempotency_key: request.idempotency_key.clone(),
-            sink_adapter: boundary_outcome.sink_adapter.clone(),
+            sink_adapter: boundary_outcome.sink_adapter,
         };
 
         insert_event_sorted(
@@ -295,11 +295,11 @@ impl MobkitRuntimeHandle {
                 DeliveryIdempotencyEntry {
                     delivery_id: delivery_id.clone(),
                     payload: request.payload.clone(),
-                    canonical_resolution: trusted_resolution.clone(),
+                    canonical_resolution: trusted_resolution,
                 },
             );
             self.delivery_idempotency_by_delivery
-                .entry(delivery_id.clone())
+                .entry(delivery_id)
                 .or_default()
                 .push(scoped_key);
         }

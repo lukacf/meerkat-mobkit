@@ -208,29 +208,29 @@ impl MobkitRuntimeHandle {
                         )),
                 ));
             };
-            if let Some(mut existing_child) = self.live_children.remove(module_id) {
-                if let Err(err) = terminate_child(
+            if let Some(mut existing_child) = self.live_children.remove(module_id)
+                && let Err(err) = terminate_child(
                     &mut existing_child,
                     self.runtime_options.supervisor_test_force_terminate_failure,
-                ) {
-                    self.live_children
-                        .insert(module_id.to_string(), existing_child);
+                )
+            {
+                self.live_children
+                    .insert(module_id.to_string(), existing_child);
 
-                    let mut error_message =
-                        format!("failed to terminate existing child before respawn: {err}");
-                    if let Err(replacement_err) = terminate_child(&mut child, false) {
-                        error_message.push_str(&format!(
-                            "; failed to terminate replacement child after aborted respawn: {replacement_err}"
-                        ));
-                    }
-                    let runtime_error =
-                        RuntimeBoundaryError::Process(ProcessBoundaryError::Io(error_message));
-                    insert_event_sorted(
-                        &mut self.merged_events,
-                        supervisor_warning_event(module_id, &runtime_error),
-                    );
-                    return Err(RuntimeMutationError::Runtime(runtime_error));
+                let mut error_message =
+                    format!("failed to terminate existing child before respawn: {err}");
+                if let Err(replacement_err) = terminate_child(&mut child, false) {
+                    error_message.push_str(&format!(
+                        "; failed to terminate replacement child after aborted respawn: {replacement_err}"
+                    ));
                 }
+                let runtime_error =
+                    RuntimeBoundaryError::Process(ProcessBoundaryError::Io(error_message));
+                insert_event_sorted(
+                    &mut self.merged_events,
+                    supervisor_warning_event(module_id, &runtime_error),
+                );
+                return Err(RuntimeMutationError::Runtime(runtime_error));
             }
             self.loaded_modules.insert(module_id.to_string());
             self.live_children.insert(module_id.to_string(), child);
@@ -238,22 +238,22 @@ impl MobkitRuntimeHandle {
             return Ok(());
         }
 
-        if let Some(mut existing_child) = self.live_children.remove(module_id) {
-            if let Err(err) = terminate_child(
+        if let Some(mut existing_child) = self.live_children.remove(module_id)
+            && let Err(err) = terminate_child(
                 &mut existing_child,
                 self.runtime_options.supervisor_test_force_terminate_failure,
-            ) {
-                self.live_children
-                    .insert(module_id.to_string(), existing_child);
-                let runtime_error = RuntimeBoundaryError::Process(ProcessBoundaryError::Io(
-                    format!("failed to terminate existing child before MCP respawn: {err}"),
-                ));
-                insert_event_sorted(
-                    &mut self.merged_events,
-                    supervisor_warning_event(module_id, &runtime_error),
-                );
-                return Err(RuntimeMutationError::Runtime(runtime_error));
-            }
+            )
+        {
+            self.live_children
+                .insert(module_id.to_string(), existing_child);
+            let runtime_error = RuntimeBoundaryError::Process(ProcessBoundaryError::Io(format!(
+                "failed to terminate existing child before MCP respawn: {err}"
+            )));
+            insert_event_sorted(
+                &mut self.merged_events,
+                supervisor_warning_event(module_id, &runtime_error),
+            );
+            return Err(RuntimeMutationError::Runtime(runtime_error));
         }
 
         self.loaded_modules.insert(module_id.to_string());

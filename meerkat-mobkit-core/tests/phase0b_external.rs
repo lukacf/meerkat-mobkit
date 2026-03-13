@@ -1,3 +1,20 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::uninlined_format_args,
+    clippy::collapsible_if,
+    clippy::redundant_clone,
+    clippy::needless_raw_string_hashes,
+    clippy::single_match,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pattern_matching,
+    clippy::ignored_unit_patterns,
+    clippy::clone_on_copy,
+    clippy::manual_assert,
+    clippy::unwrap_in_result,
+    clippy::useless_vec
+)]
 use std::process::Command;
 use std::time::Duration;
 
@@ -21,7 +38,7 @@ fn shell_module(id: &str, script: &str) -> ModuleConfig {
 }
 
 fn release_json() -> String {
-    include_str!("../../../docs/rct/release-targets.json").to_string()
+    include_str!("../../docs/rct/release-targets.json").to_string()
 }
 
 fn trusted_oidc() -> TrustedOidcRuntimeConfig {

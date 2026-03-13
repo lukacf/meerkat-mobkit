@@ -175,23 +175,22 @@ impl UnifiedRuntime {
                         ref agent_id,
                         ref event_type,
                     } = unified_event.event
+                        && event_type == "run_failed"
                     {
-                        if event_type == "run_failed" {
-                            self.fire_error(super::types::ErrorEvent::HostLoopCrash {
-                                member_id: agent_id.clone(),
-                                error: format!(
-                                    "agent run failed (event_id: {})",
-                                    unified_event.event_id
-                                ),
-                            });
-                        }
+                        self.fire_error(super::types::ErrorEvent::HostLoopCrash {
+                            member_id: agent_id.clone(),
+                            error: format!(
+                                "agent run failed (event_id: {})",
+                                unified_event.event_id
+                            ),
+                        });
                     }
                     // Ingest into event log (non-blocking, buffered)
                     self.ingest_event(&unified_event);
                     self.module_runtime
                         .lock()
                         .await
-                        .append_normalized_event(unified_event)?
+                        .append_normalized_event(unified_event)?;
                 }
                 Some(Err(TryRecvError::Empty)) => break,
                 Some(Err(TryRecvError::Disconnected)) => {

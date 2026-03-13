@@ -369,15 +369,15 @@ fn validate_claims(
         }
     }
 
-    if let Some(expected_issuer) = &config.issuer {
-        if iss.as_deref() != Some(expected_issuer.as_str()) {
-            return Err(JwtValidationError::IssuerMismatch);
-        }
+    if let Some(expected_issuer) = &config.issuer
+        && iss.as_deref() != Some(expected_issuer.as_str())
+    {
+        return Err(JwtValidationError::IssuerMismatch);
     }
-    if let Some(expected_audience) = &config.audience {
-        if !aud.iter().any(|entry| entry == expected_audience) {
-            return Err(JwtValidationError::AudienceMismatch);
-        }
+    if let Some(expected_audience) = &config.audience
+        && !aud.iter().any(|entry| entry == expected_audience)
+    {
+        return Err(JwtValidationError::AudienceMismatch);
     }
 
     Ok(ValidatedJwt {

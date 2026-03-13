@@ -244,7 +244,7 @@ impl UnifiedRuntime {
         if let Some(ref hook) = self.error_hook {
             let hook = hook.clone();
             tokio::spawn(async move {
-                let _ = hook(event).await;
+                let () = hook(event).await;
             });
         }
     }

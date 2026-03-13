@@ -77,7 +77,7 @@ pub(crate) fn validate_schedules(
         }
         if parse_schedule_interval(&schedule.interval).is_none() {
             return Err(ScheduleValidationError::InvalidInterval {
-                schedule_id: canonical_schedule_id.clone(),
+                schedule_id: canonical_schedule_id,
                 interval: schedule.interval.clone(),
             });
         }
@@ -242,7 +242,7 @@ impl MobkitRuntimeHandle {
         let scheduling_signal = self.scheduling_supervisor_signal();
         let mut supervisor_restart_emitted = false;
 
-        for (trigger, canonical_schedule_id, due_tick_ms) in due_triggers.iter() {
+        for (trigger, canonical_schedule_id, due_tick_ms) in &due_triggers {
             let claim_key = format!("{canonical_schedule_id}:{due_tick_ms}");
             if !self.record_schedule_claim(claim_key.clone(), tick_ms) {
                 skipped_claims.push(claim_key);
@@ -253,10 +253,8 @@ impl MobkitRuntimeHandle {
             self.prune_scheduling_last_due_ticks(tick_ms);
 
             let event_sequence = self.next_scheduling_dispatch_sequence();
-            let event_id = format!(
-                "evt-schedule-{}-{due_tick_ms}-{event_sequence}",
-                canonical_schedule_id
-            );
+            let event_id =
+                format!("evt-schedule-{canonical_schedule_id}-{due_tick_ms}-{event_sequence}",);
             insert_event_sorted(
                 &mut self.merged_events,
                 EventEnvelope {
@@ -279,30 +277,29 @@ impl MobkitRuntimeHandle {
                 },
             );
 
-            if let Some(signal) = &scheduling_signal {
-                if signal.restart_observed && !supervisor_restart_emitted {
-                    insert_event_sorted(
-                        &mut self.merged_events,
-                        EventEnvelope {
-                            event_id: format!(
-                                "evt-scheduling-supervisor-{tick_ms}-{event_sequence}",
-                            ),
-                            source: "module".to_string(),
-                            timestamp_ms: tick_ms,
-                            event: UnifiedEvent::Module(ModuleEvent {
-                                module: "scheduling".to_string(),
-                                event_type: "supervisor.restart".to_string(),
-                                payload: serde_json::json!({
-                                    "module_id": signal.module_id,
-                                    "latest_state": signal.latest_state,
-                                    "latest_attempt": signal.latest_attempt,
-                                    "restart_observed": signal.restart_observed,
-                                }),
+            if let Some(signal) = &scheduling_signal
+                && signal.restart_observed
+                && !supervisor_restart_emitted
+            {
+                insert_event_sorted(
+                    &mut self.merged_events,
+                    EventEnvelope {
+                        event_id: format!("evt-scheduling-supervisor-{tick_ms}-{event_sequence}",),
+                        source: "module".to_string(),
+                        timestamp_ms: tick_ms,
+                        event: UnifiedEvent::Module(ModuleEvent {
+                            module: "scheduling".to_string(),
+                            event_type: "supervisor.restart".to_string(),
+                            payload: serde_json::json!({
+                                "module_id": signal.module_id,
+                                "latest_state": signal.latest_state,
+                                "latest_attempt": signal.latest_attempt,
+                                "restart_observed": signal.restart_observed,
                             }),
-                        },
-                    );
-                    supervisor_restart_emitted = true;
-                }
+                        }),
+                    },
+                );
+                supervisor_restart_emitted = true;
             }
 
             let mut runtime_injection = None;

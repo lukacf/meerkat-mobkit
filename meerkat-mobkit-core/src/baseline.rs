@@ -70,7 +70,7 @@ pub fn verify_meerkat_baseline_symbols(
 
     let mut missing: Vec<String> = REQUIRED_MEERKAT_SYMBOLS
         .iter()
-        .map(|symbol| symbol.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
     scan_dir_for_symbols(&repo_root, &mut missing)

@@ -62,11 +62,11 @@ fn http_error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
 fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
     match error {
         MobRuntimeError::InvalidInput(message) => http_error(StatusCode::BAD_REQUEST, message),
-        MobRuntimeError::Mob(MobError::MeerkatNotFound(_))
-        | MobRuntimeError::Mob(MobError::SessionError(SessionError::NotFound { .. }))
-        | MobRuntimeError::Mob(MobError::CommsError(SendError::PeerNotFound(_))) => {
-            http_error(StatusCode::NOT_FOUND, "member_not_found")
-        }
+        MobRuntimeError::Mob(
+            MobError::MeerkatNotFound(_)
+            | MobError::SessionError(SessionError::NotFound { .. })
+            | MobError::CommsError(SendError::PeerNotFound(_)),
+        ) => http_error(StatusCode::NOT_FOUND, "member_not_found"),
         _ => http_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_server_error"),
     }
 }
