@@ -16,13 +16,39 @@ pub struct ConsoleRestJsonResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleAgentLiveSnapshot {
+    pub agent_id: String,
+    pub member_id: String,
+    pub label: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleLiveSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
     pub running: bool,
     pub loaded_modules: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<ConsoleAgentLiveSnapshot>,
+    #[serde(default)]
+    pub topology_nodes: Vec<String>,
 }
 
 impl ConsoleLiveSnapshot {
-    pub fn new(running: bool, loaded_modules: Vec<String>) -> Self {
+    pub fn new(
+        runtime_id: Option<String>,
+        running: bool,
+        loaded_modules: Vec<String>,
+        agents: Vec<ConsoleAgentLiveSnapshot>,
+        topology_nodes: Vec<String>,
+    ) -> Self {
         let mut seen = BTreeSet::new();
         let mut deduped_modules = Vec::new();
         for module_id in loaded_modules {
@@ -30,9 +56,26 @@ impl ConsoleLiveSnapshot {
                 deduped_modules.push(module_id);
             }
         }
+        let mut seen_agents = BTreeSet::new();
+        let mut deduped_agents = Vec::new();
+        for agent in agents {
+            if seen_agents.insert(agent.agent_id.clone()) {
+                deduped_agents.push(agent);
+            }
+        }
+        let mut seen_nodes = BTreeSet::new();
+        let mut deduped_nodes = Vec::new();
+        for node in topology_nodes {
+            if seen_nodes.insert(node.clone()) {
+                deduped_nodes.push(node);
+            }
+        }
         Self {
+            runtime_id,
             running,
             loaded_modules: deduped_modules,
+            agents: deduped_agents,
+            topology_nodes: deduped_nodes,
         }
     }
 }
@@ -119,13 +162,29 @@ pub fn handle_console_rest_json_route_with_snapshot(
 }
 
 fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiveSnapshot {
+    let loaded_modules = decisions
+        .modules
+        .iter()
+        .map(|module| module.id.clone())
+        .collect::<Vec<_>>();
+    let agents = loaded_modules
+        .iter()
+        .map(|module_id| ConsoleAgentLiveSnapshot {
+            agent_id: module_id.clone(),
+            member_id: module_id.clone(),
+            label: module_id.clone(),
+            kind: "module_agent".to_string(),
+            profile: None,
+            state: Some("idle".to_string()),
+            session_id: None,
+        })
+        .collect::<Vec<_>>();
     ConsoleLiveSnapshot::new(
+        None,
         !decisions.modules.is_empty(),
-        decisions
-            .modules
-            .iter()
-            .map(|module| module.id.clone())
-            .collect(),
+        loaded_modules.clone(),
+        agents,
+        loaded_modules,
     )
 }
 
@@ -149,20 +208,24 @@ fn build_console_experience_contract(
         })
         .collect::<Vec<_>>();
     let sidebar_agents = live_snapshot
-        .loaded_modules
+        .agents
         .iter()
-        .map(|module_id| {
+        .map(|agent| {
             serde_json::json!({
-                "agent_id": module_id,
-                "member_id": module_id,
-                "label": module_id,
-                "kind": "module_agent",
+                "agent_id": agent.agent_id,
+                "member_id": agent.member_id,
+                "label": agent.label,
+                "kind": agent.kind,
+                "profile": agent.profile,
+                "state": agent.state,
+                "session_id": agent.session_id,
             })
         })
         .collect::<Vec<_>>();
 
     serde_json::json!({
         "contract_version": "0.1.0",
+        "runtime_id": live_snapshot.runtime_id,
         "base_panel": {
             "panel_id": "console.home",
             "title": "Mob Console",
@@ -252,8 +315,8 @@ fn build_console_experience_contract(
                 "edge_fields": ["from", "to", "route"],
             },
             "live_snapshot": {
-                "nodes": &live_snapshot.loaded_modules,
-                "node_count": live_snapshot.loaded_modules.len(),
+                "nodes": &live_snapshot.topology_nodes,
+                "node_count": live_snapshot.topology_nodes.len(),
             }
         },
         "health_overview": {

@@ -26,7 +26,7 @@ use meerkat_core::service::SessionError;
 use meerkat_mob::MobError;
 
 pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const KEEP_ALIVE_TEXT: &str = "keep-alive";
+pub(crate) const KEEP_ALIVE_TEXT: &str = "keep-alive";
 
 pub fn agent_event_sse(interaction_id: &str, seq: u64, event: &AgentEvent) -> Event {
     let event_name = agent_event_name(event);

@@ -2164,6 +2164,7 @@ dependencies = [
  "meerkat-contracts",
  "meerkat-core",
  "meerkat-hooks",
+ "meerkat-mcp",
  "meerkat-session",
  "meerkat-skills",
  "meerkat-store",
@@ -2352,6 +2353,7 @@ dependencies = [
 name = "meerkat-mobkit"
 version = "0.4.9"
 dependencies = [
+ "anyhow",
  "async-stream",
  "async-trait",
  "axum",
@@ -2480,9 +2482,11 @@ dependencies = [
  "humantime",
  "inventory",
  "jsonschema",
+ "meerkat-client",
  "meerkat-comms",
  "meerkat-contracts",
  "meerkat-core",
+ "meerkat-mcp",
  "meerkat-skills",
  "nix 0.29.0",
  "schemars",

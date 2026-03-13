@@ -51,7 +51,7 @@ mod supervisor;
 
 pub use bootstrap::{start_mobkit_runtime, start_mobkit_runtime_with_options};
 pub use console_ingress::{
-    ConsoleLiveSnapshot, ConsoleRestJsonRequest, ConsoleRestJsonResponse,
+    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, ConsoleRestJsonResponse,
     handle_console_rest_json_route, handle_console_rest_json_route_with_snapshot,
 };
 pub use event_transport::normalize_event_line;

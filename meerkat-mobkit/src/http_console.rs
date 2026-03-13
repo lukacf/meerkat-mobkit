@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::mob_handle_runtime::RealMobRuntime;
 use crate::runtime::{
-    ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
+    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
     handle_console_rest_json_route_with_snapshot,
 };
 
@@ -86,14 +86,33 @@ pub async fn console_json_handler(
 
 async fn build_live_snapshot(runtime: &RealMobRuntime) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
-    let mut loaded_modules = runtime
+    let mut agents = runtime
         .discover()
         .await
         .into_iter()
-        .map(|member| member.meerkat_id)
+        .map(|member| ConsoleAgentLiveSnapshot {
+            agent_id: member.meerkat_id.clone(),
+            member_id: member.meerkat_id.clone(),
+            label: member.meerkat_id,
+            kind: "meerkat".to_string(),
+            profile: Some(member.profile),
+            state: Some(member.state),
+            session_id: member.session_id,
+        })
         .collect::<Vec<_>>();
-    loaded_modules.sort();
-    ConsoleLiveSnapshot::new(running, loaded_modules)
+    agents.sort_by(|left, right| left.label.cmp(&right.label));
+    let mut topology_nodes = agents
+        .iter()
+        .map(|agent| agent.label.clone())
+        .collect::<Vec<_>>();
+    topology_nodes.sort();
+    ConsoleLiveSnapshot::new(
+        Some(runtime.handle().mob_id().to_string()),
+        running,
+        Vec::new(),
+        agents,
+        topology_nodes,
+    )
 }
 
 pub async fn console_frontend_index_handler() -> impl IntoResponse {
