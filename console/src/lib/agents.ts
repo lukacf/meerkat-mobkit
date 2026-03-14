@@ -15,6 +15,7 @@ export function normalizeAgents(
       ...(entry.state !== undefined && { state: String(entry.state) }),
       ...(entry.wired_to !== undefined && { wired_to: entry.wired_to as string[] }),
       ...(entry.labels !== undefined && { labels: entry.labels as Record<string, string> }),
+      ...(entry.group !== undefined && { group: String(entry.group) }),
       ...(entry.addressable !== undefined && { addressable: Boolean(entry.addressable) }),
       ...(entry.affordances !== undefined && { affordances: entry.affordances }),
     }));

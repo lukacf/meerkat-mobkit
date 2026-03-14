@@ -173,18 +173,43 @@ fn build_console_experience_contract(
         .iter()
         .map(|module_id| {
             if let Some(member) = member_lookup.get(module_id.as_str()) {
+                // OB3-1: Use labels.display_name as label when present.
+                let label = member
+                    .labels
+                    .get("display_name")
+                    .cloned()
+                    .unwrap_or_else(|| module_id.clone());
+                // OB3-6: Derive addressable from labels.addressable override,
+                // defaulting to true for all mob agents. Profiles that should
+                // not be directly addressed can set labels.addressable = "false".
+                let addressable = member
+                    .labels
+                    .get("addressable")
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
+                // OB3-5: Group by profile for sidebar sections.
+                let group = member
+                    .labels
+                    .get("group")
+                    .cloned()
+                    .unwrap_or_else(|| member.profile.clone());
                 serde_json::json!({
                     "agent_id": module_id,
                     "member_id": module_id,
-                    "label": module_id,
+                    "label": label,
                     "kind": "mob_agent",
                     "profile": member.profile,
                     "state": member.state,
                     "wired_to": member.wired_to,
                     "labels": member.labels,
-                    "addressable": true,
+                    "group": group,
+                    "addressable": addressable,
+                    // OB3-2: Per-agent affordances with actionable booleans.
                     "affordances": {
-                        "addressable": true,
+                        "addressable": addressable,
+                        "can_send_message": addressable,
+                        "can_retire": true,
+                        "can_respawn": true,
                         "runtime_mode": "mob_agent",
                     },
                 })
@@ -239,9 +264,11 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "label", "kind", "profile", "state", "wired_to", "labels", "addressable", "affordances"],
+                "fields": ["agent_id", "member_id", "label", "kind", "profile", "state", "wired_to", "labels", "group", "addressable", "affordances"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
+                "group_by_field": "group",
+                "label_convention": "labels.display_name overrides member_id when present",
             },
             "live_snapshot": {
                 "agents": sidebar_agents,
@@ -324,6 +351,36 @@ fn build_console_experience_contract(
                 "running": live_snapshot.running,
                 "loaded_modules": &live_snapshot.loaded_modules,
                 "loaded_module_count": &live_snapshot.loaded_modules.len(),
+            }
+        },
+        "flows": {
+            "panel_id": "console.flows",
+            "title": "Flows",
+            "list_method": "mobkit/scheduling/evaluate",
+            "trigger_method": "mobkit/scheduling/dispatch",
+            "refresh_policy": {
+                "mode": "pull",
+                "poll_interval_ms": 10000,
+            },
+            "item_contract": {
+                "flow_id_field": "schedule_id",
+                "status_field": "status",
+                "trigger_action": "dispatch",
+            }
+        },
+        "session_history": {
+            "panel_id": "console.session_history",
+            "title": "Session History",
+            "source_method": "mobkit/query_events",
+            "transport": "rpc",
+            "request_contract": {
+                "member_id": "optional filter by member",
+                "limit": "max rows to return",
+                "before_event_id": "cursor for pagination",
+            },
+            "response_contract": {
+                "events": "array of persisted event envelopes",
+                "has_more": "boolean pagination flag",
             }
         }
     })

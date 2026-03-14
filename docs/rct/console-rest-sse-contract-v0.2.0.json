@@ -15,7 +15,9 @@
             "activity_feed",
             "chat_inspector",
             "topology",
-            "health_overview"
+            "health_overview",
+            "flows",
+            "session_history"
           ]
         }
       },

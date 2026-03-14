@@ -6,6 +6,9 @@ export interface ConsoleFrame {
 
 export interface ConsoleAgentAffordances {
   addressable?: boolean;
+  can_send_message?: boolean;
+  can_retire?: boolean;
+  can_respawn?: boolean;
   runtime_mode?: string;
 }
 
@@ -18,6 +21,7 @@ export interface ConsoleAgent {
   state?: string;
   wired_to?: string[];
   labels?: Record<string, string>;
+  group?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
 }
@@ -45,6 +49,7 @@ export interface ConsoleExperience {
         state?: string;
         wired_to?: string[];
         labels?: Record<string, string>;
+        group?: string;
         addressable?: boolean;
         affordances?: ConsoleAgentAffordances;
       }>;
@@ -55,6 +60,15 @@ export interface ConsoleExperience {
   };
   chat_inspector?: {
     title?: string;
+  };
+  flows?: {
+    title?: string;
+    list_method?: string;
+    trigger_method?: string;
+  };
+  session_history?: {
+    title?: string;
+    source_method?: string;
   };
   topology?: {
     title?: string;

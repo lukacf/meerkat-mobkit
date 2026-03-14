@@ -279,9 +279,13 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
                 "state": "active",
                 "wired_to": [],
                 "labels": {},
+                "group": "lead",
                 "addressable": true,
                 "affordances": {
                     "addressable": true,
+                    "can_send_message": true,
+                    "can_retire": true,
+                    "can_respawn": true,
                     "runtime_mode": "mob_agent"
                 }
             },
@@ -294,9 +298,13 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
                 "state": "active",
                 "wired_to": [],
                 "labels": {},
+                "group": "lead",
                 "addressable": true,
                 "affordances": {
                     "addressable": true,
+                    "can_send_message": true,
+                    "can_retire": true,
+                    "can_respawn": true,
                     "runtime_mode": "mob_agent"
                 }
             }
