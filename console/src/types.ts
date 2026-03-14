@@ -4,14 +4,46 @@ export interface ConsoleFrame {
   data: unknown;
 }
 
+export interface ConsoleAgentAffordances {
+  addressable?: boolean;
+  can_send_message?: boolean;
+  can_retire?: boolean;
+  can_respawn?: boolean;
+  runtime_mode?: string;
+}
+
 export interface ConsoleAgent {
   agent_id: string;
   member_id: string;
   label: string;
   kind: string;
+  profile?: string;
+  state?: string;
+  wired_to?: string[];
+  labels?: Record<string, string>;
+  group?: string;
+  addressable?: boolean;
+  affordances?: ConsoleAgentAffordances;
+}
+
+export interface ProfileCapabilities {
+  instance_count?: number;
+  addressable?: boolean;
+  has_wiring?: boolean;
+}
+
+export interface RuntimeCapabilities {
+  can_spawn_members?: boolean;
+  can_send_messages?: boolean;
+  can_wire_members?: boolean;
+  can_retire_members?: boolean;
+  available_spawn_modes?: string[];
+  profile_capabilities?: Record<string, ProfileCapabilities>;
 }
 
 export interface ConsoleExperience {
+  contract_version?: string;
+  runtime_capabilities?: RuntimeCapabilities;
   agent_sidebar?: {
     title?: string;
     live_snapshot?: {
@@ -20,6 +52,13 @@ export interface ConsoleExperience {
         member_id?: string;
         label?: string;
         kind?: string;
+        profile?: string;
+        state?: string;
+        wired_to?: string[];
+        labels?: Record<string, string>;
+        group?: string;
+        addressable?: boolean;
+        affordances?: ConsoleAgentAffordances;
       }>;
     };
   };
@@ -28,6 +67,15 @@ export interface ConsoleExperience {
   };
   chat_inspector?: {
     title?: string;
+  };
+  flows?: {
+    title?: string;
+    evaluate_method?: string;
+    dispatch_method?: string;
+  };
+  session_history?: {
+    title?: string;
+    source_method?: string;
   };
   topology?: {
     title?: string;

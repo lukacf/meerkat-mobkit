@@ -1,6 +1,8 @@
 //! Console ingress types and JSON request/response structures.
 
 use super::*;
+use crate::mob_handle_runtime::MobMemberSnapshot;
+use crate::rpc::MOBKIT_CONTRACT_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleRestJsonRequest {
@@ -19,10 +21,17 @@ pub struct ConsoleRestJsonResponse {
 pub struct ConsoleLiveSnapshot {
     pub running: bool,
     pub loaded_modules: Vec<String>,
+    pub members: Vec<MobMemberSnapshot>,
+    pub has_mob_runtime: bool,
 }
 
 impl ConsoleLiveSnapshot {
-    pub fn new(running: bool, loaded_modules: Vec<String>) -> Self {
+    pub fn new(
+        running: bool,
+        loaded_modules: Vec<String>,
+        members: Vec<MobMemberSnapshot>,
+        has_mob_runtime: bool,
+    ) -> Self {
         let mut seen = BTreeSet::new();
         let mut deduped_modules = Vec::new();
         for module_id in loaded_modules {
@@ -33,6 +42,8 @@ impl ConsoleLiveSnapshot {
         Self {
             running,
             loaded_modules: deduped_modules,
+            members,
+            has_mob_runtime,
         }
     }
 }
@@ -111,7 +122,7 @@ pub fn handle_console_rest_json_route_with_snapshot(
         build_console_experience_contract(&modules, &live_snapshot)
     } else {
         serde_json::json!({
-            "contract_version": "0.1.0",
+            "contract_version": MOBKIT_CONTRACT_VERSION,
             "modules": modules
         })
     };
@@ -126,6 +137,8 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             .iter()
             .map(|module| module.id.clone())
             .collect(),
+        Vec::new(),
+        false,
     )
 }
 
@@ -148,21 +161,124 @@ fn build_console_experience_contract(
             })
         })
         .collect::<Vec<_>>();
-    let sidebar_agents = live_snapshot
-        .loaded_modules
-        .iter()
-        .map(|module_id| {
-            serde_json::json!({
-                "agent_id": module_id,
-                "member_id": module_id,
-                "label": module_id,
-                "kind": "module_agent",
+
+    // P0 fix: Build sidebar from the full mob roster (members) when a mob
+    // runtime is present, so multi-instance profiles (e.g. 5 profiles → 15
+    // agents) enumerate every individual agent, not just profile-level IDs.
+    // Fall back to loaded_modules for module-only runtimes.
+    let sidebar_agents: Vec<Value> = if live_snapshot.has_mob_runtime
+        && !live_snapshot.members.is_empty()
+    {
+        let mut sorted_members: Vec<&MobMemberSnapshot> = live_snapshot.members.iter().collect();
+        sorted_members.sort_by(|a, b| a.meerkat_id.cmp(&b.meerkat_id));
+        sorted_members
+            .iter()
+            .map(|member| {
+                let label = member
+                    .labels
+                    .get("display_name")
+                    .cloned()
+                    .unwrap_or_else(|| member.meerkat_id.clone());
+                let addressable = member
+                    .labels
+                    .get("addressable")
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
+                let singleton = member
+                    .labels
+                    .get("singleton")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
+                let group = member
+                    .labels
+                    .get("group")
+                    .cloned()
+                    .unwrap_or_else(|| member.profile.clone());
+                serde_json::json!({
+                    "agent_id": member.meerkat_id,
+                    "member_id": member.meerkat_id,
+                    "label": label,
+                    "kind": "mob_agent",
+                    "profile": member.profile,
+                    "state": member.state,
+                    "wired_to": member.wired_to,
+                    "labels": member.labels,
+                    "group": group,
+                    "addressable": addressable,
+                    "affordances": {
+                        "addressable": addressable,
+                        "can_send_message": addressable,
+                        "can_retire": !singleton,
+                        "can_respawn": true,
+                        "runtime_mode": "mob_agent",
+                    },
+                })
             })
-        })
-        .collect::<Vec<_>>();
+            .collect()
+    } else {
+        live_snapshot
+            .loaded_modules
+            .iter()
+            .map(|module_id| {
+                serde_json::json!({
+                    "agent_id": module_id,
+                    "member_id": module_id,
+                    "label": module_id,
+                    "kind": "module_agent",
+                })
+            })
+            .collect()
+    };
+
+    let has_mob = live_snapshot.has_mob_runtime;
+
+    // P3: Build per-profile capability hints from roster data.
+    let profile_capabilities: BTreeMap<String, Value> = {
+        let mut profiles: BTreeMap<String, (usize, bool, bool)> = BTreeMap::new();
+        for member in &live_snapshot.members {
+            let entry = profiles
+                .entry(member.profile.clone())
+                .or_insert((0, true, false));
+            entry.0 += 1; // instance_count
+            // addressable = all instances addressable
+            let member_addressable = member
+                .labels
+                .get("addressable")
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            entry.1 = entry.1 && member_addressable;
+            // has_wiring = any instance wired
+            entry.2 = entry.2 || !member.wired_to.is_empty();
+        }
+        profiles
+            .into_iter()
+            .map(|(profile, (count, addressable, has_wiring))| {
+                (
+                    profile,
+                    serde_json::json!({
+                        "instance_count": count,
+                        "addressable": addressable,
+                        "has_wiring": has_wiring,
+                    }),
+                )
+            })
+            .collect()
+    };
 
     serde_json::json!({
-        "contract_version": "0.1.0",
+        "contract_version": MOBKIT_CONTRACT_VERSION,
+        "runtime_capabilities": {
+            "can_spawn_members": has_mob,
+            "can_send_messages": has_mob,
+            "can_wire_members": has_mob,
+            "can_retire_members": has_mob,
+            "available_spawn_modes": if has_mob {
+                vec!["module", "profile"]
+            } else {
+                vec!["module"]
+            },
+            "profile_capabilities": profile_capabilities,
+        },
         "base_panel": {
             "panel_id": "console.home",
             "title": "Mob Console",
@@ -176,7 +292,7 @@ fn build_console_experience_contract(
         "agent_sidebar": {
             "panel_id": "console.agent_sidebar",
             "title": "Agents",
-            "source_method": "mobkit/status",
+            "source_method": if has_mob { "mobkit/list_members" } else { "mobkit/status" },
             "refresh_policy": {
                 "mode": "pull",
                 "poll_interval_ms": 5000,
@@ -188,9 +304,17 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "label", "kind"],
+                "fields": ["agent_id", "member_id", "label", "kind", "profile", "state", "wired_to", "labels", "group", "addressable", "affordances"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
+                "group_by_field": "group",
+                "well_known_labels": {
+                    "display_name": "human-readable label; overrides member_id in sidebar",
+                    "addressable": "set \"false\" to hide send-message actions for internal agents",
+                    "singleton": "set \"true\" to prevent retire (e.g. review, summarizer agents)",
+                    "group": "sidebar group name; overrides profile-based grouping",
+                },
+                "refresh_projection": "source_method returns MobMemberSnapshot rows (meerkat_id, profile, state, wired_to, labels). Clients must project: agent_id=meerkat_id, member_id=meerkat_id, label=labels.display_name||meerkat_id, group=labels.group||profile, addressable=labels.addressable!='false', affordances derived from labels.singleton and addressable.",
             },
             "live_snapshot": {
                 "agents": sidebar_agents,
@@ -253,7 +377,7 @@ fn build_console_experience_contract(
             },
             "live_snapshot": {
                 "nodes": &live_snapshot.loaded_modules,
-                "node_count": live_snapshot.loaded_modules.len(),
+                "node_count": &live_snapshot.loaded_modules.len(),
             }
         },
         "health_overview": {
@@ -272,8 +396,61 @@ fn build_console_experience_contract(
             "live_snapshot": {
                 "running": live_snapshot.running,
                 "loaded_modules": &live_snapshot.loaded_modules,
-                "loaded_module_count": live_snapshot.loaded_modules.len(),
+                "loaded_module_count": &live_snapshot.loaded_modules.len(),
             }
+        },
+        "flows": {
+            "panel_id": "console.flows",
+            "title": "Flows",
+            "evaluate_method": "mobkit/scheduling/evaluate",
+            "dispatch_method": "mobkit/scheduling/dispatch",
+            "refresh_policy": {
+                "mode": "pull",
+                "poll_interval_ms": 10000,
+            },
+            "request_contract": {
+                "schedules": "caller-supplied array of ScheduleDefinition (schedule_id, interval|cron, timezone, enabled)",
+                "tick_ms": "evaluation timestamp in epoch milliseconds",
+            },
+            "evaluate_response_contract": {
+                "tick_ms": "u64 — echoed evaluation tick",
+                "due_triggers": "array of ScheduleTrigger {schedule_id, interval, timezone, due_tick_ms}",
+            },
+            "dispatch_response_contract": {
+                "tick_ms": "u64 — echoed dispatch tick",
+                "due_count": "usize — number of triggers that were due",
+                "dispatched": "array of ScheduleDispatch {claim_key, schedule_id, interval, timezone, due_tick_ms, tick_ms, event_id, supervisor_signal?, runtime_injection?, runtime_injection_error?}",
+                "skipped_claims": "array of schedule_id strings skipped due to idempotent claim",
+            },
+            "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
+        },
+        "session_history": if has_mob {
+            serde_json::json!({
+                "panel_id": "console.session_history",
+                "title": "Session History",
+                "source_method": "mobkit/query_events",
+                "transport": "rpc",
+                "available": true,
+                "request_contract": {
+                    "member_id": "optional filter by member (matches EventQuery.member_id)",
+                    "event_types": "optional array of event type strings to filter",
+                    "since_ms": "optional start timestamp in epoch ms (inclusive)",
+                    "until_ms": "optional end timestamp in epoch ms (exclusive)",
+                    "limit": "optional max rows to return",
+                    "after_seq": "optional sequence number for cursor pagination",
+                },
+                "response_contract": {
+                    "success": "result is a raw array of PersistedEvent {id, seq, timestamp_ms, member_id?, event}",
+                    "no_event_log": "when no event log is configured, result is {status: 'no_event_log_configured', events: []}",
+                }
+            })
+        } else {
+            serde_json::json!({
+                "panel_id": "console.session_history",
+                "title": "Session History",
+                "available": false,
+                "reason": "session history requires a mob runtime with mobkit/query_events support",
+            })
         }
     })
 }

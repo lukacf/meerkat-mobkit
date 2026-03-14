@@ -66,8 +66,14 @@ pub async fn console_json_handler(
         .map(|path_and_query| path_and_query.as_str().to_string())
         .unwrap_or_else(|| uri.path().to_string());
 
+    let config_module_ids: Vec<String> = state
+        .decisions
+        .modules
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
     let live_snapshot = match &state.runtime {
-        Some(runtime) => Some(build_live_snapshot(runtime).await),
+        Some(runtime) => Some(build_live_snapshot(runtime, &config_module_ids).await),
         None => None,
     };
 
@@ -84,16 +90,25 @@ pub async fn console_json_handler(
     (status, Json::<Value>(response.body))
 }
 
-async fn build_live_snapshot(runtime: &RealMobRuntime) -> ConsoleLiveSnapshot {
+async fn build_live_snapshot(
+    runtime: &RealMobRuntime,
+    config_module_ids: &[String],
+) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
-    let mut loaded_modules = runtime
-        .discover()
-        .await
-        .into_iter()
-        .map(|member| member.meerkat_id)
-        .collect::<Vec<_>>();
-    loaded_modules.sort();
-    ConsoleLiveSnapshot::new(running, loaded_modules)
+    let members = runtime.discover().await;
+    // Use config module IDs for loaded_modules when available (correct for
+    // topology/health which show modules, not individual mob agents).
+    // Fall back to member IDs for pure mob runtimes with no config modules.
+    let loaded_modules = if config_module_ids.is_empty() {
+        let mut mods: Vec<String> = members.iter().map(|m| m.meerkat_id.clone()).collect();
+        mods.sort();
+        mods
+    } else {
+        let mut mods = config_module_ids.to_vec();
+        mods.sort();
+        mods
+    };
+    ConsoleLiveSnapshot::new(running, loaded_modules, members, true)
 }
 
 pub async fn console_frontend_index_handler() -> impl IntoResponse {
