@@ -306,10 +306,18 @@ fn resolve_console_auth(
         return Ok(None);
     }
 
+    // Check query-param auth_token (also used as the bearer-header injection
+    // point by the HTTP handler — see console_json_handler).
     match query_params.get("auth_token") {
         Some(token) => resolve_console_auth_from_token(decisions, token).map(Some),
         None => Ok(None),
     }
+}
+
+/// Extract a bearer token from an `Authorization: Bearer <token>` header value.
+pub fn extract_bearer_token_from_header(header_value: &str) -> Option<&str> {
+    let token = header_value.strip_prefix("Bearer ")?;
+    if token.is_empty() { None } else { Some(token) }
 }
 
 fn resolve_console_auth_from_token(

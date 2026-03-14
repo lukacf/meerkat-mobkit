@@ -168,6 +168,11 @@ export class MobKitRuntime {
       }
     } else if (this._config.sessionBuilder) {
       this._dispatcher.registerBuilder(this._config.sessionBuilder);
+    } else {
+      console.warn(
+        "[mobkit] runtime started without gateway or session builder — " +
+          "RPC calls will fail with NotConnectedError",
+      );
     }
     this._running = true;
   }
@@ -181,7 +186,26 @@ export class MobKitRuntime {
       params.modules = this._config.modules;
     }
     params.has_session_builder = Boolean(this._config.sessionBuilder);
-    params.runtime_options = {};
+    const runtimeOptions: Record<string, unknown> = {};
+    if (this._config.gatingConfigPath) {
+      runtimeOptions.gating_config_path = this._config.gatingConfigPath;
+    }
+    if (this._config.routingConfigPath) {
+      runtimeOptions.routing_config_path = this._config.routingConfigPath;
+    }
+    if (this._config.schedulingFiles.length > 0) {
+      runtimeOptions.scheduling_files = this._config.schedulingFiles;
+    }
+    if (this._config.memoryConfig) {
+      runtimeOptions.memory_config = this._config.memoryConfig;
+    }
+    if (this._config.authConfig) {
+      runtimeOptions.auth_config = this._config.authConfig;
+    }
+    if (this._config.eventLog) {
+      runtimeOptions.event_log = this._config.eventLog;
+    }
+    params.runtime_options = runtimeOptions;
     return params;
   }
 

@@ -1,7 +1,7 @@
 //! HTTP routes for the admin console REST API.
 
 use axum::extract::State;
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::mob_handle_runtime::RealMobRuntime;
 use crate::runtime::{
     ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
-    handle_console_rest_json_route_with_snapshot,
+    extract_bearer_token_from_header, handle_console_rest_json_route_with_snapshot,
 };
 
 #[derive(Clone)]
@@ -59,12 +59,27 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
 
 pub async fn console_json_handler(
     State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
     uri: Uri,
 ) -> impl IntoResponse {
-    let path = uri
+    let mut path = uri
         .path_and_query()
         .map(|path_and_query| path_and_query.as_str().to_string())
         .unwrap_or_else(|| uri.path().to_string());
+
+    // If the request carries a Bearer token and the URL doesn't already have
+    // an auth_token query param, inject it so the console-ingress auth
+    // resolver can validate it through the existing query-param path.
+    if !path.contains("auth_token=") {
+        if let Some(bearer) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(extract_bearer_token_from_header)
+        {
+            let sep = if path.contains('?') { '&' } else { '?' };
+            path = format!("{path}{sep}auth_token={bearer}");
+        }
+    }
 
     let live_snapshot = match &state.runtime {
         Some(runtime) => Some(build_live_snapshot(runtime).await),

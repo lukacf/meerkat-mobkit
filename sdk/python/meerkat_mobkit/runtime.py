@@ -126,6 +126,11 @@ class MobKitRuntime:
             self._config.session_builder, SessionAgentBuilder
         ):
             self._dispatcher.register_builder(self._config.session_builder)
+        else:
+            _log.warning(
+                "MobKit runtime started without gateway or session builder — "
+                "RPC calls will fail with NotConnectedError"
+            )
         self._running = True
 
     def _build_init_params(self) -> dict[str, Any]:
@@ -137,7 +142,20 @@ class MobKitRuntime:
         if self._config.modules:
             params["modules"] = self._config.modules
         params["has_session_builder"] = bool(self._config.session_builder)
-        params["runtime_options"] = {}
+        runtime_options: dict[str, Any] = {}
+        if self._config.gating_config_path:
+            runtime_options["gating_config_path"] = self._config.gating_config_path
+        if self._config.routing_config_path:
+            runtime_options["routing_config_path"] = self._config.routing_config_path
+        if self._config.scheduling_files:
+            runtime_options["scheduling_files"] = self._config.scheduling_files
+        if self._config.memory_config:
+            runtime_options["memory_config"] = self._config.memory_config
+        if self._config.auth_config:
+            runtime_options["auth_config"] = self._config.auth_config
+        if self._config.event_log:
+            runtime_options["event_log"] = self._config.event_log
+        params["runtime_options"] = runtime_options
         return params
 
     def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -721,18 +739,58 @@ class AsgiApp:
             await _send_response(send, 200, b"ok", content_type=b"text/plain")
             return
 
+        # Gate console/observation routes when console=False.
+        if not self._console:
+            is_console_route = (
+                path.startswith("/console")
+                or path == "/mob/events"
+                or (path.startswith("/agents/") and path.endswith("/events"))
+            )
+            if is_console_route:
+                await _send_response(send, 404, b'{"error":"not found"}')
+                return
+
+        # Enforce auth when auth_config is provided.
+        if self._auth_config is not None and path != "/healthz":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(
+                b"authorization", b""
+            ).decode("utf-8", errors="replace")
+            if not auth_header.startswith("Bearer ") or not auth_header[7:].strip():
+                resp = json.dumps({"error": "unauthorized"}).encode()
+                await _send_response(send, 401, resp)
+                return
+
         if path == "/rpc" and method == "POST":
             body = await _read_body(receive)
+            request_id = None
             try:
                 parsed = json.loads(body)
+                request_id = parsed.get("id")
                 result = await self._runtime._rpc(
                     parsed.get("method", ""),
                     parsed.get("params"),
                 )
-                await _send_response(send, 200, json.dumps(result).encode())
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": result,
+                }).encode()
+                await _send_response(send, 200, resp)
+            except RpcError as exc:
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": exc.code, "message": exc.message},
+                }).encode()
+                await _send_response(send, 200, resp)
             except Exception as exc:
-                err = json.dumps({"error": str(exc)}).encode()
-                await _send_response(send, 500, err)
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": str(exc)},
+                }).encode()
+                await _send_response(send, 200, resp)
             return
 
         if path.startswith("/agents/") and path.endswith("/events") and method == "GET":
