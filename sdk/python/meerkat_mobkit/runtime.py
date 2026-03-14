@@ -150,11 +150,11 @@ class MobKitRuntime:
         if self._config.scheduling_files:
             runtime_options["scheduling_files"] = self._config.scheduling_files
         if self._config.memory_config:
-            runtime_options["memory_config"] = self._config.memory_config
+            runtime_options["memory_config"] = _serialize_config(self._config.memory_config)
         if self._config.auth_config:
-            runtime_options["auth_config"] = self._config.auth_config
+            runtime_options["auth_config"] = _serialize_config(self._config.auth_config)
         if self._config.event_log:
-            runtime_options["event_log"] = self._config.event_log
+            runtime_options["event_log"] = _serialize_config(self._config.event_log)
         params["runtime_options"] = runtime_options
         return params
 
@@ -879,72 +879,102 @@ class AsgiApp:
         await send({"type": "http.response.body", "body": b""})
 
 
+def _serialize_config(config: Any) -> Any:
+    """Serialize a config object to a JSON-compatible dict.
+
+    Calls to_dict() on dataclass configs (GoogleAuthConfig, JwtAuthConfig,
+    etc.) so json.dumps won't fail with TypeError during mobkit/init.
+    """
+    if hasattr(config, "to_dict"):
+        return config.to_dict()
+    if isinstance(config, dict):
+        return {k: _serialize_config(v) for k, v in config.items()}
+    if isinstance(config, (list, tuple)):
+        return [_serialize_config(v) for v in config]
+    return config
+
+
 def _validate_bearer_token(token: str, auth_config: Any) -> bool:
     """Validate a bearer token against the auth config.
 
-    For JwtAuthConfig (shared-secret HMAC), performs full signature
-    verification.  For GoogleAuthConfig, decodes the JWT structure and
-    checks issuer/audience claims (cryptographic verification requires
-    JWKS and is deferred to the Rust gateway).  Unknown config types
-    are rejected (fail closed).
+    For JwtAuthConfig (shared-secret HMAC): full signature verification
+    plus iss, aud, exp, and nbf claim checks with leeway.
+
+    For GoogleAuthConfig (OIDC/JWKS): rejected — asymmetric signature
+    verification requires a JWKS fetch which the ASGI facade cannot do
+    without a network dependency.  Google auth must be enforced by the
+    Rust gateway.
+
+    Unknown config types are rejected (fail closed).
     """
     import base64
     import hmac
     import hashlib
+    import time
+
+    config_dict = auth_config.to_dict() if hasattr(auth_config, "to_dict") else {}
+    provider = config_dict.get("provider", "")
+
+    # Google OIDC requires JWKS-based asymmetric verification — the
+    # lightweight ASGI facade cannot do this. Reject so callers know
+    # they must use the Rust gateway for Google auth.
+    if provider == "google":
+        _log.warning(
+            "ASGI auth with GoogleAuthConfig requires the Rust gateway for "
+            "JWKS-based token verification — rejecting token in ASGI facade"
+        )
+        return False
+
+    if provider != "jwt":
+        return False
 
     parts = token.split(".")
     if len(parts) != 3:
         return False
 
     try:
-        # Decode header to get algorithm
         header_b64 = parts[0] + "=" * (-len(parts[0]) % 4)
         header = json.loads(base64.urlsafe_b64decode(header_b64))
     except Exception:
         return False
 
-    config_dict = auth_config.to_dict() if hasattr(auth_config, "to_dict") else {}
-    provider = config_dict.get("provider", "")
+    secret = config_dict.get("shared_secret", "")
+    if not secret:
+        return False
+    if header.get("alg") != "HS256":
+        return False
 
-    if provider == "jwt":
-        # Full HMAC-SHA256 verification
-        secret = config_dict.get("shared_secret", "")
-        if not secret:
-            return False
-        if header.get("alg") != "HS256":
-            return False
-        signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
-        expected_sig = base64.urlsafe_b64encode(
-            hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
-        ).rstrip(b"=").decode("utf-8")
-        if not hmac.compare_digest(expected_sig, parts[2]):
-            return False
-        # Check claims
-        try:
-            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        except Exception:
-            return False
-        if config_dict.get("issuer") and claims.get("iss") != config_dict["issuer"]:
-            return False
-        if config_dict.get("audience") and claims.get("aud") != config_dict["audience"]:
-            return False
-        return True
+    # Verify HMAC-SHA256 signature
+    signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
+    expected_sig = base64.urlsafe_b64encode(
+        hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    ).rstrip(b"=").decode("utf-8")
+    if not hmac.compare_digest(expected_sig, parts[2]):
+        return False
 
-    if provider == "google":
-        # Structural validation only — full OIDC/JWKS is in the Rust gateway
-        try:
-            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
-        except Exception:
-            return False
-        expected_aud = config_dict.get("audience") or config_dict.get("client_id")
-        if expected_aud and claims.get("aud") != expected_aud:
-            return False
-        return True
+    # Decode and validate claims
+    try:
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        return False
 
-    # Unknown provider — fail closed
-    return False
+    if config_dict.get("issuer") and claims.get("iss") != config_dict["issuer"]:
+        return False
+    if config_dict.get("audience") and claims.get("aud") != config_dict["audience"]:
+        return False
+
+    # Enforce expiry with leeway
+    leeway = config_dict.get("leeway_seconds", 60)
+    now = time.time()
+    if "exp" in claims:
+        if now > claims["exp"] + leeway:
+            return False
+    if "nbf" in claims:
+        if now < claims["nbf"] - leeway:
+            return False
+
+    return True
 
 
 async def _read_body(receive: Any) -> bytes:

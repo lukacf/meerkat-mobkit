@@ -86,6 +86,15 @@ function nextRequestId(method: string): string {
   return `${method}:${++requestCounter}`;
 }
 
+/** Serialize a config value for JSON transport (calls toDict() on objects that have it). */
+function serializeConfig(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "object" && "toDict" in (value as Record<string, unknown>)) {
+    return (value as { toDict(): unknown }).toDict();
+  }
+  return value;
+}
+
 // -- MobKitRuntime --------------------------------------------------------
 
 /**
@@ -197,13 +206,13 @@ export class MobKitRuntime {
       runtimeOptions.scheduling_files = this._config.schedulingFiles;
     }
     if (this._config.memoryConfig) {
-      runtimeOptions.memory_config = this._config.memoryConfig;
+      runtimeOptions.memory_config = serializeConfig(this._config.memoryConfig);
     }
     if (this._config.authConfig) {
-      runtimeOptions.auth_config = this._config.authConfig;
+      runtimeOptions.auth_config = serializeConfig(this._config.authConfig);
     }
     if (this._config.eventLog) {
-      runtimeOptions.event_log = this._config.eventLog;
+      runtimeOptions.event_log = serializeConfig(this._config.eventLog);
     }
     params.runtime_options = runtimeOptions;
     return params;
