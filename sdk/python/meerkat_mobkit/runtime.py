@@ -243,6 +243,7 @@ class MobKitRuntime:
         self._running = False
         if self._transport is not None:
             self._transport.stop()
+            self._transport = None
 
     @property
     def is_running(self) -> bool:

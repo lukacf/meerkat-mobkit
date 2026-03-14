@@ -257,6 +257,7 @@ export class MobKitRuntime {
     this._running = false;
     if (this._transport !== null) {
       this._transport.stop();
+      this._transport = null;
     }
   }
 

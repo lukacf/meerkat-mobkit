@@ -84,4 +84,13 @@ export async function* parseSseStream(
       }
     }
   }
+
+  // Flush any remaining event if the stream ended without a trailing blank line.
+  if (currentData.length > 0) {
+    yield {
+      id: currentId,
+      event: currentEvent,
+      data: currentData.join("\n"),
+    };
+  }
 }
