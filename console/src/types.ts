@@ -4,14 +4,35 @@ export interface ConsoleFrame {
   data: unknown;
 }
 
+export interface ConsoleAgentAffordances {
+  addressable?: boolean;
+  runtime_mode?: string;
+}
+
 export interface ConsoleAgent {
   agent_id: string;
   member_id: string;
   label: string;
   kind: string;
+  profile?: string;
+  state?: string;
+  wired_to?: string[];
+  labels?: Record<string, string>;
+  addressable?: boolean;
+  affordances?: ConsoleAgentAffordances;
+}
+
+export interface RuntimeCapabilities {
+  can_spawn_members?: boolean;
+  can_send_messages?: boolean;
+  can_wire_members?: boolean;
+  can_retire_members?: boolean;
+  available_spawn_modes?: string[];
 }
 
 export interface ConsoleExperience {
+  contract_version?: string;
+  runtime_capabilities?: RuntimeCapabilities;
   agent_sidebar?: {
     title?: string;
     live_snapshot?: {
@@ -20,6 +41,12 @@ export interface ConsoleExperience {
         member_id?: string;
         label?: string;
         kind?: string;
+        profile?: string;
+        state?: string;
+        wired_to?: string[];
+        labels?: Record<string, string>;
+        addressable?: boolean;
+        affordances?: ConsoleAgentAffordances;
       }>;
     };
   };

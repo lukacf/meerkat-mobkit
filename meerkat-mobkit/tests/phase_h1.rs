@@ -274,15 +274,45 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
                 "agent_id": "delivery",
                 "member_id": "delivery",
                 "label": "delivery",
-                "kind": "module_agent"
+                "kind": "mob_agent",
+                "profile": "lead",
+                "state": "active",
+                "wired_to": [],
+                "labels": {},
+                "addressable": true,
+                "affordances": {
+                    "addressable": true,
+                    "runtime_mode": "mob_agent"
+                }
             },
             {
                 "agent_id": "router",
                 "member_id": "router",
                 "label": "router",
-                "kind": "module_agent"
+                "kind": "mob_agent",
+                "profile": "lead",
+                "state": "active",
+                "wired_to": [],
+                "labels": {},
+                "addressable": true,
+                "affordances": {
+                    "addressable": true,
+                    "runtime_mode": "mob_agent"
+                }
             }
         ])
+    );
+
+    assert_eq!(console_json["contract_version"], json!("0.2.0"));
+    assert_eq!(
+        console_json["runtime_capabilities"],
+        json!({
+            "can_spawn_members": true,
+            "can_send_messages": true,
+            "can_wire_members": true,
+            "can_retire_members": true,
+            "available_spawn_modes": ["module", "profile"]
+        })
     );
 
     let shutdown = fixture.runtime.shutdown().await;

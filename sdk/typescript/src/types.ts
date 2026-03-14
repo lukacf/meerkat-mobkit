@@ -63,12 +63,35 @@ export function parseStatusResult(raw: unknown): StatusResult {
   };
 }
 
+// -- RuntimeCapabilities --------------------------------------------------
+
+export interface RuntimeCapabilities {
+  readonly canSpawnMembers: boolean;
+  readonly canSendMessages: boolean;
+  readonly canWireMembers: boolean;
+  readonly canRetireMembers: boolean;
+  readonly availableSpawnModes: readonly string[];
+}
+
+function parseRuntimeCapabilities(raw: unknown): RuntimeCapabilities | undefined {
+  if (raw == null || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, unknown>;
+  return {
+    canSpawnMembers: Boolean(d.can_spawn_members ?? false),
+    canSendMessages: Boolean(d.can_send_messages ?? false),
+    canWireMembers: Boolean(d.can_wire_members ?? false),
+    canRetireMembers: Boolean(d.can_retire_members ?? false),
+    availableSpawnModes: asStringArray(d.available_spawn_modes),
+  };
+}
+
 // -- CapabilitiesResult ---------------------------------------------------
 
 export interface CapabilitiesResult {
   readonly contractVersion: string;
   readonly methods: readonly string[];
   readonly loadedModules: readonly string[];
+  readonly runtimeCapabilities?: RuntimeCapabilities;
 }
 
 export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
@@ -77,6 +100,7 @@ export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
     contractVersion: String(d.contract_version ?? ""),
     methods: asStringArray(d.methods),
     loadedModules: asStringArray(d.loaded_modules),
+    runtimeCapabilities: parseRuntimeCapabilities(d.runtime_capabilities),
   };
 }
 

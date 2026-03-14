@@ -1,6 +1,8 @@
 //! Console ingress types and JSON request/response structures.
 
 use super::*;
+use crate::mob_handle_runtime::MobMemberSnapshot;
+use crate::rpc::MOBKIT_CONTRACT_VERSION;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleRestJsonRequest {
@@ -19,10 +21,15 @@ pub struct ConsoleRestJsonResponse {
 pub struct ConsoleLiveSnapshot {
     pub running: bool,
     pub loaded_modules: Vec<String>,
+    pub members: Vec<MobMemberSnapshot>,
 }
 
 impl ConsoleLiveSnapshot {
-    pub fn new(running: bool, loaded_modules: Vec<String>) -> Self {
+    pub fn new(
+        running: bool,
+        loaded_modules: Vec<String>,
+        members: Vec<MobMemberSnapshot>,
+    ) -> Self {
         let mut seen = BTreeSet::new();
         let mut deduped_modules = Vec::new();
         for module_id in loaded_modules {
@@ -33,6 +40,7 @@ impl ConsoleLiveSnapshot {
         Self {
             running,
             loaded_modules: deduped_modules,
+            members,
         }
     }
 }
@@ -111,7 +119,7 @@ pub fn handle_console_rest_json_route_with_snapshot(
         build_console_experience_contract(&modules, &live_snapshot)
     } else {
         serde_json::json!({
-            "contract_version": "0.1.0",
+            "contract_version": MOBKIT_CONTRACT_VERSION,
             "modules": modules
         })
     };
@@ -126,6 +134,7 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             .iter()
             .map(|module| module.id.clone())
             .collect(),
+        Vec::new(),
     )
 }
 
@@ -148,21 +157,53 @@ fn build_console_experience_contract(
             })
         })
         .collect::<Vec<_>>();
+
+    let member_lookup: BTreeMap<&str, &MobMemberSnapshot> = live_snapshot
+        .members
+        .iter()
+        .map(|m| (m.meerkat_id.as_str(), m))
+        .collect();
+
     let sidebar_agents = live_snapshot
         .loaded_modules
         .iter()
         .map(|module_id| {
-            serde_json::json!({
-                "agent_id": module_id,
-                "member_id": module_id,
-                "label": module_id,
-                "kind": "module_agent",
-            })
+            if let Some(member) = member_lookup.get(module_id.as_str()) {
+                serde_json::json!({
+                    "agent_id": module_id,
+                    "member_id": module_id,
+                    "label": module_id,
+                    "kind": "mob_agent",
+                    "profile": member.profile,
+                    "state": member.state,
+                    "wired_to": member.wired_to,
+                    "labels": member.labels,
+                    "addressable": true,
+                    "affordances": {
+                        "addressable": true,
+                        "runtime_mode": "mob_agent",
+                    },
+                })
+            } else {
+                serde_json::json!({
+                    "agent_id": module_id,
+                    "member_id": module_id,
+                    "label": module_id,
+                    "kind": "module_agent",
+                })
+            }
         })
         .collect::<Vec<_>>();
 
     serde_json::json!({
-        "contract_version": "0.1.0",
+        "contract_version": MOBKIT_CONTRACT_VERSION,
+        "runtime_capabilities": {
+            "can_spawn_members": true,
+            "can_send_messages": true,
+            "can_wire_members": true,
+            "can_retire_members": true,
+            "available_spawn_modes": ["module", "profile"],
+        },
         "base_panel": {
             "panel_id": "console.home",
             "title": "Mob Console",
@@ -188,7 +229,7 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "label", "kind"],
+                "fields": ["agent_id", "member_id", "label", "kind", "profile", "state", "wired_to", "labels", "addressable", "affordances"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
             },

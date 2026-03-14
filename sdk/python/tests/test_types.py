@@ -53,6 +53,27 @@ class TestCapabilitiesResult:
         assert r.contract_version == "2.0"
         assert r.methods == ["status"]
         assert r.loaded_modules == ["x"]
+        assert r.runtime_capabilities is None
+
+    def test_from_dict_with_runtime_capabilities(self):
+        r = CapabilitiesResult.from_dict(
+            {
+                "contract_version": "0.2.0",
+                "methods": ["status"],
+                "loaded_modules": ["x"],
+                "runtime_capabilities": {
+                    "can_spawn_members": True,
+                    "can_send_messages": True,
+                    "can_wire_members": False,
+                    "can_retire_members": True,
+                    "available_spawn_modes": ["module", "profile"],
+                },
+            }
+        )
+        assert r.runtime_capabilities is not None
+        assert r.runtime_capabilities.can_spawn_members is True
+        assert r.runtime_capabilities.can_wire_members is False
+        assert r.runtime_capabilities.available_spawn_modes == ["module", "profile"]
 
 
 class TestReconcileResult:

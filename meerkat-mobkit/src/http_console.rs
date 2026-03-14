@@ -86,14 +86,13 @@ pub async fn console_json_handler(
 
 async fn build_live_snapshot(runtime: &RealMobRuntime) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
-    let mut loaded_modules = runtime
-        .discover()
-        .await
-        .into_iter()
-        .map(|member| member.meerkat_id)
+    let members = runtime.discover().await;
+    let mut loaded_modules = members
+        .iter()
+        .map(|member| member.meerkat_id.clone())
         .collect::<Vec<_>>();
     loaded_modules.sort();
-    ConsoleLiveSnapshot::new(running, loaded_modules)
+    ConsoleLiveSnapshot::new(running, loaded_modules, members)
 }
 
 pub async fn console_frontend_index_handler() -> impl IntoResponse {
