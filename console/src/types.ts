@@ -26,12 +26,19 @@ export interface ConsoleAgent {
   affordances?: ConsoleAgentAffordances;
 }
 
+export interface ProfileCapabilities {
+  instance_count?: number;
+  addressable?: boolean;
+  has_wiring?: boolean;
+}
+
 export interface RuntimeCapabilities {
   can_spawn_members?: boolean;
   can_send_messages?: boolean;
   can_wire_members?: boolean;
   can_retire_members?: boolean;
   available_spawn_modes?: string[];
+  profile_capabilities?: Record<string, ProfileCapabilities>;
 }
 
 export interface ConsoleExperience {

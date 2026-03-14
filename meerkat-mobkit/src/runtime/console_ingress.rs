@@ -162,40 +162,41 @@ fn build_console_experience_contract(
         })
         .collect::<Vec<_>>();
 
-    let member_lookup: BTreeMap<&str, &MobMemberSnapshot> = live_snapshot
-        .members
-        .iter()
-        .map(|m| (m.meerkat_id.as_str(), m))
-        .collect();
-
-    let sidebar_agents = live_snapshot
-        .loaded_modules
-        .iter()
-        .map(|module_id| {
-            if let Some(member) = member_lookup.get(module_id.as_str()) {
-                // OB3-1: Use labels.display_name as label when present.
+    // P0 fix: Build sidebar from the full mob roster (members) when a mob
+    // runtime is present, so multi-instance profiles (e.g. 5 profiles → 15
+    // agents) enumerate every individual agent, not just profile-level IDs.
+    // Fall back to loaded_modules for module-only runtimes.
+    let sidebar_agents: Vec<Value> = if live_snapshot.has_mob_runtime
+        && !live_snapshot.members.is_empty()
+    {
+        let mut sorted_members: Vec<&MobMemberSnapshot> = live_snapshot.members.iter().collect();
+        sorted_members.sort_by(|a, b| a.meerkat_id.cmp(&b.meerkat_id));
+        sorted_members
+            .iter()
+            .map(|member| {
                 let label = member
                     .labels
                     .get("display_name")
                     .cloned()
-                    .unwrap_or_else(|| module_id.clone());
-                // OB3-6: Derive addressable from labels.addressable override,
-                // defaulting to true for all mob agents. Profiles that should
-                // not be directly addressed can set labels.addressable = "false".
+                    .unwrap_or_else(|| member.meerkat_id.clone());
                 let addressable = member
                     .labels
                     .get("addressable")
                     .map(|v| v != "false")
                     .unwrap_or(true);
-                // OB3-5: Group by profile for sidebar sections.
+                let singleton = member
+                    .labels
+                    .get("singleton")
+                    .map(|v| v == "true")
+                    .unwrap_or(false);
                 let group = member
                     .labels
                     .get("group")
                     .cloned()
                     .unwrap_or_else(|| member.profile.clone());
                 serde_json::json!({
-                    "agent_id": module_id,
-                    "member_id": module_id,
+                    "agent_id": member.meerkat_id,
+                    "member_id": member.meerkat_id,
                     "label": label,
                     "kind": "mob_agent",
                     "profile": member.profile,
@@ -204,27 +205,65 @@ fn build_console_experience_contract(
                     "labels": member.labels,
                     "group": group,
                     "addressable": addressable,
-                    // OB3-2: Per-agent affordances with actionable booleans.
                     "affordances": {
                         "addressable": addressable,
                         "can_send_message": addressable,
-                        "can_retire": true,
+                        "can_retire": !singleton,
                         "can_respawn": true,
                         "runtime_mode": "mob_agent",
                     },
                 })
-            } else {
+            })
+            .collect()
+    } else {
+        live_snapshot
+            .loaded_modules
+            .iter()
+            .map(|module_id| {
                 serde_json::json!({
                     "agent_id": module_id,
                     "member_id": module_id,
                     "label": module_id,
                     "kind": "module_agent",
                 })
-            }
-        })
-        .collect::<Vec<_>>();
+            })
+            .collect()
+    };
 
     let has_mob = live_snapshot.has_mob_runtime;
+
+    // P3: Build per-profile capability hints from roster data.
+    let profile_capabilities: BTreeMap<String, Value> = {
+        let mut profiles: BTreeMap<String, (usize, bool, bool)> = BTreeMap::new();
+        for member in &live_snapshot.members {
+            let entry = profiles
+                .entry(member.profile.clone())
+                .or_insert((0, true, false));
+            entry.0 += 1; // instance_count
+            // addressable = all instances addressable
+            let member_addressable = member
+                .labels
+                .get("addressable")
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            entry.1 = entry.1 && member_addressable;
+            // has_wiring = any instance wired
+            entry.2 = entry.2 || !member.wired_to.is_empty();
+        }
+        profiles
+            .into_iter()
+            .map(|(profile, (count, addressable, has_wiring))| {
+                (
+                    profile,
+                    serde_json::json!({
+                        "instance_count": count,
+                        "addressable": addressable,
+                        "has_wiring": has_wiring,
+                    }),
+                )
+            })
+            .collect()
+    };
 
     serde_json::json!({
         "contract_version": MOBKIT_CONTRACT_VERSION,
@@ -238,6 +277,7 @@ fn build_console_experience_contract(
             } else {
                 vec!["module"]
             },
+            "profile_capabilities": profile_capabilities,
         },
         "base_panel": {
             "panel_id": "console.home",
@@ -268,7 +308,12 @@ fn build_console_experience_contract(
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
                 "group_by_field": "group",
-                "label_convention": "labels.display_name overrides member_id when present",
+                "well_known_labels": {
+                    "display_name": "human-readable label; overrides member_id in sidebar",
+                    "addressable": "set \"false\" to hide send-message actions for internal agents",
+                    "singleton": "set \"true\" to prevent retire (e.g. review, summarizer agents)",
+                    "group": "sidebar group name; overrides profile-based grouping",
+                },
             },
             "live_snapshot": {
                 "agents": sidebar_agents,
@@ -375,6 +420,7 @@ fn build_console_experience_contract(
             "transport": "rpc",
             "request_contract": {
                 "member_id": "optional filter by member",
+                "profile": "optional filter by profile (e.g. all identity agent sessions)",
                 "limit": "max rows to return",
                 "before_event_id": "cursor for pagination",
             },

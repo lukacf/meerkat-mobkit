@@ -319,7 +319,14 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
             "can_send_messages": true,
             "can_wire_members": true,
             "can_retire_members": true,
-            "available_spawn_modes": ["module", "profile"]
+            "available_spawn_modes": ["module", "profile"],
+            "profile_capabilities": {
+                "lead": {
+                    "instance_count": 2,
+                    "addressable": true,
+                    "has_wiring": false,
+                }
+            }
         })
     );
 
