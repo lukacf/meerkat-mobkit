@@ -168,8 +168,14 @@ fn validate_bigquery_api_base_url(url: &str) -> Result<(), BigQuerySessionStoreR
             "api_base_url must include a scheme (https:// or http:// for localhost)".to_string(),
         )
     })?;
-    let host_port = after_scheme.split('/').next().unwrap_or("");
-    let host = host_port.split(':').next().unwrap_or("");
+    let authority = after_scheme.split('/').next().unwrap_or("");
+
+    // Handle bracketed IPv6 (e.g. [::1]:8080) before splitting on ':'
+    let host = if let Some(bracket_end) = authority.find(']') {
+        &authority[1..bracket_end] // strip '[' and ']'
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
 
     let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "::1";
 

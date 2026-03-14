@@ -110,10 +110,42 @@ pub(super) async fn handle_ensure_member(
             }
             let labels = labels.and_then(Result::ok);
             let context = params.get("context").cloned();
-            let resume_session_id = params
-                .get("resume_session_id")
-                .and_then(Value::as_str)
-                .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+            let resume_session_id = match params.get("resume_session_id") {
+                None | Some(Value::Null) => None,
+                Some(v) => {
+                    let s = match v.as_str() {
+                        Some(s) => s,
+                        None => {
+                            return JsonRpcResponse {
+                                jsonrpc: JSONRPC_VERSION.to_string(),
+                                id: response_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32602,
+                                    message: "Invalid params: resume_session_id must be a string"
+                                        .to_string(),
+                                }),
+                            };
+                        }
+                    };
+                    match meerkat_core::types::SessionId::parse(s) {
+                        Ok(sid) => Some(sid),
+                        Err(_) => {
+                            return JsonRpcResponse {
+                                jsonrpc: JSONRPC_VERSION.to_string(),
+                                id: response_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32602,
+                                    message: format!(
+                                        "Invalid params: resume_session_id is not a valid session ID: {s}"
+                                    ),
+                                }),
+                            };
+                        }
+                    }
+                }
+            };
             let additional_instructions = match params.get("additional_instructions") {
                 None | Some(Value::Null) => None,
                 Some(Value::Array(arr)) => {

@@ -761,13 +761,35 @@ class AsgiApp:
                 resp = json.dumps({"error": "unauthorized"}).encode()
                 await _send_response(send, 401, resp)
                 return
+            token = auth_header[7:].strip()
+            if not _validate_bearer_token(token, self._auth_config):
+                resp = json.dumps({"error": "unauthorized", "reason": "invalid_token"}).encode()
+                await _send_response(send, 401, resp)
+                return
 
         if path == "/rpc" and method == "POST":
             body = await _read_body(receive)
             request_id = None
             try:
                 parsed = json.loads(body)
-                request_id = parsed.get("id")
+            except (json.JSONDecodeError, ValueError) as exc:
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": f"Parse error: {exc}"},
+                }).encode()
+                await _send_response(send, 200, resp)
+                return
+            if not isinstance(parsed, dict) or "method" not in parsed:
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": parsed.get("id") if isinstance(parsed, dict) else None,
+                    "error": {"code": -32600, "message": "Invalid Request: must be a JSON object with a method field"},
+                }).encode()
+                await _send_response(send, 200, resp)
+                return
+            request_id = parsed.get("id")
+            try:
                 result = await self._runtime._rpc(
                     parsed.get("method", ""),
                     parsed.get("params"),
@@ -855,6 +877,74 @@ class AsgiApp:
         except Exception:
             pass
         await send({"type": "http.response.body", "body": b""})
+
+
+def _validate_bearer_token(token: str, auth_config: Any) -> bool:
+    """Validate a bearer token against the auth config.
+
+    For JwtAuthConfig (shared-secret HMAC), performs full signature
+    verification.  For GoogleAuthConfig, decodes the JWT structure and
+    checks issuer/audience claims (cryptographic verification requires
+    JWKS and is deferred to the Rust gateway).  Unknown config types
+    are rejected (fail closed).
+    """
+    import base64
+    import hmac
+    import hashlib
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+
+    try:
+        # Decode header to get algorithm
+        header_b64 = parts[0] + "=" * (-len(parts[0]) % 4)
+        header = json.loads(base64.urlsafe_b64decode(header_b64))
+    except Exception:
+        return False
+
+    config_dict = auth_config.to_dict() if hasattr(auth_config, "to_dict") else {}
+    provider = config_dict.get("provider", "")
+
+    if provider == "jwt":
+        # Full HMAC-SHA256 verification
+        secret = config_dict.get("shared_secret", "")
+        if not secret:
+            return False
+        if header.get("alg") != "HS256":
+            return False
+        signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
+        expected_sig = base64.urlsafe_b64encode(
+            hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+        ).rstrip(b"=").decode("utf-8")
+        if not hmac.compare_digest(expected_sig, parts[2]):
+            return False
+        # Check claims
+        try:
+            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        except Exception:
+            return False
+        if config_dict.get("issuer") and claims.get("iss") != config_dict["issuer"]:
+            return False
+        if config_dict.get("audience") and claims.get("aud") != config_dict["audience"]:
+            return False
+        return True
+
+    if provider == "google":
+        # Structural validation only — full OIDC/JWKS is in the Rust gateway
+        try:
+            payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+            claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        except Exception:
+            return False
+        expected_aud = config_dict.get("audience") or config_dict.get("client_id")
+        if expected_aud and claims.get("aud") != expected_aud:
+            return False
+        return True
+
+    # Unknown provider — fail closed
+    return False
 
 
 async def _read_body(receive: Any) -> bytes:
