@@ -409,31 +409,48 @@ fn build_console_experience_contract(
                 "poll_interval_ms": 10000,
             },
             "request_contract": {
-                "schedules": "caller-supplied array of schedule definitions (schedule_id, cron/interval, timezone)",
+                "schedules": "caller-supplied array of ScheduleDefinition (schedule_id, interval|cron, timezone, enabled)",
                 "tick_ms": "evaluation timestamp in epoch milliseconds",
             },
-            "response_contract": {
-                "due": "array of schedule_ids due at the given tick",
-                "dispatched": "array of schedule_ids that were dispatched (dispatch only)",
+            "evaluate_response_contract": {
+                "tick_ms": "echoed evaluation tick",
+                "due_triggers": "array of ScheduleTrigger (schedule_id, interval, timezone, due_at_ms, jitter_ms)",
+            },
+            "dispatch_response_contract": {
+                "tick_ms": "echoed dispatch tick",
+                "due_count": "number of triggers that were due",
+                "dispatched": "array of ScheduleDispatch (schedule_id, interval, timezone, due_at_ms, claimed, runtime_injection, runtime_injection_error)",
+                "skipped_claims": "array of schedule_ids skipped due to idempotent claim",
             },
             "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
         },
-        "session_history": {
-            "panel_id": "console.session_history",
-            "title": "Session History",
-            "source_method": "mobkit/query_events",
-            "transport": "rpc",
-            "request_contract": {
-                "member_id": "optional filter by member (matches EventQuery.member_id)",
-                "event_types": "optional array of event type strings to filter",
-                "since_ms": "optional start timestamp in epoch ms (inclusive)",
-                "until_ms": "optional end timestamp in epoch ms (exclusive)",
-                "limit": "optional max rows to return",
-                "after_seq": "optional sequence number for cursor pagination",
-            },
-            "response_contract": {
-                "result": "array of PersistedEvent (seq, timestamp_ms, event envelope)",
-            }
+        "session_history": if has_mob {
+            serde_json::json!({
+                "panel_id": "console.session_history",
+                "title": "Session History",
+                "source_method": "mobkit/query_events",
+                "transport": "rpc",
+                "available": true,
+                "request_contract": {
+                    "member_id": "optional filter by member (matches EventQuery.member_id)",
+                    "event_types": "optional array of event type strings to filter",
+                    "since_ms": "optional start timestamp in epoch ms (inclusive)",
+                    "until_ms": "optional end timestamp in epoch ms (exclusive)",
+                    "limit": "optional max rows to return",
+                    "after_seq": "optional sequence number for cursor pagination",
+                },
+                "response_contract": {
+                    "events": "array of PersistedEvent (seq, timestamp_ms, event envelope)",
+                    "fallback": "when no event log is configured, returns {status: 'no_event_log_configured', events: []}",
+                }
+            })
+        } else {
+            serde_json::json!({
+                "panel_id": "console.session_history",
+                "title": "Session History",
+                "available": false,
+                "reason": "session history requires a mob runtime with mobkit/query_events support",
+            })
         }
     })
 }
