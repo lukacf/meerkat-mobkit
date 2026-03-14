@@ -503,3 +503,100 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
 }
+
+#[tokio::test]
+async fn phase_h1_multi_instance_profile_sidebar_enumerates_individual_agents() {
+    let fixture = build_runtime_fixture().await;
+
+    // Spawn two agents from the same profile with colon-namespaced IDs,
+    // display_name labels, and one non-addressable singleton.
+    let mut identity_luka_labels = std::collections::BTreeMap::new();
+    identity_luka_labels.insert("display_name".to_string(), "Luka".to_string());
+    identity_luka_labels.insert("group".to_string(), "Identity".to_string());
+
+    let mut identity_parent_labels = std::collections::BTreeMap::new();
+    identity_parent_labels.insert("display_name".to_string(), "Parent".to_string());
+    identity_parent_labels.insert("group".to_string(), "Identity".to_string());
+
+    let mut gate_labels = std::collections::BTreeMap::new();
+    gate_labels.insert("addressable".to_string(), "false".to_string());
+    gate_labels.insert("singleton".to_string(), "true".to_string());
+    gate_labels.insert("group".to_string(), "Internal".to_string());
+
+    let identity_luka = SpawnMemberSpec::new(
+        meerkat_mob::ProfileName::from("lead"),
+        MeerkatId::from("identity:luka"),
+    )
+    .with_labels(identity_luka_labels);
+    let identity_parent = SpawnMemberSpec::new(
+        meerkat_mob::ProfileName::from("lead"),
+        MeerkatId::from("identity:parent"),
+    )
+    .with_labels(identity_parent_labels);
+    let gate = SpawnMemberSpec::new(
+        meerkat_mob::ProfileName::from("lead"),
+        MeerkatId::from("gate:main"),
+    )
+    .with_labels(gate_labels);
+
+    fixture
+        .runtime
+        .spawn(identity_luka)
+        .await
+        .expect("spawn identity:luka");
+    fixture
+        .runtime
+        .spawn(identity_parent)
+        .await
+        .expect("spawn identity:parent");
+    fixture.runtime.spawn(gate).await.expect("spawn gate:main");
+
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let console_json = get_console_experience(&app).await;
+
+    let agents = console_json["agent_sidebar"]["live_snapshot"]["agents"]
+        .as_array()
+        .expect("agents array");
+
+    // All 3 individual agents should appear (not collapsed by profile).
+    assert_eq!(agents.len(), 3, "expected 3 agents, got {}", agents.len());
+
+    // Verify gate:main — non-addressable singleton.
+    let gate_agent = agents
+        .iter()
+        .find(|a| a["agent_id"] == "gate:main")
+        .expect("gate:main should be in sidebar");
+    assert_eq!(gate_agent["label"], json!("gate:main")); // no display_name
+    assert_eq!(gate_agent["addressable"], json!(false));
+    assert_eq!(gate_agent["group"], json!("Internal"));
+    assert_eq!(gate_agent["affordances"]["can_send_message"], json!(false));
+    assert_eq!(gate_agent["affordances"]["can_retire"], json!(false));
+    assert_eq!(gate_agent["affordances"]["can_respawn"], json!(true));
+
+    // Verify identity:luka — display_name label renders as label.
+    let luka_agent = agents
+        .iter()
+        .find(|a| a["agent_id"] == "identity:luka")
+        .expect("identity:luka should be in sidebar");
+    assert_eq!(luka_agent["label"], json!("Luka"));
+    assert_eq!(luka_agent["group"], json!("Identity"));
+    assert_eq!(luka_agent["addressable"], json!(true));
+    assert_eq!(luka_agent["affordances"]["can_retire"], json!(true));
+
+    // Verify identity:parent — second instance of same profile.
+    let parent_agent = agents
+        .iter()
+        .find(|a| a["agent_id"] == "identity:parent")
+        .expect("identity:parent should be in sidebar");
+    assert_eq!(parent_agent["label"], json!("Parent"));
+    assert_eq!(parent_agent["profile"], json!("lead"));
+
+    // Verify profile_capabilities aggregation.
+    let profile_caps = &console_json["runtime_capabilities"]["profile_capabilities"];
+    assert_eq!(profile_caps["lead"]["instance_count"], json!(3));
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}

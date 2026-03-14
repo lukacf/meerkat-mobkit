@@ -314,6 +314,7 @@ fn build_console_experience_contract(
                     "singleton": "set \"true\" to prevent retire (e.g. review, summarizer agents)",
                     "group": "sidebar group name; overrides profile-based grouping",
                 },
+                "refresh_projection": "source_method returns MobMemberSnapshot rows (meerkat_id, profile, state, wired_to, labels). Clients must project: agent_id=meerkat_id, member_id=meerkat_id, label=labels.display_name||meerkat_id, group=labels.group||profile, addressable=labels.addressable!='false', affordances derived from labels.singleton and addressable.",
             },
             "live_snapshot": {
                 "agents": sidebar_agents,
@@ -401,17 +402,21 @@ fn build_console_experience_contract(
         "flows": {
             "panel_id": "console.flows",
             "title": "Flows",
-            "list_method": "mobkit/scheduling/evaluate",
-            "trigger_method": "mobkit/scheduling/dispatch",
+            "evaluate_method": "mobkit/scheduling/evaluate",
+            "dispatch_method": "mobkit/scheduling/dispatch",
             "refresh_policy": {
                 "mode": "pull",
                 "poll_interval_ms": 10000,
             },
-            "item_contract": {
-                "flow_id_field": "schedule_id",
-                "status_field": "status",
-                "trigger_action": "dispatch",
-            }
+            "request_contract": {
+                "schedules": "caller-supplied array of schedule definitions (schedule_id, cron/interval, timezone)",
+                "tick_ms": "evaluation timestamp in epoch milliseconds",
+            },
+            "response_contract": {
+                "due": "array of schedule_ids due at the given tick",
+                "dispatched": "array of schedule_ids that were dispatched (dispatch only)",
+            },
+            "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
         },
         "session_history": {
             "panel_id": "console.session_history",
@@ -419,14 +424,15 @@ fn build_console_experience_contract(
             "source_method": "mobkit/query_events",
             "transport": "rpc",
             "request_contract": {
-                "member_id": "optional filter by member",
-                "profile": "optional filter by profile (e.g. all identity agent sessions)",
-                "limit": "max rows to return",
-                "before_event_id": "cursor for pagination",
+                "member_id": "optional filter by member (matches EventQuery.member_id)",
+                "event_types": "optional array of event type strings to filter",
+                "since_ms": "optional start timestamp in epoch ms (inclusive)",
+                "until_ms": "optional end timestamp in epoch ms (exclusive)",
+                "limit": "optional max rows to return",
+                "after_seq": "optional sequence number for cursor pagination",
             },
             "response_contract": {
-                "events": "array of persisted event envelopes",
-                "has_more": "boolean pagination flag",
+                "result": "array of PersistedEvent (seq, timestamp_ms, event envelope)",
             }
         }
     })

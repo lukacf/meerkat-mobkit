@@ -65,12 +65,37 @@ export function parseStatusResult(raw: unknown): StatusResult {
 
 // -- RuntimeCapabilities --------------------------------------------------
 
+export interface ProfileCapabilities {
+  readonly instanceCount: number;
+  readonly addressable: boolean;
+  readonly hasWiring: boolean;
+}
+
 export interface RuntimeCapabilities {
   readonly canSpawnMembers: boolean;
   readonly canSendMessages: boolean;
   readonly canWireMembers: boolean;
   readonly canRetireMembers: boolean;
   readonly availableSpawnModes: readonly string[];
+  readonly profileCapabilities?: Readonly<Record<string, ProfileCapabilities>>;
+}
+
+function parseProfileCapabilities(
+  raw: unknown,
+): Record<string, ProfileCapabilities> | undefined {
+  if (raw == null || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, Record<string, unknown>>;
+  const result: Record<string, ProfileCapabilities> = {};
+  for (const [key, val] of Object.entries(d)) {
+    if (val && typeof val === "object") {
+      result[key] = {
+        instanceCount: Number(val.instance_count ?? 0),
+        addressable: Boolean(val.addressable ?? true),
+        hasWiring: Boolean(val.has_wiring ?? false),
+      };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function parseRuntimeCapabilities(raw: unknown): RuntimeCapabilities | undefined {
@@ -82,6 +107,7 @@ function parseRuntimeCapabilities(raw: unknown): RuntimeCapabilities | undefined
     canWireMembers: Boolean(d.can_wire_members ?? false),
     canRetireMembers: Boolean(d.can_retire_members ?? false),
     availableSpawnModes: asStringArray(d.available_spawn_modes),
+    profileCapabilities: parseProfileCapabilities(d.profile_capabilities),
   };
 }
 
