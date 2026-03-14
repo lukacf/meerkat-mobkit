@@ -413,14 +413,14 @@ fn build_console_experience_contract(
                 "tick_ms": "evaluation timestamp in epoch milliseconds",
             },
             "evaluate_response_contract": {
-                "tick_ms": "echoed evaluation tick",
-                "due_triggers": "array of ScheduleTrigger (schedule_id, interval, timezone, due_at_ms, jitter_ms)",
+                "tick_ms": "u64 — echoed evaluation tick",
+                "due_triggers": "array of ScheduleTrigger {schedule_id, interval, timezone, due_tick_ms}",
             },
             "dispatch_response_contract": {
-                "tick_ms": "echoed dispatch tick",
-                "due_count": "number of triggers that were due",
-                "dispatched": "array of ScheduleDispatch (schedule_id, interval, timezone, due_at_ms, claimed, runtime_injection, runtime_injection_error)",
-                "skipped_claims": "array of schedule_ids skipped due to idempotent claim",
+                "tick_ms": "u64 — echoed dispatch tick",
+                "due_count": "usize — number of triggers that were due",
+                "dispatched": "array of ScheduleDispatch {claim_key, schedule_id, interval, timezone, due_tick_ms, tick_ms, event_id, supervisor_signal?, runtime_injection?, runtime_injection_error?}",
+                "skipped_claims": "array of schedule_id strings skipped due to idempotent claim",
             },
             "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
         },
@@ -440,8 +440,8 @@ fn build_console_experience_contract(
                     "after_seq": "optional sequence number for cursor pagination",
                 },
                 "response_contract": {
-                    "events": "array of PersistedEvent (seq, timestamp_ms, event envelope)",
-                    "fallback": "when no event log is configured, returns {status: 'no_event_log_configured', events: []}",
+                    "success": "result is a raw array of PersistedEvent {id, seq, timestamp_ms, member_id?, event}",
+                    "no_event_log": "when no event log is configured, result is {status: 'no_event_log_configured', events: []}",
                 }
             })
         } else {
