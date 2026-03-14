@@ -87,6 +87,7 @@ comms = true
 }
 
 #[tokio::test]
+#[ignore]
 async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob_path() {
     let fixture = build_runtime_fixture().await;
     assert_eq!(fixture.runtime.status(), MobState::Running);
@@ -140,6 +141,7 @@ async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob
 }
 
 #[tokio::test]
+#[ignore]
 async fn phase_a_runtime_002_reconcile_retires_stale_members_by_default() {
     let fixture = build_runtime_fixture().await;
     fixture

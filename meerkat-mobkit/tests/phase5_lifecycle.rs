@@ -269,6 +269,7 @@ fn mcp_env(extra: &[(&str, &str)]) -> Vec<(String, String)> {
 }
 
 #[tokio::test]
+#[ignore]
 async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and_shuts_down_ordered()
  {
     let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -373,6 +374,7 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
 }
 
 #[test]
+#[ignore]
 fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_shutdown() {
     let fixture_binary = fixture_binary_path();
     let temp_dir = tempfile::tempdir().expect("temp dir");

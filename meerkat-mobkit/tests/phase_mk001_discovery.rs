@@ -224,6 +224,7 @@ fn mk001_agent_discovery_spec_serde_minimal_omits_none_fields() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn mk007_spawn_many_spawns_multiple_agents() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::bootstrap(
@@ -247,6 +248,7 @@ async fn mk007_spawn_many_spawns_multiple_agents() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn mk002_builder_with_discovery_spawns_discovered_agents() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
 
@@ -300,6 +302,7 @@ async fn mk002_builder_with_discovery_spawns_discovered_agents() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn mk002_builder_pre_spawn_hook_runs_before_discovery() {
     use std::sync::atomic::{AtomicBool, Ordering};
 

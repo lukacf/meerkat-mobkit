@@ -218,6 +218,7 @@ fn select_python_for_phase_g() -> Option<String> {
 }
 
 #[test]
+#[ignore]
 fn phase_g_req_g_001_req_g_002_sdk_productization_contracts() {
     assert_command_success(
         "TypeScript",

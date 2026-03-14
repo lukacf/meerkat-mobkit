@@ -70,15 +70,14 @@ pub async fn console_json_handler(
     // If the request carries a Bearer token and the URL doesn't already have
     // an auth_token query param, inject it so the console-ingress auth
     // resolver can validate it through the existing query-param path.
-    if !path.contains("auth_token=") {
-        if let Some(bearer) = headers
+    if !path.contains("auth_token=")
+        && let Some(bearer) = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(extract_bearer_token_from_header)
-        {
-            let sep = if path.contains('?') { '&' } else { '?' };
-            path = format!("{path}{sep}auth_token={bearer}");
-        }
+    {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        path = format!("{path}{sep}auth_token={bearer}");
     }
 
     let live_snapshot = match &state.runtime {
