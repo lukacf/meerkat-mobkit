@@ -90,24 +90,66 @@ pub(super) async fn handle_ensure_member(
 
     match (profile, meerkat_id) {
         (Some(profile), Some(meerkat_id)) if !profile.is_empty() && !meerkat_id.is_empty() => {
-            let labels = params.get("labels").and_then(|v| {
-                serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone()).ok()
-            });
+            let labels = match params.get("labels") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone())
+                        .map_err(|err| format!("labels must be a map of string to string: {err}")),
+                ),
+            };
+            if let Some(Err(reason)) = &labels {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("Invalid params: {reason}"),
+                    }),
+                };
+            }
+            let labels = labels.and_then(Result::ok);
             let context = params.get("context").cloned();
             let resume_session_id = params
                 .get("resume_session_id")
                 .and_then(Value::as_str)
                 .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
-            let additional_instructions = params
-                .get("additional_instructions")
-                .and_then(Value::as_array)
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(Value::as_str)
-                        .map(String::from)
-                        .collect::<Vec<_>>()
-                })
-                .and_then(|v| if v.is_empty() { None } else { Some(v) });
+            let additional_instructions = match params.get("additional_instructions") {
+                None | Some(Value::Null) => None,
+                Some(Value::Array(arr)) => {
+                    let mut strs = Vec::with_capacity(arr.len());
+                    for (i, entry) in arr.iter().enumerate() {
+                        match entry.as_str() {
+                            Some(s) => strs.push(s.to_string()),
+                            None => {
+                                return JsonRpcResponse {
+                                    jsonrpc: JSONRPC_VERSION.to_string(),
+                                    id: response_id,
+                                    result: None,
+                                    error: Some(JsonRpcError {
+                                        code: -32602,
+                                        message: format!(
+                                            "Invalid params: additional_instructions[{i}] must be a string"
+                                        ),
+                                    }),
+                                };
+                            }
+                        }
+                    }
+                    if strs.is_empty() { None } else { Some(strs) }
+                }
+                Some(_) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: "Invalid params: additional_instructions must be an array of strings".to_string(),
+                        }),
+                    };
+                }
+            };
 
             let mut spec = meerkat_mob::SpawnMemberSpec::new(
                 meerkat_mob::ProfileName::from(profile),

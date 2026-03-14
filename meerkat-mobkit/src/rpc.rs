@@ -23,6 +23,7 @@ mod console_ingress;
 mod gating_methods;
 mod memory_methods;
 mod mob_methods;
+pub(crate) mod params;
 mod routing_delivery_methods;
 mod scheduling_methods;
 mod session_store_methods;
@@ -226,40 +227,20 @@ pub fn handle_mobkit_rpc_json(
             error: None,
         },
         "mobkit/reconcile" => {
-            let modules_array = match request.params.get("modules").and_then(Value::as_array) {
-                Some(arr) => arr,
-                None => {
+            let modules = match params::required_string_array(&request.params, "modules") {
+                Ok(m) => m,
+                Err(reason) => {
                     return serialize_response(&JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
-                            message: "Invalid params: modules must be an array of strings"
-                                .to_string(),
+                            message: format!("Invalid params: {reason}"),
                         }),
                     });
                 }
             };
-            let mut modules = Vec::with_capacity(modules_array.len());
-            for value in modules_array {
-                match value.as_str() {
-                    Some(s) => modules.push(s.to_string()),
-                    None => {
-                        return serialize_response(&JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32602,
-                                message: format!(
-                                    "Invalid params: modules array contains non-string entry: {value}"
-                                ),
-                            }),
-                        });
-                    }
-                }
-            }
 
             match runtime.reconcile_modules(modules.clone(), timeout) {
                 Ok(added) => JsonRpcResponse {
@@ -987,40 +968,20 @@ pub async fn handle_unified_rpc_json(
             }
         }
         "mobkit/reconcile" => {
-            let modules_array = match request.params.get("modules").and_then(Value::as_array) {
-                Some(arr) => arr,
-                None => {
+            let modules = match params::required_string_array(&request.params, "modules") {
+                Ok(m) => m,
+                Err(reason) => {
                     return serialize_response(&JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: None,
                         error: Some(JsonRpcError {
                             code: -32602,
-                            message: "Invalid params: modules must be an array of strings"
-                                .to_string(),
+                            message: format!("Invalid params: {reason}"),
                         }),
                     });
                 }
             };
-            let mut modules = Vec::with_capacity(modules_array.len());
-            for value in modules_array {
-                match value.as_str() {
-                    Some(s) => modules.push(s.to_string()),
-                    None => {
-                        return serialize_response(&JsonRpcResponse {
-                            jsonrpc: JSONRPC_VERSION.to_string(),
-                            id: response_id,
-                            result: None,
-                            error: Some(JsonRpcError {
-                                code: -32602,
-                                message: format!(
-                                    "Invalid params: modules array contains non-string entry: {value}"
-                                ),
-                            }),
-                        });
-                    }
-                }
-            }
 
             match runtime.reconcile_modules(modules.clone(), timeout).await {
                 Ok(added) => JsonRpcResponse {
