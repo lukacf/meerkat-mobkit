@@ -325,8 +325,20 @@ pub(super) async fn handle_query_events(
     response_id: Value,
     params: Value,
 ) -> JsonRpcResponse {
-    let query: crate::unified_runtime::EventQuery =
-        serde_json::from_value(params).unwrap_or_default();
+    let query: crate::unified_runtime::EventQuery = match serde_json::from_value(params) {
+        Ok(q) => q,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Invalid params: {err}"),
+                }),
+            };
+        }
+    };
     match runtime.query_events(query).await {
         Some(Ok(events)) => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
