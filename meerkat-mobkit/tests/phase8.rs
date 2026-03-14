@@ -276,7 +276,8 @@ fn phase8_console_001_capability_driven_rendering_contract() {
 #[test]
 fn phase8_console_live_snapshot_prefers_runtime_state_over_config_modules() {
     let state = decision_state(false);
-    let runtime_snapshot = ConsoleLiveSnapshot::new(false, vec!["router".to_string()], Vec::new());
+    let runtime_snapshot =
+        ConsoleLiveSnapshot::new(false, vec!["router".to_string()], Vec::new(), false);
     let response = handle_console_rest_json_route_with_snapshot(
         &state,
         &ConsoleRestJsonRequest {

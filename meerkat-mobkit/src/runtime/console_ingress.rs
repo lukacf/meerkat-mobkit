@@ -22,6 +22,7 @@ pub struct ConsoleLiveSnapshot {
     pub running: bool,
     pub loaded_modules: Vec<String>,
     pub members: Vec<MobMemberSnapshot>,
+    pub has_mob_runtime: bool,
 }
 
 impl ConsoleLiveSnapshot {
@@ -29,6 +30,7 @@ impl ConsoleLiveSnapshot {
         running: bool,
         loaded_modules: Vec<String>,
         members: Vec<MobMemberSnapshot>,
+        has_mob_runtime: bool,
     ) -> Self {
         let mut seen = BTreeSet::new();
         let mut deduped_modules = Vec::new();
@@ -41,6 +43,7 @@ impl ConsoleLiveSnapshot {
             running,
             loaded_modules: deduped_modules,
             members,
+            has_mob_runtime,
         }
     }
 }
@@ -135,6 +138,7 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             .map(|module| module.id.clone())
             .collect(),
         Vec::new(),
+        false,
     )
 }
 
@@ -195,14 +199,20 @@ fn build_console_experience_contract(
         })
         .collect::<Vec<_>>();
 
+    let has_mob = live_snapshot.has_mob_runtime;
+
     serde_json::json!({
         "contract_version": MOBKIT_CONTRACT_VERSION,
         "runtime_capabilities": {
-            "can_spawn_members": true,
-            "can_send_messages": true,
-            "can_wire_members": true,
-            "can_retire_members": true,
-            "available_spawn_modes": ["module", "profile"],
+            "can_spawn_members": has_mob,
+            "can_send_messages": has_mob,
+            "can_wire_members": has_mob,
+            "can_retire_members": has_mob,
+            "available_spawn_modes": if has_mob {
+                vec!["module", "profile"]
+            } else {
+                vec!["module"]
+            },
         },
         "base_panel": {
             "panel_id": "console.home",
@@ -217,7 +227,7 @@ fn build_console_experience_contract(
         "agent_sidebar": {
             "panel_id": "console.agent_sidebar",
             "title": "Agents",
-            "source_method": "mobkit/status",
+            "source_method": if has_mob { "mobkit/list_members" } else { "mobkit/status" },
             "refresh_policy": {
                 "mode": "pull",
                 "poll_interval_ms": 5000,
@@ -294,7 +304,7 @@ fn build_console_experience_contract(
             },
             "live_snapshot": {
                 "nodes": &live_snapshot.loaded_modules,
-                "node_count": live_snapshot.loaded_modules.len(),
+                "node_count": &live_snapshot.loaded_modules.len(),
             }
         },
         "health_overview": {
@@ -313,7 +323,7 @@ fn build_console_experience_contract(
             "live_snapshot": {
                 "running": live_snapshot.running,
                 "loaded_modules": &live_snapshot.loaded_modules,
-                "loaded_module_count": live_snapshot.loaded_modules.len(),
+                "loaded_module_count": &live_snapshot.loaded_modules.len(),
             }
         }
     })
