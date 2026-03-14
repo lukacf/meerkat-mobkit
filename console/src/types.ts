@@ -70,8 +70,8 @@ export interface ConsoleExperience {
   };
   flows?: {
     title?: string;
-    list_method?: string;
-    trigger_method?: string;
+    evaluate_method?: string;
+    dispatch_method?: string;
   };
   session_history?: {
     title?: string;
