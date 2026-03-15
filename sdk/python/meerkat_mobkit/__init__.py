@@ -39,6 +39,8 @@ from .errors import (
 from .types import (
     CallToolResult,
     CapabilitiesResult,
+    RuntimeCapabilities,
+    ProfileCapabilities,
     DeliveryHistoryResult,
     DeliveryResult,
     ErrorCategory,
@@ -138,6 +140,8 @@ __all__ = [
     "GatingAuditEntry",
     "GatingPendingEntry",
     "CallToolResult",
+    "RuntimeCapabilities",
+    "ProfileCapabilities",
     "ErrorCategory",
     "ErrorEvent",
     "EventQuery",

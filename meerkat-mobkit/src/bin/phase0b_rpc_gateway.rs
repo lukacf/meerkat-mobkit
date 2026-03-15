@@ -23,11 +23,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions,
-    MobBootstrapSpec, MobKitConfig, ModuleConfig, ReleaseMetadata, RestartPolicy,
-    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    handle_mobkit_rpc_json, handle_unified_rpc_json, start_mobkit_runtime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MOBKIT_CONTRACT_VERSION,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ReleaseMetadata,
+    RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json, start_mobkit_runtime,
 };
+use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 use meerkat::{
@@ -459,7 +460,9 @@ async fn run_persistent() {
     let params = init_raw.get("params").cloned().unwrap_or_else(|| json!({}));
 
     // 2. Parse init params
-    let mob_config_toml = params.get("mob_config").and_then(|v| v.as_str()).unwrap_or(
+    let mob_config_param = params.get("mob_config").and_then(|v| v.as_str());
+    let is_workspace_config = mob_config_param.is_some();
+    let mob_config_toml = mob_config_param.unwrap_or(
         r#"
 [mob]
 id = "persistent-gateway"
@@ -652,12 +655,30 @@ external_addressable = true
 
     // 8. Send init response via stdout channel
     let loaded_modules = runtime.loaded_modules().await;
+    let runtime_origin = if is_workspace_config {
+        "workspace_config"
+    } else {
+        "fallback_minimal"
+    };
+    let runtime_fingerprint = {
+        let mut hasher = Sha256::new();
+        hasher.update(mob_config_toml.as_bytes());
+        hasher.update(
+            serde_json::to_string(&loaded_modules)
+                .unwrap_or_default()
+                .as_bytes(),
+        );
+        format!("{:x}", hasher.finalize())
+    };
     let init_response = json!({
         "jsonrpc": "2.0",
         "id": request_id,
         "result": {
             "http_base_url": http_base_url,
             "loaded_modules": loaded_modules,
+            "contract_version": MOBKIT_CONTRACT_VERSION,
+            "runtime_origin": runtime_origin,
+            "runtime_fingerprint": runtime_fingerprint,
         }
     });
     let _ = stdout_tx

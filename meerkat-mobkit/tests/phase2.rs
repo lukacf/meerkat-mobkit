@@ -356,7 +356,7 @@ async fn req_002_serve_proves_reference_console_route_behavior() {
         response.starts_with("HTTP/1.1 200"),
         "expected HTTP 200 response, got: {response}"
     );
-    assert!(response.contains("\"contract_version\":\"0.1.0\""));
+    assert!(response.contains("\"contract_version\":\"0.2.0\""));
     assert!(response.contains("\"send_method\":\"mobkit/send_message\""));
 
     let shutdown = runtime.shutdown().await;

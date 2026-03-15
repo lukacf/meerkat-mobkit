@@ -52,7 +52,7 @@ use session_store_methods::{
 use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
-pub const MOBKIT_CONTRACT_VERSION: &str = "0.1.0";
+pub const MOBKIT_CONTRACT_VERSION: &str = "0.2.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,7 +222,14 @@ pub fn handle_mobkit_rpc_json(
                     "mobkit/gating/audit",
                     "mobkit/call_tool"
                 ],
-                "loaded_modules": runtime.loaded_modules()
+                "loaded_modules": runtime.loaded_modules(),
+                "runtime_capabilities": {
+                    "can_spawn_members": false,
+                    "can_send_messages": false,
+                    "can_wire_members": false,
+                    "can_retire_members": false,
+                    "available_spawn_modes": ["module"],
+                }
             })),
             error: None,
         },
@@ -962,7 +969,14 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/rediscover",
                         "mobkit/query_events"
                     ],
-                    "loaded_modules": loaded
+                    "loaded_modules": loaded,
+                    "runtime_capabilities": {
+                        "can_spawn_members": true,
+                        "can_send_messages": true,
+                        "can_wire_members": true,
+                        "can_retire_members": true,
+                        "available_spawn_modes": ["module", "profile"],
+                    }
                 })),
                 error: None,
             }
