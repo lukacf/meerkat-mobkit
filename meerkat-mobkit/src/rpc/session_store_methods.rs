@@ -80,6 +80,9 @@ pub(super) fn parse_bigquery_session_store_params(
     let project_id = parse_optional_bigquery_string_field(object, "project_id")?;
     let access_token = parse_optional_bigquery_string_field(object, "access_token")?;
     let api_base_url = parse_optional_bigquery_string_field(object, "api_base_url")?;
+    if let Some(ref url) = api_base_url {
+        validate_bigquery_api_base_url(url)?;
+    }
     let timeout_ms = match object.get("timeout_ms") {
         None => None,
         Some(value) => {
@@ -155,6 +158,47 @@ fn parse_optional_bigquery_string_field(
             Ok(Some(trimmed.to_string()))
         }
     }
+}
+
+fn validate_bigquery_api_base_url(url: &str) -> Result<(), BigQuerySessionStoreRpcError> {
+    let normalized = url.trim().trim_end_matches('/');
+
+    let (scheme, after_scheme) = normalized.split_once("://").ok_or_else(|| {
+        BigQuerySessionStoreRpcError::Params(
+            "api_base_url must include a scheme (https:// or http:// for localhost)".to_string(),
+        )
+    })?;
+    let authority = after_scheme.split('/').next().unwrap_or("");
+
+    // Handle bracketed IPv6 (e.g. [::1]:8080) before splitting on ':'
+    let host = if authority.starts_with('[') {
+        authority
+            .find(']')
+            .map(|end| &authority[1..end])
+            .unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+
+    let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "::1";
+
+    match scheme {
+        "https" => {
+            if !host.ends_with(".googleapis.com") && !is_localhost {
+                return Err(BigQuerySessionStoreRpcError::Params(
+                    "api_base_url must point to a *.googleapis.com host".to_string(),
+                ));
+            }
+        }
+        "http" if is_localhost => { /* allow for development/testing */ }
+        _ => {
+            return Err(BigQuerySessionStoreRpcError::Params(
+                "api_base_url must use https:// (or http:// for localhost only)".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 pub(super) fn run_bigquery_session_store_request(

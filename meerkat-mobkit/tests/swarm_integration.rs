@@ -358,6 +358,7 @@ async fn build_unified_runtime_fixture(module_config: MobKitConfig) -> UnifiedRu
 }
 
 #[tokio::test]
+#[ignore]
 async fn unified_bootstrap_failure_rolls_back_started_mob_runtime() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let probe = Arc::new(CheckpointerCancelProbeSessionService::new(

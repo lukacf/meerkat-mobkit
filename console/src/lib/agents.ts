@@ -11,6 +11,13 @@ export function normalizeAgents(
       member_id: String(entry.member_id || entry.agent_id || ""),
       label: String(entry.label || entry.member_id || entry.agent_id || "unknown"),
       kind: String(entry.kind || "module_agent"),
+      ...(entry.profile !== undefined && { profile: String(entry.profile) }),
+      ...(entry.state !== undefined && { state: String(entry.state) }),
+      ...(entry.wired_to !== undefined && { wired_to: entry.wired_to as string[] }),
+      ...(entry.labels !== undefined && { labels: entry.labels as Record<string, string> }),
+      ...(entry.group !== undefined && { group: String(entry.group) }),
+      ...(entry.addressable !== undefined && { addressable: Boolean(entry.addressable) }),
+      ...(entry.affordances !== undefined && { affordances: entry.affordances }),
     }));
   }
 

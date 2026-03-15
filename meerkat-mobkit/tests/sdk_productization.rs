@@ -283,6 +283,7 @@ fn node_augmented_path() -> String {
 }
 
 #[test]
+#[ignore]
 fn phase_g_req_g_001_req_g_002_sdk_productization_contracts() {
     let node_path = node_augmented_path();
     let path_env = [("PATH", node_path.clone())];

@@ -22,17 +22,59 @@ class StatusResult:
 
 
 @dataclass(frozen=True)
+class ProfileCapabilities:
+    instance_count: int
+    addressable: bool
+    has_wiring: bool
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProfileCapabilities:
+        return cls(
+            instance_count=int(data.get("instance_count", 0)),
+            addressable=bool(data.get("addressable", True)),
+            has_wiring=bool(data.get("has_wiring", False)),
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeCapabilities:
+    can_spawn_members: bool
+    can_send_messages: bool
+    can_wire_members: bool
+    can_retire_members: bool
+    available_spawn_modes: list[str]
+    profile_capabilities: dict[str, ProfileCapabilities] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RuntimeCapabilities:
+        pc_raw = data.get("profile_capabilities", {})
+        return cls(
+            can_spawn_members=bool(data.get("can_spawn_members", False)),
+            can_send_messages=bool(data.get("can_send_messages", False)),
+            can_wire_members=bool(data.get("can_wire_members", False)),
+            can_retire_members=bool(data.get("can_retire_members", False)),
+            available_spawn_modes=list(data.get("available_spawn_modes", [])),
+            profile_capabilities={
+                k: ProfileCapabilities.from_dict(v) for k, v in pc_raw.items()
+            } if isinstance(pc_raw, dict) else {},
+        )
+
+
+@dataclass(frozen=True)
 class CapabilitiesResult:
     contract_version: str
     methods: list[str]
     loaded_modules: list[str]
+    runtime_capabilities: RuntimeCapabilities | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CapabilitiesResult:
+        rc_raw = data.get("runtime_capabilities")
         return cls(
             contract_version=data["contract_version"],
             methods=list(data.get("methods", [])),
             loaded_modules=list(data.get("loaded_modules", [])),
+            runtime_capabilities=RuntimeCapabilities.from_dict(rc_raw) if rc_raw else None,
         )
 
 

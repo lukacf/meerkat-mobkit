@@ -10,7 +10,7 @@ class TestNewSymbolsExist:
         "SessionAgentBuilder",
         "MobKitError", "TransportError", "RpcError",
         "CapabilityUnavailableError", "ContractMismatchError", "NotConnectedError",
-        "StatusResult", "CapabilitiesResult", "ReconcileResult",
+        "StatusResult", "CapabilitiesResult", "RuntimeCapabilities", "ProfileCapabilities", "ReconcileResult",
         "SpawnResult", "SpawnMemberResult", "SendMessageResult", "SubscribeResult",
         "KeepAliveConfig", "EventEnvelope",
         "RoutingResolution", "DeliveryResult", "MemoryQueryResult", "CallToolResult",

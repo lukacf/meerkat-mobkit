@@ -150,7 +150,7 @@ fn phase8_console_001_capability_driven_rendering_contract() {
 
     assert_eq!(allowed.status, 200);
     assert_eq!(modules_response.status, 200);
-    assert_eq!(allowed.body["contract_version"], json!("0.1.0"));
+    assert_eq!(allowed.body["contract_version"], json!("0.2.0"));
     assert_eq!(
         allowed.body["base_panel"]["panel_id"],
         json!("console.home")
@@ -206,18 +206,12 @@ fn phase8_console_001_capability_driven_rendering_contract() {
                 "member_id":"router",
                 "label":"router",
                 "kind":"module_agent",
-                "profile": null,
-                "state":"idle",
-                "session_id": null
             },
             {
                 "agent_id":"delivery",
                 "member_id":"delivery",
                 "label":"delivery",
                 "kind":"module_agent",
-                "profile": null,
-                "state":"idle",
-                "session_id": null
             }
         ])
     );
@@ -287,7 +281,8 @@ fn phase8_console_live_snapshot_prefers_runtime_state_over_config_modules() {
         false,
         vec!["router".to_string()],
         vec![],
-        vec!["router".to_string()],
+        Vec::new(),
+        false,
     );
     let response = handle_console_rest_json_route_with_snapshot(
         &state,

@@ -23,6 +23,7 @@ mod console_ingress;
 mod gating_methods;
 mod memory_methods;
 mod mob_methods;
+pub(crate) mod params;
 mod routing_delivery_methods;
 mod scheduling_methods;
 mod session_store_methods;
@@ -51,7 +52,7 @@ use session_store_methods::{
 use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
-pub const MOBKIT_CONTRACT_VERSION: &str = "0.1.0";
+pub const MOBKIT_CONTRACT_VERSION: &str = "0.2.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,7 +223,14 @@ pub fn handle_mobkit_rpc_json(
                     "mobkit/call_tool",
                     "mobkit/models/catalog"
                 ],
-                "loaded_modules": runtime.loaded_modules()
+                "loaded_modules": runtime.loaded_modules(),
+                "runtime_capabilities": {
+                    "can_spawn_members": false,
+                    "can_send_messages": false,
+                    "can_wire_members": false,
+                    "can_retire_members": false,
+                    "available_spawn_modes": ["module"],
+                }
             })),
             error: None,
         },
@@ -246,17 +254,20 @@ pub fn handle_mobkit_rpc_json(
             }
         }
         "mobkit/reconcile" => {
-            let modules = request
-                .params
-                .get("modules")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str().map(ToString::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let modules = match params::required_string_array(&request.params, "modules") {
+                Ok(m) => m,
+                Err(reason) => {
+                    return serialize_response(&JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {reason}"),
+                        }),
+                    });
+                }
+            };
 
             match runtime.reconcile_modules(modules.clone(), timeout) {
                 Ok(added) => JsonRpcResponse {
@@ -979,23 +990,33 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/rediscover",
                         "mobkit/query_events"
                     ],
-                    "loaded_modules": loaded
+                    "loaded_modules": loaded,
+                    "runtime_capabilities": {
+                        "can_spawn_members": true,
+                        "can_send_messages": true,
+                        "can_wire_members": true,
+                        "can_retire_members": true,
+                        "available_spawn_modes": ["module", "profile"],
+                    }
                 })),
                 error: None,
             }
         }
         "mobkit/reconcile" => {
-            let modules = request
-                .params
-                .get("modules")
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|value| value.as_str().map(ToString::to_string))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+            let modules = match params::required_string_array(&request.params, "modules") {
+                Ok(m) => m,
+                Err(reason) => {
+                    return serialize_response(&JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {reason}"),
+                        }),
+                    });
+                }
+            };
 
             match runtime.reconcile_modules(modules.clone(), timeout).await {
                 Ok(added) => JsonRpcResponse {

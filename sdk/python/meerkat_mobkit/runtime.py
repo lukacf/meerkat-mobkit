@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import itertools
 import json
 import logging
+import time
 from typing import Any, AsyncIterator
 from urllib import request as urllib_request
 
@@ -127,6 +131,11 @@ class MobKitRuntime:
             self._config.session_builder, SessionAgentBuilder
         ):
             self._dispatcher.register_builder(self._config.session_builder)
+        else:
+            _log.warning(
+                "MobKit runtime started without gateway or session builder — "
+                "RPC calls will fail with NotConnectedError"
+            )
         self._running = True
 
     def _build_init_params(self) -> dict[str, Any]:
@@ -138,7 +147,20 @@ class MobKitRuntime:
         if self._config.modules:
             params["modules"] = self._config.modules
         params["has_session_builder"] = bool(self._config.session_builder)
-        params["runtime_options"] = {}
+        runtime_options: dict[str, Any] = {}
+        if self._config.gating_config_path:
+            runtime_options["gating_config_path"] = self._config.gating_config_path
+        if self._config.routing_config_path:
+            runtime_options["routing_config_path"] = self._config.routing_config_path
+        if self._config.scheduling_files:
+            runtime_options["scheduling_files"] = self._config.scheduling_files
+        if self._config.memory_config:
+            runtime_options["memory_config"] = _serialize_config(self._config.memory_config)
+        if self._config.auth_config:
+            runtime_options["auth_config"] = _serialize_config(self._config.auth_config)
+        if self._config.event_log:
+            runtime_options["event_log"] = _serialize_config(self._config.event_log)
+        params["runtime_options"] = runtime_options
         return params
 
     def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -226,6 +248,7 @@ class MobKitRuntime:
         self._running = False
         if self._transport is not None:
             self._transport.stop()
+            self._transport = None
 
     @property
     def is_running(self) -> bool:
@@ -692,6 +715,15 @@ class AsgiApp:
         auth_config: Any | None = None,
         fallback_app: Any | None = None,
     ):
+        if auth_config is not None:
+            config_dict = _auth_config_to_dict(auth_config)
+            if config_dict.get("provider") == "google":
+                raise ValueError(
+                    "GoogleAuthConfig cannot be used with the Python ASGI facade — "
+                    "asymmetric OIDC/JWKS verification requires the Rust gateway. "
+                    "Use auth=auth.jwt(...) for direct ASGI deployments, or route "
+                    "through the Rust gateway for Google auth."
+                )
         self._runtime = runtime
         self._console = console
         self._auth_config = auth_config
@@ -727,18 +759,80 @@ class AsgiApp:
             await _send_response(send, 200, b"ok", content_type=b"text/plain")
             return
 
+        # Gate console/observation routes when console=False.
+        if not self._console:
+            is_console_route = (
+                path.startswith("/console")
+                or path == "/mob/events"
+                or (path.startswith("/agents/") and path.endswith("/events"))
+            )
+            if is_console_route:
+                await _send_response(send, 404, b'{"error":"not found"}')
+                return
+
+        # Enforce auth when auth_config is provided.
+        if self._auth_config is not None and path != "/healthz":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(
+                b"authorization", b""
+            ).decode("utf-8", errors="replace")
+            if not auth_header.startswith("Bearer ") or not auth_header[7:].strip():
+                resp = json.dumps({"error": "unauthorized"}).encode()
+                await _send_response(send, 401, resp)
+                return
+            token = auth_header[7:].strip()
+            if not _validate_bearer_token(token, self._auth_config):
+                resp = json.dumps({"error": "unauthorized", "reason": "invalid_token"}).encode()
+                await _send_response(send, 401, resp)
+                return
+
         if path == "/rpc" and method == "POST":
             body = await _read_body(receive)
+            request_id = None
             try:
                 parsed = json.loads(body)
+            except (json.JSONDecodeError, ValueError) as exc:
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": f"Parse error: {exc}"},
+                }).encode()
+                await _send_response(send, 200, resp)
+                return
+            if not isinstance(parsed, dict) or "method" not in parsed:
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": parsed.get("id") if isinstance(parsed, dict) else None,
+                    "error": {"code": -32600, "message": "Invalid Request: must be a JSON object with a method field"},
+                }).encode()
+                await _send_response(send, 200, resp)
+                return
+            request_id = parsed.get("id")
+            try:
                 result = await self._runtime._rpc(
                     parsed.get("method", ""),
                     parsed.get("params"),
                 )
-                await _send_response(send, 200, json.dumps(result).encode())
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "result": result,
+                }).encode()
+                await _send_response(send, 200, resp)
+            except RpcError as exc:
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": exc.code, "message": exc.message},
+                }).encode()
+                await _send_response(send, 200, resp)
             except Exception as exc:
-                err = json.dumps({"error": str(exc)}).encode()
-                await _send_response(send, 500, err)
+                resp = json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "error": {"code": -32603, "message": str(exc)},
+                }).encode()
+                await _send_response(send, 200, resp)
             return
 
         if path.startswith("/agents/") and path.endswith("/events") and method == "GET":
@@ -802,6 +896,133 @@ class AsgiApp:
         except Exception:
             pass
         await send({"type": "http.response.body", "body": b""})
+
+
+def _serialize_config(config: Any, _seen: set[int] | None = None) -> Any:
+    """Serialize a config object to a JSON-compatible dict.
+
+    Calls to_dict() on dataclass configs (GoogleAuthConfig, JwtAuthConfig,
+    etc.) so json.dumps won't fail with TypeError during mobkit/init.
+    Non-serializable leaves (e.g. storage backend instances) are converted
+    to their qualified class name so the gateway receives a meaningful
+    string instead of crashing the transport.  Cycle-safe via id-set.
+    """
+    if config is None or isinstance(config, (bool, int, float, str)):
+        return config
+    obj_id = id(config)
+    if _seen is None:
+        _seen = set()
+    if obj_id in _seen:
+        return f"[circular:{type(config).__qualname__}]"
+    _seen.add(obj_id)
+    if hasattr(config, "to_dict"):
+        return config.to_dict()
+    if isinstance(config, dict):
+        return {k: _serialize_config(v, _seen) for k, v in config.items()}
+    if isinstance(config, (list, tuple)):
+        return [_serialize_config(v, _seen) for v in config]
+    # Non-serializable object — use qualified class name so the gateway
+    # gets a meaningful identifier instead of a TypeError.
+    return f"{type(config).__module__}.{type(config).__qualname__}"
+
+
+def _auth_config_to_dict(auth_config: Any) -> dict[str, Any]:
+    """Normalize an auth config to a plain dict.
+
+    Accepts JwtAuthConfig/GoogleAuthConfig (with to_dict()), plain dicts,
+    or anything else (returns empty dict for fail-closed behavior).
+    """
+    if hasattr(auth_config, "to_dict"):
+        return auth_config.to_dict()
+    if isinstance(auth_config, dict):
+        return auth_config
+    return {}
+
+
+def _validate_bearer_token(token: str, auth_config: Any) -> bool:
+    """Validate a bearer token against the auth config.
+
+    For JwtAuthConfig / {"provider": "jwt"} (shared-secret HMAC): full
+    signature verification plus iss, aud, exp, and nbf claim checks
+    with leeway.
+
+    Google and unknown providers are rejected (fail closed). Google auth
+    is blocked at AsgiApp construction time, but this is a defense-in-depth
+    fallback.
+    """
+    config_dict = _auth_config_to_dict(auth_config)
+    provider = config_dict.get("provider", "")
+
+    if provider != "jwt":
+        return False
+
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+
+    try:
+        header_b64 = parts[0] + "=" * (-len(parts[0]) % 4)
+        header = json.loads(base64.urlsafe_b64decode(header_b64))
+    except Exception:
+        return False
+
+    # Header must be a dict with alg field.
+    if not isinstance(header, dict):
+        return False
+
+    secret = config_dict.get("shared_secret", "")
+    if not secret:
+        return False
+    if header.get("alg") != "HS256":
+        return False
+
+    # Verify HMAC-SHA256 signature
+    signing_input = f"{parts[0]}.{parts[1]}".encode("utf-8")
+    expected_sig = base64.urlsafe_b64encode(
+        hmac.new(secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    ).rstrip(b"=").decode("utf-8")
+    if not hmac.compare_digest(expected_sig, parts[2]):
+        return False
+
+    # Decode and validate claims — must be a JSON object.
+    try:
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        return False
+
+    if not isinstance(claims, dict):
+        return False
+
+    if config_dict.get("issuer") and claims.get("iss") != config_dict["issuer"]:
+        return False
+    expected_aud = config_dict.get("audience")
+    if expected_aud:
+        token_aud = claims.get("aud")
+        # JWT aud may be a string or an array of strings (RFC 7519 §4.1.3).
+        if isinstance(token_aud, list):
+            if expected_aud not in token_aud:
+                return False
+        elif token_aud != expected_aud:
+            return False
+
+    # Enforce expiry with leeway — exp/nbf must be numeric.
+    leeway = config_dict.get("leeway_seconds", 60)
+    now = time.time()
+    exp = claims.get("exp")
+    if exp is not None:
+        if not isinstance(exp, (int, float)):
+            return False
+        if now > exp + leeway:
+            return False
+    nbf = claims.get("nbf")
+    if nbf is not None:
+        if not isinstance(nbf, (int, float)):
+            return False
+        if now < nbf - leeway:
+            return False
+
+    return True
 
 
 async def _read_body(receive: Any) -> bytes:

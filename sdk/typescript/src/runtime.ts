@@ -86,6 +86,38 @@ function nextRequestId(method: string): string {
   return `${method}:${++requestCounter}`;
 }
 
+/** Serialize a config value for JSON transport.
+ *
+ * Recursively walks dicts/arrays with cycle detection. Calls toDict()
+ * on objects that have it (e.g. typed config classes). Cyclic or
+ * non-serializable leaves become their constructor name.
+ */
+function serializeConfig(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string")
+    return value;
+  if (typeof value !== "object") return String(value);
+  const obj = value as object;
+  if (seen.has(obj)) {
+    return `[circular:${obj.constructor?.name ?? "Object"}]`;
+  }
+  seen.add(obj);
+  if ("toDict" in (obj as Record<string, unknown>)) {
+    return (obj as { toDict(): unknown }).toDict();
+  }
+  if (Array.isArray(obj)) {
+    return obj.map((v) => serializeConfig(v, seen));
+  }
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    result[k] = serializeConfig(v, seen);
+  }
+  return result;
+}
+
 // -- MobKitRuntime --------------------------------------------------------
 
 /**
@@ -168,6 +200,11 @@ export class MobKitRuntime {
       }
     } else if (this._config.sessionBuilder) {
       this._dispatcher.registerBuilder(this._config.sessionBuilder);
+    } else {
+      console.warn(
+        "[mobkit] runtime started without gateway or session builder — " +
+          "RPC calls will fail with NotConnectedError",
+      );
     }
     this._running = true;
   }
@@ -181,7 +218,26 @@ export class MobKitRuntime {
       params.modules = this._config.modules;
     }
     params.has_session_builder = Boolean(this._config.sessionBuilder);
-    params.runtime_options = {};
+    const runtimeOptions: Record<string, unknown> = {};
+    if (this._config.gatingConfigPath) {
+      runtimeOptions.gating_config_path = this._config.gatingConfigPath;
+    }
+    if (this._config.routingConfigPath) {
+      runtimeOptions.routing_config_path = this._config.routingConfigPath;
+    }
+    if (this._config.schedulingFiles.length > 0) {
+      runtimeOptions.scheduling_files = this._config.schedulingFiles;
+    }
+    if (this._config.memoryConfig) {
+      runtimeOptions.memory_config = serializeConfig(this._config.memoryConfig);
+    }
+    if (this._config.authConfig) {
+      runtimeOptions.auth_config = serializeConfig(this._config.authConfig);
+    }
+    if (this._config.eventLog) {
+      runtimeOptions.event_log = serializeConfig(this._config.eventLog);
+    }
+    params.runtime_options = runtimeOptions;
     return params;
   }
 
@@ -233,6 +289,7 @@ export class MobKitRuntime {
     this._running = false;
     if (this._transport !== null) {
       this._transport.stop();
+      this._transport = null;
     }
   }
 

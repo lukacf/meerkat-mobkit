@@ -63,12 +63,61 @@ export function parseStatusResult(raw: unknown): StatusResult {
   };
 }
 
+// -- RuntimeCapabilities --------------------------------------------------
+
+export interface ProfileCapabilities {
+  readonly instanceCount: number;
+  readonly addressable: boolean;
+  readonly hasWiring: boolean;
+}
+
+export interface RuntimeCapabilities {
+  readonly canSpawnMembers: boolean;
+  readonly canSendMessages: boolean;
+  readonly canWireMembers: boolean;
+  readonly canRetireMembers: boolean;
+  readonly availableSpawnModes: readonly string[];
+  readonly profileCapabilities?: Readonly<Record<string, ProfileCapabilities>>;
+}
+
+function parseProfileCapabilities(
+  raw: unknown,
+): Record<string, ProfileCapabilities> | undefined {
+  if (raw == null || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, Record<string, unknown>>;
+  const result: Record<string, ProfileCapabilities> = {};
+  for (const [key, val] of Object.entries(d)) {
+    if (val && typeof val === "object") {
+      result[key] = {
+        instanceCount: Number(val.instance_count ?? 0),
+        addressable: Boolean(val.addressable ?? true),
+        hasWiring: Boolean(val.has_wiring ?? false),
+      };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseRuntimeCapabilities(raw: unknown): RuntimeCapabilities | undefined {
+  if (raw == null || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, unknown>;
+  return {
+    canSpawnMembers: Boolean(d.can_spawn_members ?? false),
+    canSendMessages: Boolean(d.can_send_messages ?? false),
+    canWireMembers: Boolean(d.can_wire_members ?? false),
+    canRetireMembers: Boolean(d.can_retire_members ?? false),
+    availableSpawnModes: asStringArray(d.available_spawn_modes),
+    profileCapabilities: parseProfileCapabilities(d.profile_capabilities),
+  };
+}
+
 // -- CapabilitiesResult ---------------------------------------------------
 
 export interface CapabilitiesResult {
   readonly contractVersion: string;
   readonly methods: readonly string[];
   readonly loadedModules: readonly string[];
+  readonly runtimeCapabilities?: RuntimeCapabilities;
 }
 
 export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
@@ -77,6 +126,7 @@ export function parseCapabilitiesResult(raw: unknown): CapabilitiesResult {
     contractVersion: String(d.contract_version ?? ""),
     methods: asStringArray(d.methods),
     loadedModules: asStringArray(d.loaded_modules),
+    runtimeCapabilities: parseRuntimeCapabilities(d.runtime_capabilities),
   };
 }
 

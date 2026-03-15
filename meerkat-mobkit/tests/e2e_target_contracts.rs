@@ -448,7 +448,7 @@ fn choke_101_rpc_ingress_target_defined_red() {
             "jsonrpc":"2.0",
             "id":"choke-101",
             "result":{
-                "contract_version":"0.1.0",
+                "contract_version":"0.2.0",
                 "running":true,
                 "loaded_modules":["router"]
             }
@@ -666,7 +666,7 @@ fn choke_105_auth_to_console_route_target_defined_red() {
         ),
         (
             200,
-            json!({"contract_version":"0.1.0","modules":["router","delivery"]}),
+            json!({"contract_version":"0.2.0","modules":["router","delivery"]}),
             401,
             json!({"error":"unauthorized","reason":"provider_mismatch"}),
             401,
@@ -1112,7 +1112,7 @@ fn e2e_401_rpc_surface_target_defined_red() {
                 "jsonrpc":"2.0",
                 "id":"e2e-401-status",
                 "result":{
-                    "contract_version":"0.1.0",
+                    "contract_version":"0.2.0",
                     "running":true,
                     "loaded_modules":["router"]
                 }
@@ -1664,7 +1664,7 @@ fn e2e_801_console_experience_target_defined_red() {
             open.body["activity_feed"]["keep_alive"]["event"].clone()
         ),
         (
-            json!("0.1.0"),
+            json!("0.2.0"),
             json!("console.home"),
             json!("/console/experience"),
             json!([
@@ -1892,7 +1892,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-status"),
                     result: json!({
-                        "contract_version":"0.1.0",
+                        "contract_version":"0.2.0",
                         "running":true,
                         "loaded_modules":["router"]
                     }),
@@ -1900,9 +1900,16 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-caps"),
                     result: json!({
-                        "contract_version":"0.1.0",
+                        "contract_version":"0.2.0",
                         "methods": expected_capability_methods.clone(),
-                        "loaded_modules":["router"]
+                        "loaded_modules":["router"],
+                        "runtime_capabilities": {
+                            "can_spawn_members": false,
+                            "can_send_messages": false,
+                            "can_wire_members": false,
+                            "can_retire_members": false,
+                            "available_spawn_modes": ["module"],
+                        }
                     }),
                 },
                 SdkMappedOutcome::Error {
@@ -1920,7 +1927,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-status"),
                     result: json!({
-                        "contract_version":"0.1.0",
+                        "contract_version":"0.2.0",
                         "running":true,
                         "loaded_modules":["router"]
                     }),
@@ -1928,9 +1935,16 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-caps"),
                     result: json!({
-                        "contract_version":"0.1.0",
+                        "contract_version":"0.2.0",
                         "methods": expected_capability_methods,
-                        "loaded_modules":["router"]
+                        "loaded_modules":["router"],
+                        "runtime_capabilities": {
+                            "can_spawn_members": false,
+                            "can_send_messages": false,
+                            "can_wire_members": false,
+                            "can_retire_members": false,
+                            "available_spawn_modes": ["module"],
+                        }
                     }),
                 },
                 SdkMappedOutcome::Error {
@@ -2299,7 +2313,7 @@ fn e2e_1401_program_smoke_target_defined_red() {
                 "jsonrpc":"2.0",
                 "id":"e2e-1401-status",
                 "result":{
-                    "contract_version":"0.1.0",
+                    "contract_version":"0.2.0",
                     "running":true,
                     "loaded_modules":["router"]
                 }

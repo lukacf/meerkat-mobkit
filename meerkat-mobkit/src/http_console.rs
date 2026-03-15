@@ -1,7 +1,7 @@
 //! HTTP routes for the admin console REST API.
 
 use axum::extract::State;
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::mob_handle_runtime::RealMobRuntime;
 use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
-    handle_console_rest_json_route_with_snapshot,
+    extract_bearer_token_from_header, handle_console_rest_json_route_with_snapshot,
 };
 
 #[derive(Clone)]
@@ -59,15 +59,41 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
 
 pub async fn console_json_handler(
     State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
     uri: Uri,
 ) -> impl IntoResponse {
-    let path = uri
+    let mut path = uri
         .path_and_query()
         .map(|path_and_query| path_and_query.as_str().to_string())
         .unwrap_or_else(|| uri.path().to_string());
 
+    // If the request carries a Bearer token and the URL doesn't already have
+    // an auth_token query param, inject it so the console-ingress auth
+    // resolver can validate it through the existing query-param path.
+    //
+    // JWT tokens use base64url characters (A-Za-z0-9_-.) plus optional '='
+    // padding.  split_path_and_query uses split_once('=') for key/value
+    // separation, so '=' in the token body lands in the value side correctly
+    // and '&' never appears in valid JWTs, so no percent-encoding is needed.
+    if !path.contains("auth_token=")
+        && let Some(bearer) = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(extract_bearer_token_from_header)
+        && bearer.bytes().all(|b| b != b'&')
+    {
+        let sep = if path.contains('?') { '&' } else { '?' };
+        path = format!("{path}{sep}auth_token={bearer}");
+    }
+
+    let config_module_ids: Vec<String> = state
+        .decisions
+        .modules
+        .iter()
+        .map(|m| m.id.clone())
+        .collect();
     let live_snapshot = match &state.runtime {
-        Some(runtime) => Some(build_live_snapshot(runtime).await),
+        Some(runtime) => Some(build_live_snapshot(runtime, &config_module_ids).await),
         None => None,
     };
 
@@ -84,35 +110,44 @@ pub async fn console_json_handler(
     (status, Json::<Value>(response.body))
 }
 
-async fn build_live_snapshot(runtime: &RealMobRuntime) -> ConsoleLiveSnapshot {
+async fn build_live_snapshot(
+    runtime: &RealMobRuntime,
+    config_module_ids: &[String],
+) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
-    let mut agents = runtime
-        .discover()
-        .await
-        .into_iter()
+    let members = runtime.discover().await;
+    // Use config module IDs for loaded_modules when available (correct for
+    // topology/health which show modules, not individual mob agents).
+    // Fall back to member IDs for pure mob runtimes with no config modules.
+    let loaded_modules = if config_module_ids.is_empty() {
+        let mut mods: Vec<String> = members.iter().map(|m| m.meerkat_id.clone()).collect();
+        mods.sort();
+        mods
+    } else {
+        let mut mods = config_module_ids.to_vec();
+        mods.sort();
+        mods
+    };
+    let mut agents = members
+        .iter()
         .map(|member| ConsoleAgentLiveSnapshot {
             agent_id: member.meerkat_id.clone(),
             member_id: member.meerkat_id.clone(),
-            label: member.meerkat_id,
+            label: member.meerkat_id.clone(),
             kind: "meerkat".to_string(),
-            profile: Some(member.profile),
-            state: Some(member.state),
-            session_id: member.session_id,
+            profile: Some(member.profile.clone()),
+            state: Some(member.state.clone()),
+            session_id: member.session_id.clone(),
         })
         .collect::<Vec<_>>();
     agents.sort_by(|left, right| left.label.cmp(&right.label));
-    let mut topology_nodes = agents
-        .iter()
-        .map(|agent| agent.label.clone())
-        .collect::<Vec<_>>();
-    topology_nodes.sort();
-    let loaded_modules = agents.iter().map(|a| a.label.clone()).collect();
     ConsoleLiveSnapshot::new(
         Some(runtime.handle().mob_id().to_string()),
         running,
         loaded_modules,
         agents,
-        topology_nodes,
+        members,
+        true,
     )
 }
 
