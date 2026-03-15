@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-03-15
+
+### Changed
+
+- Bump all meerkat crate dependencies to 0.4.11
+- Map `SessionError::Unsupported` to HTTP 422 in SSE and interaction endpoints
+- `/interactions/stream` is now observe-only (message sending stays in `mobkit/send_message` RPC)
+- `NotExternallyAddressable` errors return 403 instead of 500
+- Renamed all `phase*` files to semantic names (34 files: binaries, tests, docs)
+- `validate_phase0_governance_contracts` deprecated in favor of `validate_governance_contracts`
+
+### Added
+
+- `mobkit/models/catalog` RPC method in both standard and unified dispatchers
+- Python SDK: `CatalogEntry`, `ProviderDefaults`, `ModelsCatalogResult` types
+- Python SDK: `models_catalog()` on sync/async typed clients and `MobHandle`
+- `InteractionComplete`/`InteractionFailed` as terminal SSE events
+- Console live snapshot derives `loaded_modules` from discovered agents
+
+### Fixed
+
+- Console live snapshot `loaded_modules` was hard-coded to empty
+- `phase_g` test: corrected `repo_root()` path, `.js` → `.cjs` refs, NVM PATH resolution
+
 ## [0.4.8] - 2026-03-13
 
 First public release. Version aligned with Meerkat v0.4.8.

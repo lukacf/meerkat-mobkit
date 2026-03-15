@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "meerkat-mobkit"
-version = "0.4.9"
+version = "0.4.11"
 description = "Python SDK for MobKit — companion orchestration platform for the Meerkat multi-agent runtime"
 requires-python = ">=3.10"
 license = {text = "MIT OR Apache-2.0"}
