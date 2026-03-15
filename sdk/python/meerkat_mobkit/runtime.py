@@ -705,6 +705,15 @@ class AsgiApp:
         auth_config: Any | None = None,
         fallback_app: Any | None = None,
     ):
+        if auth_config is not None:
+            config_dict = _auth_config_to_dict(auth_config)
+            if config_dict.get("provider") == "google":
+                raise ValueError(
+                    "GoogleAuthConfig cannot be used with the Python ASGI facade — "
+                    "asymmetric OIDC/JWKS verification requires the Rust gateway. "
+                    "Use auth=auth.jwt(...) for direct ASGI deployments, or route "
+                    "through the Rust gateway for Google auth."
+                )
         self._runtime = runtime
         self._console = console
         self._auth_config = auth_config
@@ -894,36 +903,37 @@ def _serialize_config(config: Any) -> Any:
     return config
 
 
+def _auth_config_to_dict(auth_config: Any) -> dict[str, Any]:
+    """Normalize an auth config to a plain dict.
+
+    Accepts JwtAuthConfig/GoogleAuthConfig (with to_dict()), plain dicts,
+    or anything else (returns empty dict for fail-closed behavior).
+    """
+    if hasattr(auth_config, "to_dict"):
+        return auth_config.to_dict()
+    if isinstance(auth_config, dict):
+        return auth_config
+    return {}
+
+
 def _validate_bearer_token(token: str, auth_config: Any) -> bool:
     """Validate a bearer token against the auth config.
 
-    For JwtAuthConfig (shared-secret HMAC): full signature verification
-    plus iss, aud, exp, and nbf claim checks with leeway.
+    For JwtAuthConfig / {"provider": "jwt"} (shared-secret HMAC): full
+    signature verification plus iss, aud, exp, and nbf claim checks
+    with leeway.
 
-    For GoogleAuthConfig (OIDC/JWKS): rejected — asymmetric signature
-    verification requires a JWKS fetch which the ASGI facade cannot do
-    without a network dependency.  Google auth must be enforced by the
-    Rust gateway.
-
-    Unknown config types are rejected (fail closed).
+    Google and unknown providers are rejected (fail closed). Google auth
+    is blocked at AsgiApp construction time, but this is a defense-in-depth
+    fallback.
     """
     import base64
     import hmac
     import hashlib
     import time
 
-    config_dict = auth_config.to_dict() if hasattr(auth_config, "to_dict") else {}
+    config_dict = _auth_config_to_dict(auth_config)
     provider = config_dict.get("provider", "")
-
-    # Google OIDC requires JWKS-based asymmetric verification — the
-    # lightweight ASGI facade cannot do this. Reject so callers know
-    # they must use the Rust gateway for Google auth.
-    if provider == "google":
-        _log.warning(
-            "ASGI auth with GoogleAuthConfig requires the Rust gateway for "
-            "JWKS-based token verification — rejecting token in ASGI facade"
-        )
-        return False
 
     if provider != "jwt":
         return False
