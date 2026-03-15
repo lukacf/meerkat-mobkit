@@ -7,7 +7,7 @@ Companion orchestration platform for the [Meerkat](https://github.com/lukacf/mee
 | Area | Path |
 |------|------|
 | Rust crate | `meerkat-mobkit/` |
-| Gateway binary | `meerkat-mobkit/src/bin/phase0b_rpc_gateway.rs` |
+| Gateway binary | `meerkat-mobkit/src/bin/mobkit_gateway.rs` |
 | Python SDK | `sdk/python/meerkat_mobkit/` |
 | Python tests | `sdk/python/tests/` |
 | TypeScript SDK | `sdk/typescript/` |
@@ -36,7 +36,7 @@ Private internals (underscore-prefixed): `_client.py`, `_transport.py`, `_sse.py
 ```bash
 # Rust
 cargo check --workspace
-cargo nextest run --workspace -E 'not test(phase0_governance)' --no-fail-fast
+cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
 
 # Python
 PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v

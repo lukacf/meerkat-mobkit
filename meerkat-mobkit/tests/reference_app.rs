@@ -30,10 +30,24 @@ struct ScriptCheck {
 #[derive(Debug, Deserialize)]
 struct ScriptSummary {
     sdk: String,
+    suite: String,
     passed: usize,
     failed: usize,
     checks: Vec<ScriptCheck>,
 }
+
+const H2_REFERENCE_CHECKS: [&str; 10] = [
+    "reference app boots and responds",
+    "health route reports gateway binding",
+    "status route matches json-rpc contract",
+    "capabilities route matches json-rpc contract",
+    "reconcile route matches json-rpc contract",
+    "spawn_member route matches json-rpc contract",
+    "events subscribe route matches json-rpc contract",
+    "spawn_member invalid params matches rust parity error",
+    "events subscribe agent validation matches rust parity error",
+    "reference flow route executes end-to-end",
+];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -66,17 +80,18 @@ fn assert_command_success(
     );
 }
 
-fn run_parity_script(
+fn run_script(
     language: &str,
+    suite: &str,
     program: &str,
     args: &[&str],
     extra_env: &[(&str, String)],
 ) -> ScriptSummary {
     let mut command = Command::new(program);
-    command.current_dir(repo_root()).args(args).env(
-        "MOBKIT_RPC_GATEWAY_BIN",
-        env!("CARGO_BIN_EXE_phase0b_rpc_gateway"),
-    );
+    command
+        .current_dir(repo_root())
+        .args(args)
+        .env("MOBKIT_RPC_GATEWAY_BIN", env!("CARGO_BIN_EXE_rpc_gateway"));
 
     for (key, value) in extra_env {
         command.env(key, value);
@@ -84,11 +99,11 @@ fn run_parity_script(
 
     let output = command
         .output()
-        .unwrap_or_else(|err| panic!("failed to spawn {language} parity script: {err}"));
+        .unwrap_or_else(|err| panic!("failed to spawn {language} {suite} script: {err}"));
 
     assert!(
         output.status.success(),
-        "{language} parity script failed\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
+        "{language} {suite} script failed\nstatus: {:?}\nstdout:\n{}\nstderr:\n{}",
         output.status.code(),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
@@ -96,41 +111,39 @@ fn run_parity_script(
 
     serde_json::from_slice::<ScriptSummary>(&output.stdout).unwrap_or_else(|err| {
         panic!(
-            "{language} parity script output was not valid summary JSON: {err}\nstdout:\n{}\nstderr:\n{}",
+            "{language} {suite} output was not valid summary JSON: {err}\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )
     })
 }
 
-fn assert_shared_sdk_coverage(summary: &ScriptSummary, expected_sdk: &str) {
+fn assert_summary(
+    summary: &ScriptSummary,
+    expected_sdk: &str,
+    expected_suite: &str,
+    expected_checks: &[&str],
+) {
     assert_eq!(summary.sdk, expected_sdk);
+    assert_eq!(summary.suite, expected_suite);
     assert_eq!(
         summary.passed + summary.failed,
         summary.checks.len(),
-        "{} parity summary should satisfy passed + failed == checks.len()",
-        summary.sdk
+        "{} {} summary should satisfy passed + failed == checks.len()",
+        summary.sdk,
+        summary.suite
     );
     assert_eq!(
         summary.failed, 0,
-        "{} parity checks should all pass",
-        summary.sdk
+        "{} {} checks should all pass",
+        summary.sdk, summary.suite
     );
-
-    let required_checks = [
-        "typed client status success",
-        "typed client capabilities success",
-        "typed client invalid params exact json-rpc error",
-        "typed client unloaded module exact json-rpc error",
-        "console route helper encodes auth token",
-        "module-authoring helper normalizes schema",
-    ];
-
     assert_eq!(
         summary.checks.len(),
-        required_checks.len(),
-        "{} parity check count should match expected cardinality",
-        summary.sdk
+        expected_checks.len(),
+        "{} {} check count should match expected cardinality",
+        summary.sdk,
+        summary.suite
     );
 
     let observed_names: BTreeSet<&str> = summary
@@ -138,25 +151,26 @@ fn assert_shared_sdk_coverage(summary: &ScriptSummary, expected_sdk: &str) {
         .iter()
         .map(|check| check.name.as_str())
         .collect();
-    let expected_names: BTreeSet<&str> = required_checks.into_iter().collect();
+    let expected_names: BTreeSet<&str> = expected_checks.iter().copied().collect();
 
     assert_eq!(
         observed_names.len(),
         summary.checks.len(),
-        "{} parity checks should not contain duplicate names",
-        summary.sdk
+        "{} {} checks should not contain duplicate names",
+        summary.sdk,
+        summary.suite
     );
     assert_eq!(
         observed_names, expected_names,
-        "{} parity checks should match expected set exactly",
-        summary.sdk
+        "{} {} checks should match expected set exactly",
+        summary.sdk, summary.suite
     );
 
     for check in &summary.checks {
         assert!(
             check.ok,
-            "check {:?} should pass for {}",
-            check.name, summary.sdk
+            "check {:?} should pass for {} {}",
+            check.name, summary.sdk, summary.suite
         );
     }
 }
@@ -188,7 +202,7 @@ fn python_meets_min_version(program: &str, min_major: u32, min_minor: u32) -> bo
     (major, minor) >= (min_major, min_minor)
 }
 
-fn select_python_for_phase11() -> Option<String> {
+fn select_python_for_phase_h2() -> Option<String> {
     for candidate in ["python3.12", "python3.11", "python3.10", "python3"] {
         if python_meets_min_version(candidate, 3, 10) {
             return Some(candidate.to_string());
@@ -198,34 +212,14 @@ fn select_python_for_phase11() -> Option<String> {
 }
 
 #[test]
-#[ignore] // requires Python venv setup (~7s)
-fn phase11_sdk_001_sdk_002_choke_110_and_e2e_1101_parity_contracts() {
-    assert_command_success(
-        "TypeScript",
-        "validation",
-        "npm",
-        &["--prefix", "sdk/typescript", "run", "--silent", "validate"],
-        &[],
-    );
-
-    let ts_summary = run_parity_script(
-        "TypeScript",
-        "node",
-        &["sdk/typescript/scripts/parity.js"],
-        &[],
-    );
-    assert_shared_sdk_coverage(&ts_summary, "typescript");
-
-    let temp = tempfile::tempdir().expect("python parity venv tempdir");
+#[ignore] // requires Python venv + cargo build (~15s)
+fn phase_h2_req_h2_001_req_h2_002_python_rpc_reference_app_parity_contracts() {
+    let temp = tempfile::tempdir().expect("python phase_h2 venv tempdir");
     let venv_dir = temp.path().join("venv");
     let venv_dir_str = venv_dir.to_string_lossy().to_string();
 
-    let Some(python_program) = select_python_for_phase11() else {
-        eprintln!(
-            "Skipping Python parity segment: no python interpreter >= 3.10 available in PATH"
-        );
-        return;
-    };
+    let python_program = select_python_for_phase_h2()
+        .expect("Python phase H2 verification requires python >= 3.10 in PATH");
 
     assert_command_success(
         "Python",
@@ -244,15 +238,29 @@ fn phase11_sdk_001_sdk_002_choke_110_and_e2e_1101_parity_contracts() {
         "Python",
         "package install",
         &venv_python_str,
-        &["-m", "pip", "install", &python_sdk_str],
+        &[
+            "-m",
+            "pip",
+            "install",
+            "fastapi",
+            "httpx",
+            "uvicorn",
+            &python_sdk_str,
+        ],
         &[],
     );
 
-    let py_summary = run_parity_script(
+    let summary = run_script(
         "Python",
+        "h2_reference_flow",
         &venv_python_str,
-        &["sdk/python/scripts/parity.py"],
+        &["sdk/python/scripts/h2_reference_flow.py"],
         &[],
     );
-    assert_shared_sdk_coverage(&py_summary, "python");
+    assert_summary(
+        &summary,
+        "python",
+        "h2_reference_flow",
+        &H2_REFERENCE_CHECKS,
+    );
 }

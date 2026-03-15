@@ -80,7 +80,7 @@ fn shell_module(id: &str, script: &str) -> ModuleConfig {
 /// Original single-shot mode: reads request from env, runs once, prints response.
 fn run_single_shot() {
     let request = std::env::var("MOBKIT_RPC_REQUEST")
-        .expect("MOBKIT_RPC_REQUEST must be set for phase0b_rpc_gateway");
+        .expect("MOBKIT_RPC_REQUEST must be set for rpc_gateway");
 
     let config = MobKitConfig {
         modules: vec![shell_module(
@@ -88,7 +88,7 @@ fn run_single_shot() {
             r#"printf '%s\n' '{"event_id":"evt-routing","source":"module","timestamp_ms":101,"event":{"kind":"module","module":"routing","event_type":"ready","payload":{"family":"routing","health":{"state":"healthy"},"tools":{"list_method":"routing/tools.list","representative_call":{"method":"routing/tool.call","params_schema":{"tool":"string","input":"json"}}}}}}'"#,
         )],
         discovery: DiscoverySpec {
-            namespace: "phase0b-rpc".to_string(),
+            namespace: "mobkit-rpc".to_string(),
             modules: vec!["routing".to_string()],
         },
         pre_spawn: vec![],
@@ -416,7 +416,7 @@ async fn run_persistent() {
     // 1. Read first line — must be mobkit/init
     let mut init_line = String::new();
     if reader.read_line(&mut init_line).await.unwrap_or(0) == 0 {
-        eprintln!("phase0b_rpc_gateway: stdin closed before init request");
+        eprintln!("rpc_gateway: stdin closed before init request");
         std::process::exit(1);
     }
 

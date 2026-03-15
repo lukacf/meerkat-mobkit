@@ -119,10 +119,10 @@ fn run_script(
         .map(|(_, v)| resolve_program(program, v))
         .unwrap_or_else(|| program.to_string());
     let mut command = Command::new(&resolved);
-    command.current_dir(repo_root()).args(args).env(
-        "MOBKIT_RPC_GATEWAY_BIN",
-        env!("CARGO_BIN_EXE_phase0b_rpc_gateway"),
-    );
+    command
+        .current_dir(repo_root())
+        .args(args)
+        .env("MOBKIT_RPC_GATEWAY_BIN", env!("CARGO_BIN_EXE_rpc_gateway"));
 
     for (key, value) in extra_env {
         command.env(key, value);

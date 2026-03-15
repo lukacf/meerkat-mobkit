@@ -36,9 +36,11 @@ pub use decisions::{
     parse_release_metadata_json, validate_bigquery_naming, validate_release_metadata,
     validate_runtime_ops_policy,
 };
+#[allow(deprecated)]
+pub use governance::validate_phase0_governance_contracts;
 pub use governance::{
-    GovernanceValidationError, STRICT_TRACEABILITY_STATUSES, validate_governance_state,
-    validate_phase0_governance_contracts, validate_traceability_statuses,
+    GovernanceValidationError, STRICT_TRACEABILITY_STATUSES, validate_governance_contracts,
+    validate_governance_state, validate_traceability_statuses,
 };
 pub use http_auth::{auth_middleware, with_auth_layer};
 pub use http_console::{

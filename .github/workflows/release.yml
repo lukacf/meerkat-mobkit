@@ -104,7 +104,7 @@ jobs:
           ARCHIVE_EXT: ${{ matrix.archive_ext }}
         run: |
           set -euo pipefail
-          BINARIES=("phase0b_rpc_gateway")
+          BINARIES=("mobkit_gateway")
           mkdir -p dist
           VERSION="${VERSION#v}"
           VERSION="${VERSION//\//-}"

@@ -36,7 +36,7 @@ fn main() {
         match run_meerkat_baseline_verification_once("sh", &args, &[], Duration::from_secs(5)) {
             Ok(report) => report,
             Err(err) => {
-                eprintln!("phase0 baseline validation failed: {err:?}");
+                eprintln!("baseline validation failed: {err:?}");
                 process::exit(1);
             }
         };
