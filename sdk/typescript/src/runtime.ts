@@ -88,28 +88,34 @@ function nextRequestId(method: string): string {
 
 /** Serialize a config value for JSON transport.
  *
- * Recursively walks dicts/arrays. Calls toDict() on objects that have it
- * (e.g. typed config classes). Non-serializable leaves become their
- * constructor name so JSON.stringify won't throw.
+ * Recursively walks dicts/arrays with cycle detection. Calls toDict()
+ * on objects that have it (e.g. typed config classes). Cyclic or
+ * non-serializable leaves become their constructor name.
  */
-function serializeConfig(value: unknown): unknown {
+function serializeConfig(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+): unknown {
   if (value === null || value === undefined) return value;
   if (typeof value === "boolean" || typeof value === "number" || typeof value === "string")
     return value;
-  if (typeof value === "object" && "toDict" in (value as Record<string, unknown>)) {
-    return (value as { toDict(): unknown }).toDict();
+  if (typeof value !== "object") return String(value);
+  const obj = value as object;
+  if (seen.has(obj)) {
+    return `[circular:${obj.constructor?.name ?? "Object"}]`;
   }
-  if (Array.isArray(value)) {
-    return value.map(serializeConfig);
+  seen.add(obj);
+  if ("toDict" in (obj as Record<string, unknown>)) {
+    return (obj as { toDict(): unknown }).toDict();
   }
-  if (typeof value === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      result[k] = serializeConfig(v);
-    }
-    return result;
+  if (Array.isArray(obj)) {
+    return obj.map((v) => serializeConfig(v, seen));
   }
-  return String(value);
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    result[k] = serializeConfig(v, seen);
+  }
+  return result;
 }
 
 // -- MobKitRuntime --------------------------------------------------------

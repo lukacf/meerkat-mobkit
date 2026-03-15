@@ -653,7 +653,6 @@ fn req_003_event_bus_merges_agent_and_module_events_with_deterministic_order() {
 }
 
 #[test]
-#[ignore]
 fn req_003_attribution_integrity_rejects_source_event_mismatch() {
     let mismatched = json!({
         "event_id": "evt-bad",
@@ -793,7 +792,6 @@ fn req_004_and_req_005_router_parity_library_and_rpc_with_typed_unloaded_error()
 }
 
 #[test]
-#[ignore]
 fn req_001_config_error_when_discovery_references_unknown_module() {
     let config = MobKitConfig {
         modules: vec![],

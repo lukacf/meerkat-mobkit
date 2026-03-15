@@ -954,6 +954,10 @@ def _validate_bearer_token(token: str, auth_config: Any) -> bool:
     except Exception:
         return False
 
+    # Header must be a dict with alg field.
+    if not isinstance(header, dict):
+        return False
+
     secret = config_dict.get("shared_secret", "")
     if not secret:
         return False
@@ -968,11 +972,14 @@ def _validate_bearer_token(token: str, auth_config: Any) -> bool:
     if not hmac.compare_digest(expected_sig, parts[2]):
         return False
 
-    # Decode and validate claims
+    # Decode and validate claims — must be a JSON object.
     try:
         payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
         claims = json.loads(base64.urlsafe_b64decode(payload_b64))
     except Exception:
+        return False
+
+    if not isinstance(claims, dict):
         return False
 
     if config_dict.get("issuer") and claims.get("iss") != config_dict["issuer"]:
@@ -987,14 +994,20 @@ def _validate_bearer_token(token: str, auth_config: Any) -> bool:
         elif token_aud != expected_aud:
             return False
 
-    # Enforce expiry with leeway
+    # Enforce expiry with leeway — exp/nbf must be numeric.
     leeway = config_dict.get("leeway_seconds", 60)
     now = time.time()
-    if "exp" in claims:
-        if now > claims["exp"] + leeway:
+    exp = claims.get("exp")
+    if exp is not None:
+        if not isinstance(exp, (int, float)):
             return False
-    if "nbf" in claims:
-        if now < claims["nbf"] - leeway:
+        if now > exp + leeway:
+            return False
+    nbf = claims.get("nbf")
+    if nbf is not None:
+        if not isinstance(nbf, (int, float)):
+            return False
+        if now < nbf - leeway:
             return False
 
     return True

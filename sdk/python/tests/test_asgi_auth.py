@@ -129,6 +129,36 @@ class TestValidateBearerTokenJwt:
         token = _make_hs256_token(self.SECRET, {"aud": ["other-app"]})
         assert _validate_bearer_token(token, self._config(audience="my-app")) is False
 
+    def test_string_exp_rejected(self):
+        """exp must be numeric, not a string."""
+        token = _make_hs256_token(self.SECRET, {"exp": "0"})
+        assert _validate_bearer_token(token, self._config()) is False
+
+    def test_array_payload_rejected(self):
+        """JWT payload must be a JSON object, not an array."""
+        token = _make_hs256_token(self.SECRET, claims=None)
+        # Manually forge a token with array payload
+        hdr_b64 = base64.urlsafe_b64encode(json.dumps({"alg": "HS256"}).encode()).rstrip(b"=").decode()
+        payload_b64 = base64.urlsafe_b64encode(json.dumps([]).encode()).rstrip(b"=").decode()
+        signing_input = f"{hdr_b64}.{payload_b64}".encode()
+        sig = base64.urlsafe_b64encode(
+            hmac.new(self.SECRET.encode(), signing_input, hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+        array_token = f"{hdr_b64}.{payload_b64}.{sig}"
+        assert _validate_bearer_token(array_token, self._config()) is False
+
+    def test_non_dict_header_rejected(self):
+        """JWT header must be a JSON object."""
+        # Forge a token with array header
+        hdr_b64 = base64.urlsafe_b64encode(json.dumps([1, 2]).encode()).rstrip(b"=").decode()
+        payload_b64 = base64.urlsafe_b64encode(json.dumps({}).encode()).rstrip(b"=").decode()
+        signing_input = f"{hdr_b64}.{payload_b64}".encode()
+        sig = base64.urlsafe_b64encode(
+            hmac.new(self.SECRET.encode(), signing_input, hashlib.sha256).digest()
+        ).rstrip(b"=").decode()
+        bad_token = f"{hdr_b64}.{payload_b64}.{sig}"
+        assert _validate_bearer_token(bad_token, self._config()) is False
+
 
 # ---------------------------------------------------------------------------
 # _validate_bearer_token — non-JWT providers
