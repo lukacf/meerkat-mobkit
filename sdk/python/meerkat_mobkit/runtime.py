@@ -903,14 +903,14 @@ def _serialize_config(config: Any, _seen: set[int] | None = None) -> Any:
     """
     if config is None or isinstance(config, (bool, int, float, str)):
         return config
-    if hasattr(config, "to_dict"):
-        return config.to_dict()
     obj_id = id(config)
     if _seen is None:
         _seen = set()
     if obj_id in _seen:
         return f"[circular:{type(config).__qualname__}]"
     _seen.add(obj_id)
+    if hasattr(config, "to_dict"):
+        return config.to_dict()
     if isinstance(config, dict):
         return {k: _serialize_config(v, _seen) for k, v in config.items()}
     if isinstance(config, (list, tuple)):
