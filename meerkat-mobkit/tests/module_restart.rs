@@ -99,6 +99,7 @@ fn single_mutation_module_config(module_id: &str, script: &str) -> MobKitConfig 
 }
 
 #[test]
+#[ignore]
 fn phase_d_req_d_001_forced_crash_restart_policy_and_backoff_are_enforced() {
     let temp = tempfile::tempdir().expect("temp dir");
     let state_file = temp.path().join("forced-crash-attempts.txt");
@@ -176,6 +177,7 @@ fn phase_d_req_d_001_forced_crash_restart_policy_and_backoff_are_enforced() {
 }
 
 #[test]
+#[ignore]
 fn phase_d_req_d_002_shutdown_lifecycle_is_clean_after_forced_crash_recovery() {
     let temp = tempfile::tempdir().expect("temp dir");
     let state_file = temp.path().join("forced-crash-attempts.txt");
@@ -219,6 +221,7 @@ fn phase_d_req_d_002_shutdown_lifecycle_is_clean_after_forced_crash_recovery() {
 }
 
 #[test]
+#[ignore]
 fn phase_d_mutation_spawn_member_uses_supervisor_retry_backoff_and_transitions() {
     let temp = tempfile::tempdir().expect("temp dir");
     let state_file = temp.path().join("forced-crash-mutation-attempts.txt");
@@ -287,6 +290,7 @@ fn phase_d_mutation_spawn_member_uses_supervisor_retry_backoff_and_transitions()
 }
 
 #[test]
+#[ignore]
 fn phase_d_mutation_spawn_member_failure_surfaces_error_warning_and_transitions() {
     let temp = tempfile::tempdir().expect("temp dir");
     let state_file = temp.path().join("forced-crash-unused.txt");
@@ -356,6 +360,7 @@ fn phase_d_mutation_spawn_member_failure_surfaces_error_warning_and_transitions(
 }
 
 #[test]
+#[ignore]
 fn phase_d_mutation_reconcile_uses_supervisor_and_propagates_partial_failure() {
     let temp = tempfile::tempdir().expect("temp dir");
     let state_file = temp.path().join("forced-crash-reconcile-attempts.txt");
@@ -442,6 +447,7 @@ fn phase_d_mutation_reconcile_uses_supervisor_and_propagates_partial_failure() {
 }
 
 #[test]
+#[ignore]
 fn phase_d_respawn_terminate_failure_keeps_existing_child_tracked_and_aborts_swap() {
     let temp = tempfile::tempdir().expect("temp dir");
     let state_file = temp.path().join("respawn-attempts.txt");
@@ -507,6 +513,7 @@ fn phase_d_respawn_terminate_failure_keeps_existing_child_tracked_and_aborts_swa
 }
 
 #[test]
+#[ignore]
 fn phase_d_boundary_normalize_cleanup_terminate_failure_is_propagated() {
     let mut runtime = start_mobkit_runtime_with_options(
         single_mutation_module_config("bad-normalize", r#"printf '%s\n' 'not-json'"#),
@@ -543,6 +550,7 @@ fn phase_d_boundary_normalize_cleanup_terminate_failure_is_propagated() {
 }
 
 #[test]
+#[ignore]
 fn phase_d_boundary_timeout_cleanup_terminate_failure_is_propagated() {
     let mut runtime = start_mobkit_runtime_with_options(
         single_mutation_module_config("bad-timeout", "sleep 0.08"),

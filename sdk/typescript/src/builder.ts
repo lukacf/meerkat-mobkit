@@ -67,7 +67,7 @@ function defaultConfig(): MobKitBuilderConfig {
  * ```ts
  * const rt = await MobKit.builder()
  *   .mob("config/mob.toml")
- *   .gateway("./target/release/phase0b_rpc_gateway")
+ *   .gateway("./target/release/mobkit_gateway")
  *   .build();
  * ```
  */

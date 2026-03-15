@@ -26,7 +26,7 @@ use meerkat_core::service::SessionError;
 use meerkat_mob::MobError;
 
 pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const KEEP_ALIVE_TEXT: &str = "keep-alive";
+pub(crate) const KEEP_ALIVE_TEXT: &str = "keep-alive";
 
 pub fn agent_event_sse(interaction_id: &str, seq: u64, event: &AgentEvent) -> Event {
     let event_name = agent_event_name(event);
@@ -67,6 +67,9 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
             | MobError::SessionError(SessionError::NotFound { .. })
             | MobError::CommsError(SendError::PeerNotFound(_)),
         ) => http_error(StatusCode::NOT_FOUND, "member_not_found"),
+        MobRuntimeError::Mob(MobError::SessionError(SessionError::Unsupported(_))) => {
+            http_error(StatusCode::UNPROCESSABLE_ENTITY, "unsupported")
+        }
         _ => http_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_server_error"),
     }
 }

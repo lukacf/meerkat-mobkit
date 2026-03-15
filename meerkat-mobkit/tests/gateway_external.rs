@@ -153,7 +153,7 @@ fn require_gate(flag: &str) {
 const DEFAULT_P0B_BQ_PROJECT: &str = "king-dnn-training-dev";
 
 fn run_phase0b_rpc_gateway(request_json: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_phase0b_rpc_gateway"))
+    let output = Command::new(env!("CARGO_BIN_EXE_rpc_gateway"))
         .env("MOBKIT_RPC_REQUEST", request_json)
         .output()
         .expect("phase0b rpc gateway should start");

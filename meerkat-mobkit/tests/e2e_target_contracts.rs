@@ -46,7 +46,7 @@ const BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
 const BOUNDARY_ENV_VALUE_MCP: &str = "mcp";
 
 fn fixture_binary_path() -> PathBuf {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_phase_c_mcp_fixture") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
         return PathBuf::from(path);
     }
 
@@ -58,26 +58,17 @@ fn fixture_binary_path() -> PathBuf {
     let binary_path = workspace_root
         .join("target")
         .join("debug")
-        .join("phase_c_mcp_fixture");
+        .join("mcp_fixture");
     if binary_path.exists() {
         return binary_path;
     }
 
     let status = Command::new("cargo")
-        .args([
-            "build",
-            "-p",
-            "meerkat-mobkit",
-            "--bin",
-            "phase_c_mcp_fixture",
-        ])
+        .args(["build", "-p", "meerkat-mobkit", "--bin", "mcp_fixture"])
         .current_dir(workspace_root)
         .status()
-        .expect("build phase_c_mcp_fixture");
-    assert!(
-        status.success(),
-        "building phase_c_mcp_fixture must succeed"
-    );
+        .expect("build mcp_fixture");
+    assert!(status.success(), "building mcp_fixture must succeed");
     binary_path
 }
 
@@ -1890,7 +1881,8 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
         "mobkit/gating/pending",
         "mobkit/gating/decide",
         "mobkit/gating/audit",
-        "mobkit/call_tool"
+        "mobkit/call_tool",
+        "mobkit/models/catalog"
     ]);
 
     assert_eq!(

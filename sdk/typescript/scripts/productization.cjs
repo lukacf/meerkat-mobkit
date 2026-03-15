@@ -251,7 +251,7 @@ async function run() {
   });
 
   await check("async factory fromGatewayBin transport errors surface", async () => {
-    const factoryClient = MobkitAsyncClient.fromGatewayBin("/__mobkit__/missing/phase-g-gateway");
+    const factoryClient = MobkitAsyncClient.fromGatewayBin("/__mobkit__/missing/sdk-test-gateway");
     let observed = null;
     try {
       await factoryClient.status("ts-prod-factory-gateway-missing");
@@ -270,7 +270,7 @@ async function run() {
   await check("async factory fromHttp status success", async () => {
     let observedCall = null;
     const factoryClient = MobkitAsyncClient.fromHttp("https://mobkit.local/rpc", {
-      headers: { "x-phase-g": "true" },
+      headers: { "x-sdk-productization": "true" },
       fetchImpl: async (url, init = {}) => {
         observedCall = { url, init };
         const payload = JSON.parse(String(init.body || "{}"));
@@ -304,7 +304,7 @@ async function run() {
       throw new Error(`unexpected fromHttp request method: ${JSON.stringify(observedCall)}`);
     }
     const headers = observedCall.init.headers || {};
-    if ((headers["x-phase-g"] || headers["X-Phase-G"]) !== "true") {
+    if ((headers["x-sdk-productization"] || headers["X-Sdk-Productization"]) !== "true") {
       throw new Error(`missing custom header in fromHttp request: ${JSON.stringify(headers)}`);
     }
     const payload = JSON.parse(String(observedCall.init.body || "{}"));

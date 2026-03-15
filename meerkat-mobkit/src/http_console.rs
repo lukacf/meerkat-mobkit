@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::mob_handle_runtime::RealMobRuntime;
 use crate::runtime::{
-    ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
+    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
     extract_bearer_token_from_header, handle_console_rest_json_route_with_snapshot,
 };
 
@@ -128,7 +128,27 @@ async fn build_live_snapshot(
         mods.sort();
         mods
     };
-    ConsoleLiveSnapshot::new(running, loaded_modules, members, true)
+    let mut agents = members
+        .iter()
+        .map(|member| ConsoleAgentLiveSnapshot {
+            agent_id: member.meerkat_id.clone(),
+            member_id: member.meerkat_id.clone(),
+            label: member.meerkat_id.clone(),
+            kind: "meerkat".to_string(),
+            profile: Some(member.profile.clone()),
+            state: Some(member.state.clone()),
+            session_id: member.session_id.clone(),
+        })
+        .collect::<Vec<_>>();
+    agents.sort_by(|left, right| left.label.cmp(&right.label));
+    ConsoleLiveSnapshot::new(
+        Some(runtime.handle().mob_id().to_string()),
+        running,
+        loaded_modules,
+        agents,
+        members,
+        true,
+    )
 }
 
 pub async fn console_frontend_index_handler() -> impl IntoResponse {

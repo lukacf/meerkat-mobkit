@@ -220,7 +220,8 @@ pub fn handle_mobkit_rpc_json(
                     "mobkit/gating/pending",
                     "mobkit/gating/decide",
                     "mobkit/gating/audit",
-                    "mobkit/call_tool"
+                    "mobkit/call_tool",
+                    "mobkit/models/catalog"
                 ],
                 "loaded_modules": runtime.loaded_modules(),
                 "runtime_capabilities": {
@@ -233,6 +234,25 @@ pub fn handle_mobkit_rpc_json(
             })),
             error: None,
         },
+        "mobkit/models/catalog" => {
+            let entries: Vec<serde_json::Value> = meerkat_models::catalog()
+                .iter()
+                .filter_map(|e| serde_json::to_value(e).ok())
+                .collect();
+            let defaults: Vec<serde_json::Value> = meerkat_models::provider_defaults()
+                .iter()
+                .filter_map(|d| serde_json::to_value(d).ok())
+                .collect();
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "models": entries,
+                    "provider_defaults": defaults,
+                })),
+                error: None,
+            }
+        }
         "mobkit/reconcile" => {
             let modules = match params::required_string_array(&request.params, "modules") {
                 Ok(m) => m,
@@ -958,6 +978,7 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/gating/decide",
                         "mobkit/gating/audit",
                         "mobkit/call_tool",
+                        "mobkit/models/catalog",
                         "mobkit/send_message",
                         "mobkit/find_members",
                         "mobkit/ensure_member",
@@ -1611,6 +1632,25 @@ pub async fn handle_unified_rpc_json(
                         message: "Invalid params: module_id and tool required".to_string(),
                     }),
                 },
+            }
+        }
+        "mobkit/models/catalog" => {
+            let entries: Vec<serde_json::Value> = meerkat_models::catalog()
+                .iter()
+                .filter_map(|e| serde_json::to_value(e).ok())
+                .collect();
+            let defaults: Vec<serde_json::Value> = meerkat_models::provider_defaults()
+                .iter()
+                .filter_map(|d| serde_json::to_value(d).ok())
+                .collect();
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "models": entries,
+                    "provider_defaults": defaults,
+                })),
+                error: None,
             }
         }
         "mobkit/send_message" => {

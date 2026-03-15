@@ -24,7 +24,7 @@ use std::{
     process,
 };
 
-use meerkat_mobkit::validate_phase0_governance_contracts;
+use meerkat_mobkit::validate_governance_contracts;
 
 fn read_required(path: &PathBuf) -> Result<String, String> {
     fs::read_to_string(path).map_err(|err| format!("failed to read {}: {err}", path.display()))
@@ -90,11 +90,10 @@ fn main() {
         }
     };
 
-    if let Err(err) = validate_phase0_governance_contracts(&spec, &plan, &checklist, &traceability)
-    {
-        eprintln!("phase0 governance validation failed: {err}");
+    if let Err(err) = validate_governance_contracts(&spec, &plan, &checklist, &traceability) {
+        eprintln!("governance validation failed: {err}");
         process::exit(1);
     }
 
-    println!("phase0 governance validation passed");
+    println!("governance validation passed");
 }

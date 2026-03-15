@@ -18,17 +18,37 @@ pub struct ConsoleRestJsonResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleAgentLiveSnapshot {
+    pub agent_id: String,
+    pub member_id: String,
+    pub label: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleLiveSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
     pub running: bool,
     pub loaded_modules: Vec<String>,
+    #[serde(default)]
+    pub agents: Vec<ConsoleAgentLiveSnapshot>,
     pub members: Vec<MobMemberSnapshot>,
     pub has_mob_runtime: bool,
 }
 
 impl ConsoleLiveSnapshot {
     pub fn new(
+        runtime_id: Option<String>,
         running: bool,
         loaded_modules: Vec<String>,
+        agents: Vec<ConsoleAgentLiveSnapshot>,
         members: Vec<MobMemberSnapshot>,
         has_mob_runtime: bool,
     ) -> Self {
@@ -39,9 +59,18 @@ impl ConsoleLiveSnapshot {
                 deduped_modules.push(module_id);
             }
         }
+        let mut seen_agents = BTreeSet::new();
+        let mut deduped_agents = Vec::new();
+        for agent in agents {
+            if seen_agents.insert(agent.agent_id.clone()) {
+                deduped_agents.push(agent);
+            }
+        }
         Self {
+            runtime_id,
             running,
             loaded_modules: deduped_modules,
+            agents: deduped_agents,
             members,
             has_mob_runtime,
         }
@@ -130,13 +159,28 @@ pub fn handle_console_rest_json_route_with_snapshot(
 }
 
 fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiveSnapshot {
+    let loaded_modules = decisions
+        .modules
+        .iter()
+        .map(|module| module.id.clone())
+        .collect::<Vec<_>>();
+    let agents = loaded_modules
+        .iter()
+        .map(|module_id| ConsoleAgentLiveSnapshot {
+            agent_id: module_id.clone(),
+            member_id: module_id.clone(),
+            label: module_id.clone(),
+            kind: "module_agent".to_string(),
+            profile: None,
+            state: Some("idle".to_string()),
+            session_id: None,
+        })
+        .collect::<Vec<_>>();
     ConsoleLiveSnapshot::new(
+        None,
         !decisions.modules.is_empty(),
-        decisions
-            .modules
-            .iter()
-            .map(|module| module.id.clone())
-            .collect(),
+        loaded_modules,
+        agents,
         Vec::new(),
         false,
     )
@@ -267,6 +311,7 @@ fn build_console_experience_contract(
 
     serde_json::json!({
         "contract_version": MOBKIT_CONTRACT_VERSION,
+        "runtime_id": live_snapshot.runtime_id,
         "runtime_capabilities": {
             "can_spawn_members": has_mob,
             "can_send_messages": has_mob,

@@ -85,6 +85,10 @@ pub struct MobMemberSnapshot {
     pub meerkat_id: String,
     pub profile: String,
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub wired_to: Vec<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
@@ -122,6 +126,8 @@ fn snapshot_from_entry(entry: RosterEntry) -> MobMemberSnapshot {
             MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
             MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
         },
+        runtime_mode: Some(entry.runtime_mode.to_string()),
+        session_id: entry.member_ref.session_id().map(ToString::to_string),
         wired_to,
         labels: entry.labels,
     }

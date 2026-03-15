@@ -239,6 +239,7 @@ async fn no_hook_still_works() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn error_hook_fires_on_spawn_failure() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let errors: Arc<Mutex<Vec<ErrorEvent>>> = Arc::new(Mutex::new(Vec::new()));

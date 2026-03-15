@@ -168,7 +168,7 @@ fn is_missing_evidence(value: &str) -> bool {
     )
 }
 
-pub fn validate_phase0_governance_contracts(
+pub fn validate_governance_contracts(
     spec_yaml: &str,
     plan_yaml: &str,
     checklist_yaml: &str,
@@ -179,4 +179,15 @@ pub fn validate_phase0_governance_contracts(
     validate_governance_state(".rct/checklist.yaml", checklist_yaml)?;
     validate_traceability_statuses(traceability_markdown)?;
     Ok(())
+}
+
+/// Deprecated alias — use [`validate_governance_contracts`] instead.
+#[deprecated(since = "0.4.11", note = "renamed to validate_governance_contracts")]
+pub fn validate_phase0_governance_contracts(
+    spec_yaml: &str,
+    plan_yaml: &str,
+    checklist_yaml: &str,
+    traceability_markdown: &str,
+) -> Result<(), GovernanceValidationError> {
+    validate_governance_contracts(spec_yaml, plan_yaml, checklist_yaml, traceability_markdown)
 }

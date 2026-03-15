@@ -279,7 +279,7 @@ async def main() -> int:
 
     async def gateway_factory_error_check() -> None:
         factory_client = MobkitAsyncTypedClient.from_gateway_bin(
-            "/__mobkit__/missing/phase-g-gateway"
+            "/__mobkit__/missing/sdk-test-gateway"
         )
         observed: Exception | None = None
         try:
@@ -332,7 +332,7 @@ async def main() -> int:
         try:
             factory_client = MobkitAsyncTypedClient.from_http(
                 "https://mobkit.local/rpc",
-                headers={"x-phase-g": "true"},
+                headers={"x-sdk-productization": "true"},
                 timeout_seconds=0.25,
             )
             status = await factory_client.status("py-prod-factory-http-status")
@@ -355,7 +355,7 @@ async def main() -> int:
         if observed.get("timeout_seconds") != 0.25:
             raise AssertionError(f"unexpected from_http timeout: {observed}")
         headers = cast(dict[str, str], observed.get("headers") or {})
-        if headers.get("x-phase-g") != "true":
+        if headers.get("x-sdk-productization") != "true":
             raise AssertionError(f"missing custom header in from_http request: {headers}")
         payload = cast(dict[str, Any], observed.get("payload") or {})
         if payload.get("method") != "mobkit/status":

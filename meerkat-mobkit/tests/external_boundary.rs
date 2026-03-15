@@ -233,7 +233,7 @@ fn external_unexpected_payload_from_subprocess_is_rejected() {
 #[test]
 #[ignore = "external baseline subprocess check"]
 fn external_phase0_baseline_check_binary_runs() {
-    let output = Command::new(env!("CARGO_BIN_EXE_phase0_baseline_check"))
+    let output = Command::new(env!("CARGO_BIN_EXE_baseline_check"))
         .env("MEERKAT_REPO", "/Users/luka/src/raik")
         .output()
         .expect("phase0 baseline binary should run");

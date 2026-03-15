@@ -33,7 +33,7 @@ release: ## Build all workspace crates (release)
 
 test: ## Run Rust tests via cargo-nextest
 	@echo "$(YELLOW)Running Rust tests…$(NC)"
-	cargo nextest run --workspace -E 'not test(phase0_governance)' --no-fail-fast
+	cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
 	@echo "$(GREEN)Rust tests passed.$(NC)"
 
 test-python: ## Run Python SDK tests

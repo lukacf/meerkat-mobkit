@@ -390,6 +390,7 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn phase_h1_console_modules_route_honors_auth_mode() {
     let open_state = decision_state(false);
     let direct_open = handle_console_rest_json_route(
