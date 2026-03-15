@@ -106,10 +106,11 @@ async fn build_live_snapshot(runtime: &RealMobRuntime) -> ConsoleLiveSnapshot {
         .map(|agent| agent.label.clone())
         .collect::<Vec<_>>();
     topology_nodes.sort();
+    let loaded_modules = agents.iter().map(|a| a.label.clone()).collect();
     ConsoleLiveSnapshot::new(
         Some(runtime.handle().mob_id().to_string()),
         running,
-        Vec::new(),
+        loaded_modules,
         agents,
         topology_nodes,
     )

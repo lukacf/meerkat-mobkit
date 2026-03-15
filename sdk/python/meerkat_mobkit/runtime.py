@@ -29,6 +29,7 @@ from .types import (
     MemoryIndexResult,
     MemoryQueryResult,
     MemoryStoreInfo,
+    ModelsCatalogResult,
     ReconcileEdgesReport,
     ReconcileResult,
     RediscoverReport,
@@ -306,6 +307,11 @@ class MobHandle:
             params["arguments"] = arguments
         raw = await self._runtime._rpc("mobkit/call_tool", params)
         return CallToolResult.from_dict(raw)
+
+    async def models_catalog(self) -> ModelsCatalogResult:
+        """Return the curated model catalog with provider defaults."""
+        raw = await self._runtime._rpc("mobkit/models/catalog")
+        return ModelsCatalogResult.from_dict(raw)
 
     def tool_caller(self, module_id: str) -> ToolCaller:
         """Return a callable scoped to one MCP module.

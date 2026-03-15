@@ -52,6 +52,8 @@ fn map_runtime_error(error: &MobRuntimeError) -> (StatusCode, Json<Value>) {
             let text = error.to_string();
             if text.contains("not found") {
                 http_error(StatusCode::NOT_FOUND, "member_not_found")
+            } else if text.contains("not externally addressable") {
+                http_error(StatusCode::FORBIDDEN, "not_externally_addressable")
             } else if text.contains("unsupported") {
                 http_error(StatusCode::UNPROCESSABLE_ENTITY, "unsupported")
             } else if text.contains("busy") {
@@ -120,7 +122,10 @@ async fn interaction_stream_handler(
                 .unwrap_or_else(|_| "{}".to_string());
             let terminal = matches!(
                 envelope.payload,
-                AgentEvent::RunCompleted { .. } | AgentEvent::RunFailed { .. }
+                AgentEvent::RunCompleted { .. }
+                    | AgentEvent::RunFailed { .. }
+                    | AgentEvent::InteractionComplete { .. }
+                    | AgentEvent::InteractionFailed { .. }
             );
 
             yield Ok::<Event, Infallible>(
