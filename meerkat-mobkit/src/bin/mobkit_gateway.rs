@@ -2,11 +2,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
-use meerkat::{AgentFactory, Config, EphemeralSessionService, FactoryAgentBuilder};
 use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, MOBKIT_CONTRACT_VERSION,
@@ -399,20 +397,18 @@ async fn run() -> anyhow::Result<()> {
     let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)?;
     let runtime_id = definition.id.to_string();
 
-    let factory = AgentFactory::new(&workspace_root)
-        .comms(true)
-        .subagents(true)
-        .mob(true);
-    let mut config = Config::default();
-    config.comms.auto_enable_for_subagents = true;
-    let builder = FactoryAgentBuilder::new(factory, config);
-    let session_service = Arc::new(EphemeralSessionService::new(builder, 64));
-    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
-        .with_options(MobBootstrapOptions {
-            allow_ephemeral_sessions: true,
-            notify_orchestrator_on_resume: true,
-            default_llm_client: None,
-        });
+    let mob_spec = MobBootstrapSpec::ephemeral(
+        definition,
+        MobStorage::in_memory(),
+        workspace_root.clone(),
+        64,
+        None,
+    )
+    .with_options(MobBootstrapOptions {
+        allow_ephemeral_sessions: true,
+        notify_orchestrator_on_resume: true,
+        default_llm_client: None,
+    });
 
     let runtime = UnifiedRuntime::bootstrap(
         mob_spec,
