@@ -892,23 +892,29 @@ class AsgiApp:
         await send({"type": "http.response.body", "body": b""})
 
 
-def _serialize_config(config: Any) -> Any:
+def _serialize_config(config: Any, _seen: set[int] | None = None) -> Any:
     """Serialize a config object to a JSON-compatible dict.
 
     Calls to_dict() on dataclass configs (GoogleAuthConfig, JwtAuthConfig,
     etc.) so json.dumps won't fail with TypeError during mobkit/init.
     Non-serializable leaves (e.g. storage backend instances) are converted
     to their qualified class name so the gateway receives a meaningful
-    string instead of crashing the transport.
+    string instead of crashing the transport.  Cycle-safe via id-set.
     """
     if config is None or isinstance(config, (bool, int, float, str)):
         return config
     if hasattr(config, "to_dict"):
         return config.to_dict()
+    obj_id = id(config)
+    if _seen is None:
+        _seen = set()
+    if obj_id in _seen:
+        return f"[circular:{type(config).__qualname__}]"
+    _seen.add(obj_id)
     if isinstance(config, dict):
-        return {k: _serialize_config(v) for k, v in config.items()}
+        return {k: _serialize_config(v, _seen) for k, v in config.items()}
     if isinstance(config, (list, tuple)):
-        return [_serialize_config(v) for v in config]
+        return [_serialize_config(v, _seen) for v in config]
     # Non-serializable object — use qualified class name so the gateway
     # gets a meaningful identifier instead of a TypeError.
     return f"{type(config).__module__}.{type(config).__qualname__}"
