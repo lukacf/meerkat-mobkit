@@ -86,13 +86,30 @@ function nextRequestId(method: string): string {
   return `${method}:${++requestCounter}`;
 }
 
-/** Serialize a config value for JSON transport (calls toDict() on objects that have it). */
+/** Serialize a config value for JSON transport.
+ *
+ * Recursively walks dicts/arrays. Calls toDict() on objects that have it
+ * (e.g. typed config classes). Non-serializable leaves become their
+ * constructor name so JSON.stringify won't throw.
+ */
 function serializeConfig(value: unknown): unknown {
   if (value === null || value === undefined) return value;
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string")
+    return value;
   if (typeof value === "object" && "toDict" in (value as Record<string, unknown>)) {
     return (value as { toDict(): unknown }).toDict();
   }
-  return value;
+  if (Array.isArray(value)) {
+    return value.map(serializeConfig);
+  }
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      result[k] = serializeConfig(v);
+    }
+    return result;
+  }
+  return String(value);
 }
 
 // -- MobKitRuntime --------------------------------------------------------

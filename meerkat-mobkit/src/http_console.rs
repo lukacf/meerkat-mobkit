@@ -70,11 +70,17 @@ pub async fn console_json_handler(
     // If the request carries a Bearer token and the URL doesn't already have
     // an auth_token query param, inject it so the console-ingress auth
     // resolver can validate it through the existing query-param path.
+    //
+    // JWT tokens use base64url characters (A-Za-z0-9_-.) plus optional '='
+    // padding.  split_path_and_query uses split_once('=') for key/value
+    // separation, so '=' in the token body lands in the value side correctly
+    // and '&' never appears in valid JWTs, so no percent-encoding is needed.
     if !path.contains("auth_token=")
         && let Some(bearer) = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(extract_bearer_token_from_header)
+        && bearer.bytes().all(|b| b != b'&')
     {
         let sep = if path.contains('?') { '&' } else { '?' };
         path = format!("{path}{sep}auth_token={bearer}");

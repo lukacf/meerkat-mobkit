@@ -92,23 +92,27 @@ pub(super) async fn handle_ensure_member(
         (Some(profile), Some(meerkat_id)) if !profile.is_empty() && !meerkat_id.is_empty() => {
             let labels = match params.get("labels") {
                 None | Some(Value::Null) => None,
-                Some(v) => Some(
-                    serde_json::from_value::<std::collections::BTreeMap<String, String>>(v.clone())
-                        .map_err(|err| format!("labels must be a map of string to string: {err}")),
-                ),
+                Some(v) => {
+                    match serde_json::from_value::<std::collections::BTreeMap<String, String>>(
+                        v.clone(),
+                    ) {
+                        Ok(map) => Some(map),
+                        Err(err) => {
+                            return JsonRpcResponse {
+                                jsonrpc: JSONRPC_VERSION.to_string(),
+                                id: response_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32602,
+                                    message: format!(
+                                        "Invalid params: labels must be a map of string to string: {err}"
+                                    ),
+                                }),
+                            };
+                        }
+                    }
+                }
             };
-            if let Some(Err(reason)) = &labels {
-                return JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32602,
-                        message: format!("Invalid params: {reason}"),
-                    }),
-                };
-            }
-            let labels = labels.and_then(Result::ok);
             let context = params.get("context").cloned();
             let resume_session_id = match params.get("resume_session_id") {
                 None | Some(Value::Null) => None,

@@ -12,6 +12,7 @@ from meerkat_mobkit.runtime import (
     AsgiApp,
     MobKitRuntime,
     _auth_config_to_dict,
+    _serialize_config,
     _validate_bearer_token,
 )
 
@@ -119,6 +120,15 @@ class TestValidateBearerTokenJwt:
         token = _make_hs256_token(self.SECRET, header={"alg": "RS256", "typ": "JWT"})
         assert _validate_bearer_token(token, self._config()) is False
 
+    def test_array_audience_accepted(self):
+        """JWT aud may be an array of strings (RFC 7519 §4.1.3)."""
+        token = _make_hs256_token(self.SECRET, {"aud": ["my-app", "other-app"]})
+        assert _validate_bearer_token(token, self._config(audience="my-app")) is True
+
+    def test_array_audience_mismatch_rejected(self):
+        token = _make_hs256_token(self.SECRET, {"aud": ["other-app"]})
+        assert _validate_bearer_token(token, self._config(audience="my-app")) is False
+
 
 # ---------------------------------------------------------------------------
 # _validate_bearer_token — non-JWT providers
@@ -164,3 +174,32 @@ class TestAsgiAppGoogleAuthRejection:
         rt = MobKitRuntime.__new__(MobKitRuntime)
         app = AsgiApp(runtime=rt, auth_config=None)
         assert app._auth_config is None
+
+
+# ---------------------------------------------------------------------------
+# _serialize_config — non-serializable objects
+# ---------------------------------------------------------------------------
+
+
+class TestSerializeConfig:
+    def test_dict_with_to_dict_object(self):
+        cfg = auth.jwt("secret", issuer="iss")
+        result = _serialize_config(cfg)
+        assert result["provider"] == "jwt"
+        assert result["shared_secret"] == "secret"
+
+    def test_nested_non_serializable_becomes_class_name(self):
+        """event_log(storage=DummyStore()) must not crash json.dumps."""
+        class DummyStore:
+            pass
+        result = _serialize_config({"storage": DummyStore(), "batch_size": 10})
+        assert result["batch_size"] == 10
+        assert "DummyStore" in result["storage"]
+        # Must be JSON-serializable now
+        json.dumps(result)
+
+    def test_primitives_pass_through(self):
+        assert _serialize_config(None) is None
+        assert _serialize_config(42) == 42
+        assert _serialize_config("hello") == "hello"
+        assert _serialize_config(True) is True

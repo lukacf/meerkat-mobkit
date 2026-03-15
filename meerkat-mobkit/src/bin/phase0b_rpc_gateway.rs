@@ -508,9 +508,15 @@ external_addressable = true
     // consume.  This surfaces "accepted but ignored" config as visible noise
     // so integrators notice early rather than debugging silent no-ops.
     if let Some(runtime_options) = params.get("runtime_options").and_then(|v| v.as_object()) {
-        for key in runtime_options.keys() {
+        let unrecognized: Vec<&String> = runtime_options.keys().collect();
+        if !unrecognized.is_empty() {
             eprintln!(
-                "[mobkit-gateway] warning: runtime_options.{key} was sent by the SDK but is not consumed by the gateway — this config has no effect"
+                "[mobkit-gateway] warning: runtime_options keys [{}] were sent by the SDK but are not consumed by the gateway — this config has no effect",
+                unrecognized
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
     }

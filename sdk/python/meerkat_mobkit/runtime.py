@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import itertools
 import json
 import logging
+import time
 from typing import Any, AsyncIterator
 from urllib import request as urllib_request
 
@@ -893,14 +897,21 @@ def _serialize_config(config: Any) -> Any:
 
     Calls to_dict() on dataclass configs (GoogleAuthConfig, JwtAuthConfig,
     etc.) so json.dumps won't fail with TypeError during mobkit/init.
+    Non-serializable leaves (e.g. storage backend instances) are converted
+    to their qualified class name so the gateway receives a meaningful
+    string instead of crashing the transport.
     """
+    if config is None or isinstance(config, (bool, int, float, str)):
+        return config
     if hasattr(config, "to_dict"):
         return config.to_dict()
     if isinstance(config, dict):
         return {k: _serialize_config(v) for k, v in config.items()}
     if isinstance(config, (list, tuple)):
         return [_serialize_config(v) for v in config]
-    return config
+    # Non-serializable object — use qualified class name so the gateway
+    # gets a meaningful identifier instead of a TypeError.
+    return f"{type(config).__module__}.{type(config).__qualname__}"
 
 
 def _auth_config_to_dict(auth_config: Any) -> dict[str, Any]:
@@ -927,11 +938,6 @@ def _validate_bearer_token(token: str, auth_config: Any) -> bool:
     is blocked at AsgiApp construction time, but this is a defense-in-depth
     fallback.
     """
-    import base64
-    import hmac
-    import hashlib
-    import time
-
     config_dict = _auth_config_to_dict(auth_config)
     provider = config_dict.get("provider", "")
 
@@ -971,8 +977,15 @@ def _validate_bearer_token(token: str, auth_config: Any) -> bool:
 
     if config_dict.get("issuer") and claims.get("iss") != config_dict["issuer"]:
         return False
-    if config_dict.get("audience") and claims.get("aud") != config_dict["audience"]:
-        return False
+    expected_aud = config_dict.get("audience")
+    if expected_aud:
+        token_aud = claims.get("aud")
+        # JWT aud may be a string or an array of strings (RFC 7519 §4.1.3).
+        if isinstance(token_aud, list):
+            if expected_aud not in token_aud:
+                return False
+        elif token_aud != expected_aud:
+            return False
 
     # Enforce expiry with leeway
     leeway = config_dict.get("leeway_seconds", 60)
