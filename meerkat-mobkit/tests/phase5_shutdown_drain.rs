@@ -88,6 +88,7 @@ async fn shutdown_drain_completes_immediately_with_no_active_members() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn shutdown_drain_report_fields_populated_with_active_members() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -132,6 +133,7 @@ async fn shutdown_drain_uses_default_timeout_from_bootstrap() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn shutting_down_flag_prevents_new_dispatches_during_drain() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()

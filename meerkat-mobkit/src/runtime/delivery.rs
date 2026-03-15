@@ -188,8 +188,6 @@ impl MobkitRuntimeHandle {
             .delivery_clock_ms
             .saturating_add(DELIVERY_CLOCK_STEP_MS);
         self.delivery_clock_ms = first_attempt_ms;
-        self.delivery_rate_window_counts
-            .insert(rate_key, current_count.saturating_add(1));
 
         let boundary_outcome =
             if let Some((delivery_module, pre_spawn)) = self.module_and_prespawn("delivery") {
@@ -214,6 +212,11 @@ impl MobkitRuntimeHandle {
                     DELIVERY_SEND_MCP_TOOL,
                 )));
             };
+
+        // Charge rate limit only after the boundary call succeeded — transient
+        // MCP/module failures should not burn quota.
+        self.delivery_rate_window_counts
+            .insert(rate_key, current_count.saturating_add(1));
 
         let should_force_fail = request
             .payload

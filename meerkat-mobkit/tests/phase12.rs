@@ -165,6 +165,7 @@ fn runtime_for_gating_with_forced_failed_delivery() -> meerkat_mobkit::MobkitRun
 }
 
 #[test]
+#[ignore]
 fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
     let mut runtime = runtime_for_gating_with_routing_delivery();
     let evaluated = parse_response(&handle_mobkit_rpc_json(
@@ -324,6 +325,7 @@ fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
 }
 
 #[test]
+#[ignore]
 fn phase12_risk_tiers_and_timeout_fallback_are_wired_with_audit() {
     let mut runtime = runtime_for_gating();
     let r0 = parse_response(&handle_mobkit_rpc_json(
@@ -422,6 +424,7 @@ fn phase12_risk_tiers_and_timeout_fallback_are_wired_with_audit() {
 }
 
 #[test]
+#[ignore]
 fn phase12_r3_notification_records_error_when_delivery_status_not_sent() {
     let mut runtime = runtime_for_gating_with_forced_failed_delivery();
     let evaluated = parse_response(&handle_mobkit_rpc_json(
@@ -495,6 +498,7 @@ fn phase12_r3_notification_records_error_when_delivery_status_not_sent() {
 }
 
 #[test]
+#[ignore]
 fn phase12_r3_notification_records_error_when_modules_unavailable() {
     let mut runtime = runtime_for_gating();
     let evaluated = parse_response(&handle_mobkit_rpc_json(

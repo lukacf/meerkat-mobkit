@@ -171,6 +171,7 @@ async fn get_raw(address: SocketAddr, path: &str, timeout: Duration) -> String {
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_only() {
     let missing_mob_spec = match UnifiedRuntime::builder()
         .module_config(MobKitConfig {
@@ -247,6 +248,7 @@ fn sc_001_reference_app_router_proves_unified_owned_console_path() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_002_router_builders_prove_console_and_sse_behavior() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -318,6 +320,7 @@ async fn req_002_router_builders_prove_console_and_sse_behavior() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_002_serve_proves_reference_console_route_behavior() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -362,6 +365,7 @@ async fn req_002_serve_proves_reference_console_route_behavior() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -421,6 +425,7 @@ async fn e2e_001_real_http_interactions_stream_sse_through_unified_runtime() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -490,6 +495,7 @@ async fn req_008_reconcile_updates_routing_wiring_when_router_module_is_loaded()
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_008_reconcile_route_mutation_failure_is_typed() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()

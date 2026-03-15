@@ -507,6 +507,23 @@ external_addressable = true
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    // Warn about SDK-forwarded runtime_options that the gateway does not yet
+    // consume.  This surfaces "accepted but ignored" config as visible noise
+    // so integrators notice early rather than debugging silent no-ops.
+    if let Some(runtime_options) = params.get("runtime_options").and_then(|v| v.as_object()) {
+        let unrecognized: Vec<&String> = runtime_options.keys().collect();
+        if !unrecognized.is_empty() {
+            eprintln!(
+                "[mobkit-gateway] warning: runtime_options keys [{}] were sent by the SDK but are not consumed by the gateway — this config has no effect",
+                unrecognized
+                    .iter()
+                    .map(|k| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
     let stdout_writer = tokio::spawn(async move {

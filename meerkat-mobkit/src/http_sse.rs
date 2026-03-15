@@ -157,9 +157,11 @@ async fn mob_events_sse_handler(State(state): State<MobSseState>) -> impl IntoRe
         let mut seq = 0_u64;
         while let Some(attributed) = router_handle.event_rx.recv().await {
             let event_name = agent_event_type(&attributed.envelope.payload).to_string();
+            let source = attributed.source.to_string();
             let data = json!({
-                "agent_id": attributed.source.to_string(),
-                "event": attributed.envelope.payload,
+                "member_id": &source,
+                "source": &source,
+                "payload": attributed.envelope.payload,
             });
             yield Ok::<Event, Infallible>(
                 Event::default()
