@@ -1,4 +1,12 @@
-//! HTTP interaction streaming for direct member messaging over SSE.
+//! HTTP interaction streaming — observe-only SSE endpoint.
+//!
+//! The published console contract is:
+//!   1. Client sends the message via `mobkit/send_message` (RPC).
+//!   2. Client opens `POST /interactions/stream` with `{ member_id }` to
+//!      observe the resulting agent event stream.
+//!
+//! This endpoint does NOT send a message; it only subscribes to agent events
+//! for the given member and streams them until a terminal event arrives.
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -17,20 +25,20 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
-use crate::mob_handle_runtime::{MobRuntimeError, RealMobRuntime};
+use crate::mob_handle_runtime::MobRuntimeError;
 
+/// Observe-only request: only `member_id` is required.
 #[derive(Debug, Deserialize)]
 struct InteractionStreamRequest {
     member_id: String,
-    message: String,
 }
 
 #[derive(Clone)]
 struct InteractionState {
-    runtime: RealMobRuntime,
+    runtime: crate::mob_handle_runtime::RealMobRuntime,
 }
 
-pub fn interaction_stream_router(runtime: RealMobRuntime) -> Router {
+pub fn interaction_stream_router(runtime: crate::mob_handle_runtime::RealMobRuntime) -> Router {
     Router::new()
         .route("/interactions/stream", post(interaction_stream_handler))
         .with_state(InteractionState { runtime })
@@ -70,18 +78,11 @@ async fn interaction_stream_handler(
     Json(request): Json<InteractionStreamRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let member_id = request.member_id.trim().to_string();
-    let message = request.message.trim().to_string();
 
     if member_id.is_empty() {
         return Err(http_error(
             StatusCode::BAD_REQUEST,
             "member_id must not be empty",
-        ));
-    }
-    if message.is_empty() {
-        return Err(http_error(
-            StatusCode::BAD_REQUEST,
-            "message must not be empty",
         ));
     }
 
@@ -90,23 +91,15 @@ async fn interaction_stream_handler(
         .handle()
         .subscribe_agent_events(&MeerkatId::from(member_id.clone()))
         .await
-        .map_err(|_| http_error(StatusCode::NOT_FOUND, "member_not_found"))?;
-
-    let session_id = state
-        .runtime
-        .send_message(&member_id, message)
-        .await
-        .map_err(|error| map_runtime_error(&error))?;
+        .map_err(|error| map_runtime_error(&MobRuntimeError::Mob(error)))?;
 
     let stream = stream! {
         yield Ok::<Event, Infallible>(
             Event::default()
-                .id(format!("{session_id}:accepted"))
-                .event("accepted")
+                .event("subscribed")
                 .data(json!({
-                    "type": "accepted",
+                    "type": "subscribed",
                     "member_id": member_id,
-                    "session_id": session_id,
                 }).to_string())
         );
 
@@ -130,7 +123,7 @@ async fn interaction_stream_handler(
 
             yield Ok::<Event, Infallible>(
                 Event::default()
-                    .id(format!("{session_id}:{seq}"))
+                    .id(format!("{member_id}:{seq}"))
                     .event(event_name)
                     .data(payload),
             );

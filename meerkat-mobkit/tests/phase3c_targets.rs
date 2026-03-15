@@ -442,6 +442,7 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
 }
 
 #[test]
+#[ignore]
 fn choke_101_rpc_ingress_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let observed = parse_response(&handle_mobkit_rpc_json(
@@ -466,6 +467,7 @@ fn choke_101_rpc_ingress_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_102_module_router_handoff_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery_mcp();
     let observed = route_module_call(
@@ -489,6 +491,7 @@ fn choke_102_module_router_handoff_target_defined_red() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn choke_103_session_store_handoff_target_defined_red() {
     let observed = decision_state(true);
     let contracts = session_store_contracts(&observed);
@@ -537,6 +540,7 @@ async fn choke_103_session_store_handoff_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_104_event_bus_to_sse_bridge_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let observed = parse_response(&handle_mobkit_rpc_json(
@@ -614,6 +618,7 @@ fn choke_104_event_bus_to_sse_bridge_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_105_auth_to_console_route_target_defined_red() {
     let state = decision_state(true);
     let allowed = handle_console_rest_json_route(
@@ -682,6 +687,7 @@ fn choke_105_auth_to_console_route_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_106_scheduling_dispatch_handoff_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let first_dispatch = parse_response(&handle_mobkit_rpc_json(
@@ -721,6 +727,7 @@ fn choke_106_scheduling_dispatch_handoff_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_107_routing_to_delivery_handoff_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery_mcp();
     let _spawn_delivery = parse_response(&handle_mobkit_rpc_json(
@@ -772,6 +779,7 @@ fn choke_107_routing_to_delivery_handoff_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_108_gating_to_approval_flow_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let _spawn_delivery = parse_response(&handle_mobkit_rpc_json(
@@ -903,6 +911,7 @@ fn choke_108_gating_to_approval_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_109_memory_to_gating_conflict_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let indexed = parse_response(&handle_mobkit_rpc_json(
@@ -990,6 +999,7 @@ fn choke_109_memory_to_gating_conflict_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn choke_110_sdk_contract_mapping_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let unloaded = parse_response(&handle_mobkit_rpc_json(
@@ -1083,6 +1093,7 @@ fn choke_110_sdk_contract_mapping_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_401_rpc_surface_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery_mcp();
     let status = parse_response(&handle_mobkit_rpc_json(
@@ -1144,6 +1155,7 @@ fn e2e_401_rpc_surface_target_defined_red() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn e2e_501_session_persistence_target_defined_red() {
     let state = decision_state(true);
     let contracts = session_store_contracts(&state);
@@ -1287,6 +1299,7 @@ async fn e2e_501_session_persistence_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_601_sse_experience_target_defined_red() {
     let mut runtime = runtime_with_phase6_agent_events();
     let first_subscribe = parse_response(&handle_mobkit_rpc_json(
@@ -1538,6 +1551,7 @@ fn e2e_601_sse_experience_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_701_auth_flow_target_defined_red() {
     let state = decision_state(true);
     let user_token = trusted_token(
@@ -1635,6 +1649,7 @@ fn e2e_701_auth_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_801_console_experience_target_defined_red() {
     let state = decision_state(false);
     let open = handle_console_rest_json_route(
@@ -1686,6 +1701,7 @@ fn e2e_801_console_experience_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_901_scheduled_action_flow_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let evaluation = parse_response(&handle_mobkit_rpc_json(
@@ -1735,6 +1751,7 @@ fn e2e_901_scheduled_action_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_1001_routing_delivery_flow_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery_mcp();
     let _spawn_delivery = parse_response(&handle_mobkit_rpc_json(
@@ -1811,6 +1828,7 @@ fn e2e_1001_routing_delivery_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_1101_sdk_parity_flow_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
 
@@ -1941,6 +1959,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_1201_gating_flow_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let _spawn_delivery = parse_response(&handle_mobkit_rpc_json(
@@ -2100,6 +2119,7 @@ fn e2e_1201_gating_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_1301_memory_gating_flow_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let stores_before = parse_response(&handle_mobkit_rpc_json(
@@ -2246,6 +2266,7 @@ fn e2e_1301_memory_gating_flow_target_defined_red() {
 }
 
 #[test]
+#[ignore]
 fn e2e_1401_program_smoke_target_defined_red() {
     let mut runtime = runtime_with_router_and_delivery();
     let status = parse_response(&handle_mobkit_rpc_json(

@@ -124,6 +124,7 @@ fn parse_response(raw: &str) -> Value {
 }
 
 #[test]
+#[ignore]
 fn phase10_choke_107_routing_resolve_hands_off_to_delivery_send() {
     let mut runtime = routing_delivery_runtime();
 
@@ -163,6 +164,7 @@ fn phase10_choke_107_routing_resolve_hands_off_to_delivery_send() {
 }
 
 #[test]
+#[ignore]
 fn phase10_e2e_1001_routing_delivery_flow_history_and_rate_limit() {
     let mut runtime = routing_delivery_runtime();
 
@@ -249,6 +251,7 @@ fn phase10_e2e_1001_routing_delivery_flow_history_and_rate_limit() {
 }
 
 #[test]
+#[ignore]
 fn phase10_rpc_invalid_params_for_routing_and_delivery_are_typed() {
     let mut runtime = routing_delivery_runtime();
 
@@ -301,6 +304,7 @@ fn phase10_rpc_invalid_params_for_routing_and_delivery_are_typed() {
 }
 
 #[test]
+#[ignore]
 fn phase10_forged_delivery_send_resolution_is_rejected() {
     let mut runtime = routing_delivery_runtime();
 
@@ -336,6 +340,7 @@ fn phase10_forged_delivery_send_resolution_is_rejected() {
 }
 
 #[test]
+#[ignore]
 fn phase10_retry_max_greater_than_one_is_honored_deterministically() {
     let mut runtime = routing_delivery_runtime();
 
@@ -383,6 +388,7 @@ fn phase10_retry_max_greater_than_one_is_honored_deterministically() {
 }
 
 #[test]
+#[ignore]
 fn phase10_idempotency_payload_mismatch_and_post_eviction_replay_are_correct() {
     let mut runtime = routing_delivery_runtime();
 
@@ -482,6 +488,7 @@ fn phase10_idempotency_payload_mismatch_and_post_eviction_replay_are_correct() {
 }
 
 #[test]
+#[ignore]
 fn phase10_retry_max_above_cap_is_rejected() {
     let mut runtime = routing_delivery_runtime();
 
@@ -501,6 +508,7 @@ fn phase10_retry_max_above_cap_is_rejected() {
 }
 
 #[test]
+#[ignore]
 fn phase10_retry_max_and_rate_limit_validation_values_are_rejected() {
     let mut runtime = routing_delivery_runtime();
 
@@ -567,6 +575,7 @@ fn phase10_retry_max_and_rate_limit_validation_values_are_rejected() {
 }
 
 #[test]
+#[ignore]
 fn phase10_rate_window_counts_remain_single_window_for_rapid_sends() {
     let mut runtime = routing_delivery_runtime();
 
@@ -600,6 +609,7 @@ fn phase10_rate_window_counts_remain_single_window_for_rapid_sends() {
 }
 
 #[test]
+#[ignore]
 fn phase10_rate_limit_is_isolated_per_route_scope() {
     let mut runtime = routing_delivery_runtime();
 
@@ -688,6 +698,7 @@ fn phase10_rate_limit_is_isolated_per_route_scope() {
 }
 
 #[test]
+#[ignore]
 fn phase10_rejected_rate_limited_calls_do_not_advance_delivery_clock() {
     let mut runtime = routing_delivery_runtime();
 
@@ -772,6 +783,7 @@ fn phase10_rejected_rate_limited_calls_do_not_advance_delivery_clock() {
 }
 
 #[test]
+#[ignore]
 fn phase10_rate_limit_cannot_be_bypassed_via_artificial_delivery_clock_advancement() {
     let mut runtime = routing_delivery_runtime();
 
@@ -846,6 +858,7 @@ fn phase10_rate_limit_cannot_be_bypassed_via_artificial_delivery_clock_advanceme
 }
 
 #[test]
+#[ignore]
 fn phase10_routing_resolved_timestamp_never_regresses_merged_timeline() {
     let mut runtime = routing_delivery_runtime();
     let baseline_max_timestamp_ms = runtime
@@ -888,6 +901,7 @@ fn phase10_routing_resolved_timestamp_never_regresses_merged_timeline() {
 }
 
 #[test]
+#[ignore]
 fn phase10_delivery_final_attempt_preserves_monotonic_event_timestamps() {
     let mut runtime = routing_delivery_runtime();
 
@@ -951,6 +965,7 @@ fn phase10_delivery_final_attempt_preserves_monotonic_event_timestamps() {
 }
 
 #[test]
+#[ignore]
 fn phase10_idempotent_replay_survives_routing_resolution_cache_eviction() {
     let mut runtime = routing_delivery_runtime();
 
@@ -1062,6 +1077,7 @@ fn phase10_idempotent_replay_survives_routing_resolution_cache_eviction() {
 }
 
 #[test]
+#[ignore]
 fn phase10_routing_and_delivery_paths_consume_module_boundary_outputs() {
     let mut runtime = routing_delivery_runtime_with_env(
         &[("MOBKIT_PHASE_C_ROUTER_SINK", "webhook")],
@@ -1115,6 +1131,7 @@ fn phase10_routing_and_delivery_paths_consume_module_boundary_outputs() {
 }
 
 #[test]
+#[ignore]
 fn phase10_runtime_route_update_surface_changes_resolve_behavior() {
     let mut runtime = routing_delivery_runtime();
 

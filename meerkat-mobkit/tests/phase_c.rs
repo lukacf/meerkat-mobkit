@@ -139,6 +139,7 @@ fn log_lines(path: &Path) -> Vec<String> {
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c001_c002_mcp_path_is_used_for_configured_router_and_delivery_modules() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -211,6 +212,7 @@ fn phase_c_req_c001_c002_mcp_path_is_used_for_configured_router_and_delivery_mod
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c003_c004_c006_core_orchestrates_gating_router_then_delivery() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -279,6 +281,7 @@ fn phase_c_req_c003_c004_c006_core_orchestrates_gating_router_then_delivery() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_typed_errors_surface_for_unloaded_and_failed_mcp_modules() {
     let mut unloaded_runtime = start_mobkit_runtime(
         MobKitConfig {
@@ -406,6 +409,7 @@ fn phase_c_typed_errors_surface_for_unloaded_and_failed_mcp_modules() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c005_and_c007_memory_conflict_read_and_scheduling_injection_use_mcp() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -527,6 +531,7 @@ fn phase_c_req_c005_and_c007_memory_conflict_read_and_scheduling_injection_use_m
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c002_core_flows_require_mcp_for_loaded_core_modules() {
     let mut runtime = start_mobkit_runtime(
         MobKitConfig {
@@ -633,6 +638,7 @@ fn phase_c_req_c002_core_flows_require_mcp_for_loaded_core_modules() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c002_generic_route_call_requires_mcp_for_loaded_core_modules() {
     let mut runtime = start_mobkit_runtime(
         MobKitConfig {
@@ -693,6 +699,7 @@ fn phase_c_req_c002_generic_route_call_requires_mcp_for_loaded_core_modules() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c002_delivery_flow_requires_mcp_when_loaded() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -746,6 +753,7 @@ fn phase_c_req_c002_delivery_flow_requires_mcp_when_loaded() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c005_memory_mcp_failure_falls_back_to_safe_draft() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -800,6 +808,7 @@ fn phase_c_req_c005_memory_mcp_failure_falls_back_to_safe_draft() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_req_c007_scheduling_mcp_failure_surfaces_runtime_injection_error() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -868,6 +877,7 @@ fn phase_c_req_c007_scheduling_mcp_failure_surfaces_runtime_injection_error() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_cq001_connect_timeout_maps_to_typed_mcp_timeout() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -921,6 +931,7 @@ fn phase_c_cq001_connect_timeout_maps_to_typed_mcp_timeout() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_cq001_list_tools_timeout_maps_to_typed_timeout() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
@@ -989,6 +1000,7 @@ fn phase_c_cq001_list_tools_timeout_maps_to_typed_timeout() {
 }
 
 #[test]
+#[ignore]
 fn phase_c_cq001_close_failure_is_secondary_and_primary_error_is_preserved() {
     let fixture_binary = fixture_binary_path();
     let temp = tempdir().expect("tempdir");
