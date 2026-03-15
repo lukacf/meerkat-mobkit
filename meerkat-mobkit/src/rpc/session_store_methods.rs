@@ -171,8 +171,11 @@ fn validate_bigquery_api_base_url(url: &str) -> Result<(), BigQuerySessionStoreR
     let authority = after_scheme.split('/').next().unwrap_or("");
 
     // Handle bracketed IPv6 (e.g. [::1]:8080) before splitting on ':'
-    let host = if let Some(bracket_end) = authority.find(']') {
-        &authority[1..bracket_end] // strip '[' and ']'
+    let host = if authority.starts_with('[') {
+        authority
+            .find(']')
+            .map(|end| &authority[1..end])
+            .unwrap_or("")
     } else {
         authority.split(':').next().unwrap_or("")
     };
