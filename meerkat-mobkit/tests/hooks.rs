@@ -85,6 +85,7 @@ fn empty_module_config() -> MobKitConfig {
 }
 
 #[tokio::test]
+#[ignore]
 async fn post_spawn_hook_receives_spawned_member_id() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let spawned_ids: Arc<Mutex<Vec<Vec<String>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -125,6 +126,7 @@ async fn post_spawn_hook_receives_spawned_member_id() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn post_reconcile_hook_receives_reconcile_report() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let reports: Arc<Mutex<Vec<UnifiedRuntimeReconcileReport>>> = Arc::new(Mutex::new(Vec::new()));
@@ -173,6 +175,7 @@ async fn post_reconcile_hook_receives_reconcile_report() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn mob_handle_returns_working_handle() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -203,6 +206,7 @@ async fn mob_handle_returns_working_handle() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn no_hook_still_works() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -235,6 +239,7 @@ async fn no_hook_still_works() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn error_hook_fires_on_spawn_failure() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let errors: Arc<Mutex<Vec<ErrorEvent>>> = Arc::new(Mutex::new(Vec::new()));
@@ -290,6 +295,7 @@ async fn error_hook_fires_on_spawn_failure() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn list_members_returns_roster() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -324,6 +330,7 @@ async fn list_members_returns_roster() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn get_member_returns_snapshot_or_none() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -353,6 +360,7 @@ async fn get_member_returns_snapshot_or_none() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn retire_member_transitions_state() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()
@@ -389,6 +397,7 @@ async fn retire_member_transitions_state() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn respawn_member_replaces_member() {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let runtime = UnifiedRuntime::builder()

@@ -497,6 +497,60 @@ class MemoryIndexResult:
         )
 
 
+@dataclass(frozen=True)
+class CatalogEntry:
+    """A curated model entry from the model catalog."""
+    id: str
+    display_name: str
+    provider: str
+    tier: str
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CatalogEntry:
+        return cls(
+            id=data["id"],
+            display_name=data["display_name"],
+            provider=data["provider"],
+            tier=data["tier"],
+            context_window=data.get("context_window"),
+            max_output_tokens=data.get("max_output_tokens"),
+        )
+
+
+@dataclass(frozen=True)
+class ProviderDefaults:
+    """Provider-level grouping with a default model."""
+    provider: str
+    default_model_id: str
+    models: list[CatalogEntry]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ProviderDefaults:
+        return cls(
+            provider=data["provider"],
+            default_model_id=data["default_model_id"],
+            models=[CatalogEntry.from_dict(m) for m in data.get("models", [])],
+        )
+
+
+@dataclass(frozen=True)
+class ModelsCatalogResult:
+    """Result of a models/catalog RPC call."""
+    models: list[CatalogEntry]
+    provider_defaults: list[ProviderDefaults]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ModelsCatalogResult:
+        return cls(
+            models=[CatalogEntry.from_dict(m) for m in data.get("models", [])],
+            provider_defaults=[
+                ProviderDefaults.from_dict(p) for p in data.get("provider_defaults", [])
+            ],
+        )
+
+
 class ErrorCategory(str, Enum):
     """Error event categories matching Rust's ErrorEvent variants."""
     SPAWN_FAILURE = "spawn_failure"

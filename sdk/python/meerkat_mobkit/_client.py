@@ -36,6 +36,11 @@ class JsonRpcErrorResponse(TypedDict):
 JsonRpcResponse = JsonRpcSuccess | JsonRpcErrorResponse
 
 
+class MobkitModelsCatalogResult(TypedDict):
+    models: list[dict[str, Any]]
+    provider_defaults: list[dict[str, Any]]
+
+
 class MobkitStatusResult(TypedDict):
     contract_version: str
     running: bool
@@ -272,6 +277,19 @@ class MobkitTypedClient:
             ),
         )
 
+    def models_catalog(
+        self, request_id: str = "models_catalog"
+    ) -> MobkitModelsCatalogResult:
+        return cast(
+            MobkitModelsCatalogResult,
+            _unwrap_typed_result(
+                self.rpc(request_id, "mobkit/models/catalog", {}),
+                request_id,
+                "mobkit/models/catalog",
+                _is_models_catalog_result,
+            ),
+        )
+
 
 class MobkitAsyncTypedClient:
     def __init__(self, transport: AsyncRpcTransport):
@@ -370,6 +388,19 @@ class MobkitAsyncTypedClient:
                 "mobkit/events/subscribe",
                 dict(params) if params is not None else {},
                 _is_subscribe_result,
+            ),
+        )
+
+    async def models_catalog(
+        self, request_id: str = "models_catalog"
+    ) -> MobkitModelsCatalogResult:
+        return cast(
+            MobkitModelsCatalogResult,
+            await self.request(
+                request_id,
+                "mobkit/models/catalog",
+                {},
+                _is_models_catalog_result,
             ),
         )
 
@@ -515,6 +546,14 @@ def _is_subscribe_result(value: Any) -> bool:
             return False
 
     return True
+
+
+def _is_models_catalog_result(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("models"), list)
+        and isinstance(value.get("provider_defaults"), list)
+    )
 
 
 def _is_string_list(value: Any) -> bool:

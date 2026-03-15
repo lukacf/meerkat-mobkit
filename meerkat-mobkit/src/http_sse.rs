@@ -67,6 +67,9 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
             | MobError::SessionError(SessionError::NotFound { .. })
             | MobError::CommsError(SendError::PeerNotFound(_)),
         ) => http_error(StatusCode::NOT_FOUND, "member_not_found"),
+        MobRuntimeError::Mob(MobError::SessionError(SessionError::Unsupported(_))) => {
+            http_error(StatusCode::UNPROCESSABLE_ENTITY, "unsupported")
+        }
         _ => http_error(StatusCode::INTERNAL_SERVER_ERROR, "internal_server_error"),
     }
 }

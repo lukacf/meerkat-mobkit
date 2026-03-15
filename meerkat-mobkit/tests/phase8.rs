@@ -205,13 +205,19 @@ fn phase8_console_001_capability_driven_rendering_contract() {
                 "agent_id":"router",
                 "member_id":"router",
                 "label":"router",
-                "kind":"module_agent"
+                "kind":"module_agent",
+                "profile": null,
+                "state":"idle",
+                "session_id": null
             },
             {
                 "agent_id":"delivery",
                 "member_id":"delivery",
                 "label":"delivery",
-                "kind":"module_agent"
+                "kind":"module_agent",
+                "profile": null,
+                "state":"idle",
+                "session_id": null
             }
         ])
     );
@@ -276,7 +282,13 @@ fn phase8_console_001_capability_driven_rendering_contract() {
 #[test]
 fn phase8_console_live_snapshot_prefers_runtime_state_over_config_modules() {
     let state = decision_state(false);
-    let runtime_snapshot = ConsoleLiveSnapshot::new(false, vec!["router".to_string()]);
+    let runtime_snapshot = ConsoleLiveSnapshot::new(
+        None,
+        false,
+        vec!["router".to_string()],
+        vec![],
+        vec!["router".to_string()],
+    );
     let response = handle_console_rest_json_route_with_snapshot(
         &state,
         &ConsoleRestJsonRequest {

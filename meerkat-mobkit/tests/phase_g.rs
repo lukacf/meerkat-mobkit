@@ -60,7 +60,18 @@ const PRODUCTIZATION_CHECKS: [&str; 12] = [
 ];
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
+}
+
+/// Resolve a program name to an absolute path using a given PATH string.
+fn resolve_program(program: &str, path: &str) -> String {
+    for dir in path.split(':') {
+        let candidate = PathBuf::from(dir).join(program);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    program.to_string()
 }
 
 fn assert_command_success(
@@ -70,7 +81,12 @@ fn assert_command_success(
     args: &[&str],
     extra_env: &[(&str, String)],
 ) {
-    let mut command = Command::new(program);
+    let resolved = extra_env
+        .iter()
+        .find(|(k, _)| *k == "PATH")
+        .map(|(_, v)| resolve_program(program, v))
+        .unwrap_or_else(|| program.to_string());
+    let mut command = Command::new(&resolved);
     command.current_dir(repo_root()).args(args);
 
     for (key, value) in extra_env {
@@ -97,7 +113,12 @@ fn run_script(
     args: &[&str],
     extra_env: &[(&str, String)],
 ) -> ScriptSummary {
-    let mut command = Command::new(program);
+    let resolved = extra_env
+        .iter()
+        .find(|(k, _)| *k == "PATH")
+        .map(|(_, v)| resolve_program(program, v))
+        .unwrap_or_else(|| program.to_string());
+    let mut command = Command::new(&resolved);
     command.current_dir(repo_root()).args(args).env(
         "MOBKIT_RPC_GATEWAY_BIN",
         env!("CARGO_BIN_EXE_phase0b_rpc_gateway"),
@@ -217,22 +238,69 @@ fn select_python_for_phase_g() -> Option<String> {
     None
 }
 
+/// Build a PATH string that includes Node.js bin directories.
+///
+/// `cargo nextest` may strip NVM/Homebrew entries from the inherited `PATH`,
+/// causing bare `npm` / `node` / `tsc` lookups to fail.  This helper
+/// prepends well-known Node install locations so that both the top-level
+/// command *and* any subprocesses it spawns (e.g. `tsc`, `node`) can be found.
+fn node_augmented_path() -> String {
+    let current = std::env::var("PATH").unwrap_or_default();
+
+    let mut extra_dirs: Vec<String> = Vec::new();
+
+    // NVM: check NVM_DIR or the default ~/.nvm.
+    let home = std::env::var("HOME").unwrap_or_default();
+    let nvm_dir = std::env::var("NVM_DIR").unwrap_or_else(|_| format!("{home}/.nvm"));
+    let nvm_root = PathBuf::from(&nvm_dir).join("versions/node");
+    if let Ok(entries) = std::fs::read_dir(&nvm_root) {
+        let mut versions: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .map(|e| e.path())
+            .collect();
+        versions.sort();
+        if let Some(latest) = versions.last() {
+            let bin = latest.join("bin");
+            if bin.exists() {
+                extra_dirs.push(bin.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    // Homebrew (macOS).
+    let brew = PathBuf::from("/opt/homebrew/bin");
+    if brew.exists() {
+        extra_dirs.push(brew.to_string_lossy().to_string());
+    }
+
+    if extra_dirs.is_empty() {
+        return current;
+    }
+
+    extra_dirs.push(current);
+    extra_dirs.join(":")
+}
+
 #[test]
 fn phase_g_req_g_001_req_g_002_sdk_productization_contracts() {
+    let node_path = node_augmented_path();
+    let path_env = [("PATH", node_path.clone())];
+
     assert_command_success(
         "TypeScript",
         "validation",
         "npm",
         &["--prefix", "sdk/typescript", "run", "--silent", "validate"],
-        &[],
+        &path_env,
     );
 
     let ts_parity = run_script(
         "TypeScript",
         "parity",
         "node",
-        &["sdk/typescript/scripts/parity.js"],
-        &[],
+        &["sdk/typescript/scripts/parity.cjs"],
+        &path_env,
     );
     assert_summary(&ts_parity, "typescript", &PARITY_CHECKS, "parity");
 
@@ -240,8 +308,8 @@ fn phase_g_req_g_001_req_g_002_sdk_productization_contracts() {
         "TypeScript",
         "productization",
         "node",
-        &["sdk/typescript/scripts/productization.js"],
-        &[],
+        &["sdk/typescript/scripts/productization.cjs"],
+        &path_env,
     );
     assert_summary(
         &ts_productization,

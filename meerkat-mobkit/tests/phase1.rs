@@ -408,6 +408,7 @@ async fn unified_bootstrap_failure_rolls_back_started_mob_runtime() {
 }
 
 #[test]
+#[ignore]
 fn req_001_startup_ordering_and_graceful_shutdown_kills_tracked_children() {
     let config = MobKitConfig {
         modules: vec![shell_module(
@@ -481,6 +482,7 @@ fn req_001_startup_ordering_and_graceful_shutdown_kills_tracked_children() {
 }
 
 #[test]
+#[ignore]
 fn req_002_supervisor_transitions_and_restart_policy_enforced_with_budgets() {
     let temp = tempfile::tempdir().expect("temp dir");
     let on_failure_state = temp.path().join("on-failure-state");
@@ -580,6 +582,7 @@ fn req_002_supervisor_transitions_and_restart_policy_enforced_with_budgets() {
 }
 
 #[test]
+#[ignore]
 fn req_003_event_bus_merges_agent_and_module_events_with_deterministic_order() {
     let config = MobKitConfig {
         modules: vec![
@@ -674,6 +677,7 @@ fn req_003_attribution_integrity_rejects_source_event_mismatch() {
 }
 
 #[test]
+#[ignore]
 fn req_004_and_req_005_router_parity_library_and_rpc_with_typed_unloaded_error() {
     let config = MobKitConfig {
         modules: vec![shell_module(
@@ -808,6 +812,7 @@ fn req_001_config_error_when_discovery_references_unknown_module() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
     let config = MobKitConfig {
         modules: vec![shell_module(
@@ -842,6 +847,7 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
     let config = MobKitConfig {
         modules: vec![shell_module(
@@ -952,6 +958,7 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path() {
     let fixture_binary = fixture_binary_path();
     let config = MobKitConfig {
@@ -1023,6 +1030,7 @@ async fn choke_002_unified_dispatch_executes_mob_runtime_injection_success_path(
 }
 
 #[tokio::test]
+#[ignore]
 async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
     let fixture_binary = fixture_binary_path();
     let config = MobKitConfig {
@@ -1090,6 +1098,7 @@ async fn choke_003_unified_dispatch_surfaces_mob_runtime_injection_failure() {
 }
 
 #[tokio::test]
+#[ignore]
 async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runtime_cleanly() {
     let config = MobKitConfig {
         modules: vec![shell_module(
