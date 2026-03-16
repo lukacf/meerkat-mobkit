@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-03-16
+
+### Added
+
+- Full multimodal `send_message` — `ContentInput` (text + images) flows end-to-end through the mob pipeline to the agent session
+- `mobkit/send_message` RPC accepts `"content"` field with multimodal blocks alongside existing `"message"` string
+- Python SDK `MobHandle.send(content=[...])` for multimodal delivery
+- `mobkit/models/catalog` enriched with per-model `profile` including `vision` and `image_tool_results` capability flags
+- Python SDK `CatalogEntry` gains `vision` and `image_tool_results` fields
+- `MobBootstrapSpec::persistent()` convenience constructor for `PersistentSessionService` with session store forwarding
+- `MobBootstrapSpec::ephemeral()` convenience constructor with optional `AgentSessionStore` override
+
+### Changed
+
+- Bump all meerkat crate dependencies to 0.4.13
+- MCP `call_tool` adapted for `Vec<ContentBlock>` return type (with lossy-serialization warning for non-text blocks)
+- `ToolResult.content` updated from `String` to `Vec<ContentBlock>`
+- `RealMobRuntime::send_message` and `UnifiedRuntime::send_message` now accept `impl Into<ContentInput>`
+
+### Fixed
+
+- `FactoryAgentBuilder` session store forwarding — custom stores (e.g. BigQuery) are now passed through to `AgentFactory`, eliminating unnecessary JSONL fallback, redb lock contention, and duplicate persistence
+
 ## [0.4.11] - 2026-03-15
 
 ### Changed
