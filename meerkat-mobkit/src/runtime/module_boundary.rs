@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use meerkat_core::ContentBlock;
 use meerkat_mcp::{McpConnection, McpError, McpServerConfig};
 use serde_json::Value;
 use tokio::time::timeout;
@@ -187,6 +188,33 @@ async fn list_tools_with_timeout(
         .map_err(|error| mcp_list_tools_error(module_id, error))
 }
 
+/// Flatten `Vec<ContentBlock>` to a single text string for MobKit's JSON pipeline.
+///
+/// MCP module tools return text in practice. If the result contains only
+/// text blocks, concatenate them. If non-text blocks are present, serialize
+/// the full block list to JSON and log a warning — this is lossy and will
+/// be replaced when the pipeline supports multimodal content natively.
+fn content_blocks_to_text(blocks: Vec<ContentBlock>) -> String {
+    let all_text = blocks
+        .iter()
+        .all(|b| matches!(b, ContentBlock::Text { .. }));
+    if all_text {
+        blocks
+            .into_iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text),
+                _ => None,
+            })
+            .collect::<String>()
+    } else {
+        eprintln!(
+            "WARN mobkit: MCP tool returned multimodal content blocks; \
+             serializing to JSON string (lossy) until pipeline supports native multimodal"
+        );
+        serde_json::to_string(&blocks).unwrap_or_default()
+    }
+}
+
 async fn call_tool_with_timeout(
     module_id: &str,
     tool_name: &str,
@@ -194,7 +222,7 @@ async fn call_tool_with_timeout(
     args: &Value,
     timeout_duration: Duration,
 ) -> Result<String, RuntimeBoundaryError> {
-    timeout(timeout_duration, connection.call_tool(tool_name, args))
+    let blocks = timeout(timeout_duration, connection.call_tool(tool_name, args))
         .await
         .map_err(|_| {
             mcp_timeout_error(
@@ -203,7 +231,8 @@ async fn call_tool_with_timeout(
                 timeout_duration,
             )
         })?
-        .map_err(|error| mcp_tool_call_error(module_id, tool_name, error))
+        .map_err(|error| mcp_tool_call_error(module_id, tool_name, error))?;
+    Ok(content_blocks_to_text(blocks))
 }
 
 async fn close_with_timeout(

@@ -36,6 +36,7 @@ use meerkat::{
     FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
 use meerkat_core::AgentToolDispatcher;
+use meerkat_core::ContentBlock;
 use meerkat_core::error::{AgentError, ToolError};
 use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
 use meerkat_mob::{MobDefinition, MobStorage};
@@ -253,7 +254,7 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
         });
         match self.bridge.call("callback/call_tool", params).await {
             Ok(result) => {
-                let content = result
+                let text = result
                     .get("content")
                     .map(|v| {
                         if let Some(s) = v.as_str() {
@@ -265,13 +266,15 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
                     .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default());
                 Ok(ToolResult {
                     tool_use_id: call.id.to_string(),
-                    content,
+                    content: vec![ContentBlock::Text { text }],
                     is_error: false,
                 })
             }
             Err(err) => Ok(ToolResult {
                 tool_use_id: call.id.to_string(),
-                content: format!("Tool execution failed: {err}"),
+                content: vec![ContentBlock::Text {
+                    text: format!("Tool execution failed: {err}"),
+                }],
                 is_error: true,
             }),
         }

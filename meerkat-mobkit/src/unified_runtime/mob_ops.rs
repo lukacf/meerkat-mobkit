@@ -56,9 +56,9 @@ impl UnifiedRuntime {
     pub async fn send_message(
         &self,
         member_id: &str,
-        message: String,
+        content: impl Into<meerkat_core::ContentInput>,
     ) -> Result<String, MobRuntimeError> {
-        self.mob_runtime.send_message(member_id, message).await
+        self.mob_runtime.send_message(member_id, content).await
     }
 
     /// Find members matching a label key-value pair.

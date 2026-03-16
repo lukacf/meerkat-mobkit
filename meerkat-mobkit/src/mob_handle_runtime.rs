@@ -354,16 +354,17 @@ impl RealMobRuntime {
     pub async fn send_message(
         &self,
         member_id: &str,
-        message: String,
+        content: impl Into<meerkat_core::ContentInput>,
     ) -> Result<String, MobRuntimeError> {
         if member_id.trim().is_empty() {
             return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
         }
-        if message.trim().is_empty() {
+        let content = content.into();
+        if content.text_content().is_empty() {
             return Err(MobRuntimeError::InvalidInput("message must not be empty"));
         }
         self.handle
-            .send_message(MeerkatId::from(member_id), message)
+            .send_message(MeerkatId::from(member_id), content)
             .await
             .map(|session_id| session_id.to_string())
             .map_err(Into::into)

@@ -234,25 +234,12 @@ pub fn handle_mobkit_rpc_json(
             })),
             error: None,
         },
-        "mobkit/models/catalog" => {
-            let entries: Vec<serde_json::Value> = meerkat_models::catalog()
-                .iter()
-                .filter_map(|e| serde_json::to_value(e).ok())
-                .collect();
-            let defaults: Vec<serde_json::Value> = meerkat_models::provider_defaults()
-                .iter()
-                .filter_map(|d| serde_json::to_value(d).ok())
-                .collect();
-            JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: Some(serde_json::json!({
-                    "models": entries,
-                    "provider_defaults": defaults,
-                })),
-                error: None,
-            }
-        }
+        "mobkit/models/catalog" => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(build_models_catalog_result()),
+            error: None,
+        },
         "mobkit/reconcile" => {
             let modules = match params::required_string_array(&request.params, "modules") {
                 Ok(m) => m,
@@ -1634,25 +1621,12 @@ pub async fn handle_unified_rpc_json(
                 },
             }
         }
-        "mobkit/models/catalog" => {
-            let entries: Vec<serde_json::Value> = meerkat_models::catalog()
-                .iter()
-                .filter_map(|e| serde_json::to_value(e).ok())
-                .collect();
-            let defaults: Vec<serde_json::Value> = meerkat_models::provider_defaults()
-                .iter()
-                .filter_map(|d| serde_json::to_value(d).ok())
-                .collect();
-            JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: Some(serde_json::json!({
-                    "models": entries,
-                    "provider_defaults": defaults,
-                })),
-                error: None,
-            }
-        }
+        "mobkit/models/catalog" => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(build_models_catalog_result()),
+            error: None,
+        },
         "mobkit/send_message" => {
             mob_methods::handle_send_message(runtime, response_id, &request.params).await
         }
@@ -1739,6 +1713,29 @@ pub async fn handle_unified_rpc_json(
     } else {
         serialize_response(&response)
     }
+}
+
+fn build_models_catalog_result() -> Value {
+    let entries: Vec<Value> = meerkat_models::catalog()
+        .iter()
+        .filter_map(|e| {
+            let mut val = serde_json::to_value(e).ok()?;
+            if let Some(profile) = meerkat_models::profile_for(e.provider, e.id)
+                && let Ok(p) = serde_json::to_value(&profile)
+            {
+                val["profile"] = p;
+            }
+            Some(val)
+        })
+        .collect();
+    let defaults: Vec<Value> = meerkat_models::provider_defaults()
+        .iter()
+        .filter_map(|d| serde_json::to_value(d).ok())
+        .collect();
+    serde_json::json!({
+        "models": entries,
+        "provider_defaults": defaults,
+    })
 }
 
 fn serialize_response(response: &JsonRpcResponse) -> String {
