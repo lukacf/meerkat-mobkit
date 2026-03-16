@@ -53,14 +53,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .spawn(
             ProfileName::from("lead"),
             MeerkatId::from("lead-1"),
-            Some("You are concise. 1 short paragraph max.".to_string()),
+            Some(meerkat_core::ContentInput::Text(
+                "You are concise. 1 short paragraph max.".to_string(),
+            )),
         )
         .await?;
     handle
         .spawn(
             ProfileName::from("worker"),
             MeerkatId::from("worker-1"),
-            Some("You are a helper worker.".to_string()),
+            Some(meerkat_core::ContentInput::Text(
+                "You are a helper worker.".to_string(),
+            )),
         )
         .await?;
     handle

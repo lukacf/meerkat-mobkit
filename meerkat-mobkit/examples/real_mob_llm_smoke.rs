@@ -59,14 +59,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .spawn(
             ProfileName::from("lead"),
             MeerkatId::from("lead-1"),
-            Some("You are the lead. Keep responses brief and direct.".to_string()),
+            Some(meerkat_core::ContentInput::Text(
+                "You are the lead. Keep responses brief and direct.".to_string(),
+            )),
         )
         .await?;
     handle
         .spawn(
             ProfileName::from("worker"),
             MeerkatId::from("worker-1"),
-            Some("You are a worker. Help the lead when asked.".to_string()),
+            Some(meerkat_core::ContentInput::Text(
+                "You are a worker. Help the lead when asked.".to_string(),
+            )),
         )
         .await?;
     handle

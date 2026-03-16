@@ -548,9 +548,12 @@ class CatalogEntry:
     tier: str
     context_window: int | None = None
     max_output_tokens: int | None = None
+    vision: bool = False
+    image_tool_results: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CatalogEntry:
+        profile = data.get("profile", {})
         return cls(
             id=data["id"],
             display_name=data["display_name"],
@@ -558,6 +561,8 @@ class CatalogEntry:
             tier=data["tier"],
             context_window=data.get("context_window"),
             max_output_tokens=data.get("max_output_tokens"),
+            vision=profile.get("vision", False),
+            image_tool_results=profile.get("image_tool_results", False),
         )
 
 

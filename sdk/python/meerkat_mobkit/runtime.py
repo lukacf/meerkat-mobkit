@@ -428,12 +428,33 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/reconcile_edges")
         return ReconcileEdgesReport.from_dict(raw)
 
-    async def send(self, member_id: str, message: str) -> SendMessageResult:
-        """Send a message to a mob member and return the accepting session."""
-        raw = await self._runtime._rpc(
-            "mobkit/send_message",
-            {"member_id": member_id, "message": message},
-        )
+    async def send(
+        self,
+        member_id: str,
+        message: str | None = None,
+        *,
+        content: list[dict[str, Any]] | None = None,
+    ) -> SendMessageResult:
+        """Send a message to a mob member and return the accepting session.
+
+        Args:
+            member_id: Target member ID.
+            message: Plain text message (simple path).
+            content: Multimodal content blocks, e.g.
+                ``[{"type": "text", "text": "describe this"},
+                  {"type": "image", "media_type": "image/png", "data": "<base64>"}]``
+
+        Either ``message`` or ``content`` must be provided. If both are given,
+        ``message`` takes precedence.
+        """
+        params: dict[str, Any] = {"member_id": member_id}
+        if message is not None:
+            params["message"] = message
+        elif content is not None:
+            params["content"] = content
+        else:
+            raise ValueError("either message or content must be provided")
+        raw = await self._runtime._rpc("mobkit/send_message", params)
         return SendMessageResult.from_dict(raw)
 
     async def query_events(

@@ -1,10 +1,33 @@
 //! RPC handler implementations for mob member operations.
 
+use meerkat_core::ContentInput;
 use serde_json::Value;
 
 use crate::unified_runtime::UnifiedRuntime;
 
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
+
+/// Extract content from params as `ContentInput`.
+///
+/// Accepts either:
+/// - `"message": "plain text"` (string — backwards-compatible)
+/// - `"content": "plain text"` (string shorthand)
+/// - `"content": [{"type":"text","text":"..."},{"type":"image",...}]` (multimodal blocks)
+///
+/// `message` takes precedence if both are present.
+fn extract_content(params: &Value) -> Option<ContentInput> {
+    if let Some(s) = params.get("message").and_then(Value::as_str)
+        && !s.is_empty()
+    {
+        return Some(ContentInput::Text(s.to_string()));
+    }
+    if let Some(content_val) = params.get("content")
+        && let Ok(input) = serde_json::from_value::<ContentInput>(content_val.clone())
+    {
+        return Some(input);
+    }
+    None
+}
 
 pub(super) async fn handle_send_message(
     runtime: &UnifiedRuntime,
@@ -12,11 +35,11 @@ pub(super) async fn handle_send_message(
     params: &Value,
 ) -> JsonRpcResponse {
     let member_id = params.get("member_id").and_then(Value::as_str);
-    let message = params.get("message").and_then(Value::as_str);
+    let content = extract_content(params);
 
-    match (member_id, message) {
-        (Some(member_id), Some(message)) if !member_id.is_empty() && !message.is_empty() => {
-            match runtime.send_message(member_id, message.to_string()).await {
+    match (member_id, content) {
+        (Some(member_id), Some(content)) if !member_id.is_empty() => {
+            match runtime.send_message(member_id, content).await {
                 Ok(session_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -44,7 +67,7 @@ pub(super) async fn handle_send_message(
             result: None,
             error: Some(JsonRpcError {
                 code: -32602,
-                message: "Invalid params: member_id and message required".to_string(),
+                message: "Invalid params: member_id and message (or content) required".to_string(),
             }),
         },
     }
