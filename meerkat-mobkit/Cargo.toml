@@ -38,6 +38,7 @@ meerkat-mcp = "0.4.11"
 meerkat-models = "0.4.11"
 meerkat = { version = "0.4.11", features = ["comms", "sub-agents", "skills", "mcp", "memory-store"] }
 meerkat-session = "0.4.11"
+meerkat-store = "0.4.11"
 tempfile = "3"
 async-trait = "0.1"
 

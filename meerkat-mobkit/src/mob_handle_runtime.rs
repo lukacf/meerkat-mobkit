@@ -1,13 +1,17 @@
 //! Mob member lifecycle management — bootstrap, spawn, reconcile, and roster queries.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use meerkat::{AgentFactory, Config, FactoryAgentBuilder, SessionStore};
 use meerkat_client::LlmClient;
+use meerkat_core::AgentSessionStore;
 use meerkat_mob::{
     MeerkatId, MemberRef, MemberState, MobBuilder, MobDefinition, MobError, MobHandle,
     MobSessionService, MobState, MobStorage, RosterEntry, SpawnMemberSpec,
 };
+use meerkat_store::StoreAdapter;
 use serde::{Deserialize, Serialize};
 
 /// Member state constant for active members.
@@ -52,6 +56,64 @@ impl MobBootstrapSpec {
     pub fn with_options(mut self, options: MobBootstrapOptions) -> Self {
         self.options = options;
         self
+    }
+
+    /// Build an ephemeral session service with a correctly wired `AgentFactory`.
+    ///
+    /// If `session_store` is provided, it is set on the `FactoryAgentBuilder` so
+    /// that agents use the given store instead of falling back to JSONL.
+    pub fn ephemeral(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Option<Arc<dyn AgentSessionStore>>,
+    ) -> Self {
+        let factory = AgentFactory::new(&store_path)
+            .comms(true)
+            .subagents(true)
+            .mob(true);
+        let mut config = Config::default();
+        config.comms.auto_enable_for_subagents = true;
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        if let Some(store) = session_store {
+            builder.default_session_store = Some(store);
+        }
+        let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(
+            builder,
+            max_sessions,
+        ));
+        Self::new(definition, storage, session_service)
+    }
+
+    /// Build a persistent session service with a correctly wired `AgentFactory`.
+    ///
+    /// The `session_store` is used in two places:
+    /// 1. As the persistence backend for `PersistentSessionService` (checkpoint/restore).
+    /// 2. Adapted via `StoreAdapter` and set on `FactoryAgentBuilder.default_session_store`
+    ///    so that agents use it directly instead of falling back to JSONL.
+    pub fn persistent(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Arc<dyn SessionStore>,
+    ) -> Self {
+        let factory = AgentFactory::new(&store_path)
+            .comms(true)
+            .subagents(true)
+            .mob(true);
+        let mut config = Config::default();
+        config.comms.auto_enable_for_subagents = true;
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        let session_service = Arc::new(meerkat_session::PersistentSessionService::new(
+            builder,
+            max_sessions,
+            session_store,
+            None,
+        ));
+        Self::new(definition, storage, session_service)
     }
 }
 
