@@ -148,6 +148,28 @@ impl UnifiedRuntime {
         Ok(())
     }
 
+    /// Send a message from a local member to a member in an external mob.
+    ///
+    /// The remote member must already be peered (via `wire_cross_mob`).
+    /// Delivers via the remote mob handle's `send_message`.
+    pub async fn send_cross_mob(
+        &self,
+        _from_local_member: &str,
+        remote_member_id: &str,
+        remote_mob_id: &str,
+        content: impl Into<meerkat_core::ContentInput>,
+    ) -> Result<String, CrossMobError> {
+        let _entry = self.resolve_contact(remote_mob_id)?;
+        let remote_handle = self.get_peer_handle(remote_mob_id).await?;
+        let remote_mid = MeerkatId::from(remote_member_id);
+        let content = content.into();
+        let session_id = remote_handle
+            .send_message(remote_mid, content)
+            .await
+            .map_err(CrossMobError::Mob)?;
+        Ok(session_id.to_string())
+    }
+
     /// List external mobs from the contact directory.
     pub fn list_external_mobs(&self) -> Vec<ContactEntry> {
         self.contact_directory
