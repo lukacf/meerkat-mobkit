@@ -683,10 +683,16 @@ class MobHandle:
         *,
         content: list[dict[str, Any]] | None = None,
     ) -> SendMessageResult:
-        """Send a message to a member in an external mob.
+        """Inject a message into a remote mob member's session.
+
+        This is an app-level injection — the remote agent receives the
+        message but does not know the sender. For agent-to-agent
+        communication with sender identity and reply path, use
+        ``wire_cross_mob()`` to set up peering, then agents communicate
+        directly via their comms ``send`` tool.
 
         Args:
-            from_member_id: Local member initiating the send.
+            from_member_id: Local member context (logged, not used for delivery).
             remote_member_id: Target member in the external mob.
             remote_mob_id: ID of the external mob.
             message: Plain text message.

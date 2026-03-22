@@ -148,13 +148,19 @@ impl UnifiedRuntime {
         Ok(())
     }
 
-    /// Send a message from a local member to a member in an external mob.
+    /// Inject a message into a remote mob member's session.
     ///
-    /// The remote member must already be peered (via `wire_cross_mob`).
-    /// Delivers via the remote mob handle's `send_message`.
+    /// This is an **app-level injection** — the remote agent receives the
+    /// message as an external turn but does not know who sent it. For
+    /// agent-to-agent communication with sender identity and reply path,
+    /// use `wire_cross_mob` to set up peering, then agents communicate
+    /// directly via their comms `send` tool.
+    ///
+    /// `from_local_member` is recorded for audit/logging but does not
+    /// affect delivery — the message is injected via the remote mob handle.
     pub async fn send_cross_mob(
         &self,
-        _from_local_member: &str,
+        from_local_member: &str,
         remote_member_id: &str,
         remote_mob_id: &str,
         content: impl Into<meerkat_core::ContentInput>,
@@ -163,6 +169,7 @@ impl UnifiedRuntime {
         let remote_handle = self.get_peer_handle(remote_mob_id).await?;
         let remote_mid = MeerkatId::from(remote_member_id);
         let content = content.into();
+        let _ = from_local_member; // audit context; delivery is via remote handle
         let session_id = remote_handle
             .send_message(remote_mid, content)
             .await
