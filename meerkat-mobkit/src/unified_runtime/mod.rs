@@ -1,6 +1,6 @@
 //! Unified runtime — combines mob lifecycle, module management, and operational subsystems.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{AttributedEvent, MeerkatId, MobEventRouterHandle, SpawnMemberSpec};
+use meerkat_mob::{AttributedEvent, MeerkatId, MobEventRouterHandle, MobHandle, SpawnMemberSpec};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
@@ -17,6 +17,7 @@ use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_w
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
 
 pub mod builder;
+pub mod cross_mob;
 pub mod edge_reconcile;
 pub mod edge_types;
 pub mod event_log;
@@ -111,6 +112,10 @@ pub struct UnifiedRuntime {
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
     event_log: Option<event_log::EventLogHandle>,
+
+    // Cross-mob communication
+    contact_directory: Option<crate::contact_directory::ContactDirectory>,
+    peer_mob_handles: tokio::sync::RwLock<BTreeMap<String, MobHandle>>,
 }
 
 enum MobEventIngress {
@@ -148,6 +153,8 @@ impl UnifiedRuntime {
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
             event_log: None,
+            contact_directory: None,
+            peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
         }
     }
 

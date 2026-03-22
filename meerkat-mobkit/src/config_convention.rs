@@ -41,6 +41,8 @@ pub struct ConventionalPaths {
     pub gating_toml: Option<PathBuf>,
     /// Routing config (e.g. `deployment/routing.toml`).
     pub routing_toml: Option<PathBuf>,
+    /// Contact directory TOML (e.g. `config/contacts.toml`).
+    pub contacts_toml: Option<PathBuf>,
     /// All discovered schedule files, in order:
     /// defaults first (e.g. `config/defaults/schedules.toml`),
     /// then deployment overrides (e.g. `deployment/schedules.toml`).
@@ -59,6 +61,7 @@ impl ConventionalPaths {
         let mob_toml = check_file(config.join("mob.toml"));
         let gating_toml = check_file(config.join("gating.toml"));
         let routing_toml = check_file(deployment.join("routing.toml"));
+        let contacts_toml = check_file(config.join("contacts.toml"));
 
         let mut schedule_files = Vec::new();
         if let Some(p) = check_file(config.join("defaults").join("schedules.toml")) {
@@ -72,6 +75,7 @@ impl ConventionalPaths {
             mob_toml,
             gating_toml,
             routing_toml,
+            contacts_toml,
             schedule_files,
         }
     }

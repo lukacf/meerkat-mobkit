@@ -975,7 +975,11 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/respawn_member",
                         "mobkit/reconcile_edges",
                         "mobkit/rediscover",
-                        "mobkit/query_events"
+                        "mobkit/query_events",
+                        "mobkit/cross_mob/wire",
+                        "mobkit/cross_mob/unwire",
+                        "mobkit/cross_mob/send",
+                        "mobkit/cross_mob/directory"
                     ],
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
@@ -1650,6 +1654,18 @@ pub async fn handle_unified_rpc_json(
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
         "mobkit/query_events" => {
             mob_methods::handle_query_events(runtime, response_id, request.params).await
+        }
+        "mobkit/cross_mob/wire" => {
+            mob_methods::handle_cross_mob_wire(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/unwire" => {
+            mob_methods::handle_cross_mob_unwire(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/send" => {
+            mob_methods::handle_cross_mob_send(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/directory" => {
+            mob_methods::handle_cross_mob_directory(runtime, response_id).await
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method

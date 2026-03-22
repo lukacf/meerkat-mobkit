@@ -540,6 +540,27 @@ class MemoryIndexResult:
 
 
 @dataclass(frozen=True)
+class CrossMobContactEntry:
+    """An entry in the cross-mob contact directory."""
+    mob_id: str
+    transport: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CrossMobContactEntry:
+        transport = data.get("transport", "")
+        if isinstance(transport, dict):
+            if "Tcp" in transport:
+                transport = f"tcp://{transport['Tcp']}"
+            elif "Uds" in transport:
+                transport = f"uds://{transport['Uds']}"
+            else:
+                transport = "inproc"
+        elif transport == "Inproc":
+            transport = "inproc"
+        return cls(mob_id=data.get("mob_id", ""), transport=transport)
+
+
+@dataclass(frozen=True)
 class CatalogEntry:
     """A curated model entry from the model catalog."""
     id: str

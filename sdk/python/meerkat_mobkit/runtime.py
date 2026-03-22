@@ -638,6 +638,86 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/memory/index", params)
         return MemoryIndexResult.from_dict(raw)
 
+    # -----------------------------------------------------------------
+    # Cross-mob operations
+    # -----------------------------------------------------------------
+
+    async def wire_cross_mob(
+        self,
+        local_member_id: str,
+        remote_member_id: str,
+        remote_mob_id: str,
+    ) -> None:
+        """Wire a local member to a member in an external mob."""
+        await self._runtime._rpc(
+            "mobkit/cross_mob/wire",
+            {
+                "local_member_id": local_member_id,
+                "remote_member_id": remote_member_id,
+                "remote_mob_id": remote_mob_id,
+            },
+        )
+
+    async def unwire_cross_mob(
+        self,
+        local_member_id: str,
+        remote_member_id: str,
+        remote_mob_id: str,
+    ) -> None:
+        """Unwire a cross-mob peering."""
+        await self._runtime._rpc(
+            "mobkit/cross_mob/unwire",
+            {
+                "local_member_id": local_member_id,
+                "remote_member_id": remote_member_id,
+                "remote_mob_id": remote_mob_id,
+            },
+        )
+
+    async def send_cross_mob(
+        self,
+        from_member_id: str,
+        remote_member_id: str,
+        remote_mob_id: str,
+        message: str | None = None,
+        *,
+        content: list[dict[str, Any]] | None = None,
+    ) -> SendMessageResult:
+        """Inject a message into a remote mob member's session.
+
+        This is an app-level injection — the remote agent receives the
+        message but does not know the sender. For agent-to-agent
+        communication with sender identity and reply path, use
+        ``wire_cross_mob()`` to set up peering, then agents communicate
+        directly via their comms ``send`` tool.
+
+        Args:
+            from_member_id: Local member context (logged, not used for delivery).
+            remote_member_id: Target member in the external mob.
+            remote_mob_id: ID of the external mob.
+            message: Plain text message.
+            content: Multimodal content blocks.
+        """
+        params: dict[str, Any] = {
+            "from_member_id": from_member_id,
+            "remote_member_id": remote_member_id,
+            "remote_mob_id": remote_mob_id,
+        }
+        if message is not None:
+            params["message"] = message
+        elif content is not None:
+            params["content"] = content
+        raw = await self._runtime._rpc("mobkit/cross_mob/send", params)
+        return SendMessageResult.from_dict(raw)
+
+    async def list_external_mobs(self) -> list:
+        """List known external mobs from the contact directory."""
+        from .types import CrossMobContactEntry
+
+        raw = await self._runtime._rpc("mobkit/cross_mob/directory")
+        mobs = raw.get("mobs", []) if isinstance(raw, dict) else []
+        return [CrossMobContactEntry.from_dict(m) for m in mobs]
+
     # Alias for backward compatibility
     send_message = send
 

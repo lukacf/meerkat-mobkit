@@ -467,3 +467,174 @@ pub(super) async fn handle_query_events(
         },
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cross-mob operations
+// ---------------------------------------------------------------------------
+
+pub(super) async fn handle_cross_mob_wire(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let local_member_id = params.get("local_member_id").and_then(Value::as_str);
+    let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
+    let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
+
+    match (local_member_id, remote_member_id, remote_mob_id) {
+        (Some(local), Some(remote), Some(mob))
+            if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
+        {
+            match runtime.wire_cross_mob(local, remote, mob).await {
+                Ok(()) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "accepted": true,
+                        "local_member_id": local,
+                        "remote_member_id": remote,
+                        "remote_mob_id": mob,
+                    })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("cross_mob/wire failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message:
+                    "Invalid params: local_member_id, remote_member_id, and remote_mob_id required"
+                        .to_string(),
+            }),
+        },
+    }
+}
+
+pub(super) async fn handle_cross_mob_unwire(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let local_member_id = params.get("local_member_id").and_then(Value::as_str);
+    let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
+    let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
+
+    match (local_member_id, remote_member_id, remote_mob_id) {
+        (Some(local), Some(remote), Some(mob))
+            if !local.is_empty() && !remote.is_empty() && !mob.is_empty() =>
+        {
+            match runtime.unwire_cross_mob(local, remote, mob).await {
+                Ok(()) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "accepted": true,
+                        "local_member_id": local,
+                        "remote_member_id": remote,
+                        "remote_mob_id": mob,
+                    })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("cross_mob/unwire failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message:
+                    "Invalid params: local_member_id, remote_member_id, and remote_mob_id required"
+                        .to_string(),
+            }),
+        },
+    }
+}
+
+pub(super) async fn handle_cross_mob_send(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let from_member_id = params.get("from_member_id").and_then(Value::as_str);
+    let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
+    let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
+    let content = extract_content(params);
+
+    match (from_member_id, remote_member_id, remote_mob_id, content) {
+        (Some(from), Some(remote), Some(mob), Some(content))
+            if !from.is_empty() && !remote.is_empty() && !mob.is_empty() =>
+        {
+            match runtime.send_cross_mob(from, remote, mob, content).await {
+                Ok(session_id) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "accepted": true,
+                        "from_member_id": from,
+                        "remote_member_id": remote,
+                        "remote_mob_id": mob,
+                        "session_id": session_id,
+                    })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("cross_mob/send failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: from_member_id, remote_member_id, remote_mob_id, and message (or content) required".to_string(),
+            }),
+        },
+    }
+}
+
+pub(super) async fn handle_cross_mob_directory(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let entries: Vec<Value> = runtime
+        .list_external_mobs()
+        .into_iter()
+        .filter_map(|e| serde_json::to_value(&e).ok())
+        .collect();
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(serde_json::json!({ "mobs": entries })),
+        error: None,
+    }
+}

@@ -36,9 +36,9 @@ meerkat-client = "0.4.13"
 meerkat-mob = "0.4.13"
 meerkat-mcp = "0.4.13"
 meerkat-models = "0.4.13"
-meerkat = { version = "0.4.13", features = ["comms", "sub-agents", "skills", "mcp", "memory-store"] }
-meerkat-session = "0.4.13"
-meerkat-store = "0.4.13"
+meerkat = { version = "0.4.13", features = ["comms", "sub-agents", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }
+meerkat-session = { version = "0.4.13", features = ["session-store"] }
+meerkat-store = { version = "0.4.13", features = ["sqlite"] }
 tempfile = "3"
 async-trait = "0.1"
 
