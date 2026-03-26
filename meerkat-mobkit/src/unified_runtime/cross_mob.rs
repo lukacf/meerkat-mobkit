@@ -126,9 +126,9 @@ impl UnifiedRuntime {
 
     /// Unwire a cross-mob peering.
     ///
-    /// Propagates lookup and unwire failures — if either side fails,
-    /// the caller gets an error indicating the peering was not fully
-    /// revoked.
+    /// Best-effort on both sides — attempts to unwire both the local and
+    /// remote members. Partial cleanup is better than aborting after one
+    /// side fails, which would leave asymmetric peering.
     pub async fn unwire_cross_mob(
         &self,
         local_member_id: &str,
@@ -143,27 +143,37 @@ impl UnifiedRuntime {
         let local_mid = MeerkatId::from(local_member_id);
         let remote_mid = MeerkatId::from(remote_member_id);
 
+        let mut first_error: Option<CrossMobError> = None;
+
         // Unwire remote peer from local member
-        let (remote_peer_id, remote_comms_name) = self
+        if let Ok((remote_peer_id, remote_comms_name)) = self
             .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
-            .await?;
-        let remote_spec = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)?;
-        local_handle
-            .unwire(local_mid.clone(), PeerTarget::External(remote_spec))
             .await
-            .map_err(CrossMobError::Mob)?;
+            && let Ok(spec) = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)
+            && let Err(e) = local_handle
+                .unwire(local_mid.clone(), PeerTarget::External(spec))
+                .await
+        {
+            first_error = Some(CrossMobError::Mob(e));
+        }
 
-        // Unwire local peer from remote member
-        let (local_peer_id, local_comms_name) = self
+        // Unwire local peer from remote member (always attempt, even if above failed)
+        if let Ok((local_peer_id, local_comms_name)) = self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
-            .await?;
-        let local_spec = build_inproc_peer_spec(&local_comms_name, &local_peer_id)?;
-        remote_handle
-            .unwire(remote_mid.clone(), PeerTarget::External(local_spec))
             .await
-            .map_err(CrossMobError::Mob)?;
+            && let Ok(spec) = build_inproc_peer_spec(&local_comms_name, &local_peer_id)
+            && let Err(e) = remote_handle
+                .unwire(remote_mid.clone(), PeerTarget::External(spec))
+                .await
+            && first_error.is_none()
+        {
+            first_error = Some(CrossMobError::Mob(e));
+        }
 
-        Ok(())
+        match first_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Inject a message into a remote mob member's session.
@@ -241,7 +251,10 @@ impl UnifiedRuntime {
     /// Resolve a member's peer_id and comms name from the roster entry.
     ///
     /// Returns `(peer_id, comms_name)` where comms_name is derived as
-    /// `"{mob_id}/{profile}/{meerkat_id}"`.
+    /// `"{mob_id}/{profile}/{meerkat_id}"` — this matches the canonical
+    /// format used by meerkat-mob's `derived_comms_name()` and
+    /// `build_agent_config()`. If meerkat-mob changes this format,
+    /// this must be updated to match.
     async fn get_member_peer_info(
         &self,
         handle: &MobHandle,

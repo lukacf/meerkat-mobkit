@@ -110,12 +110,16 @@ impl ContactDirectory {
 }
 
 fn parse_transport(s: &str) -> Option<MobTransport> {
-    match s {
-        "inproc" => Some(MobTransport::Inproc),
-        _ if s.starts_with("tcp://") => Some(MobTransport::Tcp(s[6..].to_string())),
-        _ if s.starts_with("uds://") => Some(MobTransport::Uds(s[6..].to_string())),
-        _ => None,
+    if s == "inproc" {
+        return Some(MobTransport::Inproc);
     }
+    if let Some(addr) = s.strip_prefix("tcp://") {
+        return Some(MobTransport::Tcp(addr.to_string()));
+    }
+    if let Some(path) = s.strip_prefix("uds://") {
+        return Some(MobTransport::Uds(path.to_string()));
+    }
+    None
 }
 
 /// Parse `"member::mob_id"` into `(member, mob_id)`.
