@@ -708,6 +708,9 @@ class MobHandle:
         elif content is not None:
             params["content"] = content
         raw = await self._runtime._rpc("mobkit/cross_mob/send", params)
+        # Server returns remote_member_id, not member_id — map to SendMessageResult
+        if isinstance(raw, dict):
+            raw.setdefault("member_id", raw.get("remote_member_id", ""))
         return SendMessageResult.from_dict(raw)
 
     async def list_external_mobs(self) -> list:

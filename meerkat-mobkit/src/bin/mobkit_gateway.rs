@@ -133,11 +133,15 @@ fn collect_recursive_files(root: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn config_fingerprint(
     workspace_root: &Path,
     realm: Option<&str>,
     isolated: bool,
     runtime_profile: &str,
+    persistent_sessions: bool,
+    runtime_root: &Path,
+    store_path: &Path,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
@@ -151,6 +155,12 @@ fn config_fingerprint(
     hasher.update(if isolated { b"1" } else { b"0" });
     hasher.update(b"\n");
     hasher.update(runtime_profile.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(if persistent_sessions { b"1" } else { b"0" });
+    hasher.update(b"\n");
+    hasher.update(runtime_root.to_string_lossy().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(store_path.to_string_lossy().as_bytes());
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
@@ -485,7 +495,16 @@ async fn run() -> anyhow::Result<()> {
         .unwrap_or_else(|| "tux-auto".to_string());
 
     let paths = conventional_paths(&workspace_root);
-    let key = config_fingerprint(&workspace_root, realm, isolated, &runtime_profile, &paths)?;
+    let key = config_fingerprint(
+        &workspace_root,
+        realm,
+        isolated,
+        &runtime_profile,
+        persistent_sessions,
+        &runtime_root,
+        &store_path,
+        &paths,
+    )?;
     let registry_file = registry_path()?;
     let mut registry = load_registry(&registry_file);
 

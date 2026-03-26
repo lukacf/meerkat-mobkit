@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use meerkat_mob::SpawnMemberSpec;
 
+use crate::contact_directory::ContactDirectory;
 use crate::mob_handle_runtime::MobBootstrapSpec;
 use crate::runtime::RuntimeOptions;
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
@@ -32,6 +33,7 @@ pub struct UnifiedRuntimeBuilder {
     discovery: Option<Box<dyn Discovery>>,
     pre_spawn_hook: Option<PreSpawnHook>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
+    contact_directory: Option<ContactDirectory>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -100,6 +102,12 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Set the contact directory for cross-mob address resolution.
+    pub fn contact_directory(mut self, directory: ContactDirectory) -> Self {
+        self.contact_directory = Some(directory);
+        self
+    }
+
     pub async fn build(self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         let mob_spec = self
             .mob_spec
@@ -133,6 +141,7 @@ impl UnifiedRuntimeBuilder {
             drain_timeout: self.drain_timeout.unwrap_or(DEFAULT_DRAIN_TIMEOUT),
             discovery: self.discovery,
             edge_discovery: self.edge_discovery,
+            contact_directory: self.contact_directory,
             ..runtime
         };
 
