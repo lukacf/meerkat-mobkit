@@ -15,6 +15,7 @@ use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse}
 use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
     extract_bearer_token_from_header, handle_console_rest_json_route_with_snapshot,
+    validate_console_token,
 };
 
 #[derive(Clone)]
@@ -116,8 +117,28 @@ pub async fn console_json_handler(
 
 pub async fn console_rpc_handler(
     State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
+    // Enforce console auth — validate the bearer token directly against
+    // the trusted OIDC config, same validation as the GET /console/* path.
+    if state.decisions.console.require_app_auth {
+        let token_valid = headers
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(extract_bearer_token_from_header)
+            .is_some_and(|token| validate_console_token(&state.decisions, token));
+        if !token_valid {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json::<Value>(serde_json::json!({
+                    "error": "unauthorized",
+                    "reason": "console rpc requires a valid auth token",
+                })),
+            );
+        }
+    }
+
     let Some(runtime) = &state.runtime else {
         return (
             StatusCode::NOT_FOUND,

@@ -17,6 +17,9 @@ pub enum CrossMobError {
     UnknownMob(String),
     /// No peer mob handle registered for this mob (required for inproc).
     NoPeerHandle(String),
+    /// The contact entry uses TCP or UDS transport, which is not yet supported.
+    /// Phase 1 only supports inproc (same-process) cross-mob communication.
+    TransportNotSupported { mob_id: String, transport: String },
     /// Member not found in the target mob's roster.
     MemberNotFound { member_id: String, mob_id: String },
     /// Member has no comms runtime (not comms-enabled).
@@ -33,6 +36,13 @@ impl std::fmt::Display for CrossMobError {
             Self::NoContactDirectory => write!(f, "no contact directory configured"),
             Self::UnknownMob(id) => write!(f, "unknown mob: {id}"),
             Self::NoPeerHandle(id) => write!(f, "no peer mob handle registered for: {id}"),
+            Self::TransportNotSupported { mob_id, transport } => {
+                write!(
+                    f,
+                    "cross-mob transport '{transport}' for mob '{mob_id}' is not yet supported; \
+                     only inproc (same-process) is supported in phase 1"
+                )
+            }
             Self::MemberNotFound { member_id, mob_id } => {
                 write!(f, "member '{member_id}' not found in mob '{mob_id}'")
             }
@@ -115,6 +125,10 @@ impl UnifiedRuntime {
     }
 
     /// Unwire a cross-mob peering.
+    ///
+    /// Propagates lookup and unwire failures — if either side fails,
+    /// the caller gets an error indicating the peering was not fully
+    /// revoked.
     pub async fn unwire_cross_mob(
         &self,
         local_member_id: &str,
@@ -129,25 +143,25 @@ impl UnifiedRuntime {
         let local_mid = MeerkatId::from(local_member_id);
         let remote_mid = MeerkatId::from(remote_member_id);
 
-        // Build peer specs for unwire by looking up peer IDs from roster
-        if let Ok((remote_peer_id, remote_comms_name)) = self
+        // Unwire remote peer from local member
+        let (remote_peer_id, remote_comms_name) = self
             .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
+            .await?;
+        let remote_spec = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)?;
+        local_handle
+            .unwire(local_mid.clone(), PeerTarget::External(remote_spec))
             .await
-            && let Ok(spec) = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)
-        {
-            let _ = local_handle
-                .unwire(local_mid.clone(), PeerTarget::External(spec))
-                .await;
-        }
-        if let Ok((local_peer_id, local_comms_name)) = self
+            .map_err(CrossMobError::Mob)?;
+
+        // Unwire local peer from remote member
+        let (local_peer_id, local_comms_name) = self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
+            .await?;
+        let local_spec = build_inproc_peer_spec(&local_comms_name, &local_peer_id)?;
+        remote_handle
+            .unwire(remote_mid.clone(), PeerTarget::External(local_spec))
             .await
-            && let Ok(spec) = build_inproc_peer_spec(&local_comms_name, &local_peer_id)
-        {
-            let _ = remote_handle
-                .unwire(remote_mid.clone(), PeerTarget::External(spec))
-                .await;
-        }
+            .map_err(CrossMobError::Mob)?;
 
         Ok(())
     }
@@ -199,9 +213,20 @@ impl UnifiedRuntime {
             .contact_directory
             .as_ref()
             .ok_or(CrossMobError::NoContactDirectory)?;
-        dir.get(mob_id)
+        let entry = dir
+            .get(mob_id)
             .cloned()
-            .ok_or_else(|| CrossMobError::UnknownMob(mob_id.to_string()))
+            .ok_or_else(|| CrossMobError::UnknownMob(mob_id.to_string()))?;
+        if !matches!(
+            entry.transport,
+            crate::contact_directory::MobTransport::Inproc
+        ) {
+            return Err(CrossMobError::TransportNotSupported {
+                mob_id: mob_id.to_string(),
+                transport: format!("{:?}", entry.transport),
+            });
+        }
+        Ok(entry)
     }
 
     async fn get_peer_handle(&self, mob_id: &str) -> Result<MobHandle, CrossMobError> {

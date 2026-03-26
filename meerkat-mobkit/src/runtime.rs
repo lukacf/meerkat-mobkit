@@ -53,7 +53,7 @@ pub use bootstrap::{start_mobkit_runtime, start_mobkit_runtime_with_options};
 pub use console_ingress::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, ConsoleRestJsonResponse,
     extract_bearer_token_from_header, handle_console_rest_json_route,
-    handle_console_rest_json_route_with_snapshot,
+    handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 pub use event_transport::normalize_event_line;
 pub use routing::WILDCARD_ROUTE;

@@ -542,6 +542,12 @@ pub fn extract_bearer_token_from_header(header_value: &str) -> Option<&str> {
     if token.is_empty() { None } else { Some(token) }
 }
 
+/// Validate a bearer token against the console's trusted OIDC config.
+/// Returns `true` if the token is valid, `false` otherwise.
+pub fn validate_console_token(decisions: &RuntimeDecisionState, token: &str) -> bool {
+    resolve_console_auth_from_token(decisions, token).is_ok()
+}
+
 fn resolve_console_auth_from_token(
     decisions: &RuntimeDecisionState,
     token: &str,
