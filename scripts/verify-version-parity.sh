@@ -5,6 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CARGO="${ROOT}/scripts/repo-cargo"
 FAIL=0
 
 red()    { printf '\033[0;31m%s\033[0m\n' "$*"; }
@@ -12,7 +13,7 @@ green()  { printf '\033[0;32m%s\033[0m\n' "$*"; }
 
 # 1. Package version parity
 
-CARGO_VER=$(cargo metadata --manifest-path "$ROOT/Cargo.toml" \
+CARGO_VER=$("$CARGO" metadata --manifest-path "$ROOT/Cargo.toml" \
     --no-deps --format-version 1 \
     | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version')
 

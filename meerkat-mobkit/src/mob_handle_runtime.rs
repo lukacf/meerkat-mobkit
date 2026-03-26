@@ -69,12 +69,8 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path)
-            .comms(true)
-            .subagents(true)
-            .mob(true);
-        let mut config = Config::default();
-        config.comms.auto_enable_for_subagents = true;
+        let factory = AgentFactory::new(&store_path).comms(true).mob(true);
+        let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         if let Some(store) = session_store {
             builder.default_session_store = Some(store);
@@ -99,19 +95,18 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path)
-            .comms(true)
-            .subagents(true)
-            .mob(true);
-        let mut config = Config::default();
-        config.comms.auto_enable_for_subagents = true;
+        let factory = AgentFactory::new(&store_path).comms(true).mob(true);
+        let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::MemoryBlobStore::new());
         let session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
             max_sessions,
             session_store,
             None,
+            blob_store,
         ));
         Self::new(definition, storage, session_service)
     }
@@ -261,7 +256,8 @@ impl RealMobRuntime {
         self.handle
             .respawn(MeerkatId::from(member_id), None)
             .await
-            .map_err(Into::into)
+            .map(|_receipt| ())
+            .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))
     }
 
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
@@ -363,11 +359,14 @@ impl RealMobRuntime {
         if content.text_content().is_empty() {
             return Err(MobRuntimeError::InvalidInput("message must not be empty"));
         }
-        self.handle
-            .send_message(MeerkatId::from(member_id), content)
-            .await
-            .map(|session_id| session_id.to_string())
-            .map_err(Into::into)
+        let mid = MeerkatId::from(member_id);
+        let receipt = self
+            .handle
+            .member(&mid)
+            .await?
+            .send(content, meerkat_core::types::HandlingMode::Queue)
+            .await?;
+        Ok(receipt.session_id.to_string())
     }
 
     /// Find members matching a label key-value pair.

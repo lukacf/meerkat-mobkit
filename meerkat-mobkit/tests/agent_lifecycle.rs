@@ -90,7 +90,7 @@ fn spawn_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
     SpawnMemberSpec::from_wire(
         profile.to_string(),
         member_id.to_string(),
-        Some(format!("You are {member_id}. Keep responses concise.")),
+        Some(format!("You are {member_id}. Keep responses concise.").into()),
         None,
         None,
     )

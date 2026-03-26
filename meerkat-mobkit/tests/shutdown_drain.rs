@@ -61,7 +61,7 @@ fn member_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {
     SpawnMemberSpec::from_wire(
         profile.to_string(),
         member_id.to_string(),
-        Some(format!("You are {member_id}.")),
+        Some(format!("You are {member_id}.").into()),
         None,
         None,
     )

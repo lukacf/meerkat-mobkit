@@ -2,15 +2,18 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
+use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
 use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, MOBKIT_CONTRACT_VERSION,
     MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy,
     TrustedOidcRuntimeConfig, UnifiedRuntime,
 };
+use meerkat_store::SqliteSessionStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -21,6 +24,11 @@ const FALLBACK_TEMPLATE_VERSION: &str = "tux-fallback-v2";
 #[derive(Debug, Deserialize)]
 struct InitParams {
     workspace_root: Option<PathBuf>,
+    project_root: Option<PathBuf>,
+    context_root: Option<PathBuf>,
+    runtime_root: Option<PathBuf>,
+    store_path: Option<PathBuf>,
+    persistent_sessions: Option<bool>,
     realm: Option<String>,
     isolated: Option<bool>,
     surface: Option<String>,
@@ -110,6 +118,21 @@ fn conventional_paths(workspace_root: &Path) -> ConventionalPaths {
     )
 }
 
+fn collect_recursive_files(root: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_recursive_files(&path, files);
+        } else if path.is_file() {
+            files.push(path);
+        }
+    }
+}
+
 fn config_fingerprint(
     workspace_root: &Path,
     realm: Option<&str>,
@@ -131,8 +154,11 @@ fn config_fingerprint(
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
+    let definition_json = workspace_root.join("definition.json");
     if paths.mob_toml.is_some() {
         hasher.update(b"\nworkspace-config");
+    } else if definition_json.exists() {
+        hasher.update(b"\ndefinition-json");
     } else {
         // Version the generated fallback runtime separately so local TUX
         // launches do not resume older minimal runtimes after capability
@@ -152,6 +178,16 @@ fn config_fingerprint(
         files.push(path.clone());
     }
     files.extend(paths.schedule_files.clone());
+    if definition_json.exists() {
+        files.push(definition_json);
+    }
+    let manifest_toml = workspace_root.join("manifest.toml");
+    if manifest_toml.exists() {
+        files.push(manifest_toml);
+    }
+    for extra_dir in ["skills", "hooks", "mcp", "config"] {
+        collect_recursive_files(&workspace_root.join(extra_dir), &mut files);
+    }
     files.sort();
 
     for path in files {
@@ -238,7 +274,7 @@ If peer messaging is available, use it to report completion or blockers.
 }
 
 fn load_definition(
-    _workspace_root: &Path,
+    workspace_root: &Path,
     fingerprint: &str,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<(MobDefinition, bool)> {
@@ -250,8 +286,74 @@ fn load_definition(
         return Ok((definition, true));
     }
 
+    let definition_json_path = workspace_root.join("definition.json");
+    if definition_json_path.exists() {
+        let text = fs::read_to_string(&definition_json_path)
+            .with_context(|| format!("failed to read {}", definition_json_path.display()))?;
+        let definition = serde_json::from_str::<MobDefinition>(&text)
+            .with_context(|| format!("failed to parse {}", definition_json_path.display()))?;
+        return Ok((definition, true));
+    }
+
     let runtime_id = format!("tux-{}", short_hash(fingerprint));
     Ok((minimal_definition(&runtime_id)?, false))
+}
+
+fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
+    let store_dir = if store_path.extension().is_some() {
+        store_path
+            .parent()
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+    } else {
+        store_path.to_path_buf()
+    };
+    let sqlite_path = if store_path.extension().is_some() {
+        store_path.to_path_buf()
+    } else {
+        store_dir.join("sessions.sqlite")
+    };
+    (store_dir, sqlite_path)
+}
+
+fn build_persistent_session_service(
+    store_path: &Path,
+    runtime_root: PathBuf,
+    project_root: PathBuf,
+    context_root: Option<PathBuf>,
+) -> anyhow::Result<Arc<dyn meerkat_mob::MobSessionService>> {
+    let (store_dir, sqlite_path) = resolve_store_dir(store_path);
+    fs::create_dir_all(&store_dir)
+        .with_context(|| format!("failed to create {}", store_dir.display()))?;
+    let session_store = Arc::new(
+        SqliteSessionStore::open(sqlite_path.clone())
+            .with_context(|| format!("failed to open {}", sqlite_path.display()))?,
+    );
+
+    let mut factory = AgentFactory::new(store_dir)
+        .session_store(session_store.clone())
+        .runtime_root(runtime_root)
+        .project_root(project_root)
+        .builtins(true)
+        .shell(true)
+        .mob(true)
+        .comms(true)
+        .memory(true);
+    if let Some(context_root) = context_root {
+        factory = factory.context_root(context_root);
+    }
+
+    let config = Config::default();
+    let builder = FactoryAgentBuilder::new(factory, config);
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(meerkat_store::MemoryBlobStore::new());
+    let service = Arc::new(PersistentSessionService::new(
+        builder,
+        64,
+        session_store,
+        None,
+        blob_store,
+    ));
+    Ok(service)
 }
 
 fn runtime_decision_state(runtime_id: &str) -> RuntimeDecisionState {
@@ -358,6 +460,23 @@ async fn run() -> anyhow::Result<()> {
         .workspace_root
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let workspace_root = workspace_root.canonicalize().unwrap_or(workspace_root);
+    let project_root = params
+        .project_root
+        .unwrap_or_else(|| workspace_root.clone());
+    let project_root = project_root.canonicalize().unwrap_or(project_root);
+    let context_root = params
+        .context_root
+        .map(|path| path.canonicalize().unwrap_or(path))
+        .or_else(|| Some(project_root.clone()));
+    let runtime_root = params
+        .runtime_root
+        .unwrap_or_else(|| workspace_root.clone());
+    let runtime_root = runtime_root.canonicalize().unwrap_or(runtime_root);
+    let store_path = params
+        .store_path
+        .unwrap_or_else(|| runtime_root.join("state"));
+    let store_path = store_path.canonicalize().unwrap_or(store_path);
+    let persistent_sessions = params.persistent_sessions.unwrap_or(false);
     let realm = params.realm.as_deref();
     let isolated = params.isolated.unwrap_or(false);
     let _surface = params.surface.unwrap_or_else(|| "tux".to_string());
@@ -397,15 +516,28 @@ async fn run() -> anyhow::Result<()> {
     let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)?;
     let runtime_id = definition.id.to_string();
 
-    let mob_spec = MobBootstrapSpec::ephemeral(
-        definition,
-        MobStorage::in_memory(),
-        workspace_root.clone(),
-        64,
-        None,
-    )
-    .with_options(MobBootstrapOptions {
-        allow_ephemeral_sessions: true,
+    let session_spec = if persistent_sessions {
+        MobBootstrapSpec::new(
+            definition,
+            MobStorage::in_memory(),
+            build_persistent_session_service(
+                &store_path,
+                runtime_root.clone(),
+                project_root.clone(),
+                context_root.clone(),
+            )?,
+        )
+    } else {
+        MobBootstrapSpec::ephemeral(
+            definition,
+            MobStorage::in_memory(),
+            runtime_root.clone(),
+            64,
+            None,
+        )
+    };
+    let mob_spec = session_spec.with_options(MobBootstrapOptions {
+        allow_ephemeral_sessions: !persistent_sessions,
         notify_orchestrator_on_resume: true,
         default_llm_client: None,
     });

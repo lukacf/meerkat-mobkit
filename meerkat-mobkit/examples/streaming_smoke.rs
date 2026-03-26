@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
+use meerkat_core::types::HandlingMode;
 use meerkat_mob::{MeerkatId, MobBuilder, MobStorage, Prefab, ProfileName};
 
 #[tokio::main]
@@ -80,10 +81,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 2) Send a message (fire-and-forget)
     handle
-        .send_message(
-            MeerkatId::from("lead-1"),
-            "Give a short plan for smoke-testing a Rust CLI and delegate one concrete task to worker-1."
-                .to_string(),
+        .member(&MeerkatId::from("lead-1"))
+        .await?
+        .send(
+            "Give a short plan for smoke-testing a Rust CLI and delegate one concrete task to worker-1.",
+            HandlingMode::Queue,
         )
         .await?;
     println!("STREAM_SMOKE: message sent to lead-1");

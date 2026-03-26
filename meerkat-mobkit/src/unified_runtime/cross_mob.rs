@@ -1,7 +1,8 @@
 //! Cross-mob communication — peering and messaging between members in different mobs.
 
 use meerkat_core::comms::TrustedPeerSpec;
-use meerkat_mob::{MeerkatId, MemberCommsInfo, MobHandle};
+use meerkat_core::types::HandlingMode;
+use meerkat_mob::{MeerkatId, MobHandle, PeerTarget};
 
 use crate::contact_directory::{ContactDirectory, ContactEntry};
 
@@ -71,8 +72,9 @@ impl UnifiedRuntime {
 
     /// Wire a local member to a member in an external mob.
     ///
-    /// Resolves both members' comms info, builds peer specs, and calls
-    /// `wire_external` on both mob handles to establish bidirectional trust.
+    /// Resolves both members' peer IDs from roster entries, builds peer specs,
+    /// and calls `wire(local, PeerTarget::External(spec))` on both mob handles
+    /// to establish bidirectional trust.
     pub async fn wire_cross_mob(
         &self,
         local_member_id: &str,
@@ -87,25 +89,25 @@ impl UnifiedRuntime {
         let local_mid = MeerkatId::from(local_member_id);
         let remote_mid = MeerkatId::from(remote_member_id);
 
-        // Get comms info for both members
-        let local_info = self
-            .get_member_comms_info(&local_handle, &local_mid, &local_mob_id)
+        // Get peer info for both members from roster entries
+        let (local_peer_id, local_comms_name) = self
+            .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
             .await?;
-        let remote_info = self
-            .get_member_comms_info(&remote_handle, &remote_mid, remote_mob_id)
+        let (remote_peer_id, remote_comms_name) = self
+            .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
             .await?;
 
         // Build peer specs (inproc for same-process)
-        let remote_spec = build_inproc_peer_spec(&remote_info)?;
-        let local_spec = build_inproc_peer_spec(&local_info)?;
+        let remote_spec = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)?;
+        let local_spec = build_inproc_peer_spec(&local_comms_name, &local_peer_id)?;
 
         // Wire both sides
         local_handle
-            .wire_external(local_mid, remote_spec)
+            .wire(local_mid, PeerTarget::External(remote_spec))
             .await
             .map_err(CrossMobError::Mob)?;
         remote_handle
-            .wire_external(remote_mid, local_spec)
+            .wire(remote_mid, PeerTarget::External(local_spec))
             .await
             .map_err(CrossMobError::Mob)?;
 
@@ -127,21 +129,23 @@ impl UnifiedRuntime {
         let local_mid = MeerkatId::from(local_member_id);
         let remote_mid = MeerkatId::from(remote_member_id);
 
-        // Get comms info for peer ID lookup
-        if let Ok(remote_info) = self
-            .get_member_comms_info(&remote_handle, &remote_mid, remote_mob_id)
+        // Build peer specs for unwire by looking up peer IDs from roster
+        if let Ok((remote_peer_id, remote_comms_name)) = self
+            .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
             .await
+            && let Ok(spec) = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)
         {
             let _ = local_handle
-                .unwire_external(local_mid.clone(), remote_info.peer_id)
+                .unwire(local_mid.clone(), PeerTarget::External(spec))
                 .await;
         }
-        if let Ok(local_info) = self
-            .get_member_comms_info(&local_handle, &local_mid, &local_mob_id)
+        if let Ok((local_peer_id, local_comms_name)) = self
+            .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
             .await
+            && let Ok(spec) = build_inproc_peer_spec(&local_comms_name, &local_peer_id)
         {
             let _ = remote_handle
-                .unwire_external(remote_mid.clone(), local_info.peer_id)
+                .unwire(remote_mid.clone(), PeerTarget::External(spec))
                 .await;
         }
 
@@ -170,11 +174,14 @@ impl UnifiedRuntime {
         let remote_mid = MeerkatId::from(remote_member_id);
         let content = content.into();
         let _ = from_local_member; // audit context; delivery is via remote handle
-        let session_id = remote_handle
-            .send_message(remote_mid, content)
+        let receipt = remote_handle
+            .member(&remote_mid)
+            .await
+            .map_err(CrossMobError::Mob)?
+            .send(content, HandlingMode::Queue)
             .await
             .map_err(CrossMobError::Mob)?;
-        Ok(session_id.to_string())
+        Ok(receipt.session_id.to_string())
     }
 
     /// List external mobs from the contact directory.
@@ -206,28 +213,37 @@ impl UnifiedRuntime {
             .ok_or_else(|| CrossMobError::NoPeerHandle(mob_id.to_string()))
     }
 
-    async fn get_member_comms_info(
+    /// Resolve a member's peer_id and comms name from the roster entry.
+    ///
+    /// Returns `(peer_id, comms_name)` where comms_name is derived as
+    /// `"{mob_id}/{profile}/{meerkat_id}"`.
+    async fn get_member_peer_info(
         &self,
         handle: &MobHandle,
         meerkat_id: &MeerkatId,
         mob_id: &str,
-    ) -> Result<MemberCommsInfo, CrossMobError> {
-        handle
-            .member_comms_info(meerkat_id.clone())
-            .await
-            .map_err(CrossMobError::Mob)?
-            .ok_or_else(|| CrossMobError::NoCommsInfo {
-                member_id: meerkat_id.to_string(),
-                mob_id: mob_id.to_string(),
-            })
+    ) -> Result<(String, String), CrossMobError> {
+        let entry =
+            handle
+                .get_member(meerkat_id)
+                .await
+                .ok_or_else(|| CrossMobError::MemberNotFound {
+                    member_id: meerkat_id.to_string(),
+                    mob_id: mob_id.to_string(),
+                })?;
+        let peer_id = entry.peer_id.ok_or_else(|| CrossMobError::NoCommsInfo {
+            member_id: meerkat_id.to_string(),
+            mob_id: mob_id.to_string(),
+        })?;
+        let comms_name = format!("{}/{}/{}", mob_id, entry.profile, meerkat_id);
+        Ok((peer_id, comms_name))
     }
 }
 
-fn build_inproc_peer_spec(info: &MemberCommsInfo) -> Result<TrustedPeerSpec, CrossMobError> {
-    TrustedPeerSpec::new(
-        &info.comms_name,
-        &info.peer_id,
-        format!("inproc://{}", info.comms_name),
-    )
-    .map_err(CrossMobError::PeerSpec)
+fn build_inproc_peer_spec(
+    comms_name: &str,
+    peer_id: &str,
+) -> Result<TrustedPeerSpec, CrossMobError> {
+    TrustedPeerSpec::new(comms_name, peer_id, format!("inproc://{comms_name}"))
+        .map_err(CrossMobError::PeerSpec)
 }

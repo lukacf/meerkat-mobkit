@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use meerkat_core::ContentBlock;
-use meerkat_mcp::{McpConnection, McpError, McpServerConfig};
+use meerkat_core::McpServerConfig;
+use meerkat_mcp::{McpConnection, McpError};
 use serde_json::Value;
 use tokio::time::timeout;
 

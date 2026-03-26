@@ -1080,7 +1080,7 @@ pub async fn handle_unified_rpc_json(
                         .params
                         .get("initial_message")
                         .and_then(Value::as_str)
-                        .map(ToString::to_string),
+                        .map(|s| meerkat_core::ContentInput::from(s.to_string())),
                     None,
                     None,
                 );

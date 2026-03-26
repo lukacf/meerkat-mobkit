@@ -12,10 +12,16 @@ Thank you for considering contributing to MobKit.
 
 ### Building
 
+All Rust commands use `scripts/repo-cargo`, which isolates `CARGO_HOME` and `CARGO_TARGET_DIR` per repo/worktree. The Makefile calls it automatically.
+
 ```bash
-# Rust
-cargo check --workspace
-cargo build --workspace
+# Via Makefile (preferred)
+make check
+make build
+
+# Or directly
+./scripts/repo-cargo check --workspace
+./scripts/repo-cargo build --workspace
 
 # Python (no build step — pure Python)
 PYTHONPATH=sdk/python python3 -c "import meerkat_mobkit; print('OK')"
@@ -24,8 +30,13 @@ PYTHONPATH=sdk/python python3 -c "import meerkat_mobkit; print('OK')"
 ### Testing
 
 ```bash
-# Rust
-cargo nextest run --workspace -E 'not test(phase0_governance)' --no-fail-fast
+# Via Makefile (preferred)
+make test          # Rust tests
+make test-python   # Python tests
+make test-all      # Both
+
+# Or directly
+./scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
 
 # Python
 PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
@@ -43,12 +54,12 @@ PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v
 
 1. Create a feature branch from `main`
 2. Make your changes with clear commit messages
-3. Ensure all tests pass (`cargo nextest run`, `pytest`)
+3. Ensure all tests pass (`make test-all`)
 4. Open a PR against `main` with a description of changes
 
 ## Code Style
 
-- **Rust**: `cargo fmt` for formatting, `cargo clippy` for lints
+- **Rust**: `make fmt` for formatting, `make lint` for clippy
 - **Python**: Type annotations required on all public functions
 
 ## License

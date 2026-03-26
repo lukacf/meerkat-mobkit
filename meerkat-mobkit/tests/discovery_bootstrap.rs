@@ -124,7 +124,7 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
     let labels = spawn.labels.as_ref().expect("labels should be present");
     assert_eq!(labels.get("team").map(String::as_str), Some("alpha"));
     assert_eq!(labels.get("role").map(String::as_str), Some("analyst"));
-    assert!(spawn.resume_session_id.is_none());
+    assert!(spawn.resume_session_id().is_none());
     assert!(spawn.runtime_mode.is_none());
     assert!(spawn.backend.is_none());
 }
@@ -143,7 +143,7 @@ fn mk001_discovery_spec_to_spawn_spec_handles_resume_session_id() {
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
     let sid = spawn
-        .resume_session_id
+        .resume_session_id()
         .expect("resume_session_id should be set");
     assert_eq!(sid.to_string(), session_uuid);
 }
@@ -161,7 +161,7 @@ fn mk001_discovery_spec_to_spawn_spec_ignores_invalid_session_id() {
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
     assert!(
-        spawn.resume_session_id.is_none(),
+        spawn.resume_session_id().is_none(),
         "invalid session ID should be silently ignored"
     );
 }
@@ -183,7 +183,7 @@ fn mk001_discovery_spec_to_spawn_spec_minimal() {
     assert!(spawn.initial_message.is_none());
     assert!(spawn.context.is_none());
     assert!(spawn.labels.is_none());
-    assert!(spawn.resume_session_id.is_none());
+    assert!(spawn.resume_session_id().is_none());
 }
 
 #[test]
