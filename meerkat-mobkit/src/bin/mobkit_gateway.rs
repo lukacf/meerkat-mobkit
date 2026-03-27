@@ -142,6 +142,8 @@ fn config_fingerprint(
     persistent_sessions: bool,
     runtime_root: &Path,
     store_path: &Path,
+    project_root: &Path,
+    context_root: Option<&Path>,
     paths: &ConventionalPaths,
 ) -> anyhow::Result<String> {
     let mut hasher = Sha256::new();
@@ -161,6 +163,12 @@ fn config_fingerprint(
     hasher.update(runtime_root.to_string_lossy().as_bytes());
     hasher.update(b"\n");
     hasher.update(store_path.to_string_lossy().as_bytes());
+    hasher.update(b"\n");
+    hasher.update(project_root.to_string_lossy().as_bytes());
+    hasher.update(b"\n");
+    if let Some(ctx) = context_root {
+        hasher.update(ctx.to_string_lossy().as_bytes());
+    }
     hasher.update(b"\n");
     hasher.update(env!("CARGO_PKG_VERSION").as_bytes());
 
@@ -339,6 +347,7 @@ fn build_persistent_session_service(
             .with_context(|| format!("failed to open {}", sqlite_path.display()))?,
     );
 
+    let blob_dir = store_dir.join("blobs");
     let mut factory = AgentFactory::new(store_dir)
         .session_store(session_store.clone())
         .runtime_root(runtime_root)
@@ -355,7 +364,7 @@ fn build_persistent_session_service(
     let config = Config::default();
     let builder = FactoryAgentBuilder::new(factory, config);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
-        Arc::new(meerkat_store::MemoryBlobStore::new());
+        Arc::new(meerkat_store::FsBlobStore::new(blob_dir));
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
@@ -503,6 +512,8 @@ async fn run() -> anyhow::Result<()> {
         persistent_sessions,
         &runtime_root,
         &store_path,
+        &project_root,
+        context_root.as_deref(),
         &paths,
     )?;
     let registry_file = registry_path()?;
@@ -561,7 +572,7 @@ async fn run() -> anyhow::Result<()> {
         default_llm_client: None,
     });
 
-    let mut runtime = UnifiedRuntime::bootstrap(
+    let runtime = UnifiedRuntime::bootstrap(
         mob_spec,
         meerkat_mobkit::MobKitConfig {
             modules: Vec::new(),
@@ -576,15 +587,11 @@ async fn run() -> anyhow::Result<()> {
     .await
     .context("failed to bootstrap local runtime")?;
 
-    // Load contact directory if config/contacts.toml exists.
-    if let Some(ref contacts_path) = paths.contacts_toml
-        && let Ok(contents) = std::fs::read_to_string(contacts_path)
-    {
-        match meerkat_mobkit::contact_directory::ContactDirectory::from_toml(&contents) {
-            Ok(dir) => runtime.set_contact_directory(dir),
-            Err(err) => eprintln!("WARN mobkit: failed to parse contacts.toml: {err}"),
-        }
-    }
+    // Note: contacts.toml is NOT loaded here. The gateway manages a single
+    // mob — cross-mob operations require multi-runtime orchestration (e.g.
+    // HomeCore) where both MobHandles are available for peer registration.
+    // Loading the directory without peer handles would advertise cross-mob
+    // capabilities that fail on every call.
 
     if !used_workspace_config {
         let mut labels = BTreeMap::new();
