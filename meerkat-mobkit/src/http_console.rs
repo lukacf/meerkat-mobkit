@@ -282,15 +282,24 @@ async fn handle_console_runtime_rpc(
                     "mobkit/respawn_member",
                     "mobkit/force_cancel_member",
                     "mobkit/cancel_flow",
+                    "mobkit/spawn_helper",
+                    "mobkit/fork_helper",
+                    "mobkit/attach_existing_session",
                     "mobkit/reconcile_edges",
-                    "mobkit/query_events",
                 ]);
             }
+            let loaded_modules: Vec<String> = runtime
+                .discover()
+                .await
+                .into_iter()
+                .map(|m| m.meerkat_id)
+                .collect();
             response_value(
                 response_id,
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
                     "methods": methods,
+                    "loaded_modules": loaded_modules,
                     "runtime_capabilities": {
                         "can_send_messages": is_authenticated,
                         "can_retire_members": is_authenticated,
@@ -583,6 +592,100 @@ async fn handle_console_runtime_rpc(
                 ),
                 Ok(None) => response_value(response_id, Some(Value::Null), None),
                 Err(err) => internal_error(response_id, format!("flow_status failed: {err}")),
+            }
+        }
+        "mobkit/spawn_helper" => {
+            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "meerkat_id required");
+            };
+            let Some(task) = request.params.get("task").and_then(Value::as_str) else {
+                return invalid_params(response_id, "task required");
+            };
+            let mut options = meerkat_mob::HelperOptions::default();
+            if let Some(o) = request.params.get("options") {
+                options.profile_name = o
+                    .get("profile")
+                    .and_then(Value::as_str)
+                    .map(meerkat_mob::ProfileName::from);
+            }
+            match runtime.spawn_helper(meerkat_id, task, options).await {
+                Ok(result) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "output": result.output,
+                        "tokens_used": result.tokens_used,
+                        "session_id": result.session_id.map(|s| s.to_string()),
+                    })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("spawn_helper failed: {err}")),
+            }
+        }
+        "mobkit/fork_helper" => {
+            let Some(source) = request
+                .params
+                .get("source_member_id")
+                .and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "source_member_id required");
+            };
+            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "meerkat_id required");
+            };
+            let Some(task) = request.params.get("task").and_then(Value::as_str) else {
+                return invalid_params(response_id, "task required");
+            };
+            let fork_context = request
+                .params
+                .get("fork_context")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let mut options = meerkat_mob::HelperOptions::default();
+            if let Some(o) = request.params.get("options") {
+                options.profile_name = o
+                    .get("profile")
+                    .and_then(Value::as_str)
+                    .map(meerkat_mob::ProfileName::from);
+            }
+            match runtime
+                .fork_helper(source, meerkat_id, task, fork_context, options)
+                .await
+            {
+                Ok(result) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "output": result.output,
+                        "tokens_used": result.tokens_used,
+                        "session_id": result.session_id.map(|s| s.to_string()),
+                    })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("fork_helper failed: {err}")),
+            }
+        }
+        "mobkit/attach_existing_session" => {
+            let Some(profile) = request.params.get("profile").and_then(Value::as_str) else {
+                return invalid_params(response_id, "profile required");
+            };
+            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "meerkat_id required");
+            };
+            let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "session_id required");
+            };
+            match runtime
+                .attach_existing_session(profile, meerkat_id, session_id)
+                .await
+            {
+                Ok(snapshot) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => internal_error(
+                    response_id,
+                    format!("attach_existing_session failed: {err}"),
+                ),
             }
         }
         _ => response_value(
