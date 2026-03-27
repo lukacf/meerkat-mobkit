@@ -252,6 +252,40 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
+fn parse_console_helper_options(
+    options_val: Option<&Value>,
+) -> Result<meerkat_mob::HelperOptions, String> {
+    let mut opts = meerkat_mob::HelperOptions::default();
+    if let Some(o) = options_val {
+        opts.profile_name = o
+            .get("profile")
+            .and_then(Value::as_str)
+            .map(meerkat_mob::ProfileName::from);
+        if let Some(mode_str) = o.get("runtime_mode").and_then(Value::as_str) {
+            opts.runtime_mode = Some(
+                serde_json::from_value::<meerkat_mob::MobRuntimeMode>(Value::String(
+                    mode_str.to_string(),
+                ))
+                .map_err(|_| {
+                    format!(
+                        "invalid runtime_mode '{mode_str}': \
+                         expected 'autonomous_host' or 'turn_driven'"
+                    )
+                })?,
+            );
+        }
+        if let Some(backend_str) = o.get("backend").and_then(Value::as_str) {
+            opts.backend = Some(
+                serde_json::from_value::<meerkat_mob::MobBackendKind>(Value::String(
+                    backend_str.to_string(),
+                ))
+                .map_err(|_| format!("invalid backend '{backend_str}'"))?,
+            );
+        }
+    }
+    Ok(opts)
+}
+
 async fn handle_console_runtime_rpc(
     runtime: &RealMobRuntime,
     request: JsonRpcRequest,
@@ -601,13 +635,10 @@ async fn handle_console_runtime_rpc(
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
             };
-            let mut options = meerkat_mob::HelperOptions::default();
-            if let Some(o) = request.params.get("options") {
-                options.profile_name = o
-                    .get("profile")
-                    .and_then(Value::as_str)
-                    .map(meerkat_mob::ProfileName::from);
-            }
+            let options = match parse_console_helper_options(request.params.get("options")) {
+                Ok(opts) => opts,
+                Err(msg) => return invalid_params(response_id, msg),
+            };
             match runtime.spawn_helper(meerkat_id, task, options).await {
                 Ok(result) => response_value(
                     response_id,
@@ -635,18 +666,24 @@ async fn handle_console_runtime_rpc(
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
             };
-            let fork_context = request
-                .params
-                .get("fork_context")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default();
-            let mut options = meerkat_mob::HelperOptions::default();
-            if let Some(o) = request.params.get("options") {
-                options.profile_name = o
-                    .get("profile")
-                    .and_then(Value::as_str)
-                    .map(meerkat_mob::ProfileName::from);
-            }
+            let fork_context = match request.params.get("fork_context") {
+                Some(v) if !v.is_null() => {
+                    match serde_json::from_value::<meerkat_mob::launch::ForkContext>(v.clone()) {
+                        Ok(ctx) => ctx,
+                        Err(err) => {
+                            return invalid_params(
+                                response_id,
+                                format!("invalid fork_context: {err}"),
+                            );
+                        }
+                    }
+                }
+                _ => meerkat_mob::launch::ForkContext::default(),
+            };
+            let options = match parse_console_helper_options(request.params.get("options")) {
+                Ok(opts) => opts,
+                Err(msg) => return invalid_params(response_id, msg),
+            };
             match runtime
                 .fork_helper(source, meerkat_id, task, fork_context, options)
                 .await
