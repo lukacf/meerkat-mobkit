@@ -760,6 +760,216 @@ class MobHandle:
             },
         )
 
+    # -----------------------------------------------------------------
+    # Rich member inspection
+    # -----------------------------------------------------------------
+
+    async def member_status(self, member_id: str) -> RichMemberSnapshot:
+        """Return rich execution status for a member."""
+        from .types import RichMemberSnapshot
+        raw = await self._runtime._rpc("mobkit/member_status", {"member_id": member_id})
+        return RichMemberSnapshot.from_dict(raw)
+
+    async def force_cancel_member(self, member_id: str) -> None:
+        """Force-cancel a running member immediately."""
+        await self._runtime._rpc("mobkit/force_cancel_member", {"member_id": member_id})
+
+    # -----------------------------------------------------------------
+    # Helper convenience
+    # -----------------------------------------------------------------
+
+    async def spawn_helper(
+        self,
+        meerkat_id: str,
+        task: str,
+        *,
+        profile: str | None = None,
+        runtime_mode: str | None = None,
+        backend: str | None = None,
+    ) -> HelperResult:
+        """Spawn a short-lived helper member and return its result."""
+        from .types import HelperResult
+        params: dict[str, Any] = {"meerkat_id": meerkat_id, "task": task}
+        options: dict[str, Any] = {}
+        if profile is not None:
+            options["profile"] = profile
+        if runtime_mode is not None:
+            options["runtime_mode"] = runtime_mode
+        if backend is not None:
+            options["backend"] = backend
+        if options:
+            params["options"] = options
+        raw = await self._runtime._rpc("mobkit/spawn_helper", params)
+        return HelperResult.from_dict(raw)
+
+    async def fork_helper(
+        self,
+        source_member_id: str,
+        meerkat_id: str,
+        task: str,
+        *,
+        fork_context: str | None = None,
+        profile: str | None = None,
+        runtime_mode: str | None = None,
+        backend: str | None = None,
+    ) -> HelperResult:
+        """Fork a helper from an existing member's context."""
+        from .types import HelperResult
+        params: dict[str, Any] = {
+            "source_member_id": source_member_id,
+            "meerkat_id": meerkat_id,
+            "task": task,
+        }
+        if fork_context is not None:
+            params["fork_context"] = fork_context
+        options: dict[str, Any] = {}
+        if profile is not None:
+            options["profile"] = profile
+        if runtime_mode is not None:
+            options["runtime_mode"] = runtime_mode
+        if backend is not None:
+            options["backend"] = backend
+        if options:
+            params["options"] = options
+        raw = await self._runtime._rpc("mobkit/fork_helper", params)
+        return HelperResult.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Session attachment
+    # -----------------------------------------------------------------
+
+    async def attach_session(
+        self,
+        profile: str,
+        meerkat_id: str,
+        session_id: str,
+        *,
+        runtime_mode: str | None = None,
+        backend: str | None = None,
+    ) -> RichMemberSnapshot:
+        """Attach a member to an existing session."""
+        from .types import RichMemberSnapshot
+        params: dict[str, Any] = {
+            "profile": profile,
+            "meerkat_id": meerkat_id,
+            "session_id": session_id,
+        }
+        if runtime_mode is not None:
+            params["runtime_mode"] = runtime_mode
+        if backend is not None:
+            params["backend"] = backend
+        raw = await self._runtime._rpc("mobkit/attach_session", params)
+        return RichMemberSnapshot.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Flow lifecycle
+    # -----------------------------------------------------------------
+
+    async def cancel_flow(self, run_id: str) -> None:
+        """Cancel a running flow by run ID."""
+        await self._runtime._rpc("mobkit/cancel_flow", {"run_id": run_id})
+
+    async def flow_status(self, run_id: str) -> MobRunSnapshot | None:
+        """Get flow run status. Returns None if run not found."""
+        from .types import MobRunSnapshot
+        raw = await self._runtime._rpc("mobkit/flow_status", {"run_id": run_id})
+        if raw is None:
+            return None
+        if isinstance(raw, dict) and raw.get("status") == "not_found":
+            return None
+        return MobRunSnapshot.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Batch
+    # -----------------------------------------------------------------
+
+    async def collect_completed(self) -> list[tuple[str, RichMemberSnapshot]]:
+        """Collect all members that have reached a final state."""
+        from .types import RichMemberSnapshot
+        raw = await self._runtime._rpc("mobkit/collect_completed")
+        results: list[tuple[str, RichMemberSnapshot]] = []
+        if isinstance(raw, list):
+            for entry in raw:
+                member_id = entry.get("member_id", "")
+                snapshot = RichMemberSnapshot.from_dict(entry.get("snapshot", entry))
+                results.append((member_id, snapshot))
+        return results
+
+    # -----------------------------------------------------------------
+    # Session introspection
+    # -----------------------------------------------------------------
+
+    async def member_session_id(self, member_id: str) -> str | None:
+        """Return the current session ID for a member, or None."""
+        raw = await self._runtime._rpc("mobkit/member_session_id", {"member_id": member_id})
+        if isinstance(raw, dict):
+            return raw.get("session_id")
+        return None
+
+    async def member_session_ref(self, member_id: str) -> MemberSessionRef | None:
+        """Return the session reference for a member, or None."""
+        from .types import MemberSessionRef
+        raw = await self._runtime._rpc("mobkit/member_session_ref", {"member_id": member_id})
+        if raw is None:
+            return None
+        if isinstance(raw, dict) and raw.get("session_id") is None:
+            return None
+        return MemberSessionRef.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Polling helpers (client-side)
+    # -----------------------------------------------------------------
+
+    async def wait_one(
+        self,
+        member_id: str,
+        *,
+        poll_interval: float = 1.0,
+        timeout: float | None = None,
+    ) -> RichMemberSnapshot:
+        """Poll member_status until the member reaches a final state.
+
+        Raises ``TimeoutError`` if *timeout* seconds elapse before completion.
+        """
+        import asyncio
+        import time
+
+        from .types import RichMemberSnapshot
+
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            snapshot = await self.member_status(member_id)
+            if snapshot.is_final:
+                return snapshot
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"member {member_id!r} did not reach final state "
+                    f"within {timeout}s"
+                )
+            await asyncio.sleep(poll_interval)
+
+    async def wait_all(
+        self,
+        member_ids: list[str],
+        *,
+        poll_interval: float = 1.0,
+        timeout: float | None = None,
+    ) -> list[RichMemberSnapshot]:
+        """Wait for all listed members to reach final state.
+
+        Polls in parallel via ``asyncio.gather``. Raises ``TimeoutError``
+        if *timeout* seconds elapse before all members complete.
+        """
+        import asyncio
+
+        from .types import RichMemberSnapshot
+
+        tasks = [
+            self.wait_one(mid, poll_interval=poll_interval, timeout=timeout)
+            for mid in member_ids
+        ]
+        return list(await asyncio.gather(*tasks))
+
     # Alias for backward compatibility
     send_message = send
 

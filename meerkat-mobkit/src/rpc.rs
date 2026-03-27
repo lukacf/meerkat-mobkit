@@ -981,7 +981,17 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/cross_mob/send",
                         "mobkit/cross_mob/directory",
                         "mobkit/cross_mob/peer_info",
-                        "mobkit/cross_mob/wire_local"
+                        "mobkit/cross_mob/wire_local",
+                        "mobkit/member_status",
+                        "mobkit/force_cancel_member",
+                        "mobkit/spawn_helper",
+                        "mobkit/fork_helper",
+                        "mobkit/attach_existing_session",
+                        "mobkit/cancel_flow",
+                        "mobkit/flow_status",
+                        "mobkit/collect_completed",
+                        "mobkit/member_current_session_id",
+                        "mobkit/member_session_ref"
                     ],
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
@@ -1674,6 +1684,37 @@ pub async fn handle_unified_rpc_json(
         }
         "mobkit/cross_mob/wire_local" => {
             mob_methods::handle_cross_mob_wire_local(runtime, response_id, &request.params).await
+        }
+        "mobkit/member_status" => {
+            mob_methods::handle_member_status(runtime, response_id, &request.params).await
+        }
+        "mobkit/force_cancel_member" => {
+            mob_methods::handle_force_cancel_member(runtime, response_id, &request.params).await
+        }
+        "mobkit/spawn_helper" => {
+            mob_methods::handle_spawn_helper(runtime, response_id, &request.params).await
+        }
+        "mobkit/fork_helper" => {
+            mob_methods::handle_fork_helper(runtime, response_id, &request.params).await
+        }
+        "mobkit/attach_existing_session" => {
+            mob_methods::handle_attach_existing_session(runtime, response_id, &request.params).await
+        }
+        "mobkit/cancel_flow" => {
+            mob_methods::handle_cancel_flow(runtime, response_id, &request.params).await
+        }
+        "mobkit/flow_status" => {
+            mob_methods::handle_flow_status(runtime, response_id, &request.params).await
+        }
+        "mobkit/collect_completed" => {
+            mob_methods::handle_collect_completed(runtime, response_id).await
+        }
+        "mobkit/member_current_session_id" => {
+            mob_methods::handle_member_current_session_id(runtime, response_id, &request.params)
+                .await
+        }
+        "mobkit/member_session_ref" => {
+            mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method

@@ -7,9 +7,12 @@ use std::sync::Arc;
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, SessionStore};
 use meerkat_client::LlmClient;
 use meerkat_core::AgentSessionStore;
+use meerkat_mob::MobRun;
+use meerkat_mob::launch::{ForkContext, MemberLaunchMode};
 use meerkat_mob::{
-    MeerkatId, MemberRef, MemberState, MobBuilder, MobDefinition, MobError, MobHandle,
-    MobSessionService, MobState, MobStorage, RosterEntry, SpawnMemberSpec,
+    HelperOptions, HelperResult, MeerkatId, MemberRef, MemberSessionRef, MemberState, MobBuilder,
+    MobDefinition, MobError, MobHandle, MobMemberSnapshot as RichMobMemberSnapshot,
+    MobSessionService, MobState, MobStorage, ProfileName, RosterEntry, RunId, SpawnMemberSpec,
 };
 use meerkat_store::StoreAdapter;
 use serde::{Deserialize, Serialize};
@@ -405,5 +408,174 @@ impl RealMobRuntime {
             .await
             .ok_or(MobRuntimeError::Mob(MobError::MeerkatNotFound(meerkat_id)))?;
         Ok(snapshot_from_entry(entry))
+    }
+
+    // -----------------------------------------------------------------------
+    // 0.5 API surface
+    // -----------------------------------------------------------------------
+
+    /// Detailed execution snapshot for a single member.
+    pub async fn member_status(
+        &self,
+        member_id: &str,
+    ) -> Result<RichMobMemberSnapshot, MobRuntimeError> {
+        if member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
+        }
+        self.handle
+            .member_status(&MeerkatId::from(member_id))
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Forcefully cancel a member (immediate teardown, no graceful retire).
+    pub async fn force_cancel_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
+        if member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
+        }
+        self.handle
+            .force_cancel_member(MeerkatId::from(member_id))
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Spawn a short-lived helper member, wait for completion, retire it, and return the result.
+    pub async fn spawn_helper(
+        &self,
+        meerkat_id: &str,
+        task: &str,
+        options: HelperOptions,
+    ) -> Result<HelperResult, MobRuntimeError> {
+        if meerkat_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "meerkat_id must not be empty",
+            ));
+        }
+        self.handle
+            .spawn_helper(MeerkatId::from(meerkat_id), task, options)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Fork from an existing member's context, wait for completion, retire, and return.
+    pub async fn fork_helper(
+        &self,
+        source_member_id: &str,
+        meerkat_id: &str,
+        task: &str,
+        fork_context: ForkContext,
+        options: HelperOptions,
+    ) -> Result<HelperResult, MobRuntimeError> {
+        if source_member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "source_member_id must not be empty",
+            ));
+        }
+        if meerkat_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "meerkat_id must not be empty",
+            ));
+        }
+        self.handle
+            .fork_helper(
+                &MeerkatId::from(source_member_id),
+                MeerkatId::from(meerkat_id),
+                task,
+                fork_context,
+                options,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Attach a member to an existing session (resume mode).
+    pub async fn attach_existing_session(
+        &self,
+        profile: &str,
+        meerkat_id: &str,
+        session_id_str: &str,
+    ) -> Result<RichMobMemberSnapshot, MobRuntimeError> {
+        if profile.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("profile must not be empty"));
+        }
+        if meerkat_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "meerkat_id must not be empty",
+            ));
+        }
+        if session_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "session_id must not be empty",
+            ));
+        }
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        let mid = MeerkatId::from(meerkat_id);
+        let mut spec = SpawnMemberSpec::new(ProfileName::from(profile), mid.clone());
+        spec.launch_mode = MemberLaunchMode::Resume { session_id };
+        self.handle.spawn_spec(spec).await?;
+        self.handle.member_status(&mid).await.map_err(Into::into)
+    }
+
+    /// Cancel a running flow by its run ID.
+    pub async fn cancel_flow(&self, run_id_str: &str) -> Result<(), MobRuntimeError> {
+        if run_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("run_id must not be empty"));
+        }
+        let run_id: RunId = run_id_str
+            .parse()
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid run_id format"))?;
+        self.handle.cancel_flow(run_id).await.map_err(Into::into)
+    }
+
+    /// Query the status of a flow run.
+    pub async fn flow_status(&self, run_id_str: &str) -> Result<Option<MobRun>, MobRuntimeError> {
+        if run_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("run_id must not be empty"));
+        }
+        let run_id: RunId = run_id_str
+            .parse()
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid run_id format"))?;
+        self.handle.flow_status(run_id).await.map_err(Into::into)
+    }
+
+    /// Collect all members that have reached a terminal state.
+    pub async fn collect_completed(&self) -> Vec<(String, RichMobMemberSnapshot)> {
+        self.handle
+            .collect_completed()
+            .await
+            .into_iter()
+            .map(|(mid, snapshot)| (mid.to_string(), snapshot))
+            .collect()
+    }
+
+    /// Get the current session ID for a member (if any).
+    pub async fn member_current_session_id(
+        &self,
+        member_id: &str,
+    ) -> Result<Option<String>, MobRuntimeError> {
+        if member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
+        }
+        let mid = MeerkatId::from(member_id);
+        let session_id = self.handle.member(&mid).await?.current_session_id().await?;
+        Ok(session_id.map(|sid| sid.to_string()))
+    }
+
+    /// Get a reference to a member's current session bridge.
+    pub async fn member_session_ref(
+        &self,
+        member_id: &str,
+    ) -> Result<Option<MemberSessionRef>, MobRuntimeError> {
+        if member_id.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
+        }
+        let mid = MeerkatId::from(member_id);
+        self.handle
+            .member(&mid)
+            .await?
+            .session_ref()
+            .await
+            .map_err(Into::into)
     }
 }
