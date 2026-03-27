@@ -118,6 +118,7 @@ pub async fn console_json_handler(
 pub async fn console_rpc_handler(
     State(state): State<ConsoleJsonState>,
     headers: HeaderMap,
+    uri: Uri,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
     // Parse the request early so we can check the method for auth gating.
@@ -140,11 +141,19 @@ pub async fn console_rpc_handler(
     // - When require_app_auth is false: only allow read-only methods
     //   (mutating operations require auth to be configured)
     if state.decisions.console.require_app_auth {
-        let token_valid = headers
+        // Accept token from Bearer header OR auth_token query param
+        let bearer_token = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(extract_bearer_token_from_header)
-            .is_some_and(|token| validate_console_token(&state.decisions, token));
+            .map(String::from);
+        let query_token = uri.query().and_then(|q| {
+            q.split('&')
+                .find_map(|pair| pair.strip_prefix("auth_token=").map(String::from))
+        });
+        let token_valid = bearer_token
+            .or(query_token)
+            .is_some_and(|token| validate_console_token(&state.decisions, &token));
         if !token_valid {
             return (
                 StatusCode::UNAUTHORIZED,
@@ -161,11 +170,13 @@ pub async fn console_rpc_handler(
             "mobkit/capabilities",
             "mobkit/list_members",
             "mobkit/get_member",
+            "mobkit/find_members",
             "mobkit/member_status",
             "mobkit/member_current_session_id",
             "mobkit/member_session_ref",
             "mobkit/collect_completed",
             "mobkit/flow_status",
+            "mobkit/query_events",
             "mobkit/cross_mob/directory",
             "mobkit/cross_mob/peer_info",
         ];
@@ -194,7 +205,9 @@ pub async fn console_rpc_handler(
         );
     };
 
-    let response_value = handle_console_runtime_rpc(runtime, parsed_request).await;
+    let is_authenticated = state.decisions.console.require_app_auth;
+    let response_value =
+        handle_console_runtime_rpc(runtime, parsed_request, is_authenticated).await;
     (StatusCode::OK, Json::<Value>(response_value))
 }
 
@@ -239,42 +252,54 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
-async fn handle_console_runtime_rpc(runtime: &RealMobRuntime, request: JsonRpcRequest) -> Value {
+async fn handle_console_runtime_rpc(
+    runtime: &RealMobRuntime,
+    request: JsonRpcRequest,
+    is_authenticated: bool,
+) -> Value {
     let response_id = request.id.clone().unwrap_or(Value::Null);
 
     match request.method.as_str() {
-        "mobkit/capabilities" => response_value(
-            response_id,
-            Some(serde_json::json!({
-                "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
-                "methods": [
-                    "mobkit/status",
-                    "mobkit/capabilities",
+        "mobkit/capabilities" => {
+            let mut methods = vec![
+                "mobkit/status",
+                "mobkit/capabilities",
+                "mobkit/list_members",
+                "mobkit/get_member",
+                "mobkit/find_members",
+                "mobkit/member_status",
+                "mobkit/member_current_session_id",
+                "mobkit/member_session_ref",
+                "mobkit/collect_completed",
+                "mobkit/flow_status",
+                "mobkit/query_events",
+            ];
+            if is_authenticated {
+                methods.extend_from_slice(&[
                     "mobkit/send_message",
-                    "mobkit/find_members",
                     "mobkit/ensure_member",
-                    "mobkit/list_members",
-                    "mobkit/get_member",
                     "mobkit/retire_member",
                     "mobkit/respawn_member",
+                    "mobkit/force_cancel_member",
+                    "mobkit/cancel_flow",
                     "mobkit/reconcile_edges",
                     "mobkit/query_events",
-                    "mobkit/member_status",
-                    "mobkit/force_cancel_member",
-                    "mobkit/member_current_session_id",
-                    "mobkit/member_session_ref",
-                    "mobkit/collect_completed",
-                    "mobkit/cancel_flow",
-                    "mobkit/flow_status",
-                ],
-                "runtime_capabilities": {
-                    "can_send_messages": true,
-                    "can_retire_members": true,
-                    "can_spawn_members": true,
-                }
-            })),
-            None,
-        ),
+                ]);
+            }
+            response_value(
+                response_id,
+                Some(serde_json::json!({
+                    "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
+                    "methods": methods,
+                    "runtime_capabilities": {
+                        "can_send_messages": is_authenticated,
+                        "can_retire_members": is_authenticated,
+                        "can_spawn_members": is_authenticated,
+                    }
+                })),
+                None,
+            )
+        }
         "mobkit/status" => {
             let members = runtime.discover().await;
             response_value(

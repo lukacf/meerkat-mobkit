@@ -203,8 +203,20 @@ fn config_fingerprint(
     if manifest_toml.exists() {
         files.push(manifest_toml);
     }
-    for extra_dir in ["skills", "hooks", "mcp", "config"] {
-        collect_recursive_files(&workspace_root.join(extra_dir), &mut files);
+    // Scan workspace root and any override roots for config files
+    let mut scan_roots = vec![workspace_root.to_path_buf()];
+    if project_root != workspace_root {
+        scan_roots.push(project_root.to_path_buf());
+    }
+    if let Some(ctx) = context_root
+        && ctx != workspace_root
+    {
+        scan_roots.push(ctx.to_path_buf());
+    }
+    for root in &scan_roots {
+        for extra_dir in ["skills", "hooks", "mcp", "config"] {
+            collect_recursive_files(&root.join(extra_dir), &mut files);
+        }
     }
     files.sort();
 
@@ -558,13 +570,20 @@ async fn run() -> anyhow::Result<()> {
             )?,
         )
     } else {
-        MobBootstrapSpec::ephemeral(
-            definition,
-            MobStorage::in_memory(),
-            runtime_root.clone(),
-            64,
-            None,
-        )
+        // Build the ephemeral path manually to thread project/context roots
+        // into AgentFactory (MobBootstrapSpec::ephemeral doesn't accept them).
+        let mut factory = AgentFactory::new(&runtime_root)
+            .runtime_root(runtime_root.clone())
+            .project_root(project_root.clone())
+            .comms(true)
+            .mob(true);
+        if let Some(ref ctx) = context_root {
+            factory = factory.context_root(ctx.clone());
+        }
+        let config = Config::default();
+        let builder = FactoryAgentBuilder::new(factory, config);
+        let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(builder, 64));
+        MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
     };
     let mob_spec = session_spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: !persistent_sessions,
