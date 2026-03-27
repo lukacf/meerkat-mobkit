@@ -216,33 +216,48 @@ impl UnifiedRuntime {
             .unwrap_or_default()
     }
 
+    /// Whether a contact directory is configured (cross-mob operations available).
+    pub fn has_contact_directory(&self) -> bool {
+        self.contact_directory.is_some()
+    }
+
     /// Return the local mob's ID.
     pub fn mob_id(&self) -> String {
         self.mob_runtime.handle().mob_id().to_string()
     }
 
-    /// Get comms peer info for a local member (mob_id, comms_name, peer_id).
-    /// Used by the Python SDK to build peer specs for cross-mob wiring.
+    /// Get comms peer info for a local member.
+    /// Returns `(peer_id, comms_name, address)` — the address is always
+    /// `inproc://{comms_name}` for local members. For cross-process peering,
+    /// the caller should replace the address with the remote gateway's
+    /// TCP/UDS endpoint.
     pub async fn local_member_peer_info(
         &self,
         member_id: &str,
-    ) -> Result<(String, String), CrossMobError> {
+    ) -> Result<(String, String, String), CrossMobError> {
         let handle = self.mob_runtime.handle();
         let mob_id = handle.mob_id().to_string();
         let mid = MeerkatId::from(member_id);
-        self.get_member_peer_info(&handle, &mid, &mob_id).await
+        let (peer_id, comms_name) = self.get_member_peer_info(&handle, &mid, &mob_id).await?;
+        let address = format!("inproc://{comms_name}");
+        Ok((peer_id, comms_name, address))
     }
 
     /// Wire a local member to an external peer using provided comms info.
     /// Only wires the local side — for the bidirectional wire, call this
     /// on both gateways.
+    ///
+    /// `remote_address` is the comms transport address (e.g. `"inproc://name"`
+    /// for same-process, `"tcp://host:port"` for cross-process).
     pub async fn wire_local(
         &self,
         local_member_id: &str,
         remote_comms_name: &str,
         remote_peer_id: &str,
+        remote_address: &str,
     ) -> Result<(), CrossMobError> {
-        let spec = build_inproc_peer_spec(remote_comms_name, remote_peer_id)?;
+        let spec = TrustedPeerSpec::new(remote_comms_name, remote_peer_id, remote_address)
+            .map_err(CrossMobError::PeerSpec)?;
         let local_mid = MeerkatId::from(local_member_id);
         self.mob_runtime
             .handle()

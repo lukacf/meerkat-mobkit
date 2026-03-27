@@ -724,7 +724,7 @@ class MobHandle:
     async def peer_info(self, member_id: str) -> dict[str, str]:
         """Get comms peer info for a local member.
 
-        Returns ``{"member_id", "mob_id", "comms_name", "peer_id"}``.
+        Returns ``{"member_id", "mob_id", "comms_name", "peer_id", "address"}``.
         Used to build peer specs for cross-mob wiring via ``wire_local``.
         """
         raw = await self._runtime._rpc(
@@ -738,6 +738,7 @@ class MobHandle:
         local_member_id: str,
         remote_comms_name: str,
         remote_peer_id: str,
+        remote_address: str,
     ) -> None:
         """Wire a local member to a remote peer (local side only).
 
@@ -747,9 +748,9 @@ class MobHandle:
             a_info = await core.peer_info("school")
             b_info = await gw.peer_info("calendar")
 
-            # Wire each side to the other
-            await core.wire_local("school", b_info["comms_name"], b_info["peer_id"])
-            await gw.wire_local("calendar", a_info["comms_name"], a_info["peer_id"])
+            # Wire each side to the other (address from peer_info)
+            await core.wire_local("school", b_info["comms_name"], b_info["peer_id"], b_info["address"])
+            await gw.wire_local("calendar", a_info["comms_name"], a_info["peer_id"], a_info["address"])
         """
         await self._runtime._rpc(
             "mobkit/cross_mob/wire_local",
@@ -757,6 +758,7 @@ class MobHandle:
                 "local_member_id": local_member_id,
                 "remote_comms_name": remote_comms_name,
                 "remote_peer_id": remote_peer_id,
+                "remote_address": remote_address,
             },
         )
 
@@ -843,21 +845,14 @@ class MobHandle:
         profile: str,
         meerkat_id: str,
         session_id: str,
-        *,
-        runtime_mode: str | None = None,
-        backend: str | None = None,
     ) -> RichMemberSnapshot:
-        """Attach a member to an existing session."""
+        """Attach a member to an existing session (resume mode)."""
         from .types import RichMemberSnapshot
         params: dict[str, Any] = {
             "profile": profile,
             "meerkat_id": meerkat_id,
             "session_id": session_id,
         }
-        if runtime_mode is not None:
-            params["runtime_mode"] = runtime_mode
-        if backend is not None:
-            params["backend"] = backend
         raw = await self._runtime._rpc("mobkit/attach_existing_session", params)
         return RichMemberSnapshot.from_dict(raw)
 

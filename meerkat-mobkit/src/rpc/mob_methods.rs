@@ -2,7 +2,7 @@
 
 use meerkat_core::ContentInput;
 use meerkat_mob::launch::ForkContext;
-use meerkat_mob::{HelperOptions, MobRuntimeMode, ProfileName};
+use meerkat_mob::{HelperOptions, MobBackendKind, MobRuntimeMode, ProfileName};
 use serde_json::Value;
 
 use crate::unified_runtime::UnifiedRuntime;
@@ -19,6 +19,9 @@ fn parse_helper_options(options_val: Option<&Value>) -> HelperOptions {
             .map(ProfileName::from);
         opts.runtime_mode = o.get("runtime_mode").and_then(Value::as_str).and_then(|s| {
             serde_json::from_value::<MobRuntimeMode>(Value::String(s.to_string())).ok()
+        });
+        opts.backend = o.get("backend").and_then(Value::as_str).and_then(|s| {
+            serde_json::from_value::<MobBackendKind>(Value::String(s.to_string())).ok()
         });
     }
     opts
@@ -666,7 +669,7 @@ pub(super) async fn handle_cross_mob_peer_info(
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => match runtime.local_member_peer_info(mid).await {
-            Ok((peer_id, comms_name)) => JsonRpcResponse {
+            Ok((peer_id, comms_name, address)) => JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
                 result: Some(serde_json::json!({
@@ -674,6 +677,7 @@ pub(super) async fn handle_cross_mob_peer_info(
                     "mob_id": runtime.mob_id(),
                     "comms_name": comms_name,
                     "peer_id": peer_id,
+                    "address": address,
                 })),
                 error: None,
             },
@@ -1124,12 +1128,16 @@ pub(super) async fn handle_cross_mob_wire_local(
     let local_member_id = params.get("local_member_id").and_then(Value::as_str);
     let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
     let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
+    let remote_address = params.get("remote_address").and_then(Value::as_str);
 
-    match (local_member_id, remote_comms_name, remote_peer_id) {
-        (Some(local), Some(comms_name), Some(peer_id))
-            if !local.is_empty() && !comms_name.is_empty() && !peer_id.is_empty() =>
+    match (local_member_id, remote_comms_name, remote_peer_id, remote_address) {
+        (Some(local), Some(comms_name), Some(peer_id), Some(addr))
+            if !local.is_empty()
+                && !comms_name.is_empty()
+                && !peer_id.is_empty()
+                && !addr.is_empty() =>
         {
-            match runtime.wire_local(local, comms_name, peer_id).await {
+            match runtime.wire_local(local, comms_name, peer_id, addr).await {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1157,7 +1165,7 @@ pub(super) async fn handle_cross_mob_wire_local(
             result: None,
             error: Some(JsonRpcError {
                 code: -32602,
-                message: "Invalid params: local_member_id, remote_comms_name, and remote_peer_id required".to_string(),
+                message: "Invalid params: local_member_id, remote_comms_name, remote_peer_id, and remote_address required".to_string(),
             }),
         },
     }
