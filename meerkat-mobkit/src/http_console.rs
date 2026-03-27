@@ -327,10 +327,34 @@ async fn handle_console_runtime_rpc(runtime: &RealMobRuntime, request: JsonRpcRe
                     }
                 },
             };
+            let context = request.params.get("context").cloned();
+            let resume_session_id = request
+                .params
+                .get("resume_session_id")
+                .and_then(Value::as_str)
+                .and_then(|s| meerkat_core::types::SessionId::parse(s).ok());
+            let additional_instructions: Option<Vec<String>> = request
+                .params
+                .get("additional_instructions")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                });
             let mut spec =
                 SpawnMemberSpec::new(ProfileName::from(profile), MeerkatId::from(meerkat_id));
             if !labels.is_empty() {
                 spec = spec.with_labels(labels);
+            }
+            if let Some(ctx) = context {
+                spec = spec.with_context(ctx);
+            }
+            if let Some(sid) = resume_session_id {
+                spec = spec.with_resume_session_id(sid);
+            }
+            if let Some(instructions) = additional_instructions {
+                spec = spec.with_additional_instructions(instructions);
             }
             match runtime.ensure_member(spec).await {
                 Ok(snapshot) => response_value(

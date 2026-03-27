@@ -359,8 +359,12 @@ impl RealMobRuntime {
             return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
         }
         let content = content.into();
-        if content.text_content().is_empty() {
-            return Err(MobRuntimeError::InvalidInput("message must not be empty"));
+        let is_empty = match &content {
+            meerkat_core::ContentInput::Text(s) => s.trim().is_empty(),
+            meerkat_core::ContentInput::Blocks(blocks) => blocks.is_empty(),
+        };
+        if is_empty {
+            return Err(MobRuntimeError::InvalidInput("content must not be empty"));
         }
         let mid = MeerkatId::from(member_id);
         let receipt = self
@@ -550,6 +554,7 @@ impl RealMobRuntime {
     }
 
     /// Get the current session ID for a member (if any).
+    /// Returns Ok(None) if the member doesn't exist.
     pub async fn member_current_session_id(
         &self,
         member_id: &str,
@@ -558,11 +563,18 @@ impl RealMobRuntime {
             return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
         }
         let mid = MeerkatId::from(member_id);
-        let session_id = self.handle.member(&mid).await?.current_session_id().await?;
-        Ok(session_id.map(|sid| sid.to_string()))
+        match self.handle.member(&mid).await {
+            Ok(member) => {
+                let session_id = member.current_session_id().await?;
+                Ok(session_id.map(|sid| sid.to_string()))
+            }
+            Err(MobError::MeerkatNotFound(_)) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// Get a reference to a member's current session bridge.
+    /// Returns Ok(None) if the member doesn't exist.
     pub async fn member_session_ref(
         &self,
         member_id: &str,
@@ -571,11 +583,10 @@ impl RealMobRuntime {
             return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
         }
         let mid = MeerkatId::from(member_id);
-        self.handle
-            .member(&mid)
-            .await?
-            .session_ref()
-            .await
-            .map_err(Into::into)
+        match self.handle.member(&mid).await {
+            Ok(member) => member.session_ref().await.map_err(Into::into),
+            Err(MobError::MeerkatNotFound(_)) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
     }
 }
