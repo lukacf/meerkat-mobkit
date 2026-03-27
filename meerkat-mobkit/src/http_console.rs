@@ -120,8 +120,25 @@ pub async fn console_rpc_handler(
     headers: HeaderMap,
     Json(request): Json<Value>,
 ) -> impl IntoResponse {
-    // Enforce console auth — validate the bearer token directly against
-    // the trusted OIDC config, same validation as the GET /console/* path.
+    // Parse the request early so we can check the method for auth gating.
+    let parsed_request = match serde_json::from_value::<JsonRpcRequest>(request) {
+        Ok(req) => req,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json::<Value>(serde_json::json!({
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": Value::Null,
+                    "error": { "code": -32600, "message": "Invalid Request" }
+                })),
+            );
+        }
+    };
+
+    // Auth enforcement:
+    // - When require_app_auth is true: validate bearer token (OIDC + allowlist)
+    // - When require_app_auth is false: only allow read-only methods
+    //   (mutating operations require auth to be configured)
     if state.decisions.console.require_app_auth {
         let token_valid = headers
             .get(header::AUTHORIZATION)
@@ -137,6 +154,34 @@ pub async fn console_rpc_handler(
                 })),
             );
         }
+    } else {
+        // No auth configured — block mutating methods
+        let read_only_methods = [
+            "mobkit/status",
+            "mobkit/capabilities",
+            "mobkit/list_members",
+            "mobkit/get_member",
+            "mobkit/member_status",
+            "mobkit/member_current_session_id",
+            "mobkit/member_session_ref",
+            "mobkit/collect_completed",
+            "mobkit/flow_status",
+            "mobkit/cross_mob/directory",
+            "mobkit/cross_mob/peer_info",
+        ];
+        if !read_only_methods.contains(&parsed_request.method.as_str()) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json::<Value>(serde_json::json!({
+                    "jsonrpc": JSONRPC_VERSION,
+                    "id": parsed_request.id.clone().unwrap_or(Value::Null),
+                    "error": {
+                        "code": -32600,
+                        "message": "mutating RPC methods require console auth to be configured",
+                    }
+                })),
+            );
+        }
     }
 
     let Some(runtime) = &state.runtime else {
@@ -149,17 +194,7 @@ pub async fn console_rpc_handler(
         );
     };
 
-    let response_value = match serde_json::from_value::<JsonRpcRequest>(request) {
-        Ok(request) => handle_console_runtime_rpc(runtime, request).await,
-        Err(_) => serde_json::json!({
-            "jsonrpc": JSONRPC_VERSION,
-            "id": Value::Null,
-            "error": {
-                "code": -32600,
-                "message": "Invalid Request",
-            }
-        }),
-    };
+    let response_value = handle_console_runtime_rpc(runtime, parsed_request).await;
     (StatusCode::OK, Json::<Value>(response_value))
 }
 
@@ -224,6 +259,13 @@ async fn handle_console_runtime_rpc(runtime: &RealMobRuntime, request: JsonRpcRe
                     "mobkit/respawn_member",
                     "mobkit/reconcile_edges",
                     "mobkit/query_events",
+                    "mobkit/member_status",
+                    "mobkit/force_cancel_member",
+                    "mobkit/member_current_session_id",
+                    "mobkit/member_session_ref",
+                    "mobkit/collect_completed",
+                    "mobkit/cancel_flow",
+                    "mobkit/flow_status",
                 ],
                 "runtime_capabilities": {
                     "can_send_messages": true,
@@ -407,6 +449,117 @@ async fn handle_console_runtime_rpc(runtime: &RealMobRuntime, request: JsonRpcRe
             })),
             None,
         ),
+        // 0.5 API methods
+        "mobkit/member_status" => {
+            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "member_id required");
+            };
+            match runtime.member_status(member_id).await {
+                Ok(snapshot) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("member_status failed: {err}")),
+            }
+        }
+        "mobkit/force_cancel_member" => {
+            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "member_id required");
+            };
+            match runtime.force_cancel_member(member_id).await {
+                Ok(()) => response_value(
+                    response_id,
+                    Some(serde_json::json!({ "accepted": true })),
+                    None,
+                ),
+                Err(err) => {
+                    internal_error(response_id, format!("force_cancel_member failed: {err}"))
+                }
+            }
+        }
+        "mobkit/member_current_session_id" => {
+            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "member_id required");
+            };
+            match runtime.member_current_session_id(member_id).await {
+                Ok(session_id) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "member_id": member_id,
+                        "session_id": session_id,
+                    })),
+                    None,
+                ),
+                Err(err) => internal_error(
+                    response_id,
+                    format!("member_current_session_id failed: {err}"),
+                ),
+            }
+        }
+        "mobkit/member_session_ref" => {
+            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "member_id required");
+            };
+            match runtime.member_session_ref(member_id).await {
+                Ok(session_ref) => response_value(
+                    response_id,
+                    Some(
+                        session_ref
+                            .map(|r| serde_json::to_value(&r).unwrap_or(Value::Null))
+                            .unwrap_or(Value::Null),
+                    ),
+                    None,
+                ),
+                Err(err) => {
+                    internal_error(response_id, format!("member_session_ref failed: {err}"))
+                }
+            }
+        }
+        "mobkit/collect_completed" => {
+            let completed = runtime.collect_completed().await;
+            let entries: Vec<Value> = completed
+                .into_iter()
+                .map(|(member_id, snapshot)| {
+                    serde_json::json!({
+                        "member_id": member_id,
+                        "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                    })
+                })
+                .collect();
+            response_value(
+                response_id,
+                Some(serde_json::json!({ "completed": entries })),
+                None,
+            )
+        }
+        "mobkit/cancel_flow" => {
+            let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "run_id required");
+            };
+            match runtime.cancel_flow(run_id).await {
+                Ok(()) => response_value(
+                    response_id,
+                    Some(serde_json::json!({ "accepted": true })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("cancel_flow failed: {err}")),
+            }
+        }
+        "mobkit/flow_status" => {
+            let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "run_id required");
+            };
+            match runtime.flow_status(run_id).await {
+                Ok(Some(mob_run)) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(&mob_run).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Ok(None) => response_value(response_id, Some(Value::Null), None),
+                Err(err) => internal_error(response_id, format!("flow_status failed: {err}")),
+            }
+        }
         _ => response_value(
             response_id,
             None,
