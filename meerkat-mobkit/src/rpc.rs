@@ -984,8 +984,9 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/member_current_session_id",
                 "mobkit/member_session_ref",
             ];
-            // Cross-mob directory methods only advertised when a contact directory is configured
-            if runtime.has_contact_directory() {
+            // Cross-mob methods only advertised when a contact directory with
+            // inproc entries is configured (TCP/UDS not yet supported).
+            if runtime.has_inproc_contacts() {
                 methods.extend_from_slice(&[
                     "mobkit/cross_mob/wire",
                     "mobkit/cross_mob/unwire",

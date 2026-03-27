@@ -742,15 +742,18 @@ class MobHandle:
     ) -> None:
         """Wire a local member to a remote peer (local side only).
 
-        For bidirectional cross-mob wiring, call this on both gateways::
+        For same-process (inproc) cross-mob wiring::
 
             # Get peer info from each side
             a_info = await core.peer_info("school")
             b_info = await gw.peer_info("calendar")
 
-            # Wire each side to the other (address from peer_info)
+            # Wire each side to the other (inproc address from peer_info)
             await core.wire_local("school", b_info["comms_name"], b_info["peer_id"], b_info["address"])
             await gw.wire_local("calendar", a_info["comms_name"], a_info["peer_id"], a_info["address"])
+
+        For cross-process (TCP/UDS), replace the address with the remote
+        gateway's transport endpoint — peer_info always returns inproc.
         """
         await self._runtime._rpc(
             "mobkit/cross_mob/wire_local",

@@ -221,6 +221,16 @@ impl UnifiedRuntime {
         self.contact_directory.is_some()
     }
 
+    /// Whether the contact directory has any inproc entries (the only
+    /// transport currently supported for cross-mob wire/send).
+    pub fn has_inproc_contacts(&self) -> bool {
+        self.contact_directory.as_ref().is_some_and(|d| {
+            d.list()
+                .iter()
+                .any(|e| matches!(e.transport, crate::contact_directory::MobTransport::Inproc))
+        })
+    }
+
     /// Return the local mob's ID.
     pub fn mob_id(&self) -> String {
         self.mob_runtime.handle().mob_id().to_string()
