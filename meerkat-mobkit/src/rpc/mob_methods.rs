@@ -638,3 +638,95 @@ pub(super) async fn handle_cross_mob_directory(
         error: None,
     }
 }
+
+/// Return comms peer info for a local member — used by the Python SDK
+/// to build `TrustedPeerSpec` for cross-mob wiring.
+pub(super) async fn handle_cross_mob_peer_info(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let member_id = params.get("member_id").and_then(Value::as_str);
+    match member_id {
+        Some(mid) if !mid.is_empty() => match runtime.local_member_peer_info(mid).await {
+            Ok((peer_id, comms_name)) => JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "member_id": mid,
+                    "mob_id": runtime.mob_id(),
+                    "comms_name": comms_name,
+                    "peer_id": peer_id,
+                })),
+                error: None,
+            },
+            Err(err) => JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32000,
+                    message: format!("cross_mob/peer_info failed: {err}"),
+                }),
+            },
+        },
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: member_id required".to_string(),
+            }),
+        },
+    }
+}
+
+/// Wire a local member to an external peer using a provided spec.
+/// Only wires the local side — the remote side must do its own call.
+pub(super) async fn handle_cross_mob_wire_local(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let local_member_id = params.get("local_member_id").and_then(Value::as_str);
+    let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
+    let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
+
+    match (local_member_id, remote_comms_name, remote_peer_id) {
+        (Some(local), Some(comms_name), Some(peer_id))
+            if !local.is_empty() && !comms_name.is_empty() && !peer_id.is_empty() =>
+        {
+            match runtime.wire_local(local, comms_name, peer_id).await {
+                Ok(()) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "accepted": true,
+                        "local_member_id": local,
+                        "remote_comms_name": comms_name,
+                    })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("cross_mob/wire_local failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: local_member_id, remote_comms_name, and remote_peer_id required".to_string(),
+            }),
+        },
+    }
+}

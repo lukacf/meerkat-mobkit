@@ -216,6 +216,41 @@ impl UnifiedRuntime {
             .unwrap_or_default()
     }
 
+    /// Return the local mob's ID.
+    pub fn mob_id(&self) -> String {
+        self.mob_runtime.handle().mob_id().to_string()
+    }
+
+    /// Get comms peer info for a local member (mob_id, comms_name, peer_id).
+    /// Used by the Python SDK to build peer specs for cross-mob wiring.
+    pub async fn local_member_peer_info(
+        &self,
+        member_id: &str,
+    ) -> Result<(String, String), CrossMobError> {
+        let handle = self.mob_runtime.handle();
+        let mob_id = handle.mob_id().to_string();
+        let mid = MeerkatId::from(member_id);
+        self.get_member_peer_info(&handle, &mid, &mob_id).await
+    }
+
+    /// Wire a local member to an external peer using provided comms info.
+    /// Only wires the local side — for the bidirectional wire, call this
+    /// on both gateways.
+    pub async fn wire_local(
+        &self,
+        local_member_id: &str,
+        remote_comms_name: &str,
+        remote_peer_id: &str,
+    ) -> Result<(), CrossMobError> {
+        let spec = build_inproc_peer_spec(remote_comms_name, remote_peer_id)?;
+        let local_mid = MeerkatId::from(local_member_id);
+        self.mob_runtime
+            .handle()
+            .wire(local_mid, PeerTarget::External(spec))
+            .await
+            .map_err(CrossMobError::Mob)
+    }
+
     // -- internal helpers --
 
     fn resolve_contact(&self, mob_id: &str) -> Result<ContactEntry, CrossMobError> {

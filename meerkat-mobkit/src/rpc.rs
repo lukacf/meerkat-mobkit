@@ -979,7 +979,9 @@ pub async fn handle_unified_rpc_json(
                         "mobkit/cross_mob/wire",
                         "mobkit/cross_mob/unwire",
                         "mobkit/cross_mob/send",
-                        "mobkit/cross_mob/directory"
+                        "mobkit/cross_mob/directory",
+                        "mobkit/cross_mob/peer_info",
+                        "mobkit/cross_mob/wire_local"
                     ],
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
@@ -1666,6 +1668,12 @@ pub async fn handle_unified_rpc_json(
         }
         "mobkit/cross_mob/directory" => {
             mob_methods::handle_cross_mob_directory(runtime, response_id).await
+        }
+        "mobkit/cross_mob/peer_info" => {
+            mob_methods::handle_cross_mob_peer_info(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/wire_local" => {
+            mob_methods::handle_cross_mob_wire_local(runtime, response_id, &request.params).await
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method

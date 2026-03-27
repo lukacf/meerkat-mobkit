@@ -721,6 +721,45 @@ class MobHandle:
         mobs = raw.get("mobs", []) if isinstance(raw, dict) else []
         return [CrossMobContactEntry.from_dict(m) for m in mobs]
 
+    async def peer_info(self, member_id: str) -> dict[str, str]:
+        """Get comms peer info for a local member.
+
+        Returns ``{"member_id", "mob_id", "comms_name", "peer_id"}``.
+        Used to build peer specs for cross-mob wiring via ``wire_local``.
+        """
+        raw = await self._runtime._rpc(
+            "mobkit/cross_mob/peer_info",
+            {"member_id": member_id},
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    async def wire_local(
+        self,
+        local_member_id: str,
+        remote_comms_name: str,
+        remote_peer_id: str,
+    ) -> None:
+        """Wire a local member to a remote peer (local side only).
+
+        For bidirectional cross-mob wiring, call this on both gateways::
+
+            # Get peer info from each side
+            a_info = await core.peer_info("school")
+            b_info = await gw.peer_info("calendar")
+
+            # Wire each side to the other
+            await core.wire_local("school", b_info["comms_name"], b_info["peer_id"])
+            await gw.wire_local("calendar", a_info["comms_name"], a_info["peer_id"])
+        """
+        await self._runtime._rpc(
+            "mobkit/cross_mob/wire_local",
+            {
+                "local_member_id": local_member_id,
+                "remote_comms_name": remote_comms_name,
+                "remote_peer_id": remote_peer_id,
+            },
+        )
+
     # Alias for backward compatibility
     send_message = send
 
