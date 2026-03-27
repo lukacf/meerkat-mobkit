@@ -221,6 +221,12 @@ impl UnifiedRuntime {
         self.contact_directory.is_some()
     }
 
+    /// Whether any peer mob handles are registered (required for
+    /// high-level cross-mob wire/unwire/send).
+    pub async fn has_peer_mob_handles(&self) -> bool {
+        !self.peer_mob_handles.read().await.is_empty()
+    }
+
     /// Whether the contact directory has any inproc entries (the only
     /// transport currently supported for cross-mob wire/send).
     pub fn has_inproc_contacts(&self) -> bool {

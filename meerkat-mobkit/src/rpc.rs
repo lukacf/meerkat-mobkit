@@ -984,14 +984,17 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/member_current_session_id",
                 "mobkit/member_session_ref",
             ];
-            // Cross-mob methods only advertised when a contact directory with
-            // inproc entries is configured (TCP/UDS not yet supported).
-            if runtime.has_inproc_contacts() {
+            // Cross-mob directory always advertised when configured
+            if runtime.has_contact_directory() {
+                methods.push("mobkit/cross_mob/directory");
+            }
+            // High-level wire/unwire/send require peer mob handles
+            // (Rust-only via register_peer_mob). Only advertised when handles exist.
+            if runtime.has_peer_mob_handles().await {
                 methods.extend_from_slice(&[
                     "mobkit/cross_mob/wire",
                     "mobkit/cross_mob/unwire",
                     "mobkit/cross_mob/send",
-                    "mobkit/cross_mob/directory",
                 ]);
             }
             JsonRpcResponse {

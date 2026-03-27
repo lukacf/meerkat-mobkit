@@ -646,44 +646,41 @@ class MobHandle:
         self,
         local_member_id: str,
         remote_member_id: str,
-        remote_mob_id: str,
+        remote_handle: "MobHandle",
     ) -> None:
-        """Wire a local member to a member in an external mob."""
-        await self._runtime._rpc(
-            "mobkit/cross_mob/wire",
-            {
-                "local_member_id": local_member_id,
-                "remote_member_id": remote_member_id,
-                "remote_mob_id": remote_mob_id,
-            },
-        )
+        """Wire a local member to a member on another mob handle.
 
-    async def unwire_cross_mob(
-        self,
-        local_member_id: str,
-        remote_member_id: str,
-        remote_mob_id: str,
-    ) -> None:
-        """Unwire a cross-mob peering."""
-        await self._runtime._rpc(
-            "mobkit/cross_mob/unwire",
-            {
-                "local_member_id": local_member_id,
-                "remote_member_id": remote_member_id,
-                "remote_mob_id": remote_mob_id,
-            },
+        Uses peer_info + wire_local on both sides — works across gateways.
+
+        Args:
+            local_member_id: Member on this mob to wire.
+            remote_member_id: Member on the remote mob to wire.
+            remote_handle: MobHandle for the remote mob.
+        """
+        local_info = await self.peer_info(local_member_id)
+        remote_info = await remote_handle.peer_info(remote_member_id)
+        await self.wire_local(
+            local_member_id,
+            remote_info["comms_name"],
+            remote_info["peer_id"],
+            remote_info["address"],
+        )
+        await remote_handle.wire_local(
+            remote_member_id,
+            local_info["comms_name"],
+            local_info["peer_id"],
+            local_info["address"],
         )
 
     async def send_cross_mob(
         self,
-        from_member_id: str,
         remote_member_id: str,
-        remote_mob_id: str,
+        remote_handle: "MobHandle",
         message: str | None = None,
         *,
         content: list[dict[str, Any]] | None = None,
     ) -> SendMessageResult:
-        """Inject a message into a remote mob member's session.
+        """Send a message to a member on another mob handle.
 
         This is an app-level injection — the remote agent receives the
         message but does not know the sender. For agent-to-agent
@@ -692,26 +689,12 @@ class MobHandle:
         directly via their comms ``send`` tool.
 
         Args:
-            from_member_id: Local member context (logged, not used for delivery).
-            remote_member_id: Target member in the external mob.
-            remote_mob_id: ID of the external mob.
+            remote_member_id: Target member on the remote mob.
+            remote_handle: MobHandle for the remote mob.
             message: Plain text message.
             content: Multimodal content blocks.
         """
-        params: dict[str, Any] = {
-            "from_member_id": from_member_id,
-            "remote_member_id": remote_member_id,
-            "remote_mob_id": remote_mob_id,
-        }
-        if message is not None:
-            params["message"] = message
-        elif content is not None:
-            params["content"] = content
-        raw = await self._runtime._rpc("mobkit/cross_mob/send", params)
-        # Server returns remote_member_id, not member_id — map to SendMessageResult
-        if isinstance(raw, dict):
-            raw.setdefault("member_id", raw.get("remote_member_id", ""))
-        return SendMessageResult.from_dict(raw)
+        return await remote_handle.send(remote_member_id, message, content=content)
 
     async def list_external_mobs(self) -> list:
         """List known external mobs from the contact directory."""
