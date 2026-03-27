@@ -10,21 +10,32 @@ use crate::unified_runtime::UnifiedRuntime;
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
 /// Parse HelperOptions from an optional JSON "options" object.
-fn parse_helper_options(options_val: Option<&Value>) -> HelperOptions {
+fn parse_helper_options(options_val: Option<&Value>) -> Result<HelperOptions, String> {
     let mut opts = HelperOptions::default();
     if let Some(o) = options_val {
         opts.profile_name = o
             .get("profile")
             .and_then(Value::as_str)
             .map(ProfileName::from);
-        opts.runtime_mode = o.get("runtime_mode").and_then(Value::as_str).and_then(|s| {
-            serde_json::from_value::<MobRuntimeMode>(Value::String(s.to_string())).ok()
-        });
-        opts.backend = o.get("backend").and_then(Value::as_str).and_then(|s| {
-            serde_json::from_value::<MobBackendKind>(Value::String(s.to_string())).ok()
-        });
+        if let Some(mode_str) = o.get("runtime_mode").and_then(Value::as_str) {
+            opts.runtime_mode = Some(
+                serde_json::from_value::<MobRuntimeMode>(Value::String(mode_str.to_string()))
+                    .map_err(|_| {
+                        format!(
+                            "invalid runtime_mode '{mode_str}': \
+                             expected 'autonomous_host' or 'turn_driven'"
+                        )
+                    })?,
+            );
+        }
+        if let Some(backend_str) = o.get("backend").and_then(Value::as_str) {
+            opts.backend = Some(
+                serde_json::from_value::<MobBackendKind>(Value::String(backend_str.to_string()))
+                    .map_err(|_| format!("invalid backend '{backend_str}'"))?,
+            );
+        }
     }
-    opts
+    Ok(opts)
 }
 
 /// Extract content from params as `ContentInput`.
@@ -789,7 +800,20 @@ pub(super) async fn handle_spawn_helper(
 
     match (meerkat_id, task) {
         (Some(mid), Some(task_str)) if !mid.is_empty() && !task_str.is_empty() => {
-            let options = parse_helper_options(params.get("options"));
+            let options = match parse_helper_options(params.get("options")) {
+                Ok(opts) => opts,
+                Err(msg) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {msg}"),
+                        }),
+                    };
+                }
+            };
             match runtime.spawn_helper(mid, task_str, options).await {
                 Ok(result) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
@@ -855,7 +879,20 @@ pub(super) async fn handle_fork_helper(
                 },
                 _ => ForkContext::default(),
             };
-            let options = parse_helper_options(params.get("options"));
+            let options = match parse_helper_options(params.get("options")) {
+                Ok(opts) => opts,
+                Err(msg) => {
+                    return JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32602,
+                            message: format!("Invalid params: {msg}"),
+                        }),
+                    };
+                }
+            };
             match runtime
                 .fork_helper(source, mid, task_str, fork_context, options)
                 .await

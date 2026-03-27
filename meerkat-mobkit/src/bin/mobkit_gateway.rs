@@ -561,7 +561,7 @@ async fn run() -> anyhow::Result<()> {
         default_llm_client: None,
     });
 
-    let runtime = UnifiedRuntime::bootstrap(
+    let mut runtime = UnifiedRuntime::bootstrap(
         mob_spec,
         meerkat_mobkit::MobKitConfig {
             modules: Vec::new(),
@@ -575,6 +575,16 @@ async fn run() -> anyhow::Result<()> {
     )
     .await
     .context("failed to bootstrap local runtime")?;
+
+    // Load contact directory if config/contacts.toml exists.
+    if let Some(ref contacts_path) = paths.contacts_toml
+        && let Ok(contents) = std::fs::read_to_string(contacts_path)
+    {
+        match meerkat_mobkit::contact_directory::ContactDirectory::from_toml(&contents) {
+            Ok(dir) => runtime.set_contact_directory(dir),
+            Err(err) => eprintln!("WARN mobkit: failed to parse contacts.toml: {err}"),
+        }
+    }
 
     if !used_workspace_config {
         let mut labels = BTreeMap::new();

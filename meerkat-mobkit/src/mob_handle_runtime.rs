@@ -103,7 +103,7 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(meerkat_store::MemoryBlobStore::new());
+            Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
         let session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
             max_sessions,
