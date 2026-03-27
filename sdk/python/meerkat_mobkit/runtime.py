@@ -858,7 +858,7 @@ class MobHandle:
             params["runtime_mode"] = runtime_mode
         if backend is not None:
             params["backend"] = backend
-        raw = await self._runtime._rpc("mobkit/attach_session", params)
+        raw = await self._runtime._rpc("mobkit/attach_existing_session", params)
         return RichMemberSnapshot.from_dict(raw)
 
     # -----------------------------------------------------------------
@@ -888,11 +888,11 @@ class MobHandle:
         from .types import RichMemberSnapshot
         raw = await self._runtime._rpc("mobkit/collect_completed")
         results: list[tuple[str, RichMemberSnapshot]] = []
-        if isinstance(raw, list):
-            for entry in raw:
-                member_id = entry.get("member_id", "")
-                snapshot = RichMemberSnapshot.from_dict(entry.get("snapshot", entry))
-                results.append((member_id, snapshot))
+        entries = raw.get("completed", []) if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+        for entry in entries:
+            member_id = entry.get("member_id", "")
+            snapshot = RichMemberSnapshot.from_dict(entry.get("snapshot", entry))
+            results.append((member_id, snapshot))
         return results
 
     # -----------------------------------------------------------------
@@ -901,7 +901,7 @@ class MobHandle:
 
     async def member_session_id(self, member_id: str) -> str | None:
         """Return the current session ID for a member, or None."""
-        raw = await self._runtime._rpc("mobkit/member_session_id", {"member_id": member_id})
+        raw = await self._runtime._rpc("mobkit/member_current_session_id", {"member_id": member_id})
         if isinstance(raw, dict):
             return raw.get("session_id")
         return None

@@ -851,12 +851,7 @@ pub(super) async fn handle_fork_helper(
                 },
                 _ => ForkContext::default(),
             };
-            let mut options = HelperOptions::default();
-            options.profile_name = params
-                .get("options")
-                .and_then(|o| o.get("profile"))
-                .and_then(Value::as_str)
-                .map(ProfileName::from);
+            let options = parse_helper_options(params.get("options"));
             match runtime
                 .fork_helper(source, mid, task_str, fork_context, options)
                 .await
