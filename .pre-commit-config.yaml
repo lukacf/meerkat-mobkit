@@ -10,7 +10,7 @@ repos:
     hooks:
       - id: cargo-fmt-fix
         name: cargo fmt (auto-fix)
-        entry: cargo fmt --all
+        entry: scripts/repo-cargo fmt --all
         language: system
         types: [rust]
         pass_filenames: false
@@ -45,7 +45,7 @@ repos:
     hooks:
       - id: cargo-fmt
         name: cargo fmt --check
-        entry: cargo fmt --all -- --check
+        entry: scripts/repo-cargo fmt --all -- --check
         language: system
         types: [rust]
         pass_filenames: false
@@ -67,7 +67,7 @@ repos:
     hooks:
       - id: cargo-test
         name: workspace unit gate
-        entry: cargo nextest run --workspace --lib --no-fail-fast
+        entry: scripts/repo-cargo nextest run --workspace --lib --no-fail-fast
         language: system
         types: [rust]
         pass_filenames: false

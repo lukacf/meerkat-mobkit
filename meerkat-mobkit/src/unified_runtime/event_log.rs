@@ -153,6 +153,11 @@ pub(crate) struct EventLogHandle {
 }
 
 impl EventLogHandle {
+    /// Return a cloned reference to the underlying store.
+    pub fn store(&self) -> std::sync::Arc<dyn EventLogStore> {
+        self.store.clone()
+    }
+
     /// Query the underlying store.
     pub async fn query(&self, query: EventQuery) -> Result<Vec<PersistedEvent>, EventLogError> {
         self.store.query(query).await

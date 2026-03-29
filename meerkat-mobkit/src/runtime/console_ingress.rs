@@ -542,6 +542,18 @@ pub fn extract_bearer_token_from_header(header_value: &str) -> Option<&str> {
     if token.is_empty() { None } else { Some(token) }
 }
 
+/// Validate a bearer token against the console's trusted OIDC config AND
+/// the email allowlist / provider policy (via `enforce_console_route_access`).
+/// Returns `true` only if the token is valid AND the caller is authorized.
+pub fn validate_console_token(decisions: &RuntimeDecisionState, token: &str) -> bool {
+    let auth = match resolve_console_auth_from_token(decisions, token) {
+        Ok(auth) => auth,
+        Err(_) => return false,
+    };
+    crate::decisions::enforce_console_route_access(&decisions.auth, &decisions.console, &auth)
+        .is_ok()
+}
+
 fn resolve_console_auth_from_token(
     decisions: &RuntimeDecisionState,
     token: &str,

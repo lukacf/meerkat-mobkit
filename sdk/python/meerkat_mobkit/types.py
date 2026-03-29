@@ -540,6 +540,27 @@ class MemoryIndexResult:
 
 
 @dataclass(frozen=True)
+class CrossMobContactEntry:
+    """An entry in the cross-mob contact directory."""
+    mob_id: str
+    transport: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CrossMobContactEntry:
+        transport = data.get("transport", "")
+        if isinstance(transport, dict):
+            if "Tcp" in transport:
+                transport = f"tcp://{transport['Tcp']}"
+            elif "Uds" in transport:
+                transport = f"uds://{transport['Uds']}"
+            else:
+                transport = "inproc"
+        elif transport == "Inproc":
+            transport = "inproc"
+        return cls(mob_id=data.get("mob_id", ""), transport=transport)
+
+
+@dataclass(frozen=True)
 class CatalogEntry:
     """A curated model entry from the model catalog."""
     id: str
@@ -595,6 +616,125 @@ class ModelsCatalogResult:
             provider_defaults=[
                 ProviderDefaults.from_dict(p) for p in data.get("provider_defaults", [])
             ],
+        )
+
+
+class MobMemberStatus(str, Enum):
+    """Execution status for a mob member."""
+    ACTIVE = "active"
+    RETIRING = "retiring"
+    BROKEN = "broken"
+    COMPLETED = "completed"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class MobUnreachablePeer:
+    """A wired peer known to be unreachable."""
+    peer: str
+    reason: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobUnreachablePeer:
+        return cls(
+            peer=data.get("peer", ""),
+            reason=data.get("reason"),
+        )
+
+
+@dataclass(frozen=True)
+class PeerConnectivitySnapshot:
+    """Live connectivity for a member's wired peers."""
+    reachable_peer_count: int
+    unknown_peer_count: int
+    unreachable_peers: list[MobUnreachablePeer]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> PeerConnectivitySnapshot:
+        return cls(
+            reachable_peer_count=int(data.get("reachable_peer_count", 0)),
+            unknown_peer_count=int(data.get("unknown_peer_count", 0)),
+            unreachable_peers=[
+                MobUnreachablePeer.from_dict(p)
+                for p in data.get("unreachable_peers", [])
+            ],
+        )
+
+
+@dataclass(frozen=True)
+class RichMemberSnapshot:
+    """Rich execution snapshot from mobkit/member_status."""
+    status: str
+    output_preview: str | None
+    error: str | None
+    tokens_used: int
+    is_final: bool
+    current_session_id: str | None
+    peer_connectivity: PeerConnectivitySnapshot | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RichMemberSnapshot:
+        pc_raw = data.get("peer_connectivity")
+        return cls(
+            status=data.get("status", "unknown"),
+            output_preview=data.get("output_preview"),
+            error=data.get("error"),
+            tokens_used=int(data.get("tokens_used", 0)),
+            is_final=bool(data.get("is_final", False)),
+            current_session_id=data.get("current_session_id"),
+            peer_connectivity=PeerConnectivitySnapshot.from_dict(pc_raw) if pc_raw else None,
+        )
+
+
+@dataclass(frozen=True)
+class HelperResult:
+    """Result from spawn_helper or fork_helper."""
+    output: str | None
+    tokens_used: int
+    session_id: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> HelperResult:
+        return cls(
+            output=data.get("output"),
+            tokens_used=int(data.get("tokens_used", 0)),
+            session_id=data.get("session_id"),
+        )
+
+
+@dataclass(frozen=True)
+class MemberSessionRef:
+    """Session reference for a mob member."""
+    member_id: str
+    session_id: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MemberSessionRef:
+        return cls(
+            member_id=data.get("member_id", ""),
+            session_id=data.get("session_id", ""),
+        )
+
+
+@dataclass(frozen=True)
+class MobRunSnapshot:
+    """Flow run snapshot from mobkit/flow_status."""
+    run_id: str
+    mob_id: str
+    flow_id: str
+    status: str
+    step_ledger: list[dict[str, Any]]
+    failure_ledger: list[dict[str, Any]]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobRunSnapshot:
+        return cls(
+            run_id=data.get("run_id", ""),
+            mob_id=data.get("mob_id", ""),
+            flow_id=data.get("flow_id", ""),
+            status=data.get("status", "unknown"),
+            step_ledger=list(data.get("step_ledger", [])),
+            failure_ledger=list(data.get("failure_ledger", [])),
         )
 
 

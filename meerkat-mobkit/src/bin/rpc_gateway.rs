@@ -38,6 +38,7 @@ use meerkat::{
 use meerkat_core::AgentToolDispatcher;
 use meerkat_core::ContentBlock;
 use meerkat_core::error::{AgentError, ToolError};
+use meerkat_core::ops::ToolDispatchOutcome;
 use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
 use meerkat_mob::{MobDefinition, MobStorage};
 use serde_json::{Value, json};
@@ -241,7 +242,7 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
         Arc::clone(&self.tool_defs)
     }
 
-    async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolResult, ToolError> {
+    async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
         let args: Value =
             serde_json::from_str(call.args.get()).map_err(|e| ToolError::InvalidArguments {
                 name: call.name.to_string(),
@@ -268,7 +269,8 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
                     tool_use_id: call.id.to_string(),
                     content: vec![ContentBlock::Text { text }],
                     is_error: false,
-                })
+                }
+                .into())
             }
             Err(err) => Ok(ToolResult {
                 tool_use_id: call.id.to_string(),
@@ -276,7 +278,8 @@ impl AgentToolDispatcher for CallbackToolDispatcher {
                     text: format!("Tool execution failed: {err}"),
                 }],
                 is_error: true,
-            }),
+            }
+            .into()),
         }
     }
 }
@@ -330,10 +333,10 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 let mut modified_req = CreateSessionRequest {
                     model: req.model.clone(),
                     prompt: req.prompt.clone(),
+                    render_metadata: req.render_metadata.clone(),
                     system_prompt: req.system_prompt.clone(),
                     max_tokens: req.max_tokens,
                     event_tx: req.event_tx.clone(),
-                    host_mode: req.host_mode,
                     skill_references: req.skill_references.clone(),
                     initial_turn: req.initial_turn.clone(),
                     build: req.build.clone(),

@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod baseline;
 pub mod config_convention;
+pub mod contact_directory;
 pub mod decisions;
 pub mod governance;
 pub mod http_auth;

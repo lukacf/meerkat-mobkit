@@ -2,6 +2,8 @@
 # MobKit — single source of truth for build / test / lint
 # ──────────────────────────────────────────────────────────────
 
+CARGO  ?= ./scripts/repo-cargo
+
 GREEN  := \033[0;32m
 YELLOW := \033[0;33m
 RED    := \033[0;31m
@@ -21,19 +23,19 @@ all: ci
 
 build: ## Build all workspace crates (debug)
 	@echo "$(YELLOW)Building workspace (debug)…$(NC)"
-	cargo build --workspace
+	$(CARGO) build --workspace
 	@echo "$(GREEN)Build succeeded.$(NC)"
 
 release: ## Build all workspace crates (release)
 	@echo "$(YELLOW)Building workspace (release)…$(NC)"
-	cargo build --workspace --release
+	$(CARGO) build --workspace --release
 	@echo "$(GREEN)Release build succeeded.$(NC)"
 
 # ── test ──────────────────────────────────────────────────────
 
 test: ## Run Rust tests via cargo-nextest
 	@echo "$(YELLOW)Running Rust tests…$(NC)"
-	cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
+	$(CARGO) nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
 	@echo "$(GREEN)Rust tests passed.$(NC)"
 
 test-python: ## Run Python SDK tests
@@ -47,24 +49,24 @@ test-all: test test-python ## Run all tests (Rust + Python)
 
 lint: ## Run clippy with warnings-as-errors
 	@echo "$(YELLOW)Running clippy…$(NC)"
-	cargo clippy --workspace --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	@echo "$(GREEN)Clippy passed.$(NC)"
 
 fmt: ## Format all Rust code
 	@echo "$(YELLOW)Formatting code…$(NC)"
-	cargo fmt --all
+	$(CARGO) fmt --all
 	@echo "$(GREEN)Formatting complete.$(NC)"
 
 fmt-check: ## Verify Rust formatting (CI)
 	@echo "$(YELLOW)Checking formatting…$(NC)"
-	cargo fmt --all -- --check
+	$(CARGO) fmt --all -- --check
 	@echo "$(GREEN)Formatting OK.$(NC)"
 
 # ── audit / CI ────────────────────────────────────────────────
 
 audit: ## Run cargo-deny licence / advisory checks
 	@echo "$(YELLOW)Running cargo deny…$(NC)"
-	cargo deny check
+	$(CARGO) deny check
 	@echo "$(GREEN)Audit passed.$(NC)"
 
 ci: fmt-check verify-version-parity lint test-all audit ## Full CI pipeline
@@ -77,26 +79,26 @@ ci-smoke: fmt-check lint test test-python ## Quick smoke test (no audit / versio
 
 check: ## cargo check (fast compile check)
 	@echo "$(YELLOW)Running cargo check…$(NC)"
-	cargo check --workspace --all-targets
+	$(CARGO) check --workspace --all-targets
 	@echo "$(GREEN)Check succeeded.$(NC)"
 
 doc: ## Build rustdoc for all crates
 	@echo "$(YELLOW)Building docs…$(NC)"
-	cargo doc --workspace --no-deps
+	$(CARGO) doc --workspace --no-deps
 	@echo "$(GREEN)Docs built.$(NC)"
 
 doc-open: ## Build and open rustdoc
 	@echo "$(YELLOW)Building and opening docs…$(NC)"
-	cargo doc --workspace --no-deps --open
+	$(CARGO) doc --workspace --no-deps --open
 
 coverage: ## Generate HTML coverage report (cargo-tarpaulin)
 	@echo "$(YELLOW)Generating coverage report…$(NC)"
-	cargo tarpaulin --workspace --timeout 120 --out Html
+	$(CARGO) tarpaulin --workspace --timeout 120 --out Html
 	@echo "$(GREEN)Coverage report generated.$(NC)"
 
 clean: ## Remove build artefacts
 	@echo "$(YELLOW)Cleaning…$(NC)"
-	cargo clean
+	$(CARGO) clean
 	@echo "$(GREEN)Clean complete.$(NC)"
 
 # ── git hooks ─────────────────────────────────────────────────
@@ -119,12 +121,12 @@ pre-commit-all: ## Run pre-commit on all files
 
 update: ## Update Cargo.lock to latest compatible versions
 	@echo "$(YELLOW)Updating dependencies…$(NC)"
-	cargo update
+	$(CARGO) update
 	@echo "$(GREEN)Dependencies updated.$(NC)"
 
 outdated: ## Show outdated crates
 	@echo "$(YELLOW)Checking for outdated crates…$(NC)"
-	cargo outdated
+	$(CARGO) outdated
 
 # ── version / release ─────────────────────────────────────────
 
@@ -135,7 +137,7 @@ bump-sdk-versions: ## Bump SDK version strings
 	@scripts/bump-sdk-versions.sh
 
 verify-version: ## Verify Cargo.toml version matches git tag
-	@VERSION=$$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version'); \
+	@VERSION=$$($(CARGO) metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "meerkat-mobkit") | .version'); \
 	TAG=$$(git describe --tags --exact-match 2>/dev/null | sed 's/^v//'); \
 	if [ -z "$$TAG" ]; then \
 		echo "$(YELLOW)No tag found on current commit$(NC)"; \
@@ -148,7 +150,7 @@ verify-version: ## Verify Cargo.toml version matches git tag
 
 publish-dry-run: ## Dry-run cargo publish
 	@echo "$(YELLOW)Dry-run cargo publish…$(NC)"
-	cargo publish -p meerkat-mobkit --dry-run
+	$(CARGO) publish -p meerkat-mobkit --dry-run
 	@echo "$(GREEN)Cargo dry-run succeeded.$(NC)"
 
 publish-dry-run-python: ## Dry-run Python package build + twine check

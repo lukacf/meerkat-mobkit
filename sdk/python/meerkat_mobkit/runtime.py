@@ -638,6 +638,356 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/memory/index", params)
         return MemoryIndexResult.from_dict(raw)
 
+    # -----------------------------------------------------------------
+    # Cross-mob operations
+    # -----------------------------------------------------------------
+
+    async def wire_cross_mob(
+        self,
+        local_member_id: str,
+        remote_member_id: str,
+        remote_handle: "MobHandle",
+    ) -> None:
+        """Wire a local member to a member on another mob handle.
+
+        Uses peer_info + wire_local on both sides.  Both mob handles must
+        live in the **same process** — ``peer_info()`` always returns an
+        ``inproc://`` address, which is only reachable within the same
+        process.  For cross-process peering, call ``wire_local()`` on each
+        handle directly, supplying the remote gateway's routable TCP or UDS
+        address in place of the inproc address from ``peer_info()``.
+
+        Args:
+            local_member_id: Member on this mob to wire.
+            remote_member_id: Member on the remote mob to wire.
+            remote_handle: MobHandle for the remote mob (must be same-process).
+        """
+        local_info = await self.peer_info(local_member_id)
+        remote_info = await remote_handle.peer_info(remote_member_id)
+        await self.wire_local(
+            local_member_id,
+            remote_info["comms_name"],
+            remote_info["peer_id"],
+            remote_info["address"],
+        )
+        try:
+            await remote_handle.wire_local(
+                remote_member_id,
+                local_info["comms_name"],
+                local_info["peer_id"],
+                local_info["address"],
+            )
+        except Exception:
+            # Best-effort rollback: undo the local wire using the same
+            # low-level API — no contact directory or peer handles needed.
+            try:
+                await self.unwire_local(
+                    local_member_id,
+                    remote_info["comms_name"],
+                    remote_info["peer_id"],
+                    remote_info["address"],
+                )
+            except Exception:
+                pass
+            raise
+
+    async def send_cross_mob(
+        self,
+        remote_member_id: str,
+        remote_handle: "MobHandle",
+        message: str | None = None,
+        *,
+        content: list[dict[str, Any]] | None = None,
+    ) -> SendMessageResult:
+        """Send a message to a member on another mob handle.
+
+        This is an app-level injection — the remote agent receives the
+        message but does not know the sender. For agent-to-agent
+        communication with sender identity and reply path, use
+        ``wire_cross_mob()`` to set up peering, then agents communicate
+        directly via their comms ``send`` tool.
+
+        Args:
+            remote_member_id: Target member on the remote mob.
+            remote_handle: MobHandle for the remote mob.
+            message: Plain text message.
+            content: Multimodal content blocks.
+        """
+        return await remote_handle.send(remote_member_id, message, content=content)
+
+    async def list_external_mobs(self) -> list:
+        """List known external mobs from the contact directory."""
+        from .types import CrossMobContactEntry
+
+        raw = await self._runtime._rpc("mobkit/cross_mob/directory")
+        mobs = raw.get("mobs", []) if isinstance(raw, dict) else []
+        return [CrossMobContactEntry.from_dict(m) for m in mobs]
+
+    async def peer_info(self, member_id: str) -> dict[str, str]:
+        """Get comms peer info for a local member.
+
+        Returns ``{"member_id", "mob_id", "comms_name", "peer_id", "address"}``.
+        Used to build peer specs for cross-mob wiring via ``wire_local``.
+        """
+        raw = await self._runtime._rpc(
+            "mobkit/cross_mob/peer_info",
+            {"member_id": member_id},
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    async def wire_local(
+        self,
+        local_member_id: str,
+        remote_comms_name: str,
+        remote_peer_id: str,
+        remote_address: str,
+    ) -> None:
+        """Wire a local member to a remote peer (local side only).
+
+        For same-process (inproc) cross-mob wiring::
+
+            # Get peer info from each side
+            a_info = await core.peer_info("school")
+            b_info = await gw.peer_info("calendar")
+
+            # Wire each side to the other (inproc address from peer_info)
+            await core.wire_local("school", b_info["comms_name"], b_info["peer_id"], b_info["address"])
+            await gw.wire_local("calendar", a_info["comms_name"], a_info["peer_id"], a_info["address"])
+
+        For cross-process (TCP/UDS), replace the address with the remote
+        gateway's transport endpoint — peer_info always returns inproc.
+        """
+        await self._runtime._rpc(
+            "mobkit/cross_mob/wire_local",
+            {
+                "local_member_id": local_member_id,
+                "remote_comms_name": remote_comms_name,
+                "remote_peer_id": remote_peer_id,
+                "remote_address": remote_address,
+            },
+        )
+
+    async def unwire_local(
+        self,
+        local_member_id: str,
+        remote_comms_name: str,
+        remote_peer_id: str,
+        remote_address: str,
+    ) -> None:
+        """Undo a wire_local — unwire a local member from a previously wired peer (local side only)."""
+        await self._runtime._rpc(
+            "mobkit/cross_mob/unwire_local",
+            {
+                "local_member_id": local_member_id,
+                "remote_comms_name": remote_comms_name,
+                "remote_peer_id": remote_peer_id,
+                "remote_address": remote_address,
+            },
+        )
+
+    # -----------------------------------------------------------------
+    # Rich member inspection
+    # -----------------------------------------------------------------
+
+    async def member_status(self, member_id: str) -> RichMemberSnapshot:
+        """Return rich execution status for a member."""
+        from .types import RichMemberSnapshot
+        raw = await self._runtime._rpc("mobkit/member_status", {"member_id": member_id})
+        return RichMemberSnapshot.from_dict(raw)
+
+    async def force_cancel_member(self, member_id: str) -> None:
+        """Force-cancel a running member immediately."""
+        await self._runtime._rpc("mobkit/force_cancel_member", {"member_id": member_id})
+
+    # -----------------------------------------------------------------
+    # Helper convenience
+    # -----------------------------------------------------------------
+
+    async def spawn_helper(
+        self,
+        meerkat_id: str,
+        task: str,
+        *,
+        profile: str | None = None,
+        runtime_mode: str | None = None,
+        backend: str | None = None,
+    ) -> HelperResult:
+        """Spawn a short-lived helper member and return its result."""
+        from .types import HelperResult
+        params: dict[str, Any] = {"meerkat_id": meerkat_id, "task": task}
+        options: dict[str, Any] = {}
+        if profile is not None:
+            options["profile"] = profile
+        if runtime_mode is not None:
+            options["runtime_mode"] = runtime_mode
+        if backend is not None:
+            options["backend"] = backend
+        if options:
+            params["options"] = options
+        raw = await self._runtime._rpc("mobkit/spawn_helper", params)
+        return HelperResult.from_dict(raw)
+
+    async def fork_helper(
+        self,
+        source_member_id: str,
+        meerkat_id: str,
+        task: str,
+        *,
+        fork_context: dict | None = None,
+        profile: str | None = None,
+        runtime_mode: str | None = None,
+        backend: str | None = None,
+    ) -> HelperResult:
+        """Fork a helper from an existing member's context."""
+        from .types import HelperResult
+        params: dict[str, Any] = {
+            "source_member_id": source_member_id,
+            "meerkat_id": meerkat_id,
+            "task": task,
+        }
+        if fork_context is not None:
+            params["fork_context"] = fork_context
+        options: dict[str, Any] = {}
+        if profile is not None:
+            options["profile"] = profile
+        if runtime_mode is not None:
+            options["runtime_mode"] = runtime_mode
+        if backend is not None:
+            options["backend"] = backend
+        if options:
+            params["options"] = options
+        raw = await self._runtime._rpc("mobkit/fork_helper", params)
+        return HelperResult.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Session attachment
+    # -----------------------------------------------------------------
+
+    async def attach_session(
+        self,
+        profile: str,
+        meerkat_id: str,
+        session_id: str,
+    ) -> RichMemberSnapshot:
+        """Attach a member to an existing session (resume mode)."""
+        from .types import RichMemberSnapshot
+        params: dict[str, Any] = {
+            "profile": profile,
+            "meerkat_id": meerkat_id,
+            "session_id": session_id,
+        }
+        raw = await self._runtime._rpc("mobkit/attach_existing_session", params)
+        return RichMemberSnapshot.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Flow lifecycle
+    # -----------------------------------------------------------------
+
+    async def cancel_flow(self, run_id: str) -> None:
+        """Cancel a running flow by run ID."""
+        await self._runtime._rpc("mobkit/cancel_flow", {"run_id": run_id})
+
+    async def flow_status(self, run_id: str) -> MobRunSnapshot | None:
+        """Get flow run status. Returns None if run not found."""
+        from .types import MobRunSnapshot
+        raw = await self._runtime._rpc("mobkit/flow_status", {"run_id": run_id})
+        if raw is None:
+            return None
+        if isinstance(raw, dict) and raw.get("status") == "not_found":
+            return None
+        return MobRunSnapshot.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Batch
+    # -----------------------------------------------------------------
+
+    async def collect_completed(self) -> list[tuple[str, RichMemberSnapshot]]:
+        """Collect all members that have reached a final state."""
+        from .types import RichMemberSnapshot
+        raw = await self._runtime._rpc("mobkit/collect_completed")
+        results: list[tuple[str, RichMemberSnapshot]] = []
+        entries = raw.get("completed", []) if isinstance(raw, dict) else raw if isinstance(raw, list) else []
+        for entry in entries:
+            member_id = entry.get("member_id", "")
+            snapshot = RichMemberSnapshot.from_dict(entry.get("snapshot", entry))
+            results.append((member_id, snapshot))
+        return results
+
+    # -----------------------------------------------------------------
+    # Session introspection
+    # -----------------------------------------------------------------
+
+    async def member_session_id(self, member_id: str) -> str | None:
+        """Return the current session ID for a member, or None."""
+        raw = await self._runtime._rpc("mobkit/member_current_session_id", {"member_id": member_id})
+        if isinstance(raw, dict):
+            return raw.get("session_id")
+        return None
+
+    async def member_session_ref(self, member_id: str) -> MemberSessionRef | None:
+        """Return the session reference for a member, or None."""
+        from .types import MemberSessionRef
+        raw = await self._runtime._rpc("mobkit/member_session_ref", {"member_id": member_id})
+        if raw is None:
+            return None
+        if isinstance(raw, dict) and raw.get("session_id") is None:
+            return None
+        return MemberSessionRef.from_dict(raw)
+
+    # -----------------------------------------------------------------
+    # Polling helpers (client-side)
+    # -----------------------------------------------------------------
+
+    async def wait_one(
+        self,
+        member_id: str,
+        *,
+        poll_interval: float = 1.0,
+        timeout: float | None = None,
+    ) -> RichMemberSnapshot:
+        """Poll member_status until the member reaches a final state.
+
+        Raises ``TimeoutError`` if *timeout* seconds elapse before completion.
+        """
+        import asyncio
+        import time
+
+        from .types import RichMemberSnapshot
+
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            snapshot = await self.member_status(member_id)
+            if snapshot.is_final:
+                return snapshot
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"member {member_id!r} did not reach final state "
+                    f"within {timeout}s"
+                )
+            await asyncio.sleep(poll_interval)
+
+    async def wait_all(
+        self,
+        member_ids: list[str],
+        *,
+        poll_interval: float = 1.0,
+        timeout: float | None = None,
+    ) -> list[RichMemberSnapshot]:
+        """Wait for all listed members to reach final state.
+
+        Polls in parallel via ``asyncio.gather``. Raises ``TimeoutError``
+        if *timeout* seconds elapse before all members complete.
+        """
+        import asyncio
+
+        from .types import RichMemberSnapshot
+
+        tasks = [
+            self.wait_one(mid, poll_interval=poll_interval, timeout=timeout)
+            for mid in member_ids
+        ]
+        return list(await asyncio.gather(*tasks))
+
     # Alias for backward compatibility
     send_message = send
 

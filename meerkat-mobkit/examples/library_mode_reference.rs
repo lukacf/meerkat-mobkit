@@ -157,7 +157,7 @@ fn reference_member_specs() -> Vec<SpawnMemberSpec> {
             SpawnMemberSpec::from_wire(
                 "lead".to_string(),
                 member_id.to_string(),
-                Some(format!("You are {member_id}. Keep responses concise.")),
+                Some(format!("You are {member_id}. Keep responses concise.").into()),
                 None,
                 None,
             )

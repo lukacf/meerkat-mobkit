@@ -1,12 +1,22 @@
 import React from "react";
 import { normalizeAgents } from "./lib/agents";
+import {
+  buildAgentSidebarViewState,
+  buildConversationViewState,
+  createUserConversationEntry,
+  mapFramesToConversationEntries,
+} from "./lib/console-adapters";
 import { errorMessage } from "./lib/errors";
-import { fetchJson, sendMessage } from "./lib/network";
+import { fetchJson, queryEvents, sendInteraction } from "./lib/network";
 import { ActivityPanel } from "./panels/ActivityPanel";
-import { AgentSidebarPanel } from "./panels/AgentSidebarPanel";
-import { ChatInspectorPanel } from "./panels/ChatInspectorPanel";
 import { HealthOverviewPanel } from "./panels/HealthOverviewPanel";
 import { TopologyPanel } from "./panels/TopologyPanel";
+import {
+  ConsoleSidebar,
+  ConsoleWorkbench,
+  ConversationPane,
+  type ConversationEntry,
+} from "./shared-console";
 import type {
   ConsoleAgent,
   ConsoleExperience,
@@ -26,7 +36,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
-  const [inspectorFrames, setInspectorFrames] = React.useState<ConsoleFrame[]>([]);
+  const [framesByMemberId, setFramesByMemberId] = React.useState<Record<string, ConsoleFrame[]>>({});
+  const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationEntry[]>>({});
+  const [historyLoadedByMemberId, setHistoryLoadedByMemberId] = React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
     let mounted = true;
@@ -51,7 +63,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         setExperience(experienceJson);
         setAgents(nextAgents);
         if (nextAgents.length > 0) {
-          setSelectedMemberId(nextAgents[0].member_id);
+          setSelectedMemberId((current) => current || nextAgents[0]?.member_id || "");
         }
       } catch (loadError) {
         if (!mounted) {
@@ -71,30 +83,99 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     };
   }, [baseUrl]);
 
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
+  const selectedAgent = React.useMemo(
+    () => agents.find((agent) => agent.member_id === selectedMemberId) || null,
+    [agents, selectedMemberId],
+  );
 
-    const memberControl = form.elements.namedItem("member") as
-      | { value?: string }
-      | null;
-    const messageControl = form.elements.namedItem("message") as
-      | { value?: string }
-      | null;
-
-    const submittedMemberId =
-      memberControl?.value?.trim() || selectedMemberId;
-    const trimmedMessage = messageControl?.value?.trim() || message.trim();
-    if (!submittedMemberId || !trimmedMessage) {
+  React.useEffect(() => {
+    if (!selectedMemberId || historyLoadedByMemberId[selectedMemberId]) {
       return;
     }
 
+    let cancelled = false;
+
+    async function loadHistory() {
+      try {
+        const frames = await queryEvents(baseUrl, selectedMemberId, 40);
+        if (cancelled) {
+          return;
+        }
+
+        // Prepend history before any live frames. History contains only
+        // module events (queryEvents filters agent-kind rows); live SSE emits
+        // only agent events. The two sets are disjoint — no dedup needed.
+        setFramesByMemberId((current) => ({
+          ...current,
+          [selectedMemberId]: [...frames, ...(current[selectedMemberId] || [])],
+        }));
+        setEntriesByMemberId((current) => ({
+          ...current,
+          [selectedMemberId]: [
+            ...mapFramesToConversationEntries(selectedAgent, frames),
+            ...(current[selectedMemberId] || []),
+          ],
+        }));
+      } catch (_) {
+        // History is optional; the console still works with live interaction frames only.
+      } finally {
+        if (!cancelled) {
+          setHistoryLoadedByMemberId((current) => ({
+            ...current,
+            [selectedMemberId]: true,
+          }));
+        }
+      }
+    }
+
+    void loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [baseUrl, historyLoadedByMemberId, selectedAgent, selectedMemberId]);
+
+  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmedMessage = message.trim();
+    if (!selectedMemberId || !trimmedMessage) {
+      return;
+    }
+
+    const userEntry = createUserConversationEntry(trimmedMessage);
     setError("");
+    setEntriesByMemberId((current) => ({
+      ...current,
+      [selectedMemberId]: [...(current[selectedMemberId] || []), userEntry],
+    }));
+
     try {
-      await sendMessage(baseUrl, submittedMemberId, trimmedMessage);
+      const result = await sendInteraction(baseUrl, selectedMemberId, trimmedMessage);
+      const nextEntries = mapFramesToConversationEntries(selectedAgent, result.frames);
+
+      setFramesByMemberId((current) => ({
+        ...current,
+        [selectedMemberId]: [...(current[selectedMemberId] || []), ...result.frames],
+      }));
+      setEntriesByMemberId((current) => ({
+        ...current,
+        [selectedMemberId]: [...(current[selectedMemberId] || []), ...nextEntries],
+      }));
+      setActivityFrames((current) => [...result.frames, ...current].slice(0, 64));
+      // Invalidate history cache so the next visit re-fetches including this turn.
+      setHistoryLoadedByMemberId((current) => ({
+        ...current,
+        [selectedMemberId]: false,
+      }));
       setMessage("");
     } catch (submitError) {
       setError(errorMessage(submitError));
+      // Roll back the optimistic user entry — the backend never accepted the message.
+      setEntriesByMemberId((current) => ({
+        ...current,
+        [selectedMemberId]: (current[selectedMemberId] || []).filter(
+          (e) => e.id !== userEntry.id,
+        ),
+      }));
     }
   }
 
@@ -126,38 +207,74 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ? healthSnapshot.running
       : null;
 
+  const sidebarViewState = buildAgentSidebarViewState({
+    title: experience?.agent_sidebar?.title || "Agents",
+    agents,
+    selectedMemberId,
+  });
+  const conversationViewState = buildConversationViewState({
+    conversationId: selectedMemberId || "console",
+    title: selectedAgent?.label || (experience?.chat_inspector?.title || "Chat Inspector"),
+    entries: selectedMemberId ? (entriesByMemberId[selectedMemberId] || []) : [],
+    selectedAgentLabel: selectedAgent?.label || selectedMemberId || "an agent",
+  });
+
   return (
     <div data-testid="meerkat-console">
-      <AgentSidebarPanel
-        title={experience?.agent_sidebar?.title || "Agents"}
-        agents={agents}
-        onSelectMember={setSelectedMemberId}
+      <ConsoleWorkbench
+        main={(
+          <ConversationPane
+            footer={(
+              <form className="mc-composer" data-testid="chat-form" onSubmit={onSubmit}>
+                <div className="mc-composer__header">
+                  <span className="mc-composer__eyebrow">Target</span>
+                  <span className="mc-composer__target">{selectedAgent?.label || "Select an agent"}</span>
+                </div>
+                <label className="mc-composer__field">
+                  <span className="mc-composer__label">Message</span>
+                  <textarea
+                    name="message"
+                    placeholder={selectedAgent ? `Message ${selectedAgent.label}` : "Select an agent to start"}
+                    value={message}
+                    onChange={(changeEvent) => setMessage(changeEvent.target.value)}
+                  />
+                </label>
+                <div className="mc-composer__actions">
+                  <button disabled={!selectedMemberId || !message.trim()} type="submit">Send</button>
+                </div>
+              </form>
+            )}
+            viewState={conversationViewState}
+          />
+        )}
+        sidebar={(
+          <ConsoleSidebar
+            getItemButtonProps={(item) => ({
+              "data-agent-id": agents.find((agent) => agent.member_id === item.id)?.agent_id || item.id,
+            })}
+            onSelectItem={(item) => setSelectedMemberId(item.id)}
+            viewState={sidebarViewState}
+          />
+        )}
       />
-      <ActivityPanel
-        title={experience?.activity_feed?.title || "Activity"}
-        frames={activityFrames}
-      />
-      <ChatInspectorPanel
-        title={experience?.chat_inspector?.title || "Chat Inspector"}
-        agents={agents}
-        selectedMemberId={selectedMemberId}
-        onSelectedMemberIdChange={setSelectedMemberId}
-        message={message}
-        onMessageChange={setMessage}
-        onSubmit={onSubmit}
-        frames={inspectorFrames}
-      />
-      <TopologyPanel
-        title={experience?.topology?.title || "Topology"}
-        nodeCount={topologyNodeCount}
-        nodes={topologyNodes}
-      />
-      <HealthOverviewPanel
-        title={experience?.health_overview?.title || "Health"}
-        running={running}
-        loadedModuleCount={loadedModuleCount}
-        loadedModules={loadedModules}
-      />
+
+      <div className="mc-dashboard">
+        <ActivityPanel
+          title={experience?.activity_feed?.title || "Activity"}
+          frames={activityFrames}
+        />
+        <TopologyPanel
+          title={experience?.topology?.title || "Topology"}
+          nodeCount={topologyNodeCount}
+          nodes={topologyNodes}
+        />
+        <HealthOverviewPanel
+          title={experience?.health_overview?.title || "Health"}
+          running={running}
+          loadedModuleCount={loadedModuleCount}
+          loadedModules={loadedModules}
+        />
+      </div>
     </div>
   );
 }

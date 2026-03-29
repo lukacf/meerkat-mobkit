@@ -2,7 +2,11 @@
 
 use std::collections::BTreeMap;
 
-use meerkat_mob::{MemberRef, MobHandle, MobState, SpawnMemberSpec};
+use meerkat_mob::launch::ForkContext;
+use meerkat_mob::{
+    HelperOptions, HelperResult, MemberRef, MemberSessionRef, MobHandle,
+    MobMemberSnapshot as RichMobMemberSnapshot, MobRun, MobState, SpawnMemberSpec,
+};
 
 use crate::mob_handle_runtime::{MobMemberSnapshot, MobRuntimeError};
 
@@ -106,5 +110,91 @@ impl UnifiedRuntime {
         )
         .with_labels(labels);
         self.ensure_member(spec).await
+    }
+
+    // -----------------------------------------------------------------------
+    // 0.5 API surface
+    // -----------------------------------------------------------------------
+
+    /// Detailed execution snapshot for a single member.
+    pub async fn member_status(
+        &self,
+        member_id: &str,
+    ) -> Result<RichMobMemberSnapshot, MobRuntimeError> {
+        self.mob_runtime.member_status(member_id).await
+    }
+
+    /// Forcefully cancel a member.
+    pub async fn force_cancel_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
+        self.mob_runtime.force_cancel_member(member_id).await
+    }
+
+    /// Spawn a short-lived helper member, wait for it, and return the result.
+    pub async fn spawn_helper(
+        &self,
+        meerkat_id: &str,
+        task: &str,
+        options: HelperOptions,
+    ) -> Result<HelperResult, MobRuntimeError> {
+        self.mob_runtime
+            .spawn_helper(meerkat_id, task, options)
+            .await
+    }
+
+    /// Fork from an existing member's context, wait for completion, and return.
+    pub async fn fork_helper(
+        &self,
+        source_member_id: &str,
+        meerkat_id: &str,
+        task: &str,
+        fork_context: ForkContext,
+        options: HelperOptions,
+    ) -> Result<HelperResult, MobRuntimeError> {
+        self.mob_runtime
+            .fork_helper(source_member_id, meerkat_id, task, fork_context, options)
+            .await
+    }
+
+    /// Attach a member to an existing session (resume mode).
+    pub async fn attach_existing_session(
+        &self,
+        profile: &str,
+        meerkat_id: &str,
+        session_id_str: &str,
+    ) -> Result<RichMobMemberSnapshot, MobRuntimeError> {
+        self.mob_runtime
+            .attach_existing_session(profile, meerkat_id, session_id_str)
+            .await
+    }
+
+    /// Cancel a running flow by its run ID.
+    pub async fn cancel_flow(&self, run_id_str: &str) -> Result<(), MobRuntimeError> {
+        self.mob_runtime.cancel_flow(run_id_str).await
+    }
+
+    /// Query the status of a flow run.
+    pub async fn flow_status(&self, run_id_str: &str) -> Result<Option<MobRun>, MobRuntimeError> {
+        self.mob_runtime.flow_status(run_id_str).await
+    }
+
+    /// Collect all members that have reached a terminal state.
+    pub async fn collect_completed(&self) -> Vec<(String, RichMobMemberSnapshot)> {
+        self.mob_runtime.collect_completed().await
+    }
+
+    /// Get the current session ID for a member (if any).
+    pub async fn member_current_session_id(
+        &self,
+        member_id: &str,
+    ) -> Result<Option<String>, MobRuntimeError> {
+        self.mob_runtime.member_current_session_id(member_id).await
+    }
+
+    /// Get a reference to a member's current session bridge.
+    pub async fn member_session_ref(
+        &self,
+        member_id: &str,
+    ) -> Result<Option<MemberSessionRef>, MobRuntimeError> {
+        self.mob_runtime.member_session_ref(member_id).await
     }
 }

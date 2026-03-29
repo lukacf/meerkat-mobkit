@@ -33,10 +33,16 @@ Private internals (underscore-prefixed): `_client.py`, `_transport.py`, `_sse.py
 
 ## Build and test
 
+All Rust commands go through `scripts/repo-cargo`, which isolates `CARGO_HOME` and `CARGO_TARGET_DIR` per repo/worktree. The Makefile uses it via `CARGO ?= ./scripts/repo-cargo`.
+
 ```bash
-# Rust
-cargo check --workspace
-cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
+# Rust (via wrapper)
+./scripts/repo-cargo check --workspace
+./scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts)' --no-fail-fast
+
+# Or via Makefile (preferred)
+make check
+make test
 
 # Python
 PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -v

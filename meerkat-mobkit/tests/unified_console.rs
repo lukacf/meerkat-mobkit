@@ -136,7 +136,7 @@ fn console_member_spec(member_id: &str) -> SpawnMemberSpec {
     SpawnMemberSpec::from_wire(
         "lead".to_string(),
         MeerkatId::from(member_id).to_string(),
-        Some(format!("You are {member_id}. Keep responses concise.")),
+        Some(format!("You are {member_id}. Keep responses concise.").into()),
         None,
         None,
     )

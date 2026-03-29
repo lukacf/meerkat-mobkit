@@ -22,7 +22,7 @@ use crate::unified_runtime::UnifiedRuntime;
 mod console_ingress;
 mod gating_methods;
 mod memory_methods;
-mod mob_methods;
+pub(crate) mod mob_methods;
 pub(crate) mod params;
 mod routing_delivery_methods;
 mod scheduling_methods;
@@ -935,48 +935,77 @@ pub async fn handle_unified_rpc_json(
         }
         "mobkit/capabilities" => {
             let loaded = runtime.loaded_modules().await;
+            let mut methods = vec![
+                "mobkit/init",
+                "mobkit/status",
+                "mobkit/capabilities",
+                "mobkit/reconcile",
+                "mobkit/spawn_member",
+                "mobkit/scheduling/evaluate",
+                "mobkit/scheduling/dispatch",
+                "mobkit/routing/resolve",
+                "mobkit/routing/routes/list",
+                "mobkit/routing/routes/add",
+                "mobkit/routing/routes/delete",
+                "mobkit/delivery/send",
+                "mobkit/delivery/history",
+                "mobkit/events/subscribe",
+                "mobkit/memory/stores",
+                "mobkit/memory/index",
+                "mobkit/memory/query",
+                "mobkit/session_store/bigquery",
+                "mobkit/gating/evaluate",
+                "mobkit/gating/pending",
+                "mobkit/gating/decide",
+                "mobkit/gating/audit",
+                "mobkit/call_tool",
+                "mobkit/models/catalog",
+                "mobkit/send_message",
+                "mobkit/find_members",
+                "mobkit/ensure_member",
+                "mobkit/list_members",
+                "mobkit/get_member",
+                "mobkit/retire_member",
+                "mobkit/respawn_member",
+                "mobkit/reconcile_edges",
+                "mobkit/rediscover",
+                "mobkit/query_events",
+                // Always available: local-only member introspection
+                "mobkit/cross_mob/peer_info",
+                "mobkit/cross_mob/wire_local",
+                "mobkit/cross_mob/unwire_local",
+                "mobkit/member_status",
+                "mobkit/force_cancel_member",
+                "mobkit/spawn_helper",
+                "mobkit/fork_helper",
+                "mobkit/attach_existing_session",
+                "mobkit/cancel_flow",
+                "mobkit/flow_status",
+                "mobkit/collect_completed",
+                "mobkit/member_current_session_id",
+                "mobkit/member_session_ref",
+            ];
+            // Cross-mob directory always advertised when configured
+            if runtime.has_contact_directory() {
+                methods.push("mobkit/cross_mob/directory");
+            }
+            // High-level wire/unwire/send require peer mob handles AND inproc contacts.
+            // resolve_contact() rejects non-Inproc transports at execution time, so
+            // advertising these methods for TCP/UDS-only deployments guarantees failures.
+            if runtime.has_peer_mob_handles().await && runtime.has_inproc_contacts() {
+                methods.extend_from_slice(&[
+                    "mobkit/cross_mob/wire",
+                    "mobkit/cross_mob/unwire",
+                    "mobkit/cross_mob/send",
+                ]);
+            }
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
                 result: Some(serde_json::json!({
                     "contract_version": MOBKIT_CONTRACT_VERSION,
                     "runtime_type": "unified",
-                    "methods": [
-                        "mobkit/init",
-                        "mobkit/status",
-                        "mobkit/capabilities",
-                        "mobkit/reconcile",
-                        "mobkit/spawn_member",
-                        "mobkit/scheduling/evaluate",
-                        "mobkit/scheduling/dispatch",
-                        "mobkit/routing/resolve",
-                        "mobkit/routing/routes/list",
-                        "mobkit/routing/routes/add",
-                        "mobkit/routing/routes/delete",
-                        "mobkit/delivery/send",
-                        "mobkit/delivery/history",
-                        "mobkit/events/subscribe",
-                        "mobkit/memory/stores",
-                        "mobkit/memory/index",
-                        "mobkit/memory/query",
-                        "mobkit/session_store/bigquery",
-                        "mobkit/gating/evaluate",
-                        "mobkit/gating/pending",
-                        "mobkit/gating/decide",
-                        "mobkit/gating/audit",
-                        "mobkit/call_tool",
-                        "mobkit/models/catalog",
-                        "mobkit/send_message",
-                        "mobkit/find_members",
-                        "mobkit/ensure_member",
-                        "mobkit/list_members",
-                        "mobkit/get_member",
-                        "mobkit/retire_member",
-                        "mobkit/respawn_member",
-                        "mobkit/reconcile_edges",
-                        "mobkit/rediscover",
-                        "mobkit/query_events"
-                    ],
+                    "methods": methods,
                     "loaded_modules": loaded,
                     "runtime_capabilities": {
                         "can_spawn_members": true,
@@ -1076,7 +1105,7 @@ pub async fn handle_unified_rpc_json(
                         .params
                         .get("initial_message")
                         .and_then(Value::as_str)
-                        .map(ToString::to_string),
+                        .map(|s| meerkat_core::ContentInput::from(s.to_string())),
                     None,
                     None,
                 );
@@ -1650,6 +1679,58 @@ pub async fn handle_unified_rpc_json(
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
         "mobkit/query_events" => {
             mob_methods::handle_query_events(runtime, response_id, request.params).await
+        }
+        "mobkit/cross_mob/wire" => {
+            mob_methods::handle_cross_mob_wire(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/unwire" => {
+            mob_methods::handle_cross_mob_unwire(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/send" => {
+            mob_methods::handle_cross_mob_send(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/directory" => {
+            mob_methods::handle_cross_mob_directory(runtime, response_id).await
+        }
+        "mobkit/cross_mob/peer_info" => {
+            mob_methods::handle_cross_mob_peer_info(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/wire_local" => {
+            mob_methods::handle_cross_mob_wire_local(runtime, response_id, &request.params).await
+        }
+        "mobkit/cross_mob/unwire_local" => {
+            mob_methods::handle_cross_mob_unwire_local(runtime, response_id, &request.params).await
+        }
+        "mobkit/member_status" => {
+            mob_methods::handle_member_status(runtime, response_id, &request.params).await
+        }
+        "mobkit/force_cancel_member" => {
+            mob_methods::handle_force_cancel_member(runtime, response_id, &request.params).await
+        }
+        "mobkit/spawn_helper" => {
+            mob_methods::handle_spawn_helper(runtime, response_id, &request.params).await
+        }
+        "mobkit/fork_helper" => {
+            mob_methods::handle_fork_helper(runtime, response_id, &request.params).await
+        }
+        "mobkit/attach_existing_session" => {
+            mob_methods::handle_attach_existing_session(runtime, response_id, &request.params).await
+        }
+        "mobkit/cancel_flow" => {
+            mob_methods::handle_cancel_flow(runtime, response_id, &request.params).await
+        }
+        "mobkit/flow_status" => {
+            mob_methods::handle_flow_status(runtime, response_id, &request.params).await
+        }
+        "mobkit/collect_completed" => {
+            mob_methods::handle_collect_completed(runtime, response_id).await
+        }
+        "mobkit/member_current_session_id" => {
+            mob_methods::handle_member_current_session_id(runtime, response_id, &request.params)
+                .await
+        }
+        "mobkit/member_session_ref" => {
+            mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await
         }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method

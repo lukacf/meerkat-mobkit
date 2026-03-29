@@ -4,6 +4,12 @@ export interface ConsoleFrame {
   data: unknown;
 }
 
+export interface ConsoleSendMessageResult {
+  accepted?: boolean;
+  member_id?: string;
+  session_id?: string;
+}
+
 export interface ConsoleAgentAffordances {
   addressable?: boolean;
   can_send_message?: boolean;
