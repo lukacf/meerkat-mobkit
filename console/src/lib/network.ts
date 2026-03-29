@@ -234,8 +234,10 @@ export async function queryEvents(
   memberId: string,
   limit = 40
 ): Promise<ConsoleFrame[]> {
+  // Do not filter by member_id: module events (the only ones with displayable
+  // payloads) are persisted with member_id: null, so a member_id filter would
+  // exclude them on the server side.
   const result = await rpc<unknown>(baseUrl, "mobkit/query_events", {
-    member_id: memberId,
     limit,
   });
 

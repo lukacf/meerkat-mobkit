@@ -38,6 +38,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
   const [framesByMemberId, setFramesByMemberId] = React.useState<Record<string, ConsoleFrame[]>>({});
   const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationEntry[]>>({});
+  const [historyLoadedByMemberId, setHistoryLoadedByMemberId] = React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
     let mounted = true;
@@ -88,7 +89,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   );
 
   React.useEffect(() => {
-    if (!selectedMemberId) {
+    if (!selectedMemberId || historyLoadedByMemberId[selectedMemberId]) {
       return;
     }
 
@@ -117,6 +118,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         }));
       } catch (_) {
         // History is optional; the console still works with live interaction frames only.
+      } finally {
+        if (!cancelled) {
+          setHistoryLoadedByMemberId((current) => ({
+            ...current,
+            [selectedMemberId]: true,
+          }));
+        }
       }
     }
 
@@ -124,7 +132,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [baseUrl, selectedAgent, selectedMemberId]);
+  }, [baseUrl, historyLoadedByMemberId, selectedAgent, selectedMemberId]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -153,6 +161,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         [selectedMemberId]: [...(current[selectedMemberId] || []), ...nextEntries],
       }));
       setActivityFrames((current) => [...result.frames, ...current].slice(0, 64));
+      // Invalidate history cache so the next visit re-fetches including this turn.
+      setHistoryLoadedByMemberId((current) => ({
+        ...current,
+        [selectedMemberId]: false,
+      }));
       setMessage("");
     } catch (submitError) {
       setError(errorMessage(submitError));
