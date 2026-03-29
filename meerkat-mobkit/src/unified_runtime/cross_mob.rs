@@ -111,15 +111,24 @@ impl UnifiedRuntime {
         let remote_spec = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)?;
         let local_spec = build_inproc_peer_spec(&local_comms_name, &local_peer_id)?;
 
-        // Wire both sides
+        // Wire both sides; roll back the local side if the remote wire fails.
         local_handle
-            .wire(local_mid, PeerTarget::External(remote_spec))
+            .wire(local_mid.clone(), PeerTarget::External(remote_spec))
             .await
             .map_err(CrossMobError::Mob)?;
-        remote_handle
+
+        if let Err(e) = remote_handle
             .wire(remote_mid, PeerTarget::External(local_spec))
             .await
-            .map_err(CrossMobError::Mob)?;
+        {
+            // Best-effort rollback — leave local state consistent.
+            if let Ok(rollback_spec) = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id) {
+                let _ = local_handle
+                    .unwire(local_mid, PeerTarget::External(rollback_spec))
+                    .await;
+            }
+            return Err(CrossMobError::Mob(e));
+        }
 
         Ok(())
     }
@@ -278,6 +287,25 @@ impl UnifiedRuntime {
         self.mob_runtime
             .handle()
             .wire(local_mid, PeerTarget::External(spec))
+            .await
+            .map_err(CrossMobError::Mob)
+    }
+
+    /// Undo a `wire_local` — unwire a local member from a previously wired peer.
+    /// Only affects the local side; the remote side is left unchanged.
+    pub async fn unwire_local(
+        &self,
+        local_member_id: &str,
+        remote_comms_name: &str,
+        remote_peer_id: &str,
+        remote_address: &str,
+    ) -> Result<(), CrossMobError> {
+        let spec = TrustedPeerSpec::new(remote_comms_name, remote_peer_id, remote_address)
+            .map_err(CrossMobError::PeerSpec)?;
+        let local_mid = MeerkatId::from(local_member_id);
+        self.mob_runtime
+            .handle()
+            .unwire(local_mid, PeerTarget::External(spec))
             .await
             .map_err(CrossMobError::Mob)
     }

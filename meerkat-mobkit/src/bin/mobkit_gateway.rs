@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, anyhow};
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
 use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
+use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, MOBKIT_CONTRACT_VERSION,
     MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy,
@@ -575,8 +576,11 @@ async fn run() -> anyhow::Result<()> {
         let mut factory = AgentFactory::new(&runtime_root)
             .runtime_root(runtime_root.clone())
             .project_root(project_root.clone())
+            .builtins(true)
+            .shell(true)
+            .mob(true)
             .comms(true)
-            .mob(true);
+            .memory(true);
         if let Some(ref ctx) = context_root {
             factory = factory.context_root(ctx.clone());
         }
@@ -591,7 +595,7 @@ async fn run() -> anyhow::Result<()> {
         default_llm_client: None,
     });
 
-    let runtime = UnifiedRuntime::bootstrap(
+    let mut runtime = UnifiedRuntime::bootstrap(
         mob_spec,
         meerkat_mobkit::MobKitConfig {
             modules: Vec::new(),
@@ -606,11 +610,17 @@ async fn run() -> anyhow::Result<()> {
     .await
     .context("failed to bootstrap local runtime")?;
 
-    // Note: contacts.toml is NOT loaded here. The gateway manages a single
-    // mob — cross-mob operations require multi-runtime orchestration (e.g.
-    // HomeCore) where both MobHandles are available for peer registration.
-    // Loading the directory without peer handles would advertise cross-mob
-    // capabilities that fail on every call.
+    // Load contacts.toml if present. This enables mobkit/cross_mob/directory
+    // (lookup of known mob addresses) without requiring peer mob handles.
+    // High-level wire/unwire/send still need peer handles and are gated
+    // separately by has_peer_mob_handles().
+    if let Some(ref contacts_path) = paths.contacts_toml {
+        let contacts_text = fs::read_to_string(contacts_path)
+            .with_context(|| format!("failed to read {}", contacts_path.display()))?;
+        let directory = ContactDirectory::from_toml(&contacts_text)
+            .with_context(|| format!("failed to parse {}", contacts_path.display()))?;
+        runtime.set_contact_directory(directory);
+    }
 
     if !used_workspace_config {
         let mut labels = BTreeMap::new();

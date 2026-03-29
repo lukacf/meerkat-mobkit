@@ -15,7 +15,12 @@ use super::UnifiedRuntime;
 
 impl UnifiedRuntime {
     pub fn build_console_json_router(&self, decisions: RuntimeDecisionState) -> Router {
-        console_json_router_with_runtime(decisions, self.mob_runtime.clone())
+        console_json_router_with_runtime(
+            decisions,
+            self.mob_runtime.clone(),
+            self.contact_directory.clone(),
+            self.event_log_store(),
+        )
     }
 
     pub fn build_console_frontend_router(&self) -> Router {

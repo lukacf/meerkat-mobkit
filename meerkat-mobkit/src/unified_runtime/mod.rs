@@ -225,6 +225,14 @@ impl UnifiedRuntime {
 
     /// Query persisted operational events from the event log store.
     ///
+    /// Return the underlying event log store if one is configured.
+    ///
+    /// Used to share the store with sub-handlers (e.g. console RPC) that
+    /// don't hold a full `UnifiedRuntime` reference.
+    pub fn event_log_store(&self) -> Option<std::sync::Arc<dyn event_log::EventLogStore>> {
+        self.event_log.as_ref().map(|h| h.store())
+    }
+
     /// Returns `None` if no event log is configured.
     pub async fn query_events(
         &self,

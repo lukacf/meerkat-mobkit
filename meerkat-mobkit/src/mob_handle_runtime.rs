@@ -72,7 +72,12 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path).comms(true).mob(true);
+        let factory = AgentFactory::new(&store_path)
+            .builtins(true)
+            .shell(true)
+            .mob(true)
+            .comms(true)
+            .memory(true);
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         if let Some(store) = session_store {
@@ -98,7 +103,12 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path).comms(true).mob(true);
+        let factory = AgentFactory::new(&store_path)
+            .builtins(true)
+            .shell(true)
+            .mob(true)
+            .comms(true)
+            .memory(true);
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));

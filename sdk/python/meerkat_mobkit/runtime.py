@@ -650,12 +650,17 @@ class MobHandle:
     ) -> None:
         """Wire a local member to a member on another mob handle.
 
-        Uses peer_info + wire_local on both sides — works across gateways.
+        Uses peer_info + wire_local on both sides.  Both mob handles must
+        live in the **same process** — ``peer_info()`` always returns an
+        ``inproc://`` address, which is only reachable within the same
+        process.  For cross-process peering, call ``wire_local()`` on each
+        handle directly, supplying the remote gateway's routable TCP or UDS
+        address in place of the inproc address from ``peer_info()``.
 
         Args:
             local_member_id: Member on this mob to wire.
             remote_member_id: Member on the remote mob to wire.
-            remote_handle: MobHandle for the remote mob.
+            remote_handle: MobHandle for the remote mob (must be same-process).
         """
         local_info = await self.peer_info(local_member_id)
         remote_info = await remote_handle.peer_info(remote_member_id)
@@ -665,12 +670,26 @@ class MobHandle:
             remote_info["peer_id"],
             remote_info["address"],
         )
-        await remote_handle.wire_local(
-            remote_member_id,
-            local_info["comms_name"],
-            local_info["peer_id"],
-            local_info["address"],
-        )
+        try:
+            await remote_handle.wire_local(
+                remote_member_id,
+                local_info["comms_name"],
+                local_info["peer_id"],
+                local_info["address"],
+            )
+        except Exception:
+            # Best-effort rollback: undo the local wire using the same
+            # low-level API — no contact directory or peer handles needed.
+            try:
+                await self.unwire_local(
+                    local_member_id,
+                    remote_info["comms_name"],
+                    remote_info["peer_id"],
+                    remote_info["address"],
+                )
+            except Exception:
+                pass
+            raise
 
     async def send_cross_mob(
         self,
@@ -748,6 +767,24 @@ class MobHandle:
             },
         )
 
+    async def unwire_local(
+        self,
+        local_member_id: str,
+        remote_comms_name: str,
+        remote_peer_id: str,
+        remote_address: str,
+    ) -> None:
+        """Undo a wire_local — unwire a local member from a previously wired peer (local side only)."""
+        await self._runtime._rpc(
+            "mobkit/cross_mob/unwire_local",
+            {
+                "local_member_id": local_member_id,
+                "remote_comms_name": remote_comms_name,
+                "remote_peer_id": remote_peer_id,
+                "remote_address": remote_address,
+            },
+        )
+
     # -----------------------------------------------------------------
     # Rich member inspection
     # -----------------------------------------------------------------
@@ -796,7 +833,7 @@ class MobHandle:
         meerkat_id: str,
         task: str,
         *,
-        fork_context: str | None = None,
+        fork_context: dict | None = None,
         profile: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,

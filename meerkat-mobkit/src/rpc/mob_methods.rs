@@ -10,7 +10,7 @@ use crate::unified_runtime::UnifiedRuntime;
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
 /// Parse HelperOptions from an optional JSON "options" object.
-fn parse_helper_options(options_val: Option<&Value>) -> Result<HelperOptions, String> {
+pub(crate) fn parse_helper_options(options_val: Option<&Value>) -> Result<HelperOptions, String> {
     let mut opts = HelperOptions::default();
     if let Some(o) = options_val {
         opts.profile_name = o
@@ -1150,6 +1150,59 @@ pub(super) async fn handle_member_session_ref(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+            }),
+        },
+    }
+}
+
+/// Unwire a local member from a previously wired peer (local side only).
+/// Symmetric counterpart to `handle_cross_mob_wire_local`.
+pub(super) async fn handle_cross_mob_unwire_local(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let local_member_id = params.get("local_member_id").and_then(Value::as_str);
+    let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
+    let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
+    let remote_address = params.get("remote_address").and_then(Value::as_str);
+
+    match (local_member_id, remote_comms_name, remote_peer_id, remote_address) {
+        (Some(local), Some(comms_name), Some(peer_id), Some(addr))
+            if !local.is_empty()
+                && !comms_name.is_empty()
+                && !peer_id.is_empty()
+                && !addr.is_empty() =>
+        {
+            match runtime.unwire_local(local, comms_name, peer_id, addr).await {
+                Ok(()) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "accepted": true,
+                        "local_member_id": local,
+                        "remote_comms_name": comms_name,
+                    })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("cross_mob/unwire_local failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: local_member_id, remote_comms_name, remote_peer_id, and remote_address required".to_string(),
             }),
         },
     }
