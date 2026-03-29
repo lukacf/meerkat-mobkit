@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-29
+
+### Added
+
+- **Cross-mob communication** — contact directory (TOML), `wire_cross_mob`/`unwire_cross_mob`/`send_cross_mob` via `PeerTarget::External`, `peer_info` + `wire_local`/`unwire_local` for SDK-level peering, `::` separator addressing
+- **Console RPC** — `POST /console/rpc` JSON-RPC endpoint with full auth gating, capabilities, event log queries, cross-mob peer_info/directory/wire_local/unwire_local
+- **10 new 0.5 API methods** — `member_status`, `force_cancel_member`, `spawn_helper`, `fork_helper`, `attach_existing_session`, `cancel_flow`, `flow_status`, `collect_completed`, `member_current_session_id`, `member_session_ref`
+- **Console frontend** — conversation transcript with SSE streaming (session-ID correlated), history replay from event log, optimistic entries with rollback
+- **Python SDK** — all new RPC methods on `MobHandle`, `wire_cross_mob`/`send_cross_mob`/`peer_info`/`wire_local`/`unwire_local`, `wait_one`/`wait_all` polling, new types (`RichMemberSnapshot`, `HelperResult`, `MemberSessionRef`, `CrossMobContactEntry`)
+- **Build isolation** — `scripts/repo-cargo` wrapper isolating `CARGO_HOME`/`CARGO_TARGET_DIR` per repo/worktree, `shasum`/`sha256sum` cross-platform fallback
+- Contact directory loaded from `config/contacts.toml` via `ConventionalPaths` in gateway startup
+- `EventLogStore` exposed via `event_log_store()` for console RPC event queries
+- `parse_helper_options` shared as `pub(crate)` between main RPC and console RPC
+- 176-line `test_rpc_method_names.py` covering all new SDK methods
+
+### Changed
+
+- **Meerkat 0.5.0 migration** — all deps bumped to 0.5.0, `MemberHandle.send()` replaces `send_message()`, `PeerTarget::External` for cross-mob wiring, subagents folded into builtins
+- `MobBootstrapSpec::ephemeral`/`persistent` now enable `builtins`/`shell`/`memory` (matching gateway factories)
+- `console_json_router_with_runtime` accepts `contact_directory` and `event_log` params
+- Cross-mob wire/unwire/send capabilities gated on `has_inproc_contacts() && has_peer_mob_handles()`
+- `rpc::mob_methods` module visibility changed to `pub(crate)`
+- Gateway binary renamed from `phase0b_rpc_gateway` to `mobkit_gateway`
+- Console frontend embedded bundle must be rebuilt and synced after source changes
+
+### Fixed
+
+- `wire_cross_mob` rolls back local side if remote wire fails
+- Console RPC 401/404 exits use proper JSON-RPC format (not bare `{"error": ...}`)
+- Console `mobkit/capabilities` correctly reports `is_authenticated = true` after auth gate
+- Console `mobkit/status` returns `loaded_modules: []` (not member IDs)
+- Console `ensure_member` rejects malformed `resume_session_id` and `additional_instructions`
+- `sendInteraction` opens SSE stream before send to avoid missing fast completions
+- Stream failure after successful send no longer rolls back the user message
+- History query filters out agent-kind events (no payload in `UnifiedEvent::Agent`)
+- History visit-level cache prevents transcript duplication on agent re-selection
+
 ## [0.4.13] - 2026-03-16
 
 ### Added
