@@ -251,7 +251,20 @@ export async function queryEvents(
     return [];
   }
 
-  return result.map((event, index) => persistedEventToFrame(event, index));
+  // UnifiedEvent::Agent stores only agent_id + event_type — the actual
+  // text/payload is not persisted. Skip agent-kind rows so history only
+  // includes events that carry displayable content (module events with payload).
+  return result
+    .filter((raw) => {
+      if (typeof raw !== "object" || raw === null) return true;
+      const ev = (raw as Record<string, unknown>).event;
+      return !(
+        typeof ev === "object" &&
+        ev !== null &&
+        (ev as Record<string, unknown>).kind === "agent"
+      );
+    })
+    .map((event, index) => persistedEventToFrame(event, index));
 }
 
 export async function sendInteraction(

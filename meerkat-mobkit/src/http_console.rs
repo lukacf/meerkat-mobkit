@@ -170,7 +170,7 @@ pub async fn console_rpc_handler(
                 StatusCode::UNAUTHORIZED,
                 Json::<Value>(serde_json::json!({
                     "jsonrpc": JSONRPC_VERSION,
-                    "id": parsed_request.id.clone().unwrap_or(Value::Null),
+                    "id": parsed_request.id.unwrap_or(Value::Null),
                     "error": {
                         "code": -32600,
                         "message": "unauthorized: console rpc requires a valid auth token",
@@ -188,7 +188,7 @@ pub async fn console_rpc_handler(
             StatusCode::NOT_FOUND,
             Json::<Value>(serde_json::json!({
                 "jsonrpc": JSONRPC_VERSION,
-                "id": parsed_request.id.clone().unwrap_or(Value::Null),
+                "id": parsed_request.id.unwrap_or(Value::Null),
                 "error": {
                     "code": -32600,
                     "message": "console rpc requires a unified runtime",
@@ -762,29 +762,34 @@ async fn handle_console_runtime_rpc(
             let peer_id = request.params.get("remote_peer_id").and_then(Value::as_str);
             let addr = request.params.get("remote_address").and_then(Value::as_str);
             match (local, comms_name, peer_id, addr) {
-                (Some(l), Some(c), Some(p), Some(a))
-                    if !l.is_empty() && !c.is_empty() && !p.is_empty() && !a.is_empty() =>
+                (Some(local_id), Some(cname), Some(pid), Some(address))
+                    if !local_id.is_empty()
+                        && !cname.is_empty()
+                        && !pid.is_empty()
+                        && !address.is_empty() =>
                 {
-                    match TrustedPeerSpec::new(c, p, a) {
-                        Err(e) => invalid_params(response_id, format!("invalid peer spec: {e}")),
+                    match TrustedPeerSpec::new(cname, pid, address) {
+                        Err(err) => {
+                            invalid_params(response_id, format!("invalid peer spec: {err}"))
+                        }
                         Ok(spec) => {
                             match runtime
                                 .handle()
-                                .wire(MeerkatId::from(l), PeerTarget::External(spec))
+                                .wire(MeerkatId::from(local_id), PeerTarget::External(spec))
                                 .await
                             {
                                 Ok(()) => response_value(
                                     response_id,
                                     Some(serde_json::json!({
                                         "accepted": true,
-                                        "local_member_id": l,
-                                        "remote_comms_name": c,
+                                        "local_member_id": local_id,
+                                        "remote_comms_name": cname,
                                     })),
                                     None,
                                 ),
-                                Err(e) => internal_error(
+                                Err(err) => internal_error(
                                     response_id,
-                                    format!("cross_mob/wire_local failed: {e}"),
+                                    format!("cross_mob/wire_local failed: {err}"),
                                 ),
                             }
                         }
@@ -808,29 +813,34 @@ async fn handle_console_runtime_rpc(
             let peer_id = request.params.get("remote_peer_id").and_then(Value::as_str);
             let addr = request.params.get("remote_address").and_then(Value::as_str);
             match (local, comms_name, peer_id, addr) {
-                (Some(l), Some(c), Some(p), Some(a))
-                    if !l.is_empty() && !c.is_empty() && !p.is_empty() && !a.is_empty() =>
+                (Some(local_id), Some(cname), Some(pid), Some(address))
+                    if !local_id.is_empty()
+                        && !cname.is_empty()
+                        && !pid.is_empty()
+                        && !address.is_empty() =>
                 {
-                    match TrustedPeerSpec::new(c, p, a) {
-                        Err(e) => invalid_params(response_id, format!("invalid peer spec: {e}")),
+                    match TrustedPeerSpec::new(cname, pid, address) {
+                        Err(err) => {
+                            invalid_params(response_id, format!("invalid peer spec: {err}"))
+                        }
                         Ok(spec) => {
                             match runtime
                                 .handle()
-                                .unwire(MeerkatId::from(l), PeerTarget::External(spec))
+                                .unwire(MeerkatId::from(local_id), PeerTarget::External(spec))
                                 .await
                             {
                                 Ok(()) => response_value(
                                     response_id,
                                     Some(serde_json::json!({
                                         "accepted": true,
-                                        "local_member_id": l,
-                                        "remote_comms_name": c,
+                                        "local_member_id": local_id,
+                                        "remote_comms_name": cname,
                                     })),
                                     None,
                                 ),
-                                Err(e) => internal_error(
+                                Err(err) => internal_error(
                                     response_id,
-                                    format!("cross_mob/unwire_local failed: {e}"),
+                                    format!("cross_mob/unwire_local failed: {err}"),
                                 ),
                             }
                         }

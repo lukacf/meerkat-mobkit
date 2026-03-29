@@ -38,7 +38,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
   const [framesByMemberId, setFramesByMemberId] = React.useState<Record<string, ConsoleFrame[]>>({});
   const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationEntry[]>>({});
-  const [historyLoadedByMemberId, setHistoryLoadedByMemberId] = React.useState<Record<string, boolean>>({});
 
   React.useEffect(() => {
     let mounted = true;
@@ -89,7 +88,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   );
 
   React.useEffect(() => {
-    if (!selectedMemberId || historyLoadedByMemberId[selectedMemberId]) {
+    if (!selectedMemberId) {
       return;
     }
 
@@ -102,40 +101,22 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           return;
         }
 
-        // Prepend history before any live frames that may have arrived while
-        // queryEvents was in flight, deduplicating by frame ID so overlapping
-        // live activity doesn't produce duplicate transcript entries.
-        setFramesByMemberId((current) => {
-          const live = current[selectedMemberId] || [];
-          const liveIds = new Set(live.map((f) => f.id).filter(Boolean));
-          const newHistory = frames.filter((f) => !f.id || !liveIds.has(f.id));
-          return { ...current, [selectedMemberId]: [...newHistory, ...live] };
-        });
-        setEntriesByMemberId((current) => {
-          const live = current[selectedMemberId] || [];
-          // Entry IDs are "${frameId}:${index}" — strip the trailing :N to recover
-          // the original frame ID for comparison against history frame IDs.
-          const liveIds = new Set(
-            live.map((e) => e.id.replace(/:(\d+)$/, "")).filter(Boolean),
-          );
-          const historyFrames = frames.filter((f) => !f.id || !liveIds.has(f.id));
-          return {
-            ...current,
-            [selectedMemberId]: [
-              ...mapFramesToConversationEntries(selectedAgent, historyFrames),
-              ...live,
-            ],
-          };
-        });
+        // Prepend history before any live frames. History contains only
+        // module events (queryEvents filters agent-kind rows); live SSE emits
+        // only agent events. The two sets are disjoint — no dedup needed.
+        setFramesByMemberId((current) => ({
+          ...current,
+          [selectedMemberId]: [...frames, ...(current[selectedMemberId] || [])],
+        }));
+        setEntriesByMemberId((current) => ({
+          ...current,
+          [selectedMemberId]: [
+            ...mapFramesToConversationEntries(selectedAgent, frames),
+            ...(current[selectedMemberId] || []),
+          ],
+        }));
       } catch (_) {
         // History is optional; the console still works with live interaction frames only.
-      } finally {
-        if (!cancelled) {
-          setHistoryLoadedByMemberId((current) => ({
-            ...current,
-            [selectedMemberId]: true,
-          }));
-        }
       }
     }
 
@@ -143,7 +124,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [baseUrl, historyLoadedByMemberId, selectedAgent, selectedMemberId]);
+  }, [baseUrl, selectedAgent, selectedMemberId]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
