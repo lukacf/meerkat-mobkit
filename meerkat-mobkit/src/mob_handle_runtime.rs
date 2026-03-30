@@ -4,9 +4,12 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use meerkat::{AgentFactory, Config, FactoryAgentBuilder, SessionStore};
+use async_trait::async_trait;
+use meerkat::{AgentFactory, Config, FactoryAgent, FactoryAgentBuilder, SessionStore};
 use meerkat_client::LlmClient;
 use meerkat_core::AgentSessionStore;
+use meerkat_core::event::AgentEvent;
+use meerkat_core::service::{CreateSessionRequest, SessionError};
 use meerkat_mob::MobRun;
 use meerkat_mob::launch::{ForkContext, MemberLaunchMode};
 use meerkat_mob::{
@@ -14,8 +17,10 @@ use meerkat_mob::{
     MobDefinition, MobError, MobHandle, MobMemberSnapshot as RichMobMemberSnapshot,
     MobSessionService, MobState, MobStorage, ProfileName, RosterEntry, RunId, SpawnMemberSpec,
 };
+use meerkat_session::SessionAgentBuilder;
 use meerkat_store::StoreAdapter;
 use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc;
 
 /// Member state constant for active members.
 pub const MEMBER_STATE_ACTIVE: &str = "active";
@@ -28,6 +33,74 @@ pub struct MobBootstrapOptions {
     pub allow_ephemeral_sessions: bool,
     pub notify_orchestrator_on_resume: bool,
     pub default_llm_client: Option<Arc<dyn LlmClient>>,
+}
+
+/// Hook called before each agent build. Receives the mutable `CreateSessionRequest`
+/// so the app can inject external tools, augment the system prompt, set labels, etc.
+///
+/// ```rust,ignore
+/// let spec = MobBootstrapSpec::persistent_with_hook(
+///     definition, storage, store_path, 64, session_store,
+///     |req: &mut CreateSessionRequest| {
+///         // Inject per-agent tools
+///         let build = req.build.get_or_insert_with(SessionBuildOptions::default);
+///         build.external_tools = Some(my_tools());
+///         // Augment system prompt
+///         req.system_prompt = Some(format!(
+///             "{}\n{}",
+///             req.system_prompt.as_deref().unwrap_or(""),
+///             my_dynamic_context(),
+///         ));
+///     },
+/// );
+/// ```
+pub type PreBuildHook = Arc<dyn Fn(&mut CreateSessionRequest) + Send + Sync>;
+
+/// Wraps a `SessionAgentBuilder`, applying a `PreBuildHook` before delegating.
+///
+/// When no hook is set, delegates directly with zero overhead.
+pub struct HookedAgentBuilder<B: SessionAgentBuilder> {
+    inner: B,
+    hook: Option<PreBuildHook>,
+}
+
+impl<B: SessionAgentBuilder> HookedAgentBuilder<B> {
+    pub fn new(inner: B, hook: Option<PreBuildHook>) -> Self {
+        Self { inner, hook }
+    }
+}
+
+#[async_trait]
+impl<B> SessionAgentBuilder for HookedAgentBuilder<B>
+where
+    B: SessionAgentBuilder<Agent = FactoryAgent>,
+{
+    type Agent = FactoryAgent;
+
+    async fn build_agent(
+        &self,
+        req: &CreateSessionRequest,
+        event_tx: mpsc::Sender<AgentEvent>,
+    ) -> Result<FactoryAgent, SessionError> {
+        if let Some(ref hook) = self.hook {
+            let mut modified = CreateSessionRequest {
+                model: req.model.clone(),
+                prompt: req.prompt.clone(),
+                render_metadata: req.render_metadata.clone(),
+                system_prompt: req.system_prompt.clone(),
+                max_tokens: req.max_tokens,
+                event_tx: req.event_tx.clone(),
+                skill_references: req.skill_references.clone(),
+                initial_turn: req.initial_turn,
+                build: req.build.clone(),
+                labels: req.labels.clone(),
+            };
+            hook(&mut modified);
+            self.inner.build_agent(&modified, event_tx).await
+        } else {
+            self.inner.build_agent(req, event_tx).await
+        }
+    }
 }
 
 /// Specification for bootstrapping a mob runtime from a definition, storage, and session service.
@@ -72,6 +145,45 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
     ) -> Self {
+        Self::ephemeral_inner(
+            definition,
+            storage,
+            store_path,
+            max_sessions,
+            session_store,
+            None,
+        )
+    }
+
+    /// Like [`ephemeral`](Self::ephemeral), but with a pre-build hook that is
+    /// called before each agent is constructed. Use this to inject external
+    /// tools, augment system prompts, or set per-agent labels.
+    pub fn ephemeral_with_hook(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Option<Arc<dyn AgentSessionStore>>,
+        hook: impl Fn(&mut CreateSessionRequest) + Send + Sync + 'static,
+    ) -> Self {
+        Self::ephemeral_inner(
+            definition,
+            storage,
+            store_path,
+            max_sessions,
+            session_store,
+            Some(Arc::new(hook)),
+        )
+    }
+
+    fn ephemeral_inner(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Option<Arc<dyn AgentSessionStore>>,
+        hook: Option<PreBuildHook>,
+    ) -> Self {
         let factory = AgentFactory::new(&store_path)
             .builtins(true)
             .shell(true)
@@ -83,8 +195,9 @@ impl MobBootstrapSpec {
         if let Some(store) = session_store {
             builder.default_session_store = Some(store);
         }
+        let hooked = HookedAgentBuilder::new(builder, hook);
         let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(
-            builder,
+            hooked,
             max_sessions,
         ));
         Self::new(definition, storage, session_service)
@@ -103,6 +216,45 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
     ) -> Self {
+        Self::persistent_inner(
+            definition,
+            storage,
+            store_path,
+            max_sessions,
+            session_store,
+            None,
+        )
+    }
+
+    /// Like [`persistent`](Self::persistent), but with a pre-build hook that
+    /// is called before each agent is constructed. Use this to inject external
+    /// tools, augment system prompts, or set per-agent labels.
+    pub fn persistent_with_hook(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Arc<dyn SessionStore>,
+        hook: impl Fn(&mut CreateSessionRequest) + Send + Sync + 'static,
+    ) -> Self {
+        Self::persistent_inner(
+            definition,
+            storage,
+            store_path,
+            max_sessions,
+            session_store,
+            Some(Arc::new(hook)),
+        )
+    }
+
+    fn persistent_inner(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        session_store: Arc<dyn SessionStore>,
+        hook: Option<PreBuildHook>,
+    ) -> Self {
         let factory = AgentFactory::new(&store_path)
             .builtins(true)
             .shell(true)
@@ -112,12 +264,13 @@ impl MobBootstrapSpec {
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        let hooked = HookedAgentBuilder::new(builder, hook);
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let session_service = Arc::new(meerkat_session::PersistentSessionService::new(
-            builder,
+            hooked,
             max_sessions,
             session_store,
             Some(runtime_store),
