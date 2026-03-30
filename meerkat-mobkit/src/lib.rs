@@ -56,7 +56,7 @@ pub use http_sse::{
 };
 pub use mob_handle_runtime::{
     MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot, MobReconcileOptions,
-    MobReconcileReport, MobRuntimeError, RealMobRuntime,
+    MobReconcileReport, MobRuntimeError, PreBuildHook, RealMobRuntime,
 };
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};

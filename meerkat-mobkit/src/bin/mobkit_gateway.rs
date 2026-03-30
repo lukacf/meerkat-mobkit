@@ -346,12 +346,21 @@ fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
     (store_dir, sqlite_path)
 }
 
+/// Returns (session_service, runtime_adapter).
+///
+/// The runtime adapter is supplied separately from the session service so
+/// the session service's `runtime_store` stays `None` — keeping the
+/// StoreCheckpointer enabled.  The adapter is wired into MobBuilder
+/// directly via `with_runtime_adapter()`.
 fn build_persistent_session_service(
     store_path: &Path,
     runtime_root: PathBuf,
     project_root: PathBuf,
     context_root: Option<PathBuf>,
-) -> anyhow::Result<Arc<dyn meerkat_mob::MobSessionService>> {
+) -> anyhow::Result<(
+    Arc<dyn meerkat_mob::MobSessionService>,
+    Arc<meerkat_runtime::RuntimeSessionAdapter>,
+)> {
     let (store_dir, sqlite_path) = resolve_store_dir(store_path);
     fs::create_dir_all(&store_dir)
         .with_context(|| format!("failed to create {}", store_dir.display()))?;
@@ -378,16 +387,20 @@ fn build_persistent_session_service(
     let builder = FactoryAgentBuilder::new(factory, config);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::FsBlobStore::new(blob_dir));
-    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
         session_store,
-        Some(runtime_store),
+        None,
+        blob_store.clone(),
+    ));
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+    let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+        runtime_store,
         blob_store,
     ));
-    Ok(service)
+    Ok((service, adapter))
 }
 
 fn runtime_decision_state(runtime_id: &str) -> RuntimeDecisionState {
@@ -562,16 +575,15 @@ async fn run() -> anyhow::Result<()> {
     let runtime_id = definition.id.to_string();
 
     let session_spec = if persistent_sessions {
-        MobBootstrapSpec::new(
-            definition,
-            MobStorage::in_memory(),
-            build_persistent_session_service(
-                &store_path,
-                runtime_root.clone(),
-                project_root.clone(),
-                context_root.clone(),
-            )?,
-        )
+        let (service, adapter) = build_persistent_session_service(
+            &store_path,
+            runtime_root.clone(),
+            project_root.clone(),
+            context_root.clone(),
+        )?;
+        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
+        spec.runtime_adapter = Some(adapter);
+        spec
     } else {
         // Build the ephemeral path manually to thread project/context roots
         // into AgentFactory (MobBootstrapSpec::ephemeral doesn't accept them).
