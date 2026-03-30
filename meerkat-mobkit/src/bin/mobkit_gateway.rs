@@ -392,9 +392,14 @@ fn build_persistent_session_service(
         64,
         session_store,
         None,
+        blob_store.clone(),
+    ));
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+    let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+        runtime_store,
         blob_store,
     ));
-    let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::ephemeral());
     Ok((service, adapter))
 }
 

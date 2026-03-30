@@ -437,7 +437,7 @@ impl MobBootstrapSpec {
                 max_sessions,
                 session_store,
                 None,
-                blob_store,
+                blob_store.clone(),
             ));
         let session_service = match hook {
             Some(h) => Arc::new(PreBuildMobSessionService {
@@ -446,7 +446,17 @@ impl MobBootstrapSpec {
             }) as Arc<dyn MobSessionService>,
             None => session_service,
         };
-        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::ephemeral());
+        // Use a persistent adapter with InMemoryRuntimeStore so same-process
+        // stop/resume can recover queued runtime inputs. The session service
+        // still has runtime_store=None (checkpointer enabled), but the adapter
+        // on the spec gives the mob actor a PersistentRuntimeDriver for state
+        // recovery within the process lifetime.
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+            runtime_store,
+            blob_store,
+        ));
         let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_adapter = Some(adapter);
         spec
