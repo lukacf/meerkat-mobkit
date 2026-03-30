@@ -109,6 +109,12 @@ pub struct MobBootstrapSpec {
     pub storage: MobStorage,
     pub session_service: Arc<dyn MobSessionService>,
     pub options: MobBootstrapOptions,
+    /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
+    ///
+    /// Used by `persistent()` to supply the adapter directly so the session
+    /// service's `runtime_store` can stay `None` (keeping the checkpointer
+    /// enabled). See meerkat-session#checkpointer-enabled-flag.
+    pub runtime_adapter: Option<Arc<meerkat_runtime::RuntimeSessionAdapter>>,
 }
 
 impl MobBootstrapSpec {
@@ -126,6 +132,7 @@ impl MobBootstrapSpec {
                 notify_orchestrator_on_resume: true,
                 default_llm_client: None,
             },
+            runtime_adapter: None,
         }
     }
 
@@ -267,16 +274,22 @@ impl MobBootstrapSpec {
         let hooked = HookedAgentBuilder::new(builder, hook);
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        // Supply runtime_store as None so the session checkpointer stays enabled
+        // (the checkpointer owns persistence when no runtime store is present).
+        // The runtime adapter is provided directly on the spec via ephemeral() —
+        // this supports comms drain / keep-alive without implying runtime-backed
+        // persistence ownership.
         let session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             hooked,
             max_sessions,
             session_store,
-            Some(runtime_store),
+            None,
             blob_store,
         ));
-        Self::new(definition, storage, session_service)
+        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::ephemeral());
+        let mut spec = Self::new(definition, storage, session_service);
+        spec.runtime_adapter = Some(adapter);
+        spec
     }
 }
 
@@ -366,7 +379,15 @@ pub struct RealMobRuntime {
 
 impl RealMobRuntime {
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
-        let mut builder = MobBuilder::new(spec.definition, spec.storage)
+        let mut builder = MobBuilder::new(spec.definition, spec.storage);
+
+        // Set the runtime adapter BEFORE with_session_service — MobBuilder only
+        // pulls the adapter from the session service when runtime_adapter is None.
+        if let Some(adapter) = spec.runtime_adapter {
+            builder = builder.with_runtime_adapter(adapter);
+        }
+
+        builder = builder
             .with_session_service(spec.session_service)
             .allow_ephemeral_sessions(spec.options.allow_ephemeral_sessions)
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
@@ -761,12 +782,12 @@ impl RealMobRuntime {
 mod tests {
     use super::*;
 
-    /// Regression: MobBootstrapSpec::persistent must supply a RuntimeStore
-    /// so that PersistentSessionService::runtime_adapter() returns Some.
-    /// Without it, the comms drain is never spawned and AutonomousHost agents
-    /// die after their kickoff turn.
+    /// Regression: MobBootstrapSpec::persistent must supply a runtime adapter
+    /// so the mob actor spawns the comms drain. The adapter is provided directly
+    /// on the spec (not via session service's runtime_store) to keep the session
+    /// checkpointer enabled.
     #[test]
-    fn persistent_bootstrap_provides_runtime_store() {
+    fn persistent_bootstrap_provides_runtime_adapter() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(sqlite) = meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
@@ -784,11 +805,15 @@ mod tests {
             4,
             session_store,
         );
-        // The session service MUST provide a runtime adapter, otherwise the
-        // mob actor never spawns the comms drain.
+        // The spec must carry a runtime adapter for comms drain.
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
-            "persistent bootstrap must provide a RuntimeStore so runtime_adapter() returns Some"
+            spec.runtime_adapter.is_some(),
+            "persistent bootstrap must set runtime_adapter on the spec"
+        );
+        // The session service must NOT have a runtime_store (keeps checkpointer enabled).
+        assert!(
+            spec.session_service.runtime_adapter().is_none(),
+            "session service should not have runtime_store (checkpointer must stay enabled)"
         );
     }
 }
