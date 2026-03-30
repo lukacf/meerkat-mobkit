@@ -114,11 +114,13 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let session_service = Arc::new(meerkat_session::PersistentSessionService::new(
             builder,
             max_sessions,
             session_store,
-            None,
+            Some(runtime_store),
             blob_store,
         ));
         Self::new(definition, storage, session_service)
@@ -598,5 +600,42 @@ impl RealMobRuntime {
             Err(MobError::MeerkatNotFound(_)) => Ok(None),
             Err(err) => Err(err.into()),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// Regression: MobBootstrapSpec::persistent must supply a RuntimeStore
+    /// so that PersistentSessionService::runtime_adapter() returns Some.
+    /// Without it, the comms drain is never spawned and AutonomousHost agents
+    /// die after their kickoff turn.
+    #[test]
+    fn persistent_bootstrap_provides_runtime_store() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(sqlite) = meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
+        else {
+            panic!("failed to open sqlite session store");
+        };
+        let session_store: Arc<dyn SessionStore> = Arc::new(sqlite);
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n") else {
+            panic!("failed to parse minimal mob definition");
+        };
+        let spec = MobBootstrapSpec::persistent(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            session_store,
+        );
+        // The session service MUST provide a runtime adapter, otherwise the
+        // mob actor never spawns the comms drain.
+        assert!(
+            spec.session_service.runtime_adapter().is_some(),
+            "persistent bootstrap must provide a RuntimeStore so runtime_adapter() returns Some"
+        );
     }
 }

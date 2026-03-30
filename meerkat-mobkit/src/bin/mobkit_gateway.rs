@@ -378,11 +378,13 @@ fn build_persistent_session_service(
     let builder = FactoryAgentBuilder::new(factory, config);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::FsBlobStore::new(blob_dir));
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
         session_store,
-        None,
+        Some(runtime_store),
         blob_store,
     ));
     Ok(service)
