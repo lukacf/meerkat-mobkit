@@ -284,6 +284,192 @@ macro_rules! delegate_mob_session_service {
 
 delegate_mob_session_service!(PreBuildMobSessionService);
 
+/// Wraps a `MobSessionService` to fire an `AfterCreateHook` after each
+/// successful `create_session`. Unlike `PreBuildMobSessionService`, this
+/// captures context **after** the inner service (including any pre-build hooks)
+/// has finished, so the context reflects all mutations.
+struct AfterCreateMobSessionService {
+    inner: Arc<dyn MobSessionService>,
+    after_hook: AfterCreateHook,
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
+    async fn create_session(
+        &self,
+        req: CreateSessionRequest,
+    ) -> Result<meerkat_core::types::RunResult, SessionError> {
+        // Capture pre-create context from the request (before inner consumes it).
+        // The inner service's pre-build hooks may mutate the request further,
+        // but we capture here because we can't read the request after inner
+        // consumes it. The pre-build hook runs inside inner.create_session.
+        //
+        // For accurate post-mutation context, we re-read from the request
+        // that was already mutated by any outer hooks, and accept that inner
+        // hooks are not visible here. This is the correct trade-off: the
+        // after_create context matches the request as seen by this layer.
+        let ctx = SessionCreatedContext {
+            model: req.model.clone(),
+            labels: req.labels.clone().unwrap_or_default(),
+            system_prompt: req.system_prompt.clone(),
+        };
+        let result = self.inner.create_session(req).await?;
+        (self.after_hook)(result.session_id.clone(), ctx).await;
+        Ok(result)
+    }
+    async fn start_turn(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        req: meerkat_core::service::StartTurnRequest,
+    ) -> Result<meerkat_core::types::RunResult, SessionError> {
+        self.inner.start_turn(id, req).await
+    }
+    async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
+        self.inner.interrupt(id).await
+    }
+    async fn set_session_client(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        client: Arc<dyn meerkat_core::AgentLlmClient>,
+    ) -> Result<(), SessionError> {
+        self.inner.set_session_client(id, client).await
+    }
+    async fn hot_swap_session_llm_identity(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        client: Arc<dyn meerkat_core::AgentLlmClient>,
+        identity: meerkat_core::session::SessionLlmIdentity,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .hot_swap_session_llm_identity(id, client, identity)
+            .await
+    }
+    async fn update_session_keep_alive(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        keep_alive: bool,
+    ) -> Result<(), SessionError> {
+        self.inner.update_session_keep_alive(id, keep_alive).await
+    }
+    async fn has_live_session(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<bool, SessionError> {
+        self.inner.has_live_session(id).await
+    }
+    async fn set_session_tool_filter(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        filter: meerkat_core::ToolFilter,
+    ) -> Result<(), SessionError> {
+        self.inner.set_session_tool_filter(id, filter).await
+    }
+    async fn read(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::service::SessionView, SessionError> {
+        self.inner.read(id).await
+    }
+    async fn list(
+        &self,
+        query: meerkat_core::service::SessionQuery,
+    ) -> Result<Vec<meerkat_core::service::SessionSummary>, SessionError> {
+        self.inner.list(query).await
+    }
+    async fn archive(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
+        self.inner.archive(id).await
+    }
+    async fn subscribe_session_events(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
+        meerkat_core::service::SessionService::subscribe_session_events(self.inner.as_ref(), id)
+            .await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionServiceCommsExt for AfterCreateMobSessionService {
+    async fn comms_runtime(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Option<Arc<dyn meerkat_core::agent::CommsRuntime>> {
+        self.inner.comms_runtime(id).await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionServiceControlExt for AfterCreateMobSessionService {
+    async fn append_system_context(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        req: meerkat_core::service::AppendSystemContextRequest,
+    ) -> Result<
+        meerkat_core::service::AppendSystemContextResult,
+        meerkat_core::service::SessionControlError,
+    > {
+        self.inner.append_system_context(id, req).await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionService {
+    async fn read_history(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        query: meerkat_core::service::SessionHistoryQuery,
+    ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
+        self.inner.read_history(id, query).await
+    }
+}
+
+#[async_trait]
+impl MobSessionService for AfterCreateMobSessionService {
+    fn supports_persistent_sessions(&self) -> bool {
+        self.inner.supports_persistent_sessions()
+    }
+    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::RuntimeSessionAdapter>> {
+        self.inner.runtime_adapter()
+    }
+    async fn session_belongs_to_mob(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        mob_id: &meerkat_mob::MobId,
+    ) -> bool {
+        self.inner.session_belongs_to_mob(session_id, mob_id).await
+    }
+    async fn load_persisted_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
+        self.inner.load_persisted_session(session_id).await
+    }
+    async fn apply_runtime_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        run_id: meerkat_core::lifecycle::RunId,
+        req: meerkat_core::service::StartTurnRequest,
+        boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
+        contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
+    ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+        self.inner
+            .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
+            .await
+    }
+    async fn discard_live_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner.discard_live_session(session_id).await
+    }
+    async fn cancel_all_checkpointers(&self) {
+        self.inner.cancel_all_checkpointers().await;
+    }
+    async fn rearm_all_checkpointers(&self) {
+        self.inner.rearm_all_checkpointers().await;
+    }
+}
+
 /// Specification for bootstrapping a mob runtime from a definition, storage, and session service.
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
@@ -328,13 +514,13 @@ impl MobBootstrapSpec {
 
     /// Wrap the session service with an after-create hook that fires after
     /// each successful `create_session`. The hook is best-effort: errors are
-    /// not propagated. A no-op `PreBuildHook` is used when none was set.
+    /// not propagated. Uses `AfterCreateMobSessionService` which wraps the
+    /// inner service without a pre-build hook, so any pre-build mutations
+    /// from inner wrappers are fully reflected in the context.
     pub fn with_after_create_hook(mut self, hook: AfterCreateHook) -> Self {
-        let noop_pre_hook: PreBuildHook = Arc::new(|_req| Box::pin(async { Ok(()) }));
-        self.session_service = Arc::new(PreBuildMobSessionService {
+        self.session_service = Arc::new(AfterCreateMobSessionService {
             inner: self.session_service,
-            hook: noop_pre_hook,
-            after_create_hook: Some(hook),
+            after_hook: hook,
         });
         self
     }

@@ -130,6 +130,7 @@ impl StdioCallbackBridge {
     }
 
     /// Send a fire-and-forget notification to Python (no response expected).
+    /// Uses `try_send` — may drop under backpressure.
     fn notify(&self, method: &str, params: Value) {
         let notification = json!({
             "jsonrpc": "2.0",
@@ -138,6 +139,21 @@ impl StdioCallbackBridge {
         });
         if let Ok(line) = serde_json::to_string(&notification) {
             let _ = self.stdout_tx.try_send(line);
+        }
+    }
+
+    /// Send a notification with reliable delivery (async, waits for channel space).
+    /// Use for callbacks where delivery must not be silently lost.
+    async fn notify_reliable(&self, method: &str, params: Value) {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        if let Ok(line) = serde_json::to_string(&notification) {
+            if let Err(e) = self.stdout_tx.send(line).await {
+                eprintln!("[mobkit-gateway] failed to deliver {method}: {e}");
+            }
         }
     }
 
@@ -289,6 +305,9 @@ struct StdioCallbackAgentBuilder {
     inner: FactoryAgentBuilder,
     bridge: StdioCallbackBridge,
     has_session_builder: bool,
+    /// Session store for loading sessions by ID when the Python builder
+    /// sets `resume_session_id`. Only populated in persistent mode.
+    session_store: Option<Arc<dyn meerkat::SessionStore>>,
 }
 
 #[async_trait]
@@ -364,12 +383,55 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Note: resume_session_id is NOT handled here. Session resume
-                // flows through DiscoverySpec.resume_session_id → SpawnMemberSpec
-                // → mob actor, not through the build_agent callback. The build_agent
-                // callback runs at create_session time, after the spawn path has
-                // already decided whether to resume or create fresh.
-                //
+                // Apply resume_session_id: Python builder can request resuming
+                // an existing session. The gateway loads the session from the
+                // store and sets it on build.resume_session.
+                if let Some(resume_id) = result.get("resume_session_id").and_then(|v| v.as_str()) {
+                    if let Some(ref store) = self.session_store {
+                        let sid =
+                            meerkat_core::types::SessionId::parse(resume_id).map_err(|_| {
+                                SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: invalid resume_session_id: {resume_id}"
+                                )))
+                            })?;
+                        // Validate against any spawn-level resume already set.
+                        if let Some(existing) = modified_req
+                            .build
+                            .as_ref()
+                            .and_then(|b| b.resume_session.as_ref())
+                        {
+                            if existing.id() != &sid {
+                                return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: resume_session_id conflict: \
+                                     spawn set {} but hook set {resume_id}",
+                                    existing.id()
+                                ))));
+                            }
+                            // Same ID — already loaded, skip.
+                        } else {
+                            let session = store.load(&sid).await.map_err(|e| {
+                                SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: failed to load resume session {resume_id}: {e}"
+                                )))
+                            })?;
+                            let session = session.ok_or_else(|| {
+                                SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: resume session not found: {resume_id}"
+                                )))
+                            })?;
+                            let build = modified_req.build.get_or_insert_with(|| {
+                                meerkat_core::service::SessionBuildOptions::default()
+                            });
+                            build.resume_session = Some(session);
+                        }
+                    } else {
+                        return Err(SessionError::Agent(AgentError::ToolError(
+                            "callback/build_agent: resume_session_id requires persistent mode \
+                             (no session store available in ephemeral mode)"
+                                .to_string(),
+                        )));
+                    }
+                }
                 // Callback tools: Python SDK provides tool names via add_tools()
                 // or register_tool(). Create a CallbackToolDispatcher that routes
                 // tool calls back to Python via callback/call_tool.
@@ -655,6 +717,7 @@ external_addressable = true
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
+            session_store: Some(session_store.clone()),
         };
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(state_path.join("blobs")));
@@ -694,6 +757,7 @@ external_addressable = true
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
+            session_store: None,
         };
         let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
 
@@ -707,13 +771,14 @@ external_addressable = true
     };
 
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
+    // Uses notify_reliable to avoid silent drops under backpressure.
     let mob_spec = if has_session_builder {
         let after_bridge = bridge.clone();
         mob_spec.with_after_create_hook(Arc::new(
             move |session_id: meerkat_core::types::SessionId, ctx| {
                 let b = after_bridge.clone();
                 Box::pin(async move {
-                    b.notify(
+                    b.notify_reliable(
                         "callback/after_create",
                         json!({
                             "session_id": session_id.to_string(),
@@ -721,7 +786,8 @@ external_addressable = true
                             "labels": ctx.labels,
                             "system_prompt": ctx.system_prompt,
                         }),
-                    );
+                    )
+                    .await;
                 })
             },
         ))
