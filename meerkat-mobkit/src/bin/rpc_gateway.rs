@@ -364,6 +364,14 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
+                // Apply resume_session_id: Python builder can request resuming
+                // an existing session by setting resume_session_id on opts.
+                // This flows to SpawnMemberSpec and the mob actor handles the
+                // actual session loading during spawn.
+                if let Some(resume_id) = result.get("resume_session_id").and_then(|v| v.as_str()) {
+                    let label_map = modified_req.labels.get_or_insert_with(Default::default);
+                    label_map.insert("resume_session_id".to_string(), resume_id.to_string());
+                }
                 // Callback tools: Python SDK provides tool names via add_tools()
                 // or register_tool(). Create a CallbackToolDispatcher that routes
                 // tool calls back to Python via callback/call_tool.

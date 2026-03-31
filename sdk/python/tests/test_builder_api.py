@@ -141,3 +141,44 @@ class TestBuildAgentErrorPropagation:
                 "callback/build_agent",
                 {"options": {"scope_id": "s1"}},
             )
+
+
+class TestResumeSessionId:
+    """Tests for resume_session_id on SessionBuildOptions."""
+
+    def test_field_exists_default_none(self):
+        opts = SessionBuildOptions()
+        assert opts.resume_session_id is None
+
+    def test_field_set(self):
+        opts = SessionBuildOptions()
+        opts.resume_session_id = "sid-resume-123"
+        assert opts.resume_session_id == "sid-resume-123"
+
+    def test_to_dict_includes_when_set(self):
+        opts = SessionBuildOptions()
+        opts.resume_session_id = "sid-resume-456"
+        d = opts.to_dict()
+        assert d["resume_session_id"] == "sid-resume-456"
+
+    def test_to_dict_omits_when_none(self):
+        opts = SessionBuildOptions()
+        d = opts.to_dict()
+        assert "resume_session_id" not in d
+
+    @pytest.mark.asyncio
+    async def test_build_agent_sets_resume_session_id(self):
+        """build_agent can set resume_session_id and it flows through callback."""
+
+        class ResumeBuilder:
+            async def build_agent(self, opts: SessionBuildOptions) -> None:
+                opts.resume_session_id = "sid-owner-789"
+
+        d = CallbackDispatcher()
+        d.register_builder(ResumeBuilder())
+
+        result = await d.handle_callback(
+            "callback/build_agent",
+            {"options": {"scope_id": "s1"}},
+        )
+        assert result["resume_session_id"] == "sid-owner-789"

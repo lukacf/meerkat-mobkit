@@ -214,3 +214,45 @@ async fn test_builder_defaults() {
     assert_eq!(runtime.mob_runtime().status(), MobState::Running);
     runtime.mob_runtime().stop().await.expect("stop");
 }
+
+// ---------------------------------------------------------------------------
+// 8. Builder persistent with custom session store
+// ---------------------------------------------------------------------------
+#[tokio::test]
+#[ignore]
+async fn test_builder_persistent_custom_store() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let state_path = tmp.path().join("state");
+    std::fs::create_dir_all(&state_path).expect("create state dir");
+
+    // Open a custom SQLite store at a non-default path to prove the builder
+    // uses it instead of creating its own.
+    let custom_db_path = state_path.join("custom_sessions.db");
+    let custom_store: std::sync::Arc<dyn meerkat::SessionStore> = std::sync::Arc::new(
+        meerkat_store::SqliteSessionStore::open(&custom_db_path).expect("open custom store"),
+    );
+
+    let runtime = UnifiedRuntime::builder()
+        .definition(test_definition())
+        .persistent_state(&state_path)
+        .session_store(custom_store)
+        .default_llm_client(Arc::new(TestClient::default()))
+        .build()
+        .await
+        .expect("persistent build with custom store");
+
+    assert_eq!(runtime.mob_runtime().status(), MobState::Running);
+
+    // The custom store path should exist (we created it).
+    assert!(
+        custom_db_path.exists(),
+        "custom session store db must exist"
+    );
+    // The default sessions.db should NOT have been created by the builder.
+    assert!(
+        !state_path.join("sessions.db").exists(),
+        "builder must use custom store, not create default SQLite"
+    );
+
+    runtime.mob_runtime().stop().await.expect("stop");
+}

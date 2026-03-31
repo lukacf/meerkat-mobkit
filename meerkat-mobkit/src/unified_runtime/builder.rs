@@ -44,6 +44,7 @@ pub struct UnifiedRuntimeBuilder {
     definition_source: Option<DefinitionSource>,
     persistent_state_path: Option<PathBuf>,
     session_hook: Option<Arc<dyn SessionHook>>,
+    custom_session_store: Option<Arc<dyn meerkat::SessionStore>>,
     default_llm_client: Option<Arc<dyn LlmClient>>,
     capability_flags: CapabilityFlags,
 
@@ -92,6 +93,14 @@ impl UnifiedRuntimeBuilder {
     /// Set a session lifecycle hook.
     pub fn session_hook(mut self, hook: Arc<dyn SessionHook>) -> Self {
         self.session_hook = Some(hook);
+        self
+    }
+
+    /// Set a custom session store for the persistent path. When set, the
+    /// builder uses this store instead of creating a default `SqliteSessionStore`.
+    /// Only valid with `.persistent_state()` — ignored for ephemeral builds.
+    pub fn session_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
+        self.custom_session_store = Some(store);
         self
     }
 
@@ -361,14 +370,19 @@ impl UnifiedRuntimeBuilder {
                 ))
             })?;
 
-            let sqlite_path = state_path.join("sessions.db");
-            let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
-                meerkat_store::SqliteSessionStore::open(sqlite_path).map_err(|e| {
-                    UnifiedRuntimeBuilderError::Io(format!(
-                        "failed to open SQLite session store: {e}"
-                    ))
-                })?,
-            );
+            let session_store: Arc<dyn meerkat::SessionStore> =
+                if let Some(ref store) = self.custom_session_store {
+                    store.clone()
+                } else {
+                    let sqlite_path = state_path.join("sessions.db");
+                    Arc::new(
+                        meerkat_store::SqliteSessionStore::open(sqlite_path).map_err(|e| {
+                            UnifiedRuntimeBuilderError::Io(format!(
+                                "failed to open SQLite session store: {e}"
+                            ))
+                        })?,
+                    )
+                };
             let mob_storage = MobStorage::redb(state_path.join("mob.redb")).map_err(|e| {
                 UnifiedRuntimeBuilderError::Io(format!("failed to open redb mob storage: {e}"))
             })?;
