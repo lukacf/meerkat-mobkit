@@ -69,7 +69,7 @@ pub(crate) type PreBuildHook = Arc<
 >;
 
 /// Optional post-creation hook invoked after `create_session` succeeds.
-pub(crate) type AfterCreateHook = Arc<
+pub type AfterCreateHook = Arc<
     dyn Fn(
             meerkat_core::types::SessionId,
             SessionCreatedContext,
@@ -323,6 +323,19 @@ impl MobBootstrapSpec {
 
     pub fn with_options(mut self, options: MobBootstrapOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Wrap the session service with an after-create hook that fires after
+    /// each successful `create_session`. The hook is best-effort: errors are
+    /// not propagated. A no-op `PreBuildHook` is used when none was set.
+    pub fn with_after_create_hook(mut self, hook: AfterCreateHook) -> Self {
+        let noop_pre_hook: PreBuildHook = Arc::new(|_req| Box::pin(async { Ok(()) }));
+        self.session_service = Arc::new(PreBuildMobSessionService {
+            inner: self.session_service,
+            hook: noop_pre_hook,
+            after_create_hook: Some(hook),
+        });
         self
     }
 

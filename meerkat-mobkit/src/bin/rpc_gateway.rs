@@ -592,35 +592,50 @@ external_addressable = true
         }
     });
 
+    /// Helper: send a JSON-RPC error response for the init request and exit.
+    fn fail_init(request_id: &Value, code: i32, message: String) -> ! {
+        let error_response = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": { "code": code, "message": message }
+        });
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string(&error_response)
+                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+        );
+        let _ = stdout.flush();
+        std::process::exit(1);
+    }
+
     // 5. Build session service with callback bridge.
-    //    Persistent mode uses MobBootstrapSpec::persistent_inner to avoid
-    //    duplicating the SQLite + redb + PersistentSessionService wiring.
     let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
         if let Err(e) = std::fs::create_dir_all(state_path) {
-            return bridge.notify(
-                "mobkit/init_error",
-                json!({ "error": format!("failed to create persistent state directory: {e}") }),
+            fail_init(
+                &request_id,
+                -32603,
+                format!("failed to create persistent state directory: {e}"),
             );
         }
         let sqlite_path = state_path.join("sessions.db");
         let session_store: Arc<dyn meerkat::SessionStore> =
             match meerkat_store::SqliteSessionStore::open(sqlite_path) {
                 Ok(s) => Arc::new(s),
-                Err(e) => {
-                    return bridge.notify(
-                        "mobkit/init_error",
-                        json!({ "error": format!("failed to open SQLite session store: {e}") }),
-                    );
-                }
+                Err(e) => fail_init(
+                    &request_id,
+                    -32603,
+                    format!("failed to open SQLite session store: {e}"),
+                ),
             };
         let mob_storage = match MobStorage::redb(state_path.join("mob.redb")) {
             Ok(s) => s,
-            Err(e) => {
-                return bridge.notify(
-                    "mobkit/init_error",
-                    json!({ "error": format!("failed to open redb mob storage: {e}") }),
-                );
-            }
+            Err(e) => fail_init(
+                &request_id,
+                -32603,
+                format!("failed to open redb mob storage: {e}"),
+            ),
         };
         let factory = AgentFactory::new(state_path)
             .builtins(true)
@@ -685,6 +700,29 @@ external_addressable = true
                 default_llm_client: None,
             });
         (spec, Some(temp_dir))
+    };
+
+    // Wire callback/after_create — notify Python/TS SDK after each session creation.
+    let mob_spec = if has_session_builder {
+        let after_bridge = bridge.clone();
+        mob_spec.with_after_create_hook(Arc::new(
+            move |session_id: meerkat_core::types::SessionId, ctx| {
+                let b = after_bridge.clone();
+                Box::pin(async move {
+                    b.notify(
+                        "callback/after_create",
+                        json!({
+                            "session_id": session_id.to_string(),
+                            "model": ctx.model,
+                            "labels": ctx.labels,
+                            "system_prompt": ctx.system_prompt,
+                        }),
+                    );
+                })
+            },
+        ))
+    } else {
+        mob_spec
     };
 
     let timeout = Duration::from_secs(30);
