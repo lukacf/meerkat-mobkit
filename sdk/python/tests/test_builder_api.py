@@ -168,7 +168,12 @@ class TestResumeSessionId:
 
     @pytest.mark.asyncio
     async def test_build_agent_sets_resume_session_id(self):
-        """build_agent can set resume_session_id and it flows through callback."""
+        """build_agent can set resume_session_id and it is serialized in to_dict().
+
+        Note: actual session resume flows through DiscoverySpec.resume_session_id
+        at the mob spawn layer, not through the build_agent callback. This field
+        is informational for the build_agent result.
+        """
 
         class ResumeBuilder:
             async def build_agent(self, opts: SessionBuildOptions) -> None:

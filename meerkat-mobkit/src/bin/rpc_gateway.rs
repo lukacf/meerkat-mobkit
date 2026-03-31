@@ -364,14 +364,12 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
-                // Apply resume_session_id: Python builder can request resuming
-                // an existing session by setting resume_session_id on opts.
-                // This flows to SpawnMemberSpec and the mob actor handles the
-                // actual session loading during spawn.
-                if let Some(resume_id) = result.get("resume_session_id").and_then(|v| v.as_str()) {
-                    let label_map = modified_req.labels.get_or_insert_with(Default::default);
-                    label_map.insert("resume_session_id".to_string(), resume_id.to_string());
-                }
+                // Note: resume_session_id is NOT handled here. Session resume
+                // flows through DiscoverySpec.resume_session_id → SpawnMemberSpec
+                // → mob actor, not through the build_agent callback. The build_agent
+                // callback runs at create_session time, after the spawn path has
+                // already decided whether to resume or create fresh.
+                //
                 // Callback tools: Python SDK provides tool names via add_tools()
                 // or register_tool(). Create a CallbackToolDispatcher that routes
                 // tool calls back to Python via callback/call_tool.
@@ -645,12 +643,10 @@ external_addressable = true
                 format!("failed to open redb mob storage: {e}"),
             ),
         };
-        let factory = AgentFactory::new(state_path)
-            .builtins(true)
-            .shell(true)
-            .mob(true)
-            .comms(true)
-            .memory(true);
+        // Match the ephemeral path's capability mask — only comms is enabled
+        // by default. Apps control additional capabilities via their mob
+        // definition profiles, not the gateway factory.
+        let factory = AgentFactory::new(state_path).comms(true);
         let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
         inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
             session_store.clone(),
