@@ -161,6 +161,8 @@ class MobKitRuntime:
         if self._config.event_log:
             runtime_options["event_log"] = _serialize_config(self._config.event_log)
         params["runtime_options"] = runtime_options
+        if self._config.persistent_state:
+            params["persistent_state"] = self._config.persistent_state
         return params
 
     def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:

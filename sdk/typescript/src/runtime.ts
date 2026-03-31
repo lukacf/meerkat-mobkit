@@ -238,6 +238,9 @@ export class MobKitRuntime {
       runtimeOptions.event_log = serializeConfig(this._config.eventLog);
     }
     params.runtime_options = runtimeOptions;
+    if (this._config.persistentState) {
+      params.persistent_state = this._config.persistentState;
+    }
     return params;
   }
 

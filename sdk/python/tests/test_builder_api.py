@@ -2,7 +2,7 @@
 import pytest
 from meerkat_mobkit.builder import MobKit, MobKitBuilder
 from meerkat_mobkit.agent_builder import CallbackDispatcher, SessionAgentBuilder
-from meerkat_mobkit.models import SessionBuildOptions
+from meerkat_mobkit.models import SessionBuildOptions, SessionCreatedContext
 
 
 class TestPersistentState:
@@ -48,9 +48,11 @@ class TestAfterCreate:
         })
 
         assert received["session_id"] == "sid-123"
-        assert received["context"]["model"] == "claude-sonnet-4-5"
-        assert received["context"]["labels"] == {"agent_type": "lead"}
-        assert received["context"]["system_prompt"] == "You are a lead."
+        ctx = received["context"]
+        assert isinstance(ctx, SessionCreatedContext)
+        assert ctx.model == "claude-sonnet-4-5"
+        assert ctx.labels == {"agent_type": "lead"}
+        assert ctx.system_prompt == "You are a lead."
 
     @pytest.mark.asyncio
     async def test_after_create_noop_when_not_defined(self):

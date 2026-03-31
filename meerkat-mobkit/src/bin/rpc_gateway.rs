@@ -592,18 +592,36 @@ external_addressable = true
         }
     });
 
-    // 5. Build session service with callback bridge
+    // 5. Build session service with callback bridge.
+    //    Persistent mode uses MobBootstrapSpec::persistent_inner to avoid
+    //    duplicating the SQLite + redb + PersistentSessionService wiring.
     let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
-        // Persistent mode: SQLite session store + redb mob storage + FsBlobStore.
-        std::fs::create_dir_all(state_path).unwrap_or_else(|e| {
-            panic!("failed to create persistent state directory: {e}");
-        });
+        if let Err(e) = std::fs::create_dir_all(state_path) {
+            return bridge.notify(
+                "mobkit/init_error",
+                json!({ "error": format!("failed to create persistent state directory: {e}") }),
+            );
+        }
         let sqlite_path = state_path.join("sessions.db");
-        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
-            meerkat_store::SqliteSessionStore::open(sqlite_path)
-                .expect("open SQLite session store"),
-        );
-
+        let session_store: Arc<dyn meerkat::SessionStore> =
+            match meerkat_store::SqliteSessionStore::open(sqlite_path) {
+                Ok(s) => Arc::new(s),
+                Err(e) => {
+                    return bridge.notify(
+                        "mobkit/init_error",
+                        json!({ "error": format!("failed to open SQLite session store: {e}") }),
+                    );
+                }
+            };
+        let mob_storage = match MobStorage::redb(state_path.join("mob.redb")) {
+            Ok(s) => s,
+            Err(e) => {
+                return bridge.notify(
+                    "mobkit/init_error",
+                    json!({ "error": format!("failed to open redb mob storage: {e}") }),
+                );
+            }
+        };
         let factory = AgentFactory::new(state_path)
             .builtins(true)
             .shell(true)
@@ -614,7 +632,6 @@ external_addressable = true
         inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
             session_store.clone(),
         )));
-
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
@@ -636,8 +653,6 @@ external_addressable = true
             runtime_store,
             blob_store,
         ));
-        let mob_storage =
-            MobStorage::redb(state_path.join("mob.redb")).expect("open redb mob storage");
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,

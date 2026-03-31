@@ -79,12 +79,10 @@ class CallbackDispatcher:
 
         if method == "callback/after_create":
             if self._builder is not None and hasattr(self._builder, "after_create"):
+                from .models import SessionCreatedContext
+
                 session_id = params.get("session_id", "")
-                context = {
-                    "model": params.get("model", ""),
-                    "labels": params.get("labels", {}),
-                    "system_prompt": params.get("system_prompt"),
-                }
+                context = SessionCreatedContext.from_dict(params)
                 try:
                     result = self._builder.after_create(session_id, context)
                     if asyncio.iscoroutine(result):

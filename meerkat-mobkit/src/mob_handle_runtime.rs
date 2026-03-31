@@ -54,6 +54,7 @@ pub struct MobBootstrapOptions {
 ///             // Sync: inject tools, augment prompt
 ///             let build = req.build.get_or_insert_with(SessionBuildOptions::default);
 ///             build.external_tools = Some(my_tools());
+///             Ok(())
 ///         })
 ///     },
 /// );
@@ -61,7 +62,18 @@ pub struct MobBootstrapOptions {
 pub(crate) type PreBuildHook = Arc<
     dyn Fn(
             &mut CreateSessionRequest,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), SessionError>> + Send + '_>,
+        > + Send
+        + Sync,
+>;
+
+/// Optional post-creation hook invoked after `create_session` succeeds.
+pub(crate) type AfterCreateHook = Arc<
+    dyn Fn(
+            meerkat_core::types::SessionId,
+            SessionCreatedContext,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
         + Send
         + Sync,
 >;
@@ -75,6 +87,7 @@ pub(crate) type PreBuildHook = Arc<
 struct PreBuildMobSessionService {
     inner: Arc<dyn MobSessionService>,
     hook: PreBuildHook,
+    after_create_hook: Option<AfterCreateHook>,
 }
 
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
@@ -87,8 +100,23 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 mut req: CreateSessionRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
-                (self.hook)(&mut req).await;
-                self.inner.create_session(req).await
+                (self.hook)(&mut req).await?;
+
+                // Capture context before create_session consumes the request.
+                let ctx = SessionCreatedContext {
+                    model: req.model.clone(),
+                    labels: req.labels.clone().unwrap_or_default(),
+                    system_prompt: req.system_prompt.clone(),
+                };
+
+                let result = self.inner.create_session(req).await?;
+
+                // Best-effort after_create — errors logged, not propagated.
+                if let Some(ref after_hook) = self.after_create_hook {
+                    after_hook(result.session_id.clone(), ctx).await;
+                }
+
+                Ok(result)
             }
             async fn start_turn(
                 &self,
@@ -317,6 +345,7 @@ impl MobBootstrapSpec {
             session_store,
             None,
             CapabilityFlags::default(),
+            None,
         )
     }
 
@@ -331,8 +360,9 @@ impl MobBootstrapSpec {
         session_store: Option<Arc<dyn AgentSessionStore>>,
         hook: impl Fn(
             &mut CreateSessionRequest,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), SessionError>> + Send + '_>,
+        > + Send
         + Sync
         + 'static,
     ) -> Self {
@@ -344,9 +374,11 @@ impl MobBootstrapSpec {
             session_store,
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn ephemeral_inner(
         definition: MobDefinition,
         storage: MobStorage,
@@ -355,6 +387,7 @@ impl MobBootstrapSpec {
         session_store: Option<Arc<dyn AgentSessionStore>>,
         hook: Option<PreBuildHook>,
         caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         let factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
@@ -374,6 +407,7 @@ impl MobBootstrapSpec {
             Some(h) => Arc::new(PreBuildMobSessionService {
                 inner: session_service,
                 hook: h,
+                after_create_hook,
             }) as Arc<dyn MobSessionService>,
             None => session_service,
         };
@@ -401,6 +435,7 @@ impl MobBootstrapSpec {
             session_store,
             None,
             CapabilityFlags::default(),
+            None,
         )
     }
 
@@ -415,8 +450,9 @@ impl MobBootstrapSpec {
         session_store: Arc<dyn SessionStore>,
         hook: impl Fn(
             &mut CreateSessionRequest,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>>
-        + Send
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), SessionError>> + Send + '_>,
+        > + Send
         + Sync
         + 'static,
     ) -> Self {
@@ -428,9 +464,11 @@ impl MobBootstrapSpec {
             session_store,
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn persistent_inner(
         definition: MobDefinition,
         storage: MobStorage,
@@ -439,6 +477,7 @@ impl MobBootstrapSpec {
         session_store: Arc<dyn SessionStore>,
         hook: Option<PreBuildHook>,
         caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         let factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
@@ -451,11 +490,6 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
-        // Supply runtime_store as None so the session checkpointer stays enabled
-        // (the checkpointer owns persistence when no runtime store is present).
-        // The runtime adapter is provided directly on the spec via ephemeral() —
-        // this supports comms drain / keep-alive without implying runtime-backed
-        // persistence ownership.
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -468,6 +502,7 @@ impl MobBootstrapSpec {
             Some(h) => Arc::new(PreBuildMobSessionService {
                 inner: session_service,
                 hook: h,
+                after_create_hook,
             }) as Arc<dyn MobSessionService>,
             None => session_service,
         };
@@ -629,10 +664,15 @@ pub type RealMobRuntime = MobRuntime;
 #[derive(Clone)]
 pub struct MobRuntime {
     handle: MobHandle,
+    /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
+    /// Dropped when the runtime is dropped, cleaning up the temp dir.
+    _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
 }
 
 impl MobRuntime {
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+        let ephemeral_dir = spec._ephemeral_dir.clone();
+
         let mut builder = MobBuilder::new(spec.definition, spec.storage);
 
         // Set the runtime adapter BEFORE with_session_service — MobBuilder only
@@ -651,11 +691,17 @@ impl MobRuntime {
         }
 
         let handle = builder.create().await?;
-        Ok(Self { handle })
+        Ok(Self {
+            handle,
+            _ephemeral_dir: ephemeral_dir,
+        })
     }
 
     pub fn from_handle(handle: MobHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            _ephemeral_dir: None,
+        }
     }
 
     pub fn handle(&self) -> MobHandle {
@@ -1062,7 +1108,7 @@ mod tests {
             session_store,
             move |_req: &mut CreateSessionRequest| {
                 hook_called_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-                Box::pin(async {})
+                Box::pin(async { Ok(()) })
             },
         );
 
@@ -1102,7 +1148,7 @@ mod tests {
             None,
             move |_req: &mut CreateSessionRequest| {
                 hook_called_clone.store(true, std::sync::atomic::Ordering::Relaxed);
-                Box::pin(async {})
+                Box::pin(async { Ok(()) })
             },
         );
 
@@ -1145,9 +1191,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *lock = Some((req.model.clone(), req.system_prompt.clone()));
-            Box::pin(async {})
+            Box::pin(async { Ok(()) })
         });
-        let wrapped = PreBuildMobSessionService { inner, hook };
+        let wrapped = PreBuildMobSessionService {
+            inner,
+            hook,
+            after_create_hook: None,
+        };
 
         let req = CreateSessionRequest {
             model: "original-model".to_string(),

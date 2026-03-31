@@ -21,8 +21,7 @@ use meerkat_client::TestClient;
 use meerkat_core::service::{CreateSessionRequest, SessionError};
 use meerkat_mob::{MobDefinition, MobState, MobStorage};
 use meerkat_mobkit::{
-    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobRuntime,
-    SessionCreatedContext, SessionHook, UnifiedRuntime,
+    DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, SessionHook, UnifiedRuntime,
 };
 
 const MINIMAL_MOB_TOML: &str = r#"

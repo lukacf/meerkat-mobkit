@@ -25,7 +25,7 @@ use super::{
 
 /// How the mob definition is supplied to the builder.
 pub(crate) enum DefinitionSource {
-    Inline(MobDefinition),
+    Inline(Box<MobDefinition>),
     TomlPath(PathBuf),
 }
 
@@ -70,7 +70,7 @@ impl UnifiedRuntimeBuilder {
 
     /// Set the mob definition from an inline `MobDefinition`.
     pub fn definition(mut self, def: MobDefinition) -> Self {
-        self.definition_source = Some(DefinitionSource::Inline(def));
+        self.definition_source = Some(DefinitionSource::Inline(Box::new(def)));
         self
     }
 
@@ -213,21 +213,22 @@ impl UnifiedRuntimeBuilder {
     pub async fn build(mut self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
         // Legacy mob_spec path takes precedence — must be consumed before
         // resolve_mob_spec (which borrows &self for the definition path).
-        let mob_spec = if self.mob_spec.is_some() {
-            // Legacy path: require module_config and timeout as before.
-            if self.module_config.is_none() {
-                return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
-                    UnifiedRuntimeBuilderField::ModuleConfig,
-                ));
+        let mob_spec = match self.mob_spec.take() {
+            Some(spec) => {
+                // Legacy path: require module_config and timeout as before.
+                if self.module_config.is_none() {
+                    return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
+                        UnifiedRuntimeBuilderField::ModuleConfig,
+                    ));
+                }
+                if self.timeout.is_none() {
+                    return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
+                        UnifiedRuntimeBuilderField::Timeout,
+                    ));
+                }
+                spec
             }
-            if self.timeout.is_none() {
-                return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
-                    UnifiedRuntimeBuilderField::Timeout,
-                ));
-            }
-            self.mob_spec.take().expect("checked is_some above")
-        } else {
-            self.resolve_mob_spec().await?
+            None => self.resolve_mob_spec().await?,
         };
 
         let module_config = self.module_config.unwrap_or_else(|| MobKitConfig {
@@ -301,7 +302,7 @@ impl UnifiedRuntimeBuilder {
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
         let definition = match self.definition_source {
-            Some(DefinitionSource::Inline(ref def)) => def.clone(),
+            Some(DefinitionSource::Inline(ref def)) => *def.clone(),
             Some(DefinitionSource::TomlPath(ref path)) => {
                 let toml_content = std::fs::read_to_string(path).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!(
@@ -331,18 +332,27 @@ impl UnifiedRuntimeBuilder {
                 Arc::new(
                     move |req: &mut meerkat_core::service::CreateSessionRequest| {
                         let hook = hook.clone();
-                        Box::pin(async move {
-                            // before_create errors are swallowed here because PreBuildHook
-                            // returns (). The SessionHook bridge for error propagation
-                            // will be wired in Cycle 5 (gateway).
-                            let _ = hook.before_create(req).await;
-                        })
+                        Box::pin(async move { hook.before_create(req).await })
                     },
                 )
             });
 
+        let after_hook: Option<crate::mob_handle_runtime::AfterCreateHook> = self
+            .session_hook
+            .as_ref()
+            .map(|h| -> crate::mob_handle_runtime::AfterCreateHook {
+                let hook = h.clone();
+                Arc::new(move |session_id, ctx| {
+                    let hook = hook.clone();
+                    Box::pin(async move {
+                        hook.after_create(&session_id, &ctx).await;
+                    })
+                })
+            });
+
         let caps = self.capability_flags;
 
+        // Note: blocking I/O (fs, SQLite, redb) — acceptable at startup.
         let mut spec = if let Some(ref state_path) = self.persistent_state_path {
             std::fs::create_dir_all(state_path).map_err(|e| {
                 UnifiedRuntimeBuilderError::Io(format!(
@@ -371,6 +381,7 @@ impl UnifiedRuntimeBuilder {
                 session_store,
                 hook,
                 caps,
+                after_hook.clone(),
             )
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.
@@ -387,6 +398,7 @@ impl UnifiedRuntimeBuilder {
                 None,
                 hook,
                 caps,
+                after_hook,
             );
             spec._ephemeral_dir = Some(Arc::new(temp_dir));
             spec
