@@ -12,7 +12,7 @@ use meerkat_mob::{MeerkatId, PeerTarget, ProfileName, SpawnMemberSpec};
 use serde_json::Value;
 
 use crate::contact_directory::ContactDirectory;
-use crate::mob_handle_runtime::RealMobRuntime;
+use crate::mob_handle_runtime::MobRuntime;
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
@@ -24,7 +24,7 @@ use crate::unified_runtime::{EventLogStore, EventQuery};
 #[derive(Clone)]
 pub struct ConsoleJsonState {
     pub decisions: RuntimeDecisionState,
-    pub runtime: Option<RealMobRuntime>,
+    pub runtime: Option<MobRuntime>,
     pub contact_directory: Option<ContactDirectory>,
     pub event_log: Option<std::sync::Arc<dyn EventLogStore>>,
 }
@@ -43,7 +43,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
 
 pub fn console_json_router_with_runtime(
     decisions: RuntimeDecisionState,
-    runtime: RealMobRuntime,
+    runtime: MobRuntime,
     contact_directory: Option<ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
 ) -> Router {
@@ -261,7 +261,7 @@ fn parse_console_helper_options(
 }
 
 async fn handle_console_runtime_rpc(
-    runtime: &RealMobRuntime,
+    runtime: &MobRuntime,
     contact_directory: Option<&ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     request: JsonRpcRequest,
@@ -307,7 +307,7 @@ async fn handle_console_runtime_rpc(
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
                     "methods": methods,
-                    // The console routes to RealMobRuntime directly and has no
+                    // The console routes to MobRuntime directly and has no
                     // access to the module runtime, so loaded_modules is always [].
                     "loaded_modules": serde_json::json!([]),
                     "runtime_capabilities": {
@@ -325,7 +325,7 @@ async fn handle_console_runtime_rpc(
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
                     "running": matches!(runtime.status(), MobState::Creating | MobState::Running),
-                    // Console routes to RealMobRuntime directly — no module runtime available.
+                    // Console routes to MobRuntime directly — no module runtime available.
                     // Return [] to keep StatusResult.loaded_modules schema-consistent.
                     "loaded_modules": serde_json::json!([]),
                 })),
@@ -513,7 +513,7 @@ async fn handle_console_runtime_rpc(
             response_id,
             Some(serde_json::json!({
                 "status": "noop",
-                "reason": "console runtime routes directly to RealMobRuntime",
+                "reason": "console runtime routes directly to MobRuntime",
             })),
             None,
         ),
@@ -925,7 +925,7 @@ async fn handle_console_runtime_rpc(
 }
 
 async fn build_live_snapshot(
-    runtime: &RealMobRuntime,
+    runtime: &MobRuntime,
     config_module_ids: &[String],
 ) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);

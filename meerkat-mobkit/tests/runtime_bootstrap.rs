@@ -20,12 +20,22 @@ use std::sync::Arc;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_mob::{MobDefinition, MobState, MobStorage, SpawnMemberSpec};
-use meerkat_mobkit::{MobBootstrapOptions, MobBootstrapSpec, RealMobRuntime};
+use meerkat_mobkit::{MobBootstrapOptions, MobBootstrapSpec, MobRuntime, RealMobRuntime};
 use tempfile::TempDir;
 
 struct RuntimeFixture {
     _temp_dir: TempDir,
-    runtime: RealMobRuntime,
+    runtime: MobRuntime,
+}
+
+/// Verify that `MobRuntime` is the canonical name and `RealMobRuntime` is a
+/// backward-compatible alias pointing to the same type.
+#[test]
+fn mob_runtime_rename_alias_compat() {
+    // Both names must resolve to the same concrete type.
+    let a = std::any::type_name::<MobRuntime>();
+    let b = std::any::type_name::<RealMobRuntime>();
+    assert_eq!(a, b);
 }
 
 fn spawn_spec(profile: &str, member_id: &str) -> SpawnMemberSpec {

@@ -404,9 +404,12 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 self.inner.build_agent(&modified_req, event_tx).await
             }
             Err(err) => {
-                eprintln!("callback/build_agent failed: {err}");
-                // Continue with default build — don't fail the session
-                self.inner.build_agent(req, event_tx).await
+                // Propagate the error — before_create failure aborts session creation.
+                // This is an intentional breaking change from v0.5.x where failures
+                // were silently swallowed with a fallback to default build.
+                Err(SessionError::Agent(AgentError::ToolError(format!(
+                    "callback/build_agent failed: {err}"
+                ))))
             }
         }
     }
@@ -513,6 +516,11 @@ external_addressable = true
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let persistent_state = params
+        .get("persistent_state")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+
     // Warn about SDK-forwarded runtime_options that the gateway does not yet
     // consume.  This surfaces "accepted but ignored" config as visible noise
     // so integrators notice early rather than debugging silent no-ops.
@@ -585,27 +593,84 @@ external_addressable = true
     });
 
     // 5. Build session service with callback bridge
-    // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
-    // so agent-level persistence is not needed. This avoids failures on read-only
-    // filesystems (e.g., GKE containers) where the default JSONL store can't write.
-    let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
-    let factory = AgentFactory::new(temp_dir.path())
-        .comms(true)
-        .session_store(Arc::new(meerkat::MemoryStore::new()));
-    let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-    let callback_builder = StdioCallbackAgentBuilder {
-        inner: inner_builder,
-        bridge: bridge.clone(),
-        has_session_builder,
-    };
-    let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
-
-    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
-        .with_options(MobBootstrapOptions {
-            allow_ephemeral_sessions: true,
-            notify_orchestrator_on_resume: true,
-            default_llm_client: None,
+    let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
+        // Persistent mode: SQLite session store + redb mob storage + FsBlobStore.
+        std::fs::create_dir_all(state_path).unwrap_or_else(|e| {
+            panic!("failed to create persistent state directory: {e}");
         });
+        let sqlite_path = state_path.join("sessions.db");
+        let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+            meerkat_store::SqliteSessionStore::open(sqlite_path)
+                .expect("open SQLite session store"),
+        );
+
+        let factory = AgentFactory::new(state_path)
+            .builtins(true)
+            .shell(true)
+            .mob(true)
+            .comms(true)
+            .memory(true);
+        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+
+        let callback_builder = StdioCallbackAgentBuilder {
+            inner: inner_builder,
+            bridge: bridge.clone(),
+            has_session_builder,
+        };
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::FsBlobStore::new(state_path.join("blobs")));
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+            Arc::new(meerkat_session::PersistentSessionService::new(
+                callback_builder,
+                16,
+                session_store,
+                None,
+                blob_store.clone(),
+            ));
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+            runtime_store,
+            blob_store,
+        ));
+        let mob_storage =
+            MobStorage::redb(state_path.join("mob.redb")).expect("open redb mob storage");
+        let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: None,
+            });
+        spec.runtime_adapter = Some(adapter);
+        (spec, None)
+    } else {
+        // Ephemeral mode (original behavior).
+        // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
+        // so agent-level persistence is not needed. This avoids failures on read-only
+        // filesystems (e.g., GKE containers) where the default JSONL store can't write.
+        let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
+        let factory = AgentFactory::new(temp_dir.path())
+            .comms(true)
+            .session_store(Arc::new(meerkat::MemoryStore::new()));
+        let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        let callback_builder = StdioCallbackAgentBuilder {
+            inner: inner_builder,
+            bridge: bridge.clone(),
+            has_session_builder,
+        };
+        let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
+
+        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: None,
+            });
+        (spec, Some(temp_dir))
+    };
 
     let timeout = Duration::from_secs(30);
     let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
@@ -723,7 +788,7 @@ external_addressable = true
     drop(stdout_tx);
     let _ = stdin_reader.await;
     let _ = stdout_writer.await;
-    drop(temp_dir);
+    drop(_temp_dir);
 }
 
 fn main() {

@@ -128,6 +128,7 @@ export type {
   EventQuery,
   ErrorEvent,
   ErrorCategoryValue,
+  SessionCreatedContext,
 } from "./types.js";
 
 // -- Typed events ---------------------------------------------------------

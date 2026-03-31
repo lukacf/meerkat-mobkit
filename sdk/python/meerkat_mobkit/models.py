@@ -81,6 +81,24 @@ class SessionQuery:
         return result
 
 
+@dataclass(frozen=True)
+class SessionCreatedContext:
+    """Context delivered to SessionAgentBuilder.after_create after a session
+    is successfully created."""
+
+    model: str
+    labels: dict[str, str]
+    system_prompt: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SessionCreatedContext:
+        return cls(
+            model=data.get("model", ""),
+            labels=dict(data.get("labels") or {}),
+            system_prompt=data.get("system_prompt"),
+        )
+
+
 @dataclass
 class SessionBuildOptions:
     """Options passed to SessionAgentBuilder.build_agent().

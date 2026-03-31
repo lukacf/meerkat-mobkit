@@ -6,7 +6,7 @@
  */
 
 import { SessionBuildOptions, type ToolHandler } from "./models.js";
-import { parseErrorEvent, type ErrorEvent } from "./types.js";
+import { parseErrorEvent, type ErrorEvent, type SessionCreatedContext } from "./types.js";
 
 // -- Protocol -------------------------------------------------------------
 
@@ -25,6 +25,8 @@ import { parseErrorEvent, type ErrorEvent } from "./types.js";
  */
 export interface SessionAgentBuilder {
   buildAgent(options: SessionBuildOptions): Promise<void>;
+  /** Called after session creation succeeds. Best-effort — errors logged, not propagated. */
+  afterCreate?(sessionId: string, context: SessionCreatedContext): Promise<void>;
 }
 
 // -- Error callback type --------------------------------------------------
@@ -76,6 +78,27 @@ export class CallbackDispatcher {
           await this._errorCallback(event);
         } catch {
           // Fire-and-forget — swallow error callback failures
+        }
+      }
+      return null;
+    }
+
+    if (method === "callback/after_create") {
+      if (this._builder !== null && typeof this._builder.afterCreate === "function") {
+        const sessionId = String(params.session_id ?? "");
+        const context: SessionCreatedContext = {
+          model: String(params.model ?? ""),
+          labels: typeof params.labels === "object" && params.labels !== null
+            ? (params.labels as Record<string, string>)
+            : {},
+          systemPrompt: typeof params.system_prompt === "string"
+            ? params.system_prompt
+            : null,
+        };
+        try {
+          await this._builder.afterCreate(sessionId, context);
+        } catch {
+          // Best-effort — swallow afterCreate failures.
         }
       }
       return null;

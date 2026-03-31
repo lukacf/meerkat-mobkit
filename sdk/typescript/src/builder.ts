@@ -37,6 +37,7 @@ export interface MobKitBuilderConfig {
   authConfig: unknown;
   gatewayBin: string | null;
   modules: unknown[];
+  persistentState: string | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -55,6 +56,7 @@ function defaultConfig(): MobKitBuilderConfig {
     authConfig: null,
     gatewayBin: null,
     modules: [],
+    persistentState: null,
   };
 }
 
@@ -139,6 +141,17 @@ export class MobKitBuilder {
 
   modules(moduleSpecs: unknown[]): this {
     this._config.modules = moduleSpecs;
+    return this;
+  }
+
+  /**
+   * Enable persistent state at the given path.
+   *
+   * When set, the gateway creates SQLite session store, FsBlobStore,
+   * and redb mob storage under this directory.
+   */
+  persistentState(path: string): this {
+    this._config.persistentState = path;
     return this;
   }
 

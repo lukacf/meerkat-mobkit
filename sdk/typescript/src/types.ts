@@ -46,6 +46,16 @@ function asStringRecord(value: unknown): Record<string, string> {
 export const MEMBER_STATE_ACTIVE = "active" as const;
 export const MEMBER_STATE_RETIRING = "retiring" as const;
 
+// -- SessionCreatedContext ------------------------------------------------
+
+/** Context delivered to SessionAgentBuilder.afterCreate after a session
+ *  is successfully created. */
+export interface SessionCreatedContext {
+  readonly model: string;
+  readonly labels: Record<string, string>;
+  readonly systemPrompt: string | null;
+}
+
 // -- StatusResult ---------------------------------------------------------
 
 export interface StatusResult {

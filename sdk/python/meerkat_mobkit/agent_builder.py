@@ -77,6 +77,22 @@ class CallbackDispatcher:
                     _log.warning("error callback failed: %s", exc)
             return None
 
+        if method == "callback/after_create":
+            if self._builder is not None and hasattr(self._builder, "after_create"):
+                session_id = params.get("session_id", "")
+                context = {
+                    "model": params.get("model", ""),
+                    "labels": params.get("labels", {}),
+                    "system_prompt": params.get("system_prompt"),
+                }
+                try:
+                    result = self._builder.after_create(session_id, context)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as exc:
+                    _log.warning("after_create callback failed: %s", exc)
+            return None
+
         if method == "callback/build_agent":
             if self._builder is None:
                 raise ValueError("no SessionAgentBuilder registered")

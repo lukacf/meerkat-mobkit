@@ -12,7 +12,7 @@ use meerkat_mob::{AttributedEvent, MeerkatId, MobEventRouterHandle, MobHandle, S
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
-use crate::mob_handle_runtime::{MobBootstrapSpec, RealMobRuntime};
+use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime};
 use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_with_options};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
 
@@ -97,7 +97,7 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
 
 pub struct UnifiedRuntime {
     // Immutable after construction — &self access
-    mob_runtime: RealMobRuntime,
+    mob_runtime: MobRuntime,
     post_spawn_hook: Option<PostSpawnHook>,
     post_reconcile_hook: Option<PostReconcileHook>,
     error_hook: Option<ErrorHook>,
@@ -133,10 +133,7 @@ impl UnifiedRuntime {
         UnifiedRuntimeBuilder::default()
     }
 
-    pub(crate) fn from_parts(
-        mob_runtime: RealMobRuntime,
-        module_runtime: MobkitRuntimeHandle,
-    ) -> Self {
+    pub(crate) fn from_parts(mob_runtime: MobRuntime, module_runtime: MobkitRuntimeHandle) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events();
         let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
         Self {
@@ -180,7 +177,7 @@ impl UnifiedRuntime {
         timeout: Duration,
         options: RuntimeOptions,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
-        let mob_runtime = RealMobRuntime::bootstrap(mob_spec)
+        let mob_runtime = MobRuntime::bootstrap(mob_spec)
             .await
             .map_err(UnifiedRuntimeBootstrapError::Mob)?;
         let module_start_result = std::thread::spawn(move || {
@@ -278,7 +275,7 @@ impl UnifiedRuntime {
     }
 
     async fn rollback_mob_runtime(
-        mob_runtime: RealMobRuntime,
+        mob_runtime: MobRuntime,
         startup_error: UnifiedRuntimeBootstrapError,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
         match mob_runtime.stop().await {

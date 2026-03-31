@@ -1,11 +1,16 @@
 //! Builder for constructing a configured UnifiedRuntime instance.
 
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use meerkat_mob::SpawnMemberSpec;
+use meerkat_client::LlmClient;
+use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 
 use crate::contact_directory::ContactDirectory;
-use crate::mob_handle_runtime::MobBootstrapSpec;
+use crate::mob_handle_runtime::{
+    CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
+};
 use crate::runtime::RuntimeOptions;
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
@@ -18,9 +23,31 @@ use super::{
     UnifiedRuntime, discovery_spec_to_spawn_spec,
 };
 
+/// How the mob definition is supplied to the builder.
+pub(crate) enum DefinitionSource {
+    Inline(MobDefinition),
+    TomlPath(PathBuf),
+}
+
+/// Default max concurrent sessions for builder-created session services.
+const DEFAULT_MAX_SESSIONS: usize = 64;
+
+/// Default builder timeout.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Default)]
 pub struct UnifiedRuntimeBuilder {
+    // --- Legacy path (mob_spec directly) ---
     mob_spec: Option<MobBootstrapSpec>,
+
+    // --- New convenience path ---
+    definition_source: Option<DefinitionSource>,
+    persistent_state_path: Option<PathBuf>,
+    session_hook: Option<Arc<dyn SessionHook>>,
+    default_llm_client: Option<Arc<dyn LlmClient>>,
+    capability_flags: CapabilityFlags,
+
+    // --- Common fields ---
     module_config: Option<MobKitConfig>,
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
     timeout: Option<Duration>,
@@ -37,6 +64,77 @@ pub struct UnifiedRuntimeBuilder {
 }
 
 impl UnifiedRuntimeBuilder {
+    // -----------------------------------------------------------------------
+    // New convenience API
+    // -----------------------------------------------------------------------
+
+    /// Set the mob definition from an inline `MobDefinition`.
+    pub fn definition(mut self, def: MobDefinition) -> Self {
+        self.definition_source = Some(DefinitionSource::Inline(def));
+        self
+    }
+
+    /// Set the mob definition from a TOML file path.
+    pub fn definition_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.definition_source = Some(DefinitionSource::TomlPath(path.into()));
+        self
+    }
+
+    /// Enable persistent state at the given path. When set, the builder
+    /// creates a `SqliteSessionStore`, `FsBlobStore`, and `MobStorage::redb()`
+    /// under this directory. When not set, the builder uses an ephemeral
+    /// session service with an auto-created temp directory.
+    pub fn persistent_state(mut self, path: impl Into<PathBuf>) -> Self {
+        self.persistent_state_path = Some(path.into());
+        self
+    }
+
+    /// Set a session lifecycle hook.
+    pub fn session_hook(mut self, hook: Arc<dyn SessionHook>) -> Self {
+        self.session_hook = Some(hook);
+        self
+    }
+
+    /// Set the default LLM client (used for test stubs).
+    pub fn default_llm_client(mut self, client: Arc<dyn LlmClient>) -> Self {
+        self.default_llm_client = Some(client);
+        self
+    }
+
+    /// Enable or disable builtin tools (default: true).
+    pub fn builtins(mut self, enabled: bool) -> Self {
+        self.capability_flags.builtins = enabled;
+        self
+    }
+
+    /// Enable or disable shell tool (default: true).
+    pub fn shell(mut self, enabled: bool) -> Self {
+        self.capability_flags.shell = enabled;
+        self
+    }
+
+    /// Enable or disable mob tools (default: true).
+    pub fn mob(mut self, enabled: bool) -> Self {
+        self.capability_flags.mob = enabled;
+        self
+    }
+
+    /// Enable or disable comms (default: true).
+    pub fn comms(mut self, enabled: bool) -> Self {
+        self.capability_flags.comms = enabled;
+        self
+    }
+
+    /// Enable or disable memory tools (default: true).
+    pub fn memory(mut self, enabled: bool) -> Self {
+        self.capability_flags.memory = enabled;
+        self
+    }
+
+    // -----------------------------------------------------------------------
+    // Legacy API (preserved for backward compat)
+    // -----------------------------------------------------------------------
+
     pub fn mob_spec(mut self, spec: MobBootstrapSpec) -> Self {
         self.mob_spec = Some(spec);
         self
@@ -108,22 +206,40 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    pub async fn build(self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
-        let mob_spec = self
-            .mob_spec
-            .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
-                UnifiedRuntimeBuilderField::MobSpec,
-            ))?;
-        let module_config =
-            self.module_config
-                .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
+    // -----------------------------------------------------------------------
+    // Build
+    // -----------------------------------------------------------------------
+
+    pub async fn build(mut self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
+        // Legacy mob_spec path takes precedence — must be consumed before
+        // resolve_mob_spec (which borrows &self for the definition path).
+        let mob_spec = if self.mob_spec.is_some() {
+            // Legacy path: require module_config and timeout as before.
+            if self.module_config.is_none() {
+                return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
                     UnifiedRuntimeBuilderField::ModuleConfig,
-                ))?;
-        let timeout = self
-            .timeout
-            .ok_or(UnifiedRuntimeBuilderError::MissingRequiredField(
-                UnifiedRuntimeBuilderField::Timeout,
-            ))?;
+                ));
+            }
+            if self.timeout.is_none() {
+                return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
+                    UnifiedRuntimeBuilderField::Timeout,
+                ));
+            }
+            self.mob_spec.take().expect("checked is_some above")
+        } else {
+            self.resolve_mob_spec().await?
+        };
+
+        let module_config = self.module_config.unwrap_or_else(|| MobKitConfig {
+            modules: Vec::new(),
+            discovery: crate::types::DiscoverySpec {
+                namespace: String::new(),
+                modules: Vec::new(),
+            },
+            pre_spawn: Vec::new(),
+        });
+        let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
+
         let runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
@@ -133,6 +249,7 @@ impl UnifiedRuntimeBuilder {
         )
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
+
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
             post_spawn_hook: self.post_spawn_hook,
@@ -178,5 +295,109 @@ impl UnifiedRuntimeBuilder {
         }
 
         Ok(runtime)
+    }
+
+    /// Resolve the mob spec from the definition-based path.
+    /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
+    async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
+        let definition = match self.definition_source {
+            Some(DefinitionSource::Inline(ref def)) => def.clone(),
+            Some(DefinitionSource::TomlPath(ref path)) => {
+                let toml_content = std::fs::read_to_string(path).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to read definition TOML at {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                MobDefinition::from_toml(&toml_content).map_err(|e| {
+                    UnifiedRuntimeBuilderError::DefinitionLoad(format!(
+                        "failed to parse definition TOML at {}: {e}",
+                        path.display()
+                    ))
+                })?
+            }
+            None => {
+                return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
+                    UnifiedRuntimeBuilderField::MobSpec,
+                ));
+            }
+        };
+
+        let hook = self
+            .session_hook
+            .as_ref()
+            .map(|h| -> crate::mob_handle_runtime::PreBuildHook {
+                let hook = h.clone();
+                Arc::new(
+                    move |req: &mut meerkat_core::service::CreateSessionRequest| {
+                        let hook = hook.clone();
+                        Box::pin(async move {
+                            // before_create errors are swallowed here because PreBuildHook
+                            // returns (). The SessionHook bridge for error propagation
+                            // will be wired in Cycle 5 (gateway).
+                            let _ = hook.before_create(req).await;
+                        })
+                    },
+                )
+            });
+
+        let caps = self.capability_flags;
+
+        let mut spec = if let Some(ref state_path) = self.persistent_state_path {
+            std::fs::create_dir_all(state_path).map_err(|e| {
+                UnifiedRuntimeBuilderError::Io(format!(
+                    "failed to create state directory at {}: {e}",
+                    state_path.display()
+                ))
+            })?;
+
+            let sqlite_path = state_path.join("sessions.db");
+            let session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
+                meerkat_store::SqliteSessionStore::open(sqlite_path).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to open SQLite session store: {e}"
+                    ))
+                })?,
+            );
+            let mob_storage = MobStorage::redb(state_path.join("mob.redb")).map_err(|e| {
+                UnifiedRuntimeBuilderError::Io(format!("failed to open redb mob storage: {e}"))
+            })?;
+
+            MobBootstrapSpec::persistent_inner(
+                definition,
+                mob_storage,
+                state_path.clone(),
+                DEFAULT_MAX_SESSIONS,
+                session_store,
+                hook,
+                caps,
+            )
+        } else {
+            // Ephemeral: create a temp dir that lives as long as the runtime.
+            let temp_dir = tempfile::tempdir().map_err(|e| {
+                UnifiedRuntimeBuilderError::Io(format!("failed to create temp dir: {e}"))
+            })?;
+            let store_path = temp_dir.path().to_path_buf();
+
+            let mut spec = MobBootstrapSpec::ephemeral_inner(
+                definition,
+                MobStorage::in_memory(),
+                store_path,
+                DEFAULT_MAX_SESSIONS,
+                None,
+                hook,
+                caps,
+            );
+            spec._ephemeral_dir = Some(Arc::new(temp_dir));
+            spec
+        };
+
+        spec.options = MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: self.default_llm_client.clone(),
+        };
+
+        Ok(spec)
     }
 }

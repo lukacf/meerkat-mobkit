@@ -23,6 +23,7 @@ class MobKitBuilderConfig:
     gateway_bin: str | None = None
     modules: list[dict[str, Any]] = field(default_factory=list)
     extra_routes: Any | None = None
+    persistent_state: str | None = None
 
 
 class MobKitBuilder:
@@ -111,6 +112,16 @@ class MobKitBuilder:
 
     def modules(self, module_specs: list[dict[str, Any]]) -> MobKitBuilder:
         self._config.modules = module_specs
+        return self
+
+    def persistent_state(self, path: str) -> MobKitBuilder:
+        """Enable persistent state at the given path.
+
+        When set, the gateway creates SQLite session store, FsBlobStore,
+        and redb mob storage under this directory. When not set, the
+        gateway uses an ephemeral session service.
+        """
+        self._config.persistent_state = path
         return self
 
     async def build(self) -> MobKitRuntime:

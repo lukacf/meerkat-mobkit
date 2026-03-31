@@ -35,10 +35,10 @@ struct InteractionStreamRequest {
 
 #[derive(Clone)]
 struct InteractionState {
-    runtime: crate::mob_handle_runtime::RealMobRuntime,
+    runtime: crate::mob_handle_runtime::MobRuntime,
 }
 
-pub fn interaction_stream_router(runtime: crate::mob_handle_runtime::RealMobRuntime) -> Router {
+pub fn interaction_stream_router(runtime: crate::mob_handle_runtime::MobRuntime) -> Router {
     Router::new()
         .route("/interactions/stream", post(interaction_stream_handler))
         .with_state(InteractionState { runtime })
