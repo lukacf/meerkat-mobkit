@@ -53,12 +53,33 @@ class CallbackDispatcher:
         self._tool_handlers: dict[tuple[str, str], Any] = {}
         # Track scope_ids so we can clean up handlers when a scope is released
         self._scope_tools: dict[str, list[str]] = {}
+        # Identity-first providers (REQ-45)
+        self._continuity_store: Any | None = None
+        self._lease_provider: Any | None = None
+        self._roster_provider: Any | None = None
+        self._topology_provider: Any | None = None
+        self._agent_customizer: Any | None = None
 
     def register_builder(self, builder: SessionAgentBuilder) -> None:
         self._builder = builder
 
     def register_error_callback(self, callback: Callable) -> None:
         self._error_callback = callback
+
+    def register_continuity_store(self, provider: Any) -> None:
+        self._continuity_store = provider
+
+    def register_lease_provider(self, provider: Any) -> None:
+        self._lease_provider = provider
+
+    def register_roster_provider(self, provider: Any) -> None:
+        self._roster_provider = provider
+
+    def register_topology_provider(self, provider: Any) -> None:
+        self._topology_provider = provider
+
+    def register_agent_customizer(self, provider: Any) -> None:
+        self._agent_customizer = provider
 
     def release_scope(self, scope_id: str) -> None:
         """Remove all tool handlers for a scope. Call when a session ends."""
@@ -98,7 +119,12 @@ class CallbackDispatcher:
             scope_id = raw_options.pop("scope_id", None)
             if not scope_id:
                 raise ValueError("callback/build_agent requires scope_id in options")
-            opts = SessionBuildOptions(**raw_options)
+            # Filter to only fields accepted by SessionBuildOptions — Rust
+            # sends extra context (model, prompt) that is informational only.
+            import dataclasses as _dc
+            _known = {f.name for f in _dc.fields(SessionBuildOptions)}
+            filtered = {k: v for k, v in raw_options.items() if k in _known}
+            opts = SessionBuildOptions(**filtered)
             await self._builder.build_agent(opts)
             for t in opts.tools:
                 if not isinstance(t, str):
@@ -129,4 +155,144 @@ class CallbackDispatcher:
                 result = await result
             return {"content": result}
 
+        # ----- Identity-first provider routing (REQ-45) -----
+        if method.startswith("callback/continuity_store/"):
+            return await self._handle_continuity_store(method, params)
+        if method.startswith("callback/lease_provider/"):
+            return await self._handle_lease_provider(method, params)
+        if method.startswith("callback/roster_provider/"):
+            return await self._handle_roster_provider(method, params)
+        if method.startswith("callback/topology_provider/"):
+            return await self._handle_topology_provider(method, params)
+        if method.startswith("callback/agent_customizer/"):
+            return await self._handle_agent_customizer(method, params)
+
         raise ValueError(f"unknown callback method: {method}")
+
+    # --- Provider dispatch helpers ---
+
+    async def _handle_continuity_store(self, method: str, params: dict[str, Any]) -> Any:
+        from .identity_first_providers import (
+            ContinuityRecord,
+            SessionSnapshot,
+        )
+        store = self._continuity_store
+        if store is None:
+            raise ValueError("no continuity store provider registered")
+
+        op = method.rsplit("/", 1)[-1]
+
+        if op == "resolve_many":
+            result = await store.resolve_many(params["identities"])
+            return {k: v.to_dict() for k, v in result.items()}
+
+        if op == "load_session_snapshot":
+            snap = await store.load_session_snapshot(params["session_id"])
+            return snap.to_dict() if snap is not None else None
+
+        if op == "save_session_snapshot":
+            snapshot = SessionSnapshot.from_dict(params["snapshot"])
+            await store.save_session_snapshot(
+                params["identity"],
+                params["session_id"],
+                params["generation"],
+                params["version"],
+                params["fencing_token"],
+                snapshot,
+            )
+            return None
+
+        if op == "upsert_continuity_record":
+            record = ContinuityRecord.from_dict(params["record"])
+            await store.upsert_continuity_record(record, params["fencing_token"])
+            return None
+
+        raise ValueError(f"unknown continuity_store operation: {op}")
+
+    async def _handle_lease_provider(self, method: str, params: dict[str, Any]) -> Any:
+        from .identity_first_providers import LeaseGrant
+        provider = self._lease_provider
+        if provider is None:
+            raise ValueError("no lease provider registered")
+
+        op = method.rsplit("/", 1)[-1]
+
+        if op == "acquire_leases":
+            result = await provider.acquire_leases(
+                params["identities"], params["runtime_instance"],
+            )
+            return {k: v.to_dict() for k, v in result.items()}
+
+        if op == "renew_leases":
+            grants = [LeaseGrant.from_dict(g) for g in params["grants"]]
+            result = await provider.renew_leases(grants)
+            return {k: v.to_dict() for k, v in result.items()}
+
+        if op == "release_leases":
+            grants = [LeaseGrant.from_dict(g) for g in params["grants"]]
+            await provider.release_leases(grants)
+            return None
+
+        raise ValueError(f"unknown lease_provider operation: {op}")
+
+    async def _handle_roster_provider(self, method: str, params: dict[str, Any]) -> Any:
+        provider = self._roster_provider
+        if provider is None:
+            raise ValueError("no roster provider registered")
+
+        op = method.rsplit("/", 1)[-1]
+
+        if op == "roster":
+            specs = await provider.roster(params.get("context", {}))
+            return [s.to_dict() for s in specs]
+
+        raise ValueError(f"unknown roster_provider operation: {op}")
+
+    async def _handle_topology_provider(self, method: str, params: dict[str, Any]) -> Any:
+        provider = self._topology_provider
+        if provider is None:
+            raise ValueError("no topology provider registered")
+
+        op = method.rsplit("/", 1)[-1]
+
+        if op == "compute_edges":
+            edges = await provider.compute_edges(
+                params["target_identities"],
+                params.get("context", {}),
+            )
+            return [e.to_dict() for e in edges]
+
+        raise ValueError(f"unknown topology_provider operation: {op}")
+
+    async def _handle_agent_customizer(self, method: str, params: dict[str, Any]) -> Any:
+        from .identity_first_models import (
+            AgentBuildContext,
+            AgentBuildDraft,
+            DurableAgentSpec,
+        )
+        from .models import SessionCreatedContext
+
+        customizer = self._agent_customizer
+        if customizer is None:
+            raise ValueError("no agent customizer registered")
+
+        op = method.rsplit("/", 1)[-1]
+
+        if op == "customize_build":
+            context = AgentBuildContext.from_dict(params["context"])
+            spec = DurableAgentSpec.from_dict(params["spec"])
+            draft = AgentBuildDraft.from_dict(params["draft"])
+            await customizer.customize_build(context, spec, draft)
+            return draft.to_dict()
+
+        if op == "after_create":
+            identity = params["identity"]
+            session_id = params["session_id"]
+            context = SessionCreatedContext.from_dict(params.get("context", {}))
+            if hasattr(customizer, "after_create"):
+                result = customizer.after_create(identity, session_id, context)
+                if asyncio.iscoroutine(result):
+                    await result
+            return None
+
+        raise ValueError(f"unknown agent_customizer operation: {op}")

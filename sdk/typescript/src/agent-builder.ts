@@ -6,7 +6,28 @@
  */
 
 import { SessionBuildOptions, type ToolHandler } from "./models.js";
-import { parseErrorEvent, type ErrorEvent, type SessionCreatedContext } from "./types.js";
+import {
+  parseErrorEvent,
+  parseContinuityRecord,
+  parseSessionSnapshot,
+  parseLeaseGrant,
+  parseAgentBuildContext,
+  parseDurableAgentSpec,
+  parseAgentBuildDraft,
+  agentBuildDraftToDict,
+  durableAgentSpecToDict,
+  sessionSnapshotToDict,
+  leaseGrantToDict,
+  managedPeerEdgeToDict,
+  type ErrorEvent,
+  type SessionCreatedContext,
+  type ContinuityStore,
+  type LeaseProvider,
+  type RosterProvider,
+  type AgentCustomizer,
+  type TopologyProvider,
+  type LeaseGrant,
+} from "./types.js";
 
 // -- Protocol -------------------------------------------------------------
 
@@ -47,6 +68,11 @@ export class CallbackDispatcher {
   private _errorCallback: ErrorCallback | null = null;
   private readonly _toolHandlers = new Map<string, ToolHandler>();
   private readonly _scopeTools = new Map<string, string[]>();
+  private _continuityStore: ContinuityStore | null = null;
+  private _leaseProvider: LeaseProvider | null = null;
+  private _rosterProvider: RosterProvider | null = null;
+  private _agentCustomizer: AgentCustomizer | null = null;
+  private _topologyProvider: TopologyProvider | null = null;
 
   registerBuilder(builder: SessionAgentBuilder): void {
     this._builder = builder;
@@ -54,6 +80,26 @@ export class CallbackDispatcher {
 
   registerErrorCallback(callback: ErrorCallback): void {
     this._errorCallback = callback;
+  }
+
+  registerContinuityStore(store: ContinuityStore): void {
+    this._continuityStore = store;
+  }
+
+  registerLeaseProvider(provider: LeaseProvider): void {
+    this._leaseProvider = provider;
+  }
+
+  registerRosterProvider(provider: RosterProvider): void {
+    this._rosterProvider = provider;
+  }
+
+  registerAgentCustomizer(customizer: AgentCustomizer): void {
+    this._agentCustomizer = customizer;
+  }
+
+  registerTopologyProvider(provider: TopologyProvider): void {
+    this._topologyProvider = provider;
   }
 
   /** Remove all tool handlers for a scope. Call when a session ends. */
@@ -175,6 +221,157 @@ export class CallbackDispatcher {
 
       const result = await handler(args);
       return { content: result };
+    }
+
+    // -- Continuity callbacks -----------------------------------------------
+
+    if (method === "callback/continuity/resolve_many") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const identities = Array.isArray(params.identities)
+        ? params.identities.map(String)
+        : [];
+      return this._continuityStore.resolveMany(identities);
+    }
+
+    if (method === "callback/continuity/load_session_snapshot") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const sessionId = String(params.session_id ?? "");
+      const snap = await this._continuityStore.loadSessionSnapshot(sessionId);
+      if (snap === null) return null;
+      return sessionSnapshotToDict(snap);
+    }
+
+    if (method === "callback/continuity/save_session_snapshot") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const identity = String(params.identity ?? "");
+      const sessionId = String(params.session_id ?? "");
+      const generation = Number(params.generation ?? 0);
+      const version = Number(params.checkpoint_version ?? 0);
+      const fencingToken = Number(params.fencing_token ?? 0);
+      const snapshot = parseSessionSnapshot({ data: params.snapshot ?? "" });
+      await this._continuityStore.saveSessionSnapshot(
+        identity, sessionId, generation, version, fencingToken, snapshot,
+      );
+      return null;
+    }
+
+    if (method === "callback/continuity/upsert_continuity_record") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const record = parseContinuityRecord(params.record);
+      const fencingToken = Number(params.fencing_token ?? 0);
+      await this._continuityStore.upsertContinuityRecord(record, fencingToken);
+      return null;
+    }
+
+    // -- Lease callbacks ----------------------------------------------------
+
+    if (method === "callback/lease/acquire_leases") {
+      if (this._leaseProvider === null) {
+        throw new Error("no LeaseProvider registered");
+      }
+      const identities = Array.isArray(params.identities)
+        ? params.identities.map(String)
+        : [];
+      const runtimeInstance = String(params.runtime_instance ?? "");
+      return this._leaseProvider.acquireLeases(identities, runtimeInstance);
+    }
+
+    if (method === "callback/lease/renew_leases") {
+      if (this._leaseProvider === null) {
+        throw new Error("no LeaseProvider registered");
+      }
+      const rawGrants = Array.isArray(params.grants) ? params.grants : [];
+      const grants: LeaseGrant[] = rawGrants.map(parseLeaseGrant);
+      return this._leaseProvider.renewLeases(grants);
+    }
+
+    if (method === "callback/lease/release_leases") {
+      if (this._leaseProvider === null) {
+        throw new Error("no LeaseProvider registered");
+      }
+      const rawGrants = Array.isArray(params.grants) ? params.grants : [];
+      const grants: LeaseGrant[] = rawGrants.map(parseLeaseGrant);
+      await this._leaseProvider.releaseLeases(grants);
+      return null;
+    }
+
+    // -- Roster callback ----------------------------------------------------
+
+    if (method === "callback/roster") {
+      if (this._rosterProvider === null) {
+        throw new Error("no RosterProvider registered");
+      }
+      const context = params.context ?? {};
+      const specs = await this._rosterProvider.roster(context);
+      return specs.map(durableAgentSpecToDict);
+    }
+
+    // -- Topology callback --------------------------------------------------
+
+    if (method === "callback/topology/compute_edges") {
+      if (this._topologyProvider === null) {
+        throw new Error("no TopologyProvider registered");
+      }
+      const targetIdentities = Array.isArray(params.target_identities)
+        ? params.target_identities.map(String)
+        : [];
+      const context = params.context ?? {};
+      const edges = await this._topologyProvider.computeEdges(
+        targetIdentities,
+        context,
+      );
+      return edges.map(managedPeerEdgeToDict);
+    }
+
+    // -- Customizer callbacks -----------------------------------------------
+
+    if (method === "callback/customizer/customize_build") {
+      if (this._agentCustomizer === null) {
+        throw new Error("no AgentCustomizer registered");
+      }
+      const context = parseAgentBuildContext(params.context);
+      const spec = parseDurableAgentSpec(params.spec);
+      const draft = parseAgentBuildDraft(params.draft);
+      await this._agentCustomizer.customizeBuild(context, spec, draft);
+      return agentBuildDraftToDict(draft);
+    }
+
+    if (method === "callback/customizer/after_create") {
+      if (
+        this._agentCustomizer !== null &&
+        typeof this._agentCustomizer.afterCreate === "function"
+      ) {
+        const identity = String(params.identity ?? "");
+        const sessionId = String(params.session_id ?? "");
+        const rawLabels = (params.labels != null && typeof params.labels === "object")
+          ? Object.fromEntries(
+              Object.entries(params.labels as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+            )
+          : {};
+        const context: SessionCreatedContext = {
+          model: String(params.model ?? ""),
+          labels: rawLabels,
+          systemPrompt: typeof params.system_prompt === "string" ? params.system_prompt : null,
+        };
+        try {
+          await this._agentCustomizer.afterCreate(
+            identity,
+            sessionId,
+            context,
+          );
+        } catch {
+          // Best-effort — swallow afterCreate failures.
+        }
+      }
+      return null;
     }
 
     throw new Error(`unknown callback method: ${method}`);

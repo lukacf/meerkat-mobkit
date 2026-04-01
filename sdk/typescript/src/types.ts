@@ -701,3 +701,548 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
 
   return { category, message, context };
 }
+
+// =========================================================================
+// Identity-First Continuity Types
+// =========================================================================
+
+// -- DurableAgentSpec (REQ-46) --------------------------------------------
+
+export interface DurableAgentSpec {
+  readonly identity: string;
+  readonly profile: string;
+  readonly addressability: string;
+  readonly displayName: string | null;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly context: unknown | null;
+  readonly additionalInstructions: readonly string[];
+}
+
+export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    profile: String(d.profile ?? ""),
+    addressability: String(d.addressability ?? "addressable"),
+    displayName: typeof d.display_name === "string" ? d.display_name : null,
+    labels: asStringRecord(d.labels),
+    context: d.context !== undefined && d.context !== null ? d.context : null,
+    additionalInstructions: asStringArray(d.additional_instructions),
+  };
+}
+
+export function durableAgentSpecToDict(
+  spec: DurableAgentSpec,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    identity: spec.identity,
+    profile: spec.profile,
+    addressability: spec.addressability,
+  };
+  if (spec.displayName !== null) result.display_name = spec.displayName;
+  if (Object.keys(spec.labels).length > 0) result.labels = { ...spec.labels };
+  if (spec.context !== null) result.context = spec.context;
+  if (spec.additionalInstructions.length > 0) {
+    result.additional_instructions = [...spec.additionalInstructions];
+  }
+  return result;
+}
+
+// -- DispatchContentBlock + DispatchInput (REQ-49) ------------------------
+
+export interface TextContentBlock {
+  readonly type: "text";
+  readonly text: string;
+}
+
+export interface ImageContentBlock {
+  readonly type: "image";
+  readonly mediaType: string;
+  readonly data: string;
+}
+
+export type DispatchContentBlock = TextContentBlock | ImageContentBlock;
+
+export type DispatchOrigin =
+  | "connector"
+  | "scheduler"
+  | "policy"
+  | "flow"
+  | "system";
+
+export interface DispatchInput {
+  readonly content: string | DispatchContentBlock[];
+  readonly origin: DispatchOrigin;
+  readonly correlationId?: string;
+  readonly idempotencyKey?: string;
+}
+
+function parseContentBlock(raw: unknown): DispatchContentBlock {
+  const d = asRecord(raw);
+  if (d.type === "image") {
+    return {
+      type: "image",
+      mediaType: String(d.media_type ?? d.mediaType ?? ""),
+      data: String(d.data ?? ""),
+    };
+  }
+  return { type: "text", text: String(d.text ?? "") };
+}
+
+function contentBlockToDict(block: DispatchContentBlock): Record<string, unknown> {
+  if (block.type === "image") {
+    return { type: "image", media_type: block.mediaType, data: block.data };
+  }
+  return { type: "text", text: block.text };
+}
+
+export function parseDispatchInput(raw: unknown): DispatchInput {
+  const d = asRecord(raw);
+  let content: string | DispatchContentBlock[];
+  if (typeof d.content === "string") {
+    content = d.content;
+  } else if (Array.isArray(d.content)) {
+    content = d.content.map(parseContentBlock);
+  } else {
+    content = "";
+  }
+  return {
+    content,
+    origin: String(d.origin ?? "system") as DispatchOrigin,
+    correlationId: typeof d.correlation_id === "string" ? d.correlation_id : undefined,
+    idempotencyKey: typeof d.idempotency_key === "string" ? d.idempotency_key : undefined,
+  };
+}
+
+export function dispatchInputToDict(
+  input: DispatchInput,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    origin: input.origin,
+  };
+  if (typeof input.content === "string") {
+    result.content = input.content;
+  } else {
+    result.content = input.content.map(contentBlockToDict);
+  }
+  if (input.correlationId !== undefined) {
+    result.correlation_id = input.correlationId;
+  }
+  if (input.idempotencyKey !== undefined) {
+    result.idempotency_key = input.idempotencyKey;
+  }
+  return result;
+}
+
+// -- ManagedPeerEdge (REQ-49a) --------------------------------------------
+
+export interface ManagedPeerEdge {
+  readonly a: string;
+  readonly b: string;
+}
+
+export function parseManagedPeerEdge(raw: unknown): ManagedPeerEdge {
+  const d = asRecord(raw);
+  return { a: String(d.a ?? ""), b: String(d.b ?? "") };
+}
+
+export function managedPeerEdgeToDict(edge: ManagedPeerEdge): Record<string, string> {
+  return { a: edge.a, b: edge.b };
+}
+
+// -- ExternalToolDef (REQ-49a) --------------------------------------------
+
+export interface ExternalToolDef {
+  readonly name: string;
+  readonly description: string;
+  readonly inputSchema: Record<string, unknown>;
+}
+
+export function parseExternalToolDef(raw: unknown): ExternalToolDef {
+  const d = asRecord(raw);
+  return {
+    name: String(d.name ?? ""),
+    description: String(d.description ?? ""),
+    inputSchema: asRecord(d.input_schema),
+  };
+}
+
+export function externalToolDefToDict(
+  tool: ExternalToolDef,
+): Record<string, unknown> {
+  return {
+    name: tool.name,
+    description: tool.description,
+    input_schema: tool.inputSchema,
+  };
+}
+
+// -- AgentBuildContext (REQ-49a) -------------------------------------------
+
+export interface AgentBuildContext {
+  readonly identity: string;
+  readonly activePeers: readonly string[];
+  readonly managedEdges: readonly ManagedPeerEdge[];
+}
+
+export function parseAgentBuildContext(raw: unknown): AgentBuildContext {
+  const d = asRecord(raw);
+  const rawEdges = Array.isArray(d.managed_edges) ? d.managed_edges : [];
+  return {
+    identity: String(d.identity ?? ""),
+    activePeers: asStringArray(d.active_peers),
+    managedEdges: rawEdges.map(parseManagedPeerEdge),
+  };
+}
+
+// -- AgentBuildDraft (REQ-49a) --------------------------------------------
+
+export interface AgentBuildDraft {
+  model: string | null;
+  systemPrompt: string | null;
+  additionalInstructions: string[];
+  labels: Record<string, string>;
+  appContext: unknown | null;
+  externalTools: ExternalToolDef[];
+}
+
+export function parseAgentBuildDraft(raw: unknown): AgentBuildDraft {
+  const d = asRecord(raw);
+  const rawTools = Array.isArray(d.external_tools) ? d.external_tools : [];
+  return {
+    model: typeof d.model === "string" ? d.model : null,
+    systemPrompt: typeof d.system_prompt === "string" ? d.system_prompt : null,
+    additionalInstructions: asStringArray(d.additional_instructions),
+    labels: asStringRecord(d.labels),
+    appContext: d.app_context !== undefined && d.app_context !== null ? d.app_context : null,
+    externalTools: rawTools.map(parseExternalToolDef),
+  };
+}
+
+export function agentBuildDraftToDict(
+  draft: AgentBuildDraft,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  if (draft.model !== null) result.model = draft.model;
+  if (draft.systemPrompt !== null) result.system_prompt = draft.systemPrompt;
+  if (draft.additionalInstructions.length > 0) {
+    result.additional_instructions = [...draft.additionalInstructions];
+  }
+  if (Object.keys(draft.labels).length > 0) result.labels = { ...draft.labels };
+  if (draft.appContext !== null) result.app_context = draft.appContext;
+  if (draft.externalTools.length > 0) {
+    result.external_tools = draft.externalTools.map(externalToolDefToDict);
+  }
+  return result;
+}
+
+// -- LeaseInfo (REQ-49b) --------------------------------------------------
+
+export interface LeaseInfo {
+  readonly fencingToken: number;
+  readonly ttlRemainingMs: number;
+  readonly healthy: boolean;
+}
+
+function parseLeaseInfo(raw: unknown): LeaseInfo | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const d = raw as Record<string, unknown>;
+  return {
+    fencingToken: Number(d.fencing_token ?? 0),
+    ttlRemainingMs: Number(d.ttl_remaining_ms ?? 0),
+    healthy: Boolean(d.healthy ?? false),
+  };
+}
+
+// -- DurabilityPolicy (REQ-49b) -------------------------------------------
+
+export interface DurabilityPolicy {
+  readonly kind: "syncWriteThrough" | "asyncReplicated" | "bufferedExport";
+  readonly maxLossWindowMs?: number;
+}
+
+function parseDurabilityPolicy(raw: unknown): DurabilityPolicy {
+  const d = asRecord(raw);
+  const wireKind = String(d.kind ?? "sync_write_through");
+  let kind: DurabilityPolicy["kind"];
+  switch (wireKind) {
+    case "async_replicated":
+      kind = "asyncReplicated";
+      break;
+    case "buffered_export":
+      kind = "bufferedExport";
+      break;
+    default:
+      kind = "syncWriteThrough";
+      break;
+  }
+  const result: DurabilityPolicy = { kind };
+  if (kind === "bufferedExport" && d.max_loss_window_ms !== undefined) {
+    return { kind, maxLossWindowMs: Number(d.max_loss_window_ms) };
+  }
+  return result;
+}
+
+// -- ContinuityHealth (REQ-49b) -------------------------------------------
+
+export interface ContinuityHealth {
+  readonly storeReachable: boolean;
+  readonly durabilityPolicy: DurabilityPolicy;
+  readonly lastCheckpointVersion: number | null;
+}
+
+function parseContinuityHealth(raw: unknown): ContinuityHealth | null {
+  if (raw == null || typeof raw !== "object") return null;
+  const d = raw as Record<string, unknown>;
+  return {
+    storeReachable: Boolean(d.store_reachable ?? false),
+    durabilityPolicy: parseDurabilityPolicy(d.durability_policy),
+    lastCheckpointVersion:
+      typeof d.last_checkpoint_version === "number"
+        ? d.last_checkpoint_version
+        : null,
+  };
+}
+
+// -- IdentityStatus (REQ-49b) ---------------------------------------------
+
+export interface IdentityStatus {
+  readonly identity: string;
+  readonly lifecycleState: string;
+  readonly agentRuntimeId: string;
+  readonly sessionId: string;
+  readonly profile: string;
+  readonly addressability: string;
+  readonly displayName: string | null;
+  readonly labels: Readonly<Record<string, string>>;
+  readonly generation: number;
+  readonly checkpointVersion: number;
+  readonly lease: LeaseInfo | null;
+  readonly continuityHealth: ContinuityHealth | null;
+}
+
+export function parseIdentityStatus(raw: unknown): IdentityStatus {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    lifecycleState: String(d.state ?? ""),
+    agentRuntimeId: String(d.agent_runtime_id ?? ""),
+    sessionId: String(d.session_id ?? ""),
+    profile: String(d.profile ?? ""),
+    addressability: String(d.addressability ?? "addressable"),
+    displayName: typeof d.display_name === "string" ? d.display_name : null,
+    labels: asStringRecord(d.labels),
+    generation: Number(d.generation ?? 0),
+    checkpointVersion: Number(d.checkpoint_version ?? 0),
+    lease: parseLeaseInfo(d.lease),
+    continuityHealth: parseContinuityHealth(d.continuity_health),
+  };
+}
+
+// -- ContinuityRecord (REQ-49c) -------------------------------------------
+
+export interface ContinuityRecord {
+  readonly identity: string;
+  readonly agentRuntimeId: string;
+  readonly sessionId: string;
+  readonly generation: number;
+  readonly checkpointVersion: number;
+}
+
+export function parseContinuityRecord(raw: unknown): ContinuityRecord {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    agentRuntimeId: String(d.agent_runtime_id ?? ""),
+    sessionId: String(d.session_id ?? ""),
+    generation: Number(d.generation ?? 0),
+    checkpointVersion: Number(d.checkpoint_version ?? 0),
+  };
+}
+
+export function continuityRecordToDict(
+  record: ContinuityRecord,
+): Record<string, unknown> {
+  return {
+    identity: record.identity,
+    agent_runtime_id: record.agentRuntimeId,
+    session_id: record.sessionId,
+    generation: record.generation,
+    checkpoint_version: record.checkpointVersion,
+  };
+}
+
+// -- ContinuityFailure (REQ-49c) ------------------------------------------
+
+export interface ContinuityFailure {
+  readonly identity: string;
+  readonly kind: string;
+  readonly record?: ContinuityRecord;
+  readonly detail: string;
+}
+
+export function parseContinuityFailure(raw: unknown): ContinuityFailure {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    kind: String(d.kind ?? ""),
+    record: d.record != null ? parseContinuityRecord(d.record) : undefined,
+    detail: String(d.detail ?? ""),
+  };
+}
+
+// -- ContinuityResolveState (REQ-49c) -------------------------------------
+
+export interface ContinuityResolveState {
+  readonly state: "uninitialized" | "ready" | "broken";
+  readonly record?: ContinuityRecord;
+  readonly failure?: ContinuityFailure;
+}
+
+export function parseContinuityResolveState(
+  raw: unknown,
+): ContinuityResolveState {
+  const d = asRecord(raw);
+  const state = String(d.state ?? "uninitialized") as ContinuityResolveState["state"];
+  return {
+    state,
+    record: d.record != null ? parseContinuityRecord(d.record) : undefined,
+    failure: d.failure != null ? parseContinuityFailure(d.failure) : undefined,
+  };
+}
+
+// -- SessionSnapshot (REQ-49c) --------------------------------------------
+
+export interface SessionSnapshot {
+  readonly data: Uint8Array;
+}
+
+export function parseSessionSnapshot(raw: unknown): SessionSnapshot {
+  const d = asRecord(raw);
+  const b64 = String(d.data ?? "");
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return { data: bytes };
+}
+
+export function sessionSnapshotToDict(
+  snap: SessionSnapshot,
+): Record<string, string> {
+  let binary = "";
+  for (let i = 0; i < snap.data.length; i++) {
+    binary += String.fromCharCode(snap.data[i]);
+  }
+  return { data: btoa(binary) };
+}
+
+// -- LeaseGrant (REQ-49c) -------------------------------------------------
+
+export interface LeaseGrant {
+  readonly identity: string;
+  readonly fencingToken: number;
+  readonly ttlMs: number;
+}
+
+export function parseLeaseGrant(raw: unknown): LeaseGrant {
+  const d = asRecord(raw);
+  return {
+    identity: String(d.identity ?? ""),
+    fencingToken: Number(d.fencing_token ?? 0),
+    ttlMs: Number(d.ttl_ms ?? 0),
+  };
+}
+
+export function leaseGrantToDict(grant: LeaseGrant): Record<string, unknown> {
+  return {
+    identity: grant.identity,
+    fencing_token: grant.fencingToken,
+    ttl_ms: grant.ttlMs,
+  };
+}
+
+// -- LeaseAcquireResult (REQ-49c) -----------------------------------------
+
+export interface LeaseAcquireResult {
+  readonly status: "acquired" | "alreadyHeld";
+  readonly grant?: LeaseGrant;
+  readonly holder?: string;
+}
+
+export function parseLeaseAcquireResult(raw: unknown): LeaseAcquireResult {
+  const d = asRecord(raw);
+  const wireStatus = String(d.status ?? "acquired");
+  const status = wireStatus === "already_held" ? "alreadyHeld" as const : "acquired" as const;
+  return {
+    status,
+    grant: d.grant != null ? parseLeaseGrant(d.grant) : undefined,
+    holder: typeof d.holder === "string" ? d.holder : undefined,
+  };
+}
+
+// -- LeaseRenewResult (REQ-49c) -------------------------------------------
+
+export interface LeaseRenewResult {
+  readonly status: "renewed" | "lost";
+  readonly grant?: LeaseGrant;
+}
+
+export function parseLeaseRenewResult(raw: unknown): LeaseRenewResult {
+  const d = asRecord(raw);
+  const status = String(d.status ?? "renewed") as LeaseRenewResult["status"];
+  return {
+    status,
+    grant: d.grant != null ? parseLeaseGrant(d.grant) : undefined,
+  };
+}
+
+// -- Provider interfaces (REQ-48) -----------------------------------------
+
+export interface ContinuityStore {
+  resolveMany(identities: string[]): Promise<Record<string, ContinuityResolveState>>;
+  loadSessionSnapshot(sessionId: string): Promise<SessionSnapshot | null>;
+  saveSessionSnapshot(
+    identity: string,
+    sessionId: string,
+    generation: number,
+    version: number,
+    fencingToken: number,
+    snapshot: SessionSnapshot,
+  ): Promise<void>;
+  upsertContinuityRecord(record: ContinuityRecord, fencingToken: number): Promise<void>;
+}
+
+export interface LeaseProvider {
+  acquireLeases(
+    identities: string[],
+    runtimeInstance: string,
+  ): Promise<Record<string, LeaseAcquireResult>>;
+  renewLeases(grants: LeaseGrant[]): Promise<Record<string, LeaseRenewResult>>;
+  releaseLeases(grants: LeaseGrant[]): Promise<void>;
+}
+
+export interface RosterProvider {
+  roster(context: unknown): Promise<DurableAgentSpec[]>;
+}
+
+export interface AgentCustomizer {
+  customizeBuild(
+    context: AgentBuildContext,
+    spec: DurableAgentSpec,
+    draft: AgentBuildDraft,
+  ): Promise<void>;
+  afterCreate?(
+    identity: string,
+    sessionId: string,
+    context: SessionCreatedContext,
+  ): Promise<void>;
+}
+
+export interface TopologyProvider {
+  computeEdges(
+    targetIdentities: string[],
+    context: unknown,
+  ): Promise<ManagedPeerEdge[]>;
+}

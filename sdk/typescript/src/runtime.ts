@@ -54,6 +54,8 @@ import {
   parseReconcileEdgesReport,
   parsePersistedEvent,
   eventQueryToDict,
+  parseIdentityStatus,
+  dispatchInputToDict,
   type StatusResult,
   type CapabilitiesResult,
   type ReconcileResult,
@@ -77,6 +79,9 @@ import {
   type ReconcileEdgesReport,
   type PersistedEvent,
   type EventQuery,
+  type IdentityStatus,
+  type DispatchInput,
+  type DispatchContentBlock,
 } from "./types.js";
 
 // -- Request ID counter ---------------------------------------------------
@@ -298,6 +303,77 @@ export class MobKitRuntime {
 
   get isRunning(): boolean {
     return this._running;
+  }
+
+  // -- Identity-first APIs (REQ-47) -----------------------------------------
+
+  /** Get agent snapshot by identity. */
+  async agent(identity: string): Promise<MemberSnapshot> {
+    return parseMemberSnapshot(
+      await this._rpc("mobkit/identity/agent", { identity }),
+    );
+  }
+
+  /** Send content to an identity. Content can be a string or content blocks. */
+  async send(
+    identity: string,
+    content: string | DispatchContentBlock[],
+  ): Promise<unknown> {
+    const params: Record<string, unknown> = { identity };
+    if (typeof content === "string") {
+      params.content = content;
+    } else {
+      params.content = content.map((b) => {
+        if (b.type === "image") {
+          return { type: "image", media_type: b.mediaType, data: b.data };
+        }
+        return { type: "text", text: b.text };
+      });
+    }
+    return this._rpc("mobkit/identity/send", params);
+  }
+
+  /** Dispatch structured input to an identity. */
+  async dispatch(
+    identity: string,
+    input: DispatchInput,
+  ): Promise<unknown> {
+    return this._rpc("mobkit/identity/dispatch", {
+      identity,
+      dispatch_input: dispatchInputToDict(input),
+    });
+  }
+
+  /** Subscribe to events for an identity. */
+  async subscribe(identity: string): Promise<unknown> {
+    return this._rpc("mobkit/identity/subscribe", { identity });
+  }
+
+  /** Get identity status. */
+  async status(identity: string): Promise<IdentityStatus> {
+    return parseIdentityStatus(
+      await this._rpc("mobkit/identity/status", { identity }),
+    );
+  }
+
+  /** Respawn an identity (non-destructive recovery). */
+  async respawn(identity: string): Promise<unknown> {
+    return this._rpc("mobkit/identity/respawn", { identity });
+  }
+
+  /** Retire an identity. */
+  async retire(identity: string): Promise<unknown> {
+    return this._rpc("mobkit/identity/retire", { identity });
+  }
+
+  /** Reset an identity (destructive continuity reset). */
+  async reset(identity: string): Promise<unknown> {
+    return this._rpc("mobkit/identity/reset", { identity });
+  }
+
+  /** Delete an identity permanently. */
+  async deleteIdentity(identity: string): Promise<unknown> {
+    return this._rpc("mobkit/identity/delete", { identity });
   }
 }
 

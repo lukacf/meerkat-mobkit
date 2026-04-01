@@ -221,6 +221,13 @@ impl StdioCallbackBridge {
     }
 }
 
+#[async_trait]
+impl meerkat_mobkit::identity_first::gateway_bridges::CallbackBridge for StdioCallbackBridge {
+    async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call(method, params).await
+    }
+}
+
 /// Tool dispatcher that routes tool calls to Python via the callback bridge.
 ///
 /// Created from tool name strings provided by `SessionBuildOptions.add_tools()`.
@@ -488,6 +495,19 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
 async fn run_persistent() {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
+    // Initialize tracing subscriber so meerkat-mob/meerkat-runtime errors
+    // are visible on stderr. Without this, all tracing events are silently
+    // dropped and runtime failures (agent build, LLM calls, comms drain)
+    // are invisible.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
+
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
 
@@ -564,6 +584,44 @@ external_addressable = true
         std::process::exit(1);
     });
 
+    // Validate profile model names against the catalog.
+    // A wrong model name (e.g., "claude-sonnet-4-5-20250514" instead of "claude-sonnet-4-5")
+    // silently fails at LLM call time with no observable error. Catch it here.
+    {
+        let catalog = meerkat_models::catalog::catalog();
+        let known_models: std::collections::HashSet<&str> =
+            catalog.iter().map(|entry| entry.id).collect();
+
+        for (profile_name, profile) in &definition.profiles {
+            if !known_models.contains(profile.model.as_str()) {
+                let model = &profile.model;
+                // Find similar model names for the error hint
+                let prefix = model.split('-').take(3).collect::<Vec<_>>().join("-");
+                let mut suggestions: Vec<&str> = known_models
+                    .iter()
+                    .filter(|m| {
+                        m.starts_with(&prefix)
+                            || model
+                                .starts_with(&m.split('-').take(3).collect::<Vec<_>>().join("-"))
+                    })
+                    .copied()
+                    .collect();
+                suggestions.sort_unstable();
+                suggestions.truncate(5);
+                let hint = if suggestions.is_empty() {
+                    String::new()
+                } else {
+                    format!(". Did you mean one of: {}?", suggestions.join(", "))
+                };
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("Profile '{profile_name}' uses unknown model '{model}'{hint}"),
+                );
+            }
+        }
+    }
+
     let modules: Vec<ModuleConfig> = params
         .get("modules")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -588,6 +646,21 @@ external_addressable = true
         .get("persistent_state")
         .and_then(|v| v.as_str())
         .map(std::path::PathBuf::from);
+
+    let has_roster_provider = params
+        .get("has_roster_provider")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let has_topology_provider = params
+        .get("has_topology_provider")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let has_agent_customizer = params
+        .get("has_agent_customizer")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     // Warn about SDK-forwarded runtime_options that the gateway does not yet
     // consume.  This surfaces "accepted but ignored" config as visible noise
@@ -828,6 +901,120 @@ external_addressable = true
         }));
     }
 
+    // 5c. Build identity-first runtime if providers are configured
+    let identity_ctx: Option<meerkat_mobkit::rpc::IdentityFirstContext> = if has_roster_provider {
+        use meerkat_mobkit::identity_first::{
+            DurabilityPolicy, IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore,
+            LocalLeaseProvider, RosterContext,
+            contracts::LeaseProvider as LeaseProviderTrait,
+            gateway_bridges::{
+                GatewayAgentCustomizer, GatewayRosterProvider, GatewayTopologyProvider,
+            },
+        };
+
+        // Build provider bridges
+        let continuity_store: Arc<dyn meerkat_mobkit::identity_first::ContinuityStore> =
+            if let Some(ref state_path) = persistent_state {
+                Arc::new(
+                    LocalContinuityStore::open(state_path.join("continuity.db")).unwrap_or_else(
+                        |e| {
+                            fail_init(
+                                &request_id,
+                                -32603,
+                                format!("failed to open continuity store: {e}"),
+                            );
+                        },
+                    ),
+                )
+            } else {
+                Arc::new(
+                    LocalContinuityStore::open(
+                        std::env::temp_dir()
+                            .join(format!("mobkit-continuity-{}.db", std::process::id())),
+                    )
+                    .unwrap_or_else(|e| {
+                        fail_init(
+                            &request_id,
+                            -32603,
+                            format!("failed to open continuity store: {e}"),
+                        );
+                    }),
+                )
+            };
+
+        let lease_provider: Arc<dyn LeaseProviderTrait> = Arc::new(LocalLeaseProvider::new());
+
+        // Construct the session bridge from the mob handle. The gateway
+        // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
+        // session_bridge() won't be set — build it directly.
+        let mob_handle = runtime.mob_handle();
+        let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(
+            meerkat_mobkit::identity_first::MobSessionBridge::new(mob_handle),
+        );
+
+        let irt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider,
+            runtime_instance_id: format!("gateway-{}", std::process::id()),
+            has_runtime_store: persistent_state.is_some(),
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge_arc),
+            default_timeout: None,
+        });
+
+        // Build provider bridges for callbacks to Python
+        let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
+            Arc::new(GatewayRosterProvider::new(bridge.clone()));
+        let topology: Option<Arc<dyn meerkat_mobkit::identity_first::contracts::TopologyProvider>> =
+            if has_topology_provider {
+                Some(Arc::new(GatewayTopologyProvider::new(bridge.clone())))
+            } else {
+                None
+            };
+        let customizer: Option<
+            Arc<dyn meerkat_mobkit::identity_first::contracts::AgentCustomizer>,
+        > = if has_agent_customizer {
+            Some(Arc::new(GatewayAgentCustomizer::new(bridge.clone())))
+        } else {
+            None
+        };
+
+        // Call restore_flow to bootstrap identities from the roster provider
+        let roster_specs = roster
+            .roster(&RosterContext {
+                mob_definition: None,
+                previous_identities: Vec::new(),
+            })
+            .await
+            .unwrap_or_else(|e| {
+                fail_init(&request_id, -32603, format!("roster provider failed: {e}"));
+            });
+
+        if let Err(e) = meerkat_mobkit::identity_first::restore_flow(
+            &irt,
+            &roster_specs,
+            topology.as_deref(),
+            customizer.as_deref(),
+        )
+        .await
+        {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("identity-first restore_flow failed: {e}"),
+            );
+        }
+
+        Some(meerkat_mobkit::rpc::IdentityFirstContext {
+            runtime: Arc::new(irt),
+            roster_provider: roster,
+            topology_provider: topology,
+            customizer,
+        })
+    } else {
+        None
+    };
+
     // 6. Bind HTTP server on ephemeral port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -894,9 +1081,14 @@ external_addressable = true
                 },
                 _ = tokio::signal::ctrl_c() => break,
             };
-            let response =
-                handle_unified_rpc_json(&runtime, &request_line, timeout, Some(&http_base_url))
-                    .await;
+            let response = handle_unified_rpc_json(
+                &runtime,
+                &request_line,
+                timeout,
+                Some(&http_base_url),
+                identity_ctx.as_ref(),
+            )
+            .await;
             if !response.is_empty() {
                 let _ = stdout_tx.send(response).await;
             }

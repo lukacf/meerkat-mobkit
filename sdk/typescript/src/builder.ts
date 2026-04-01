@@ -19,6 +19,13 @@
 import { existsSync } from "node:fs";
 import type { SessionAgentBuilder, ErrorCallback } from "./agent-builder.js";
 import type { MobKitRuntime } from "./runtime.js";
+import type {
+  ContinuityStore,
+  LeaseProvider,
+  RosterProvider,
+  AgentCustomizer,
+  TopologyProvider,
+} from "./types.js";
 
 // -- Builder config -------------------------------------------------------
 
@@ -38,6 +45,12 @@ export interface MobKitBuilderConfig {
   gatewayBin: string | null;
   modules: unknown[];
   persistentState: string | null;
+  continuityStore: ContinuityStore | null;
+  leaseProvider: LeaseProvider | null;
+  scratchDir: string | null;
+  rosterProvider: RosterProvider | null;
+  agentCustomizer: AgentCustomizer | null;
+  topologyProvider: TopologyProvider | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -57,6 +70,12 @@ function defaultConfig(): MobKitBuilderConfig {
     gatewayBin: null,
     modules: [],
     persistentState: null,
+    continuityStore: null,
+    leaseProvider: null,
+    scratchDir: null,
+    rosterProvider: null,
+    agentCustomizer: null,
+    topologyProvider: null,
   };
 }
 
@@ -155,11 +174,61 @@ export class MobKitBuilder {
     return this;
   }
 
+  /** Set an external ContinuityStore provider. Mutually exclusive with persistentState. */
+  continuityStore(store: ContinuityStore): this {
+    this._config.continuityStore = store;
+    return this;
+  }
+
+  /** Set an external LeaseProvider. Mutually exclusive with persistentState. */
+  leaseProvider(provider: LeaseProvider): this {
+    this._config.leaseProvider = provider;
+    return this;
+  }
+
+  /** Set scratch directory for external provider path. */
+  scratchDir(path: string): this {
+    this._config.scratchDir = path;
+    return this;
+  }
+
+  /** Set a RosterProvider. */
+  rosterProvider(provider: RosterProvider): this {
+    this._config.rosterProvider = provider;
+    return this;
+  }
+
+  /** Set an AgentCustomizer. */
+  agentCustomizer(customizer: AgentCustomizer): this {
+    this._config.agentCustomizer = customizer;
+    return this;
+  }
+
+  /** Set a TopologyProvider. */
+  topologyProvider(provider: TopologyProvider): this {
+    this._config.topologyProvider = provider;
+    return this;
+  }
+
   async build(): Promise<MobKitRuntime> {
+    this._validateConfig();
     this._applyConventionDefaults();
     // Dynamic import to break circular dep (runtime imports from builder config type)
     const { MobKitRuntime } = await import("./runtime.js");
     return MobKitRuntime._create(this._config);
+  }
+
+  private _validateConfig(): void {
+    const hasPersistent = this._config.persistentState !== null;
+    const hasExternal =
+      this._config.continuityStore !== null ||
+      this._config.leaseProvider !== null;
+    if (hasPersistent && hasExternal) {
+      throw new Error(
+        "persistentState and continuityStore/leaseProvider are mutually exclusive — " +
+          "use one path or the other, not both",
+      );
+    }
   }
 
   private _applyConventionDefaults(): void {

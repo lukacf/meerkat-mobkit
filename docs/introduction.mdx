@@ -8,9 +8,21 @@ MobKit lets you stand up a production multi-agent system in a few lines of code.
 It builds on [Meerkat](https://github.com/lukacf/meerkat), which provides the agent runtime (prompt assembly, tool dispatch, sessions, the core agent loop). MobKit adds the orchestration layer that turns individual agents into coordinated groups.
 
 ```python
-async with await MobKit.builder().mob("mob.toml").gateway("./mobkit-rpc").build() as rt:
-    handle = rt.mob_handle()
-    await handle.send("agent-1", "Review PR #42")
+rt = await (
+    MobKit.builder()
+    .mob("mob.toml")
+    .persistent_state("./state")
+    .roster(my_roster)
+    .gateway("./rpc_gateway")
+    .build()
+)
+
+triage = rt.agent("triage:main")
+luka = rt.agent("identity:luka")
+
+await triage.dispatch_text("New event", origin="connector")
+await luka.send("What's happening?")
+output = await luka.wait_for_output(timeout=60)
 ```
 
 <img src="/images/architecture-overview.png" alt="MobKit architecture: Your App → MobKit (orchestration, routing, lifecycle, admin console) → Meerkat (agent loop, sessions, tools, comms). Agent topology: Domain, Personal, and Task agents." style={{ borderRadius: '8px', marginTop: '1rem', marginBottom: '1rem' }} />
@@ -29,6 +41,7 @@ You define agents as profiles in a mob config, wire them together with peer conn
 ## What MobKit provides
 
 - **Orchestration.** Bootstrap an entire mob and its operational modules in a single call. Process supervision, health gates, and configurable restart policies.
+- **Identity-first continuity.** Durable agent identities with roster providers, topology-aware prompts, non-destructive respawn, destructive reset, and in-process reconciliation. Agents survive restarts with stable session IDs.
 - **Roster management.** List, inspect, spawn, retire, and respawn members. Ensure agents exist before sending them work. Reconcile the roster against a desired state.
 - **Operational subsystems.** Message routing with sink adapters, risk-based approval gates, cron scheduling with timezone support, and semantic memory — all wired in as supervised modules.
 - **Admin console.** React web UI with agent sidebar, activity feed, chat inspector, topology view, and health overview — all updating in real time via SSE.

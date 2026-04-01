@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Sequence
 @dataclass
 class MobKitBuilderConfig:
     mob_config_path: str | None = None
+    mob_config_inline: str | None = None
     session_builder: Any | None = None
     session_store: Any | None = None
     discovery_callback: Any | None = None
@@ -24,6 +25,13 @@ class MobKitBuilderConfig:
     modules: list[dict[str, Any]] = field(default_factory=list)
     extra_routes: Any | None = None
     persistent_state: str | None = None
+    # Identity-first provider fields (REQ-44)
+    continuity_store: Any | None = None
+    lease_provider: Any | None = None
+    scratch_dir: str | None = None
+    roster_provider: Any | None = None
+    topology_provider: Any | None = None
+    agent_customizer: Any | None = None
 
 
 class MobKitBuilder:
@@ -44,7 +52,16 @@ class MobKitBuilder:
         self._config = MobKitBuilderConfig()
 
     def mob(self, config_path: str) -> MobKitBuilder:
+        """Set the mob definition from a TOML file path."""
         self._config.mob_config_path = config_path
+        return self
+
+    def mob_inline(self, toml_content: str) -> MobKitBuilder:
+        """Set the mob definition from an inline TOML string.
+
+        Mutually exclusive with mob(config_path).
+        """
+        self._config.mob_config_inline = toml_content
         return self
 
     def session_service(self, builder: Any, store: Any = None) -> MobKitBuilder:
@@ -124,10 +141,57 @@ class MobKitBuilder:
         self._config.persistent_state = path
         return self
 
+    def continuity_store(self, provider: Any) -> MobKitBuilder:
+        """Set an external continuity store provider."""
+        self._config.continuity_store = provider
+        return self
+
+    def lease_provider(self, provider: Any) -> MobKitBuilder:
+        """Set an external lease provider."""
+        self._config.lease_provider = provider
+        return self
+
+    def scratch_dir(self, path: str) -> MobKitBuilder:
+        """Set the scratch directory for non-authoritative local state."""
+        self._config.scratch_dir = path
+        return self
+
+    def roster(self, provider: Any) -> MobKitBuilder:
+        """Set the roster provider for identity-first continuity."""
+        self._config.roster_provider = provider
+        return self
+
+    def topology_provider(self, provider: Any) -> MobKitBuilder:
+        """Set the topology provider for identity-first continuity."""
+        self._config.topology_provider = provider
+        return self
+
+    def agent_customizer(self, customizer: Any) -> MobKitBuilder:
+        """Set the agent customizer for identity-first continuity."""
+        self._config.agent_customizer = customizer
+        return self
+
     async def build(self) -> MobKitRuntime:
+        self._validate()
         self._apply_convention_defaults()
         from .runtime import MobKitRuntime
         return await MobKitRuntime._create(self._config)
+
+    def _validate(self) -> None:
+        if self._config.mob_config_path and self._config.mob_config_inline:
+            raise ValueError(
+                "mob() and mob_inline() are mutually exclusive"
+            )
+        has_external = (
+            self._config.continuity_store is not None
+            or self._config.lease_provider is not None
+            or self._config.scratch_dir is not None
+        )
+        if self._config.persistent_state and has_external:
+            raise ValueError(
+                "persistent_state and continuity_store/lease_provider/scratch_dir "
+                "are mutually exclusive — use one path or the other"
+            )
 
     def _apply_convention_defaults(self) -> None:
         """Fill in conventional config paths when not explicitly set.

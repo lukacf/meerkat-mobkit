@@ -92,6 +92,8 @@ pub enum UnifiedRuntimeBuilderError {
     Io(String),
     /// Failed to parse a mob definition TOML.
     DefinitionLoad(String),
+    /// Conflicting builder configuration (e.g., persistent_state + continuity_store).
+    ConflictingConfiguration(String),
 }
 
 impl Display for UnifiedRuntimeBuilderError {
@@ -109,6 +111,7 @@ impl Display for UnifiedRuntimeBuilderError {
             Self::Bootstrap(err) => write!(f, "{err}"),
             Self::Io(msg) => write!(f, "{msg}"),
             Self::DefinitionLoad(msg) => write!(f, "{msg}"),
+            Self::ConflictingConfiguration(msg) => write!(f, "conflicting configuration: {msg}"),
         }
     }
 }

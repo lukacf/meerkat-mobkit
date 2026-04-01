@@ -48,6 +48,13 @@ pub struct UnifiedRuntimeBuilder {
     default_llm_client: Option<Arc<dyn LlmClient>>,
     capability_flags: CapabilityFlags,
 
+    // --- Identity-first external path ---
+    continuity_store: Option<Arc<dyn crate::identity_first::contracts::ContinuityStore>>,
+    lease_provider: Option<Arc<dyn crate::identity_first::contracts::LeaseProvider>>,
+    scratch_dir: Option<PathBuf>,
+    runtime_store: Option<Arc<dyn meerkat::SessionStore>>,
+    blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+
     // --- Common fields ---
     module_config: Option<MobKitConfig>,
     module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
@@ -62,6 +69,7 @@ pub struct UnifiedRuntimeBuilder {
     pre_spawn_hook: Option<PreSpawnHook>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
+    mob_storage_in_memory: bool,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -96,17 +104,74 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Set a custom session store for the persistent path. When set, the
-    /// builder uses this store instead of creating a default `SqliteSessionStore`.
-    /// Only valid with `.persistent_state()` — ignored for ephemeral builds.
+    /// Set a custom session store. When set, the builder uses this store
+    /// instead of creating a default one. Works with both `.persistent_state()`
+    /// (overrides the auto-created SQLite store) and ephemeral builds
+    /// (provides durable sessions without redb mob storage).
     pub fn session_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
         self.custom_session_store = Some(store);
+        self
+    }
+
+    /// Use in-memory mob storage instead of redb. When set with
+    /// `.persistent_state()`, sessions are still persisted (via the session
+    /// store) but mob-level metadata (events, flow runs, specs) is ephemeral.
+    /// Avoids the redb exclusive file lock.
+    pub fn mob_storage_in_memory(mut self) -> Self {
+        self.mob_storage_in_memory = true;
         self
     }
 
     /// Set the default LLM client (used for test stubs).
     pub fn default_llm_client(mut self, client: Arc<dyn LlmClient>) -> Self {
         self.default_llm_client = Some(client);
+        self
+    }
+
+    /// Set an external `ContinuityStore` for the identity-first path.
+    ///
+    /// Mutually exclusive with `persistent_state()`.
+    pub fn continuity_store(
+        mut self,
+        store: Arc<dyn crate::identity_first::contracts::ContinuityStore>,
+    ) -> Self {
+        self.continuity_store = Some(store);
+        self
+    }
+
+    /// Set an external `LeaseProvider` for the identity-first path.
+    ///
+    /// Mutually exclusive with `persistent_state()`.
+    pub fn lease_provider(
+        mut self,
+        provider: Arc<dyn crate::identity_first::contracts::LeaseProvider>,
+    ) -> Self {
+        self.lease_provider = Some(provider);
+        self
+    }
+
+    /// Set a scratch directory for the external-authoritative path.
+    ///
+    /// Required when using `continuity_store()` + `lease_provider()`.
+    pub fn scratch_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.scratch_dir = Some(path.into());
+        self
+    }
+
+    /// Set an optional runtime store for durable dispatch.
+    ///
+    /// Without this, dispatch acknowledgment means in-memory only.
+    /// Can be used with both `persistent_state()` and the external path.
+    pub fn runtime_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
+        self.runtime_store = Some(store);
+        self
+    }
+
+    /// Set an optional blob store for custom blob persistence.
+    ///
+    /// Can be used with both `persistent_state()` and the external path.
+    pub fn blob_store(mut self, store: Arc<dyn meerkat_core::BlobStore>) -> Self {
+        self.blob_store = Some(store);
         self
     }
 
@@ -220,6 +285,44 @@ impl UnifiedRuntimeBuilder {
     // -----------------------------------------------------------------------
 
     pub async fn build(mut self) -> Result<UnifiedRuntime, UnifiedRuntimeBuilderError> {
+        // --- Identity-first builder validation ---
+
+        let has_persistent_state = self.persistent_state_path.is_some();
+        let has_continuity_store = self.continuity_store.is_some();
+        let has_lease_provider = self.lease_provider.is_some();
+        let has_scratch_dir = self.scratch_dir.is_some();
+        let has_any_external = has_continuity_store || has_lease_provider || has_scratch_dir;
+
+        // REQ-23: persistent_state and explicit providers are mutually exclusive
+        if has_persistent_state && has_any_external {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "persistent_state() and continuity_store()/lease_provider()/scratch_dir() \
+                 are mutually exclusive — use one path or the other"
+                    .to_string(),
+            ));
+        }
+
+        // REQ-24: external path requires all three
+        if has_any_external && !(has_continuity_store && has_lease_provider && has_scratch_dir) {
+            let mut missing = Vec::new();
+            if !has_continuity_store {
+                missing.push("continuity_store");
+            }
+            if !has_lease_provider {
+                missing.push("lease_provider");
+            }
+            if !has_scratch_dir {
+                missing.push("scratch_dir");
+            }
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                format!(
+                    "external-authoritative path requires continuity_store() + lease_provider() + \
+                     scratch_dir(); missing: {}",
+                    missing.join(", ")
+                ),
+            ));
+        }
+
         // Legacy mob_spec path takes precedence — must be consumed before
         // resolve_mob_spec (which borrows &self for the definition path).
         let mob_spec = match self.mob_spec.take() {
@@ -260,6 +363,22 @@ impl UnifiedRuntimeBuilder {
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
 
+        // Construct session bridge from the mob handle for identity-first wiring.
+        // Available for BOTH persistent_state and external-authoritative paths —
+        // the bridge connects the identity-first control plane to real sessions.
+        let session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>> = {
+            let handle = runtime.mob_runtime.handle();
+            let bridge = if let Some(ref store) = self.custom_session_store {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store(
+                    handle,
+                    store.clone(),
+                )
+            } else {
+                crate::identity_first::bridge::MobSessionBridge::new(handle)
+            };
+            Some(Arc::new(bridge))
+        };
+
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
             post_spawn_hook: self.post_spawn_hook,
@@ -269,6 +388,7 @@ impl UnifiedRuntimeBuilder {
             discovery: self.discovery,
             edge_discovery: self.edge_discovery,
             contact_directory: self.contact_directory,
+            session_bridge,
             ..runtime
         };
 
@@ -383,9 +503,13 @@ impl UnifiedRuntimeBuilder {
                         })?,
                     )
                 };
-            let mob_storage = MobStorage::redb(state_path.join("mob.redb")).map_err(|e| {
-                UnifiedRuntimeBuilderError::Io(format!("failed to open redb mob storage: {e}"))
-            })?;
+            let mob_storage = if self.mob_storage_in_memory {
+                MobStorage::in_memory()
+            } else {
+                MobStorage::redb(state_path.join("mob.redb")).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!("failed to open redb mob storage: {e}"))
+                })?
+            };
 
             MobBootstrapSpec::persistent_inner(
                 definition,

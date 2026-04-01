@@ -116,6 +116,9 @@ pub struct UnifiedRuntime {
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
     peer_mob_handles: tokio::sync::RwLock<BTreeMap<String, MobHandle>>,
+
+    // Identity-first session bridge
+    session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
 }
 
 enum MobEventIngress {
@@ -152,6 +155,7 @@ impl UnifiedRuntime {
             event_log: None,
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
+            session_bridge: None,
         }
     }
 
@@ -218,6 +222,11 @@ impl UnifiedRuntime {
     pub(crate) fn start_event_log(&mut self, config: EventLogConfig) {
         let handle = event_log::start_event_log(config, self.error_hook.clone());
         self.event_log = Some(handle);
+    }
+
+    /// Return the session bridge for identity-first operations, if configured.
+    pub fn session_bridge(&self) -> Option<&Arc<dyn crate::identity_first::bridge::SessionBridge>> {
+        self.session_bridge.as_ref()
     }
 
     /// Return the underlying event log store if one is configured.
