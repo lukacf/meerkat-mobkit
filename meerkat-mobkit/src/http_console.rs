@@ -31,6 +31,7 @@ pub struct ConsoleJsonState {
 
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
 const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../console-dist/console-app.js");
+const CONSOLE_FRONTEND_APP_CSS: &str = include_str!("../console-dist/console-app.css");
 
 pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     console_json_router_with_state(ConsoleJsonState {
@@ -62,6 +63,10 @@ pub fn console_frontend_router() -> Router {
         .route(
             "/console/assets/console-app.js",
             get(console_frontend_app_js_handler),
+        )
+        .route(
+            "/console/assets/console-app.css",
+            get(console_frontend_app_css_handler),
         )
 }
 
@@ -985,5 +990,15 @@ pub async fn console_frontend_app_js_handler() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         CONSOLE_FRONTEND_APP_JS,
+    )
+}
+
+pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        CONSOLE_FRONTEND_APP_CSS,
     )
 }

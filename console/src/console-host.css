@@ -1,0 +1,118 @@
+/* MobKit Console — host styles */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #131316;
+  color: rgba(232, 234, 237, 0.96);
+}
+
+[data-testid="meerkat-console"] {
+  height: 100%;
+  width: 100%;
+}
+
+/* Tune shared component tokens for MobKit */
+.cc-theme-scope {
+  --cc-sidebar-safe-top: 12px;
+  --cc-sidebar-pad-left: 12px;
+  --cc-sidebar-pad-right: 12px;
+  --cc-workbench-sidebar-width: 260px;
+  --cc-workbench-activity-width: 280px;
+}
+
+/* ── Composer ── */
+
+.mc-composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 24px 16px;
+  align-items: flex-end;
+  max-width: var(--_cc-content-width);
+  margin: 0 auto;
+  width: 100%;
+}
+
+.mc-composer textarea {
+  flex: 1 1 auto;
+  min-height: 40px;
+  max-height: 160px;
+  resize: none;
+  border: 1px solid var(--_cc-border-strong);
+  border-radius: 12px;
+  background: var(--_cc-surface-raised);
+  color: var(--_cc-foreground);
+  font: inherit;
+  font-size: var(--_cc-text-sm);
+  padding: 10px 14px;
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  line-height: 1.4;
+}
+
+.mc-composer textarea:focus {
+  border-color: var(--_cc-member-accent);
+  box-shadow: 0 0 0 2px rgba(153, 210, 234, 0.15);
+}
+
+.mc-composer textarea::placeholder {
+  color: var(--_cc-foreground-subtle);
+}
+
+.mc-composer__actions {
+  flex-shrink: 0;
+}
+
+.mc-composer__actions button {
+  padding: 8px 18px;
+  border: none;
+  border-radius: 10px;
+  background: var(--_cc-member-accent);
+  color: #0d1117;
+  font: inherit;
+  font-size: var(--_cc-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  height: 40px;
+}
+
+.mc-composer__actions button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.mc-composer__actions button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* ── Icon fallback ── */
+
+.mc-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 3px;
+  background: var(--_cc-surface-raised);
+  color: var(--_cc-foreground-muted);
+  flex-shrink: 0;
+}

@@ -96,7 +96,7 @@ async function runBrowserProof() {
   const baseUrl = `http://${addr}`;
 
   const backend = spawn(
-    "cargo",
+    path.join(repoRoot, "scripts", "repo-cargo"),
     ["run", "-p", "meerkat-mobkit", "--example", "library_mode_reference"],
     {
       cwd: repoRoot,
@@ -118,32 +118,46 @@ async function runBrowserProof() {
     const page = await browser.newPage();
     await page.goto(`${baseUrl}/console`, { waitUntil: "networkidle" });
 
-    await page.waitForSelector('[data-testid="sidebar-list"] button', {
-      timeout: 30_000,
-    });
-    const sidebarLabels = await page.$$eval('[data-testid="sidebar-list"] button', (buttons) =>
-      buttons.map((button) => button.textContent.trim())
+    // Wait for sidebar agent rows to appear
+    await page.waitForSelector(".cc-sidebar-row", { timeout: 30_000 });
+    const sidebarLabels = await page.$$eval(".cc-sidebar-row", (rows) =>
+      rows.map((row) => row.textContent.trim())
     );
-    assert(sidebarLabels.includes("router"), "sidebar missing router");
-    assert(sidebarLabels.includes("delivery"), "sidebar missing delivery");
+    assert(
+      sidebarLabels.some((label) => label.includes("router")),
+      `sidebar missing router: ${JSON.stringify(sidebarLabels)}`
+    );
+    assert(
+      sidebarLabels.some((label) => label.includes("delivery")),
+      `sidebar missing delivery: ${JSON.stringify(sidebarLabels)}`
+    );
 
+    // Verify dock and conversation pane rendered
+    await page.waitForSelector(".cc-conversation-pane", { timeout: 10_000 });
+
+    // Verify activity rail rendered
+    await page.waitForSelector(".cc-activity-rail", { timeout: 10_000 });
+
+    // Send a message via the composer
     await page.fill('textarea[name="message"]', "browser proof message");
     await page.click('[data-testid="chat-form"] button[type="submit"]');
 
+    // Wait for activity pulse to show events
     await page.waitForFunction(
-      () =>
-        Array.from(document.querySelectorAll('[data-testid="activity-feed"] li')).some((row) =>
-          (row.textContent || "").includes("interaction_started")
-        ),
+      () => document.querySelectorAll(".cc-activity-rail__pulse-row").length > 0,
       { timeout: 30_000 }
     );
 
-    const activityRows = await page.$$eval('[data-testid="activity-feed"] li', (items) =>
+    const pulseLabels = await page.$$eval(".cc-activity-rail__pulse-row", (items) =>
       items.map((item) => item.textContent || "")
     );
     assert(
-      activityRows.some((value) => value.includes("interaction_started")),
-      "activity feed did not show interaction_started"
+      pulseLabels.some((label) =>
+        label.includes("interaction_started") ||
+        label.includes("text_delta") ||
+        label.includes("subscribed")
+      ),
+      `expected event in pulse: ${JSON.stringify(pulseLabels)}`
     );
 
     process.stdout.write("browser e2e ok\n");

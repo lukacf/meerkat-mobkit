@@ -16,40 +16,36 @@
     clippy::useless_vec
 )]
 use std::sync::Arc;
+use std::time::Duration;
 
-use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::{MobStorage, Prefab, SpawnMemberSpec};
+use meerkat_mob::{MobDefinition, SpawnMemberSpec};
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobBootstrapOptions,
-    MobBootstrapSpec, MobKitConfig, PreSpawnData, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    ScheduleDefinition, SubscribeRequest, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    build_runtime_decision_state, handle_console_ingress_json,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobKitConfig, PreSpawnData,
+    RuntimeDecisionInputs, RuntimeOpsPolicy, SubscribeRequest, TrustedOidcRuntimeConfig,
+    UnifiedRuntime, build_runtime_decision_state, handle_console_ingress_json,
 };
+
+const MINIMAL_MOB_TOML: &str = r#"
+[mob]
+id = "reference-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempfile::tempdir()?;
-    let session_path = temp_dir.path().join("sessions");
-    std::fs::create_dir_all(&session_path)?;
-
-    let factory = AgentFactory::new(&session_path).comms(true);
-    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
-
-    let mut definition = Prefab::CodingSwarm.definition();
-    for profile in definition.profiles.values_mut() {
-        profile.model = "gpt-5.2".to_string();
-    }
+    let definition = MobDefinition::from_toml(MINIMAL_MOB_TOML)
+        .map_err(|e| std::io::Error::other(format!("bad mob definition: {e}")))?;
 
     let runtime = UnifiedRuntime::builder()
-        .mob_spec(
-            MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
-                .with_options(MobBootstrapOptions {
-                    allow_ephemeral_sessions: true,
-                    notify_orchestrator_on_resume: true,
-                    default_llm_client: Some(Arc::new(TestClient::default())),
-                }),
-        )
+        .definition(definition)
+        .default_llm_client(Arc::new(TestClient::default()))
         .module_config(MobKitConfig {
             modules: vec![],
             discovery: DiscoverySpec {
@@ -58,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             pre_spawn: Vec::<PreSpawnData>::new(),
         })
-        .timeout(std::time::Duration::from_secs(1))
+        .timeout(Duration::from_secs(5))
         .build()
         .await?;
 
@@ -66,36 +62,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runtime
         .subscribe_events(SubscribeRequest::default())
         .await?;
-    let empty_schedules = Vec::<ScheduleDefinition>::new();
-    runtime
-        .dispatch_schedule_tick(&empty_schedules, 60_000)
-        .await?;
-    let _ = runtime
-        .reconcile_modules(Vec::new(), std::time::Duration::from_secs(1))
-        .await;
-    let loaded_modules = runtime.loaded_modules().await;
-    if loaded_modules.iter().any(|module| module == "router")
-        && loaded_modules.iter().any(|module| module == "delivery")
-    {
-        if let Ok(resolution) = runtime
-            .resolve_routing(meerkat_mobkit::runtime::RoutingResolveRequest {
-                recipient: "sample@example.com".to_string(),
-                channel: Some("transactional".to_string()),
-                retry_max: Some(1),
-                backoff_ms: Some(250),
-                rate_limit_per_minute: Some(2),
-            })
-            .await
-        {
-            let _ = runtime
-                .send_delivery(meerkat_mobkit::runtime::DeliverySendRequest {
-                    resolution,
-                    payload: serde_json::json!({"message":"reference-app smoke"}),
-                    idempotency_key: Some("reference-app-smoke".to_string()),
-                })
-                .await;
-        }
-    }
 
     let decisions = build_runtime_decision_state(RuntimeDecisionInputs {
         bigquery: BigQueryNaming {

@@ -11,78 +11,26 @@ const libraryBundlePath = path.join(outDir, "index.cjs");
 const appBundlePath = path.join(outDir, "console-app.js");
 const htmlPath = path.join(outDir, "index.html");
 
+// Resolve shared packages from local workspace
+const alias = {
+  "@console-core": path.resolve(__dirname, "../packages/console-core/src/index.ts"),
+  "@console-components": path.resolve(__dirname, "../packages/console-components/src/index.ts"),
+  "@console-components/styles": path.resolve(__dirname, "../packages/console-components/src/styles/index.ts"),
+};
+
+// Shared packages import clsx etc. — resolve from console/node_modules
+const nodePaths = [path.resolve(__dirname, "node_modules")];
+
 const html = `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="mobkit-base-url" content="" />
-    <title>Meerkat Console</title>
-    <style>
-      body {
-        margin: 0;
-        font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
-        background: linear-gradient(180deg, #f7f7f3 0%, #ecefe9 100%);
-        color: #123032;
-      }
-
-      #root {
-        min-height: 100vh;
-        padding: 16px;
-      }
-
-      [data-testid="meerkat-console"] {
-        display: grid;
-        gap: 12px;
-        grid-template-columns: minmax(220px, 320px) minmax(320px, 1fr);
-      }
-
-      [data-testid="meerkat-console"] section {
-        border: 1px solid #c4d2cc;
-        border-radius: 10px;
-        background: #ffffff;
-        padding: 12px;
-        box-shadow: 0 4px 12px rgba(18, 48, 50, 0.08);
-      }
-
-      [data-testid="chat-inspector"],
-      [data-testid="topology-panel"],
-      [data-testid="health-overview"] {
-        grid-column: 1 / -1;
-      }
-
-      [data-testid="sidebar-list"],
-      [data-testid="activity-feed"],
-      [data-testid="chat-events"],
-      [data-testid="topology-nodes"],
-      [data-testid="health-loaded-modules"] {
-        margin: 0;
-        padding-left: 20px;
-      }
-
-      [data-testid="chat-form"] {
-        display: grid;
-        gap: 8px;
-      }
-
-      textarea,
-      select,
-      button {
-        font: inherit;
-      }
-
-      textarea {
-        min-height: 96px;
-      }
-
-      @media (max-width: 900px) {
-        [data-testid="meerkat-console"] {
-          grid-template-columns: 1fr;
-        }
-      }
-    </style>
+    <title>MobKit Console</title>
+    <link rel="stylesheet" href="/console/assets/console-app.css" />
   </head>
-  <body>
+  <body class="cc-theme-scope" data-cc-theme="dark">
     <div id="root"></div>
     <script src="/console/assets/console-app.js" defer></script>
   </body>
@@ -91,6 +39,11 @@ const html = `<!doctype html>
 
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
+
+  // Shared components use JSX automatic runtime (react/jsx-runtime)
+  const jsxOptions = { jsx: "automatic" };
+
+  // Library bundle (CJS) for JSDOM / smoke tests
   await build({
     entryPoints: [indexSourcePath],
     outfile: libraryBundlePath,
@@ -98,9 +51,14 @@ async function main() {
     format: "cjs",
     platform: "neutral",
     target: ["es2020"],
-    external: ["react", "react-dom", "react-dom/client"],
+    external: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"],
+    alias,
+    nodePaths,
+    ...jsxOptions,
     minify: false,
   });
+
+  // Browser app bundle (IIFE) served by the gateway
   await build({
     entryPoints: [browserSourcePath],
     outfile: appBundlePath,
@@ -112,9 +70,13 @@ async function main() {
       "process.env.NODE_ENV": '"production"',
       NODE_ENV: '"production"',
     },
+    alias,
+    nodePaths,
+    ...jsxOptions,
     keepNames: true,
     minify: true,
   });
+
   await fs.writeFile(htmlPath, html, "utf8");
 }
 

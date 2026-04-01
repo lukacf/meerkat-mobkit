@@ -1,22 +1,30 @@
 import React from "react";
-import { normalizeAgents } from "./lib/agents";
+import "@console-components/styles";
+import "./console-host.css";
+
 import {
-  buildAgentSidebarViewState,
-  buildConversationViewState,
-  createUserConversationEntry,
-  mapFramesToConversationEntries,
-} from "./lib/console-adapters";
-import { errorMessage } from "./lib/errors";
-import { fetchJson, queryEvents, sendInteraction } from "./lib/network";
-import { ActivityPanel } from "./panels/ActivityPanel";
-import { HealthOverviewPanel } from "./panels/HealthOverviewPanel";
-import { TopologyPanel } from "./panels/TopologyPanel";
-import {
+  ConsoleActivityRail,
+  ConsoleDock,
   ConsoleSidebar,
   ConsoleWorkbench,
   ConversationPane,
-  type ConversationEntry,
-} from "./shared-console";
+  useConsoleDockController,
+} from "@console-components";
+import type { ConversationTimelineEntry } from "@console-core";
+
+import { normalizeAgents } from "./lib/agents";
+import {
+  buildActivityRailViewState,
+  buildConversationViewState,
+  buildDockTarget,
+  buildSidebarViewState,
+  createUserEntry,
+  mapFramesToTimelineEntries,
+  type MobKitDockTarget,
+} from "./lib/adapters";
+import { errorMessage } from "./lib/errors";
+import { fetchJson, sendInteraction } from "./lib/network";
+import { Icon } from "./icon";
 import type {
   ConsoleAgent,
   ConsoleExperience,
@@ -24,22 +32,76 @@ import type {
   ConsoleModulesResponse,
 } from "./types";
 
+// ---------------------------------------------------------------------------
+// Chat composer (inline subcomponent)
+// ---------------------------------------------------------------------------
+
+function ChatComposer({
+  agentLabel,
+  disabled,
+  onSend,
+}: {
+  agentLabel: string;
+  disabled: boolean;
+  onSend: (text: string) => void;
+}) {
+  const [message, setMessage] = React.useState("");
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const trimmed = message.trim();
+    if (!trimmed || disabled) return;
+    onSend(trimmed);
+    setMessage("");
+  }
+
+  return (
+    <form className="mc-composer" data-testid="chat-form" onSubmit={handleSubmit}>
+      <textarea
+        name="message"
+        placeholder={`Message ${agentLabel}...`}
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            handleSubmit(e as unknown as React.FormEvent<HTMLFormElement>);
+          }
+        }}
+      />
+      <div className="mc-composer__actions">
+        <button disabled={disabled || !message.trim()} type="submit">Send</button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Console app
+// ---------------------------------------------------------------------------
+
 interface ConsoleAppProps {
   baseUrl: string;
 }
 
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
-  const [experience, setExperience] = React.useState<ConsoleExperience | null>(null);
+  // ── Data state ──
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
-  const [selectedMemberId, setSelectedMemberId] = React.useState("");
-  const [message, setMessage] = React.useState("");
+  const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
+  const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
-  const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
-  const [framesByMemberId, setFramesByMemberId] = React.useState<Record<string, ConsoleFrame[]>>({});
-  const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationEntry[]>>({});
-  const [historyLoadedByMemberId, setHistoryLoadedByMemberId] = React.useState<Record<string, boolean>>({});
 
+  // ── Dock controller ──
+  const dock = useConsoleDockController<MobKitDockTarget>({
+    createPanelState: ({ target }) => ({
+      id: `panel-${crypto.randomUUID()}`,
+      target: target || null,
+      mode: "console" as const,
+    }),
+  });
+
+  // ── Load experience on mount ──
   React.useEffect(() => {
     let mounted = true;
 
@@ -51,230 +113,148 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
           fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
         ]);
-        if (!mounted) {
-          return;
-        }
+        if (!mounted) return;
 
         const loadedModules = Array.isArray(modulesJson.modules)
           ? modulesJson.modules.map((moduleId) => String(moduleId))
           : [];
         const nextAgents = normalizeAgents(experienceJson, loadedModules);
-
-        setExperience(experienceJson);
         setAgents(nextAgents);
-        if (nextAgents.length > 0) {
-          setSelectedMemberId((current) => current || nextAgents[0]?.member_id || "");
+
+        // Open the first addressable agent in the dock
+        const firstAddressable = nextAgents.find((a) =>
+          a.addressable || a.affordances?.can_send_message
+        ) || nextAgents[0];
+        if (firstAddressable) {
+          dock.openTarget(buildDockTarget(firstAddressable), "replace_focused");
         }
       } catch (loadError) {
-        if (!mounted) {
-          return;
-        }
-        setError(errorMessage(loadError));
+        if (mounted) setError(errorMessage(loadError));
       } finally {
-        if (mounted) {
-          setLoading(false);
-        }
+        if (mounted) setLoading(false);
       }
     }
 
     void load();
-    return () => {
-      mounted = false;
-    };
-  }, [baseUrl]);
+    return () => { mounted = false; };
+  }, [baseUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selectedAgent = React.useMemo(
-    () => agents.find((agent) => agent.member_id === selectedMemberId) || null,
-    [agents, selectedMemberId],
-  );
-
-  React.useEffect(() => {
-    if (!selectedMemberId || historyLoadedByMemberId[selectedMemberId]) {
-      return;
+  // ── Select agent from sidebar → open in dock ──
+  function onSelectAgent(
+    _block: unknown,
+    _section: unknown,
+    item: { id: string },
+  ) {
+    const agent = agents.find((a) => a.member_id === item.id);
+    if (agent) {
+      dock.openTarget(buildDockTarget(agent), "replace_focused");
     }
+  }
 
-    let cancelled = false;
+  // ── Send message to agent ──
+  async function onSendMessage(memberId: string, text: string) {
+    const agent = agents.find((a) => a.member_id === memberId) || null;
 
-    async function loadHistory() {
-      try {
-        const frames = await queryEvents(baseUrl, selectedMemberId, 40);
-        if (cancelled) {
-          return;
-        }
-
-        // Prepend history before any live frames. History contains only
-        // module events (queryEvents filters agent-kind rows); live SSE emits
-        // only agent events. The two sets are disjoint — no dedup needed.
-        setFramesByMemberId((current) => ({
-          ...current,
-          [selectedMemberId]: [...frames, ...(current[selectedMemberId] || [])],
-        }));
-        setEntriesByMemberId((current) => ({
-          ...current,
-          [selectedMemberId]: [
-            ...mapFramesToConversationEntries(selectedAgent, frames),
-            ...(current[selectedMemberId] || []),
-          ],
-        }));
-      } catch (_) {
-        // History is optional; the console still works with live interaction frames only.
-      } finally {
-        if (!cancelled) {
-          setHistoryLoadedByMemberId((current) => ({
-            ...current,
-            [selectedMemberId]: true,
-          }));
-        }
-      }
-    }
-
-    void loadHistory();
-    return () => {
-      cancelled = true;
-    };
-  }, [baseUrl, historyLoadedByMemberId, selectedAgent, selectedMemberId]);
-
-  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmedMessage = message.trim();
-    if (!selectedMemberId || !trimmedMessage) {
-      return;
-    }
-
-    const userEntry = createUserConversationEntry(trimmedMessage);
-    setError("");
+    // Optimistic user entry
+    const userEntry = createUserEntry(text);
     setEntriesByMemberId((current) => ({
       ...current,
-      [selectedMemberId]: [...(current[selectedMemberId] || []), userEntry],
+      [memberId]: [...(current[memberId] || []), userEntry],
     }));
 
     try {
-      const result = await sendInteraction(baseUrl, selectedMemberId, trimmedMessage);
-      const nextEntries = mapFramesToConversationEntries(selectedAgent, result.frames);
+      const result = await sendInteraction(baseUrl, memberId, text);
+      const agentEntries = mapFramesToTimelineEntries(agent, result.frames);
 
-      setFramesByMemberId((current) => ({
-        ...current,
-        [selectedMemberId]: [...(current[selectedMemberId] || []), ...result.frames],
-      }));
       setEntriesByMemberId((current) => ({
         ...current,
-        [selectedMemberId]: [...(current[selectedMemberId] || []), ...nextEntries],
+        [memberId]: [...(current[memberId] || []), ...agentEntries],
       }));
+
       setActivityFrames((current) => [...result.frames, ...current].slice(0, 64));
-      // Invalidate history cache so the next visit re-fetches including this turn.
-      setHistoryLoadedByMemberId((current) => ({
-        ...current,
-        [selectedMemberId]: false,
-      }));
-      setMessage("");
     } catch (submitError) {
       setError(errorMessage(submitError));
-      // Roll back the optimistic user entry — the backend never accepted the message.
+      // Roll back optimistic user entry
       setEntriesByMemberId((current) => ({
         ...current,
-        [selectedMemberId]: (current[selectedMemberId] || []).filter(
-          (e) => e.id !== userEntry.id,
-        ),
+        [memberId]: (current[memberId] || []).filter((e) => e.id !== userEntry.id),
       }));
     }
   }
 
+  // ── Loading / error states ──
   if (loading) {
     return <div data-testid="console-loading">Loading console...</div>;
   }
-
   if (error) {
     return <div data-testid="console-error">{error}</div>;
   }
 
-  const topologySnapshot = experience?.topology?.live_snapshot || {};
-  const topologyNodes = Array.isArray(topologySnapshot.nodes)
-    ? topologySnapshot.nodes.map((node) => String(node))
-    : [];
-  const topologyNodeCount = Number.isFinite(topologySnapshot.node_count)
-    ? (topologySnapshot.node_count as number)
-    : topologyNodes.length;
-
-  const healthSnapshot = experience?.health_overview?.live_snapshot || {};
-  const loadedModules = Array.isArray(healthSnapshot.loaded_modules)
-    ? healthSnapshot.loaded_modules.map((moduleId) => String(moduleId))
-    : [];
-  const loadedModuleCount = Number.isFinite(healthSnapshot.loaded_module_count)
-    ? (healthSnapshot.loaded_module_count as number)
-    : loadedModules.length;
-  const running =
-    typeof healthSnapshot.running === "boolean"
-      ? healthSnapshot.running
-      : null;
-
-  const sidebarViewState = buildAgentSidebarViewState({
-    title: experience?.agent_sidebar?.title || "Agents",
-    agents,
-    selectedMemberId,
-  });
-  const conversationViewState = buildConversationViewState({
-    conversationId: selectedMemberId || "console",
-    title: selectedAgent?.label || (experience?.chat_inspector?.title || "Chat Inspector"),
-    entries: selectedMemberId ? (entriesByMemberId[selectedMemberId] || []) : [],
-    selectedAgentLabel: selectedAgent?.label || selectedMemberId || "an agent",
-  });
+  // ── Build view states ──
+  const focusedMemberId = dock.focusedTarget?.id || "";
+  const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId });
+  const activityVS = buildActivityRailViewState({ agents, eventFrames: activityFrames });
 
   return (
-    <div data-testid="meerkat-console">
+    <div className="cc-theme-scope" data-cc-theme="dark" data-testid="meerkat-console">
       <ConsoleWorkbench
-        main={(
-          <ConversationPane
-            footer={(
-              <form className="mc-composer" data-testid="chat-form" onSubmit={onSubmit}>
-                <div className="mc-composer__header">
-                  <span className="mc-composer__eyebrow">Target</span>
-                  <span className="mc-composer__target">{selectedAgent?.label || "Select an agent"}</span>
-                </div>
-                <label className="mc-composer__field">
-                  <span className="mc-composer__label">Message</span>
-                  <textarea
-                    name="message"
-                    placeholder={selectedAgent ? `Message ${selectedAgent.label}` : "Select an agent to start"}
-                    value={message}
-                    onChange={(changeEvent) => setMessage(changeEvent.target.value)}
-                  />
-                </label>
-                <div className="mc-composer__actions">
-                  <button disabled={!selectedMemberId || !message.trim()} type="submit">Send</button>
-                </div>
-              </form>
-            )}
-            viewState={conversationViewState}
-          />
-        )}
-        sidebar={(
+        launcher={
           <ConsoleSidebar
-            getItemButtonProps={(item) => ({
-              "data-agent-id": agents.find((agent) => agent.member_id === item.id)?.agent_id || item.id,
-            })}
-            onSelectItem={(item) => setSelectedMemberId(item.id)}
-            viewState={sidebarViewState}
+            viewState={sidebarVS}
+            Icon={Icon}
+            onSelectItem={onSelectAgent}
           />
-        )}
+        }
+        main={
+          <ConsoleDock
+            viewState={dock.viewState}
+            Icon={Icon}
+            onSelectTab={(tab) => dock.selectTab(tab.id)}
+            onCloseTab={(tab) => dock.closeTab(tab.id)}
+            onFocusPanel={(panel) => dock.focusPanel(panel.id)}
+            onSplitPanel={(panel, dir) => dock.splitPanel(panel.id, dir)}
+            onResizeSplit={(id, ratio) => dock.resizeSplit(id, ratio)}
+            onCreateTab={() => dock.createTab()}
+            renderPanelBody={(panel) => {
+              const memberId = panel.target?.id || "";
+              const entries = entriesByMemberId[memberId] || [];
+              const vs = buildConversationViewState({
+                memberId,
+                agentLabel: panel.target?.title || "Agent",
+                entries,
+              });
+              return (
+                <ConversationPane
+                  viewState={vs}
+                  Icon={Icon}
+                  footer={
+                    <ChatComposer
+                      agentLabel={panel.target?.title || "Agent"}
+                      disabled={!memberId}
+                      onSend={(text) => void onSendMessage(memberId, text)}
+                    />
+                  }
+                />
+              );
+            }}
+          />
+        }
+        activityRail={
+          <ConsoleActivityRail
+            viewState={activityVS}
+            Icon={Icon}
+            onTogglePicker={() => {}}
+            onCollapse={() => {}}
+            renderSlotPreview={() => null}
+            onSelectItem={(focusId) => {
+              const agent = agents.find((a) => a.member_id === focusId);
+              if (agent) {
+                dock.openTarget(buildDockTarget(agent), "replace_focused");
+              }
+            }}
+          />
+        }
       />
-
-      <div className="mc-dashboard">
-        <ActivityPanel
-          title={experience?.activity_feed?.title || "Activity"}
-          frames={activityFrames}
-        />
-        <TopologyPanel
-          title={experience?.topology?.title || "Topology"}
-          nodeCount={topologyNodeCount}
-          nodes={topologyNodes}
-        />
-        <HealthOverviewPanel
-          title={experience?.health_overview?.title || "Health"}
-          running={running}
-          loadedModuleCount={loadedModuleCount}
-          loadedModules={loadedModules}
-        />
-      </div>
     </div>
   );
 }

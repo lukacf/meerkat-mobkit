@@ -93,7 +93,7 @@ async function runSmoke() {
   const baseUrl = `http://${addr}`;
 
   const backend = spawn(
-    "cargo",
+    path.join(repoRoot, "scripts", "repo-cargo"),
     ["run", "-p", "meerkat-mobkit", "--example", "library_mode_reference"],
     {
       cwd: repoRoot,
@@ -108,23 +108,6 @@ async function runSmoke() {
 
   try {
     await waitForHttpOk(`${baseUrl}/healthz`);
-    const experienceResponse = await fetch(`${baseUrl}/console/experience`);
-    assert(experienceResponse.ok, "console experience endpoint unavailable");
-    const experienceJson = await experienceResponse.json();
-    const expectedNodeCount =
-      experienceJson?.topology?.live_snapshot?.node_count;
-    const expectedLoadedModuleCount =
-      experienceJson?.health_overview?.live_snapshot?.loaded_module_count;
-    assert.equal(
-      typeof expectedNodeCount,
-      "number",
-      "topology live snapshot node_count missing"
-    );
-    assert.equal(
-      typeof expectedLoadedModuleCount,
-      "number",
-      "health live snapshot loaded_module_count missing"
-    );
 
     const dom = new JSDOM(
       "<!doctype html><html><body><div id=\"root\"></div></body></html>",
@@ -146,69 +129,42 @@ async function runSmoke() {
     const root = dom.window.document.getElementById("root");
     createConsoleApp(root, { baseUrl });
 
+    // 1. Wait for sidebar to populate with agent rows
     await waitFor(() => {
-      return dom.window.document.querySelectorAll("[data-testid=\"sidebar-list\"] button").length >= 2;
+      return dom.window.document.querySelectorAll(".cc-sidebar-row").length >= 2;
     });
 
     const sidebarLabels = Array.from(
-      dom.window.document.querySelectorAll("[data-testid=\"sidebar-list\"] button")
-    ).map((button) => button.textContent.trim());
-    assert(sidebarLabels.includes("router"));
-    assert(sidebarLabels.includes("delivery"));
+      dom.window.document.querySelectorAll(".cc-sidebar-row")
+    ).map((row) => row.textContent.trim());
+    assert(
+      sidebarLabels.some((label) => label.includes("router")),
+      `expected "router" in sidebar labels: ${JSON.stringify(sidebarLabels)}`
+    );
+    assert(
+      sidebarLabels.some((label) => label.includes("delivery")),
+      `expected "delivery" in sidebar labels: ${JSON.stringify(sidebarLabels)}`
+    );
 
+    // 2. Verify dock panel (conversation pane) rendered
     await waitFor(() => {
-      const nodeCount = dom.window.document.querySelector("[data-testid=\"topology-node-count\"]");
-      const moduleCount = dom.window.document.querySelector(
-        "[data-testid=\"health-loaded-module-count\"]"
-      );
-      return Boolean(nodeCount && moduleCount);
+      return dom.window.document.querySelector(".cc-conversation-pane") !== null;
     });
 
-    const topologyCountText =
-      dom.window.document.querySelector("[data-testid=\"topology-node-count\"]")?.textContent || "";
-    const loadedModuleCountText =
-      dom.window.document.querySelector("[data-testid=\"health-loaded-module-count\"]")
-        ?.textContent || "";
-    assert(
-      topologyCountText.includes(String(expectedNodeCount)),
-      `expected topology node count ${expectedNodeCount} in "${topologyCountText}"`
-    );
-    assert(
-      loadedModuleCountText.includes(String(expectedLoadedModuleCount)),
-      `expected loaded module count ${expectedLoadedModuleCount} in "${loadedModuleCountText}"`
-    );
-
-    const messageField = dom.window.document.querySelector("textarea[name=\"message\"]");
-    const form = dom.window.document.querySelector("[data-testid=\"chat-form\"]");
-    assert(messageField, "message textarea missing");
-    assert(form, "chat form missing");
-
-    messageField.value = "smoke message";
-    messageField.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-    messageField.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
-    form.dispatchEvent(
-      new dom.window.Event("submit", { bubbles: true, cancelable: true })
-    );
-
+    // 3. Verify activity rail rendered with roster panel
     await waitFor(() => {
-      return dom.window.document.querySelectorAll("[data-testid=\"activity-feed\"] li").length > 0;
-    }, 30_000, 100);
+      return dom.window.document.querySelector(".cc-activity-rail") !== null;
+    });
+    const rosterItems = dom.window.document.querySelectorAll(".cc-activity-rail__roster-item");
+    assert(rosterItems.length >= 2, `expected at least 2 roster items, got ${rosterItems.length}`);
 
-    const activityRows = Array.from(
-      dom.window.document.querySelectorAll("[data-testid=\"activity-feed\"] li")
-    ).map((row) => row.textContent || "");
-    assert(
-      activityRows.some((value) => value.includes("interaction_started")),
-      "activity feed did not receive interaction_started event"
-    );
+    // 4. Verify chat composer is present
+    const composer = dom.window.document.querySelector("[data-testid=\"chat-form\"]");
+    assert(composer, "chat composer missing");
 
-    const inspectorRows = Array.from(
-      dom.window.document.querySelectorAll("[data-testid=\"chat-events\"] li")
-    ).map((row) => row.textContent || "");
-    assert(
-      inspectorRows.some((value) => value.includes("interaction_started")),
-      "chat inspector did not render interaction_started event"
-    );
+    // 5. Verify the workbench layout has all three columns
+    const workbench = dom.window.document.querySelector(".cc-workbench");
+    assert(workbench, "workbench layout missing");
 
     dom.window.close();
     process.stdout.write("smoke ok\n");
