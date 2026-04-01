@@ -1,0 +1,115 @@
+/**
+ * TDD tests for the new builder API: persistentState, afterCreate, SessionCreatedContext.
+ */
+
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+
+import { MobKit, MobKitBuilder } from "../dist/index.js";
+import { CallbackDispatcher } from "../dist/agent-builder.js";
+import { SessionBuildOptions } from "../dist/models.js";
+import type { SessionCreatedContext } from "../dist/types.js";
+
+// ---------------------------------------------------------------------------
+// persistentState on builder
+// ---------------------------------------------------------------------------
+
+describe("MobKitBuilder.persistentState()", () => {
+  it("returns this for chaining", () => {
+    const builder = MobKit.builder();
+    const result = builder.persistentState("/tmp/test-state");
+    assert.equal(result, builder);
+  });
+
+  it("sets persistentState on config", () => {
+    const builder = MobKit.builder();
+    builder.persistentState("/tmp/test-state");
+    assert.equal(builder._config.persistentState, "/tmp/test-state");
+  });
+
+  it("defaults to null", () => {
+    const builder = MobKit.builder();
+    assert.equal(builder._config.persistentState, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// callback/after_create dispatch
+// ---------------------------------------------------------------------------
+
+describe("CallbackDispatcher callback/after_create", () => {
+  it("routes to builder.afterCreate()", async () => {
+    const received: { sessionId?: string; context?: SessionCreatedContext } = {};
+
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerBuilder({
+      async buildAgent(_opts: SessionBuildOptions) {},
+      async afterCreate(sessionId: string, context: SessionCreatedContext) {
+        received.sessionId = sessionId;
+        received.context = context;
+      },
+    });
+
+    await dispatcher.handleCallback("callback/after_create", {
+      session_id: "sid-123",
+      model: "claude-sonnet-4-5",
+      labels: { agent_type: "lead" },
+      system_prompt: "You are a lead.",
+    });
+
+    assert.equal(received.sessionId, "sid-123");
+    assert.equal(received.context?.model, "claude-sonnet-4-5");
+    assert.deepEqual(received.context?.labels, { agent_type: "lead" });
+    assert.equal(received.context?.systemPrompt, "You are a lead.");
+  });
+
+  it("is a no-op when builder has no afterCreate", async () => {
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerBuilder({
+      async buildAgent(_opts: SessionBuildOptions) {},
+    });
+
+    // Should not throw.
+    await dispatcher.handleCallback("callback/after_create", {
+      session_id: "sid-456",
+      model: "test-model",
+      labels: {},
+      system_prompt: null,
+    });
+  });
+
+  it("swallows afterCreate errors (best-effort)", async () => {
+    const dispatcher = new CallbackDispatcher();
+    dispatcher.registerBuilder({
+      async buildAgent(_opts: SessionBuildOptions) {},
+      async afterCreate(_sessionId: string, _context: SessionCreatedContext) {
+        throw new Error("db unavailable");
+      },
+    });
+
+    // Should not throw.
+    await dispatcher.handleCallback("callback/after_create", {
+      session_id: "sid-789",
+      model: "test-model",
+      labels: {},
+      system_prompt: null,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SessionCreatedContext interface
+// ---------------------------------------------------------------------------
+
+describe("SessionCreatedContext", () => {
+  it("can be constructed from wire format", () => {
+    const ctx: SessionCreatedContext = {
+      model: "claude-sonnet-4-5",
+      labels: { agent_type: "lead" },
+      systemPrompt: "You are a lead agent.",
+    };
+    assert.equal(ctx.model, "claude-sonnet-4-5");
+    assert.deepEqual(ctx.labels, { agent_type: "lead" });
+    assert.equal(ctx.systemPrompt, "You are a lead agent.");
+  });
+});

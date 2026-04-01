@@ -108,6 +108,14 @@ class MobKitRuntime:
                 self._dispatcher.register_builder(self._config.session_builder)
             if self._config.error_callback is not None:
                 self._dispatcher.register_error_callback(self._config.error_callback)
+            # Register identity-first providers before transport start —
+            # restore_flow during init may trigger provider callbacks.
+            if self._config.roster_provider is not None:
+                self._dispatcher.register_roster_provider(self._config.roster_provider)
+            if self._config.topology_provider is not None:
+                self._dispatcher.register_topology_provider(self._config.topology_provider)
+            if self._config.agent_customizer is not None:
+                self._dispatcher.register_agent_customizer(self._config.agent_customizer)
             self._transport.set_callback_handler(self._dispatcher.handle_callback)
             self._transport.start()
             if not self._transport.is_running():
@@ -123,10 +131,14 @@ class MobKitRuntime:
                             "mobkit/init did not return http_base_url — "
                             "SSE event streaming unavailable"
                         )
-            except Exception:
+            except Exception as init_err:
                 if self._transport is not None and not self._transport.is_running():
-                    raise TransportError("gateway process died during bootstrap")
-                raise TransportError("mobkit/init failed — runtime could not be initialized")
+                    raise TransportError(
+                        f"gateway process died during bootstrap: {init_err}"
+                    )
+                raise TransportError(
+                    f"mobkit/init failed: {init_err}"
+                )
         elif self._config.session_builder and isinstance(
             self._config.session_builder, SessionAgentBuilder
         ):
@@ -141,7 +153,9 @@ class MobKitRuntime:
     def _build_init_params(self) -> dict[str, Any]:
         """Build init params dict from builder config for mobkit/init RPC."""
         params: dict[str, Any] = {}
-        if self._config.mob_config_path:
+        if self._config.mob_config_inline:
+            params["mob_config"] = self._config.mob_config_inline
+        elif self._config.mob_config_path:
             with open(self._config.mob_config_path) as f:
                 params["mob_config"] = f.read()
         if self._config.modules:
@@ -161,6 +175,15 @@ class MobKitRuntime:
         if self._config.event_log:
             runtime_options["event_log"] = _serialize_config(self._config.event_log)
         params["runtime_options"] = runtime_options
+        if self._config.persistent_state:
+            params["persistent_state"] = self._config.persistent_state
+        # Identity-first provider flags
+        if self._config.roster_provider is not None:
+            params["has_roster_provider"] = True
+        if self._config.topology_provider is not None:
+            params["has_topology_provider"] = True
+        if self._config.agent_customizer is not None:
+            params["has_agent_customizer"] = True
         return params
 
     def _rpc_sync(self, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -244,6 +267,124 @@ class MobKitRuntime:
         finally:
             await self.shutdown()
 
+    # -----------------------------------------------------------------
+    # Identity-first runtime APIs (REQ-41)
+    # -----------------------------------------------------------------
+
+    def agent(self, identity: str) -> IdentityAgentHandle:
+        """Return an identity-scoped agent handle."""
+        return IdentityAgentHandle(self, identity)
+
+    async def send(self, identity: str, content: "str | list") -> Any:
+        """Send conversational content to an addressable identity."""
+        from .identity_first_models import SendResult
+        if isinstance(content, str):
+            wire_content = content
+        else:
+            wire_content = [b.to_dict() for b in content]
+        raw = await self._rpc("mobkit/send", {
+            "identity": identity,
+            "content": wire_content,
+        })
+        return SendResult.from_dict(raw) if isinstance(raw, dict) else raw
+
+    async def dispatch(self, identity: str, dispatch_input: Any) -> Any:
+        """Dispatch content to any identity (addressable or internal)."""
+        from .identity_first_models import DispatchResult
+        raw = await self._rpc("mobkit/dispatch", {
+            "identity": identity,
+            "dispatch_input": dispatch_input.to_dict(),
+        })
+        return DispatchResult.from_dict(raw) if isinstance(raw, dict) else raw
+
+    async def dispatch_text(
+        self,
+        identity: str,
+        text: str,
+        *,
+        origin: str = "system",
+        correlation_id: str | None = None,
+    ) -> Any:
+        """Dispatch plain text without constructing DispatchInput manually."""
+        from .identity_first_models import DispatchInput
+        di = DispatchInput(content=text, origin=origin, correlation_id=correlation_id)
+        return await self.dispatch(identity, di)
+
+    async def subscribe(self, identity: str) -> Any:
+        """Subscribe to identity-scoped events."""
+        raw = await self._rpc("mobkit/subscribe", {"identity": identity})
+        return raw
+
+    async def status(self, identity: str) -> Any:
+        """Return IdentityStatus for the given identity."""
+        from .identity_first_models import IdentityStatus
+        raw = await self._rpc("mobkit/status_identity", {"identity": identity})
+        return IdentityStatus.from_dict(raw)
+
+    async def inspect_identity(self, identity: str) -> Any:
+        """Return execution-level inspection (output_preview, peer connectivity)."""
+        from .identity_first_models import IdentityInspection
+        raw = await self._rpc("mobkit/inspect_identity", {"identity": identity})
+        return IdentityInspection.from_dict(raw)
+
+    async def respawn(self, identity: str) -> Any:
+        """Non-destructive durable recovery for an identity."""
+        return await self._rpc("mobkit/respawn", {"identity": identity})
+
+    async def retire(self, identity: str) -> Any:
+        """Retire an identity through the standard retirement pipeline."""
+        return await self._rpc("mobkit/retire", {"identity": identity})
+
+    async def reset(self, identity: str) -> Any:
+        """Destructive continuity reset for an identity."""
+        return await self._rpc("mobkit/reset", {"identity": identity})
+
+    async def reconcile(self) -> Any:
+        """Re-run restore_flow with fresh roster from the provider.
+
+        Picks up roster changes (added/removed/modified identities) and
+        topology changes without restarting the runtime.
+        """
+        return await self._rpc("mobkit/reconcile_identity", {})
+
+    async def delete_identity(self, identity: str) -> Any:
+        """Remove continuity for an identity."""
+        return await self._rpc("mobkit/delete_identity", {"identity": identity})
+
+    async def wait_until_ready(
+        self,
+        identities: list[str],
+        *,
+        timeout: float = 60,
+        poll_interval: float = 1.5,
+    ) -> None:
+        """Wait until all identities have completed their autonomous kickoff turn.
+
+        Polls inspect_identity() until each identity has a non-None output_preview,
+        meaning the kickoff turn has completed and the agent is ready for work.
+
+        Note: readiness is inferred from output_preview presence — a proxy for
+        kickoff completion. A future meerkat release may expose an explicit
+        readiness signal, at which point this method will use that instead.
+        """
+        import time
+        deadline = time.monotonic() + timeout
+        remaining = set(identities)
+        while remaining and time.monotonic() < deadline:
+            for identity in list(remaining):
+                try:
+                    inspection = await self.inspect_identity(identity)
+                    if inspection.output_preview is not None:
+                        remaining.discard(identity)
+                except Exception:
+                    pass
+            if remaining:
+                await asyncio.sleep(poll_interval)
+        if remaining:
+            raise TimeoutError(
+                f"identities did not become ready within {timeout}s: {sorted(remaining)}"
+            )
+
     async def shutdown(self) -> None:
         self._running = False
         if self._transport is not None:
@@ -253,6 +394,111 @@ class MobKitRuntime:
     @property
     def is_running(self) -> bool:
         return self._running
+
+
+class IdentityAgentHandle:
+    """Identity-scoped agent handle for delivery, lifecycle, and observation."""
+
+    def __init__(self, runtime: MobKitRuntime, identity: str):
+        self._runtime = runtime
+        self._identity = identity
+
+    @property
+    def identity(self) -> str:
+        return self._identity
+
+    async def send(self, content: Any) -> Any:
+        """Send conversational content (Addressable only)."""
+        return await self._runtime.send(self._identity, content)
+
+    async def dispatch(self, dispatch_input: Any) -> Any:
+        """Dispatch with a DispatchInput object."""
+        return await self._runtime.dispatch(self._identity, dispatch_input)
+
+    async def dispatch_text(
+        self,
+        text: str,
+        *,
+        origin: str = "system",
+        correlation_id: str | None = None,
+    ) -> Any:
+        """Dispatch plain text without constructing DispatchInput."""
+        return await self._runtime.dispatch_text(
+            self._identity, text, origin=origin, correlation_id=correlation_id,
+        )
+
+    async def status(self) -> Any:
+        """Return IdentityStatus."""
+        return await self._runtime.status(self._identity)
+
+    async def inspect(self) -> Any:
+        """Return execution-level inspection (output_preview, peers)."""
+        return await self._runtime.inspect_identity(self._identity)
+
+    async def wait_until_ready(self, *, timeout: float = 60) -> None:
+        """Wait until this identity's autonomous kickoff turn has completed."""
+        await self._runtime.wait_until_ready(
+            [self._identity], timeout=timeout,
+        )
+
+    async def wait_for_output(
+        self,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 1.5,
+        baseline: str | None = None,
+    ) -> str:
+        """Poll until this identity produces an output_preview.
+
+        If baseline is given, waits until output_preview differs from it.
+        Raises TimeoutError if timeout expires.
+        """
+        import time
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            inspection = await self.inspect()
+            if inspection.output_preview:
+                if baseline is None or inspection.output_preview != baseline:
+                    return inspection.output_preview
+            await asyncio.sleep(poll_interval)
+        raise TimeoutError(
+            f"identity {self._identity!r} did not produce output within {timeout}s"
+        )
+
+    async def wait_for_output_containing(
+        self,
+        needle: str,
+        *,
+        timeout: float = 90,
+        poll_interval: float = 1.5,
+    ) -> str:
+        """Poll until output_preview contains the given substring."""
+        import time
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            inspection = await self.inspect()
+            if inspection.output_preview and needle in inspection.output_preview:
+                return inspection.output_preview
+            await asyncio.sleep(poll_interval)
+        raise TimeoutError(
+            f"identity {self._identity!r} did not produce output "
+            f"containing {needle!r} within {timeout}s"
+        )
+
+    async def subscribe(self) -> Any:
+        return await self._runtime.subscribe(self._identity)
+
+    async def respawn(self) -> Any:
+        return await self._runtime.respawn(self._identity)
+
+    async def retire(self) -> Any:
+        return await self._runtime.retire(self._identity)
+
+    async def reset(self) -> Any:
+        return await self._runtime.reset(self._identity)
+
+    async def delete_identity(self) -> Any:
+        return await self._runtime.delete_identity(self._identity)
 
 
 class MobHandle:

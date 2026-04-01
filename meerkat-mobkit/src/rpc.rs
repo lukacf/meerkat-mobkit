@@ -853,11 +853,21 @@ pub fn handle_mobkit_rpc_json(
     }
 }
 
+/// Identity-first runtime context passed to the RPC handler.
+pub struct IdentityFirstContext {
+    pub runtime: std::sync::Arc<crate::identity_first::IdentityRuntime>,
+    pub roster_provider: std::sync::Arc<dyn crate::identity_first::contracts::RosterProvider>,
+    pub topology_provider:
+        Option<std::sync::Arc<dyn crate::identity_first::contracts::TopologyProvider>>,
+    pub customizer: Option<std::sync::Arc<dyn crate::identity_first::contracts::AgentCustomizer>>,
+}
+
 pub async fn handle_unified_rpc_json(
     runtime: &UnifiedRuntime,
     request_json: &str,
     timeout: Duration,
     http_base_url: Option<&str>,
+    identity_ctx: Option<&IdentityFirstContext>,
 ) -> String {
     let raw_request: Value = match serde_json::from_str(request_json) {
         Ok(raw_request) => raw_request,
@@ -1732,6 +1742,372 @@ pub async fn handle_unified_rpc_json(
         "mobkit/member_session_ref" => {
             mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await
         }
+        // ----- identity-first methods -----
+        "mobkit/send" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            let content_val = request
+                .params
+                .get("content")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let content = if let Some(s) = content_val.as_str() {
+                meerkat_core::ContentInput::Text(s.to_string())
+            } else {
+                meerkat_core::ContentInput::Text(content_val.to_string())
+            };
+            match identity_rt.send(&identity, &content).await {
+                Ok(token) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({ "fencing_token": token.get() })),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/dispatch" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            let di_val = request
+                .params
+                .get("dispatch_input")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let content_text = di_val
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let origin_str = di_val
+                .get("origin")
+                .and_then(|v| v.as_str())
+                .unwrap_or("system");
+            let origin = match origin_str {
+                "connector" => crate::identity_first::DispatchOrigin::Connector,
+                "scheduler" => crate::identity_first::DispatchOrigin::Scheduler,
+                "policy" => crate::identity_first::DispatchOrigin::Policy,
+                "flow" => crate::identity_first::DispatchOrigin::Flow,
+                _ => crate::identity_first::DispatchOrigin::System,
+            };
+            let correlation_id = di_val
+                .get("correlation_id")
+                .and_then(|v| v.as_str())
+                .map(crate::identity_first::CorrelationId::new);
+            let dispatch_input = crate::identity_first::DispatchInput {
+                content: meerkat_core::ContentInput::Text(content_text),
+                origin,
+                correlation_id,
+                idempotency_key: None,
+            };
+            match identity_rt.dispatch(&identity, &dispatch_input).await {
+                Ok((token, durable)) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(
+                        serde_json::json!({ "fencing_token": token.get(), "durable": durable }),
+                    ),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/status_identity" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.status(&identity).await {
+                Ok(status) => {
+                    let result = serde_json::json!({
+                        "state": format!("{:?}", status.state),
+                        "identity": identity_str,
+                        "agent_runtime_id": status.agent_runtime_id.as_ref().map(super::identity_first::AgentRuntimeId::as_str),
+                        "session_id": status.session_id.as_ref().map(ToString::to_string),
+                        "profile": status.profile.as_ref().map(meerkat_mob::ProfileName::as_str),
+                        "addressability": format!("{:?}", status.addressability),
+                        "display_name": status.display_name.as_ref().map(super::identity_first::DisplayName::as_str),
+                        "labels": status.labels,
+                        "generation": status.generation.map(super::identity_first::ContinuityGeneration::get),
+                        "checkpoint_version": status.checkpoint_version.map(super::identity_first::CheckpointVersion::get),
+                    });
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(result),
+                        error: None,
+                    }
+                }
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/respawn" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.respawn(&identity).await {
+                Ok(record) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": record.identity.as_str(),
+                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                        "session_id": record.session_id.to_string(),
+                        "generation": record.generation.get(),
+                        "checkpoint_version": record.checkpoint_version.get(),
+                    })),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/retire" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.retire(&identity).await {
+                Ok(token) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({ "fencing_token": token.get() })),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/reset" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.reset(&identity).await {
+                Ok(record) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": record.identity.as_str(),
+                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                        "session_id": record.session_id.to_string(),
+                        "generation": record.generation.get(),
+                        "checkpoint_version": record.checkpoint_version.get(),
+                    })),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/delete_identity" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.delete_identity(&identity).await {
+                Ok(()) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({})),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/inspect_identity" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.inspect(&identity).await {
+                Ok(inspection) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": identity_str,
+                        "output_preview": inspection.output_preview,
+                        "is_final": inspection.is_final,
+                        "peer_reachable_count": inspection.peer_reachable_count,
+                    })),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/reconcile_identity" => {
+            let ctx = match identity_ctx {
+                Some(ctx) => ctx,
+                None => return identity_not_configured(response_id),
+            };
+            // Re-fetch roster from provider and re-run restore_flow
+            let roster_specs = match ctx
+                .roster_provider
+                .roster(&crate::identity_first::RosterContext {
+                    mob_definition: None,
+                    previous_identities: Vec::new(),
+                })
+                .await
+            {
+                Ok(specs) => specs,
+                Err(e) => {
+                    return error_response(
+                        response_id,
+                        -32603,
+                        format!("roster provider failed: {e}"),
+                    );
+                }
+            };
+            match crate::identity_first::restore_flow(
+                &ctx.runtime,
+                &roster_specs,
+                ctx.topology_provider.as_deref(),
+                ctx.customizer.as_deref(),
+            )
+            .await
+            {
+                Ok(result) => {
+                    let outcomes: serde_json::Map<String, Value> = result
+                        .outcomes
+                        .iter()
+                        .map(|(id, outcome)| {
+                            let val = match outcome {
+                                crate::identity_first::RestoreOutcome::Created {
+                                    record, ..
+                                } => {
+                                    serde_json::json!({
+                                        "outcome": "created",
+                                        "identity": record.identity.as_str(),
+                                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                                        "session_id": record.session_id.to_string(),
+                                        "generation": record.generation.get(),
+                                    })
+                                }
+                                crate::identity_first::RestoreOutcome::Resumed {
+                                    record, ..
+                                } => {
+                                    serde_json::json!({
+                                        "outcome": "resumed",
+                                        "identity": record.identity.as_str(),
+                                        "agent_runtime_id": record.agent_runtime_id.as_str(),
+                                        "session_id": record.session_id.to_string(),
+                                        "generation": record.generation.get(),
+                                    })
+                                }
+                                crate::identity_first::RestoreOutcome::Broken(failure) => {
+                                    serde_json::json!({
+                                        "outcome": "broken",
+                                        "identity": failure.identity.as_str(),
+                                        "detail": failure.detail,
+                                    })
+                                }
+                            };
+                            (id.to_string(), val)
+                        })
+                        .collect();
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "outcomes": outcomes,
+                            "managed_edges": result.managed_edges.len(),
+                        })),
+                        error: None,
+                    }
+                }
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
         method if method.contains('/') && !method.starts_with("mobkit/") => {
             let module_id = method
                 .split('/')
@@ -1816,6 +2192,44 @@ fn build_models_catalog_result() -> Value {
     serde_json::json!({
         "models": entries,
         "provider_defaults": defaults,
+    })
+}
+
+fn identity_not_configured(response_id: Value) -> String {
+    error_response(response_id, -32601, "identity-first runtime not configured")
+}
+
+fn identity_error_response(
+    response_id: Value,
+    err: &crate::identity_first::IdentityRuntimeError,
+) -> JsonRpcResponse {
+    use crate::identity_first::IdentityRuntimeError;
+    let (code, message) = match err {
+        IdentityRuntimeError::UnknownIdentity(id) => (-32001, format!("unknown identity: {id}")),
+        IdentityRuntimeError::NotAddressable(na) => {
+            (-32002, format!("not addressable: {}", na.identity))
+        }
+        IdentityRuntimeError::NoActiveLease(id) => (-32003, format!("no active lease: {id}")),
+        IdentityRuntimeError::LeaseLost(id) => (-32004, format!("lease lost: {id}")),
+        _ => (-32603, format!("{err}")),
+    };
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError { code, message }),
+    }
+}
+
+fn error_response(response_id: Value, code: i64, message: impl Into<String>) -> String {
+    serialize_response(&JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code,
+            message: message.into(),
+        }),
     })
 }
 

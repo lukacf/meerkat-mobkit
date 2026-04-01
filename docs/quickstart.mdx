@@ -130,6 +130,48 @@ http://localhost:8080/console
 
 The console shows the agent sidebar, activity feed, topology view, and health overview -- all updating in real time via SSE.
 
+## Identity-first (household apps)
+
+For apps with durable agent identities (like HomeCore), use the identity-first API:
+
+```python
+from meerkat_mobkit import MobKit
+from meerkat_mobkit.identity_first_models import DurableAgentSpec, ManagedPeerEdge
+
+# Define your household roster
+class MyRoster:
+    async def roster(self, context):
+        return [
+            DurableAgentSpec(identity="identity:luka", profile="personal", addressability="addressable"),
+            DurableAgentSpec(identity="triage:main", profile="triage", addressability="internal_only"),
+        ]
+
+class MyTopology:
+    async def compute_edges(self, target_identities, context):
+        return [ManagedPeerEdge(a="identity:luka", b="triage:main")]
+
+# Boot the runtime
+rt = await (
+    MobKit.builder()
+    .mob_inline(MOB_TOML)
+    .persistent_state("./state")
+    .roster(MyRoster())
+    .topology_provider(MyTopology())
+    .gateway("./rpc_gateway")
+    .build()
+)
+
+# Use identity-scoped handles
+triage = rt.agent("triage:main")
+luka = rt.agent("identity:luka")
+
+await triage.dispatch_text("New event from connector", origin="connector")
+output = await triage.wait_for_output(timeout=60)
+
+await luka.send("What's happening today?")
+await luka.wait_for_output(timeout=60)
+```
+
 ## What's next
 
 - [Modules](/concepts/modules) -- how the module system works

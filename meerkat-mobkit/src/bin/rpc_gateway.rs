@@ -130,6 +130,7 @@ impl StdioCallbackBridge {
     }
 
     /// Send a fire-and-forget notification to Python (no response expected).
+    /// Uses `try_send` — may drop under backpressure.
     fn notify(&self, method: &str, params: Value) {
         let notification = json!({
             "jsonrpc": "2.0",
@@ -138,6 +139,21 @@ impl StdioCallbackBridge {
         });
         if let Ok(line) = serde_json::to_string(&notification) {
             let _ = self.stdout_tx.try_send(line);
+        }
+    }
+
+    /// Send a notification with reliable delivery (async, waits for channel space).
+    /// Use for callbacks where delivery must not be silently lost.
+    async fn notify_reliable(&self, method: &str, params: Value) {
+        let notification = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        if let Ok(line) = serde_json::to_string(&notification) {
+            if let Err(e) = self.stdout_tx.send(line).await {
+                eprintln!("[mobkit-gateway] failed to deliver {method}: {e}");
+            }
         }
     }
 
@@ -202,6 +218,13 @@ impl StdioCallbackBridge {
         if let Some(tx) = self.pending.lock().await.remove(&id) {
             let _ = tx.send(msg);
         }
+    }
+}
+
+#[async_trait]
+impl meerkat_mobkit::identity_first::gateway_bridges::CallbackBridge for StdioCallbackBridge {
+    async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        self.call(method, params).await
     }
 }
 
@@ -289,6 +312,9 @@ struct StdioCallbackAgentBuilder {
     inner: FactoryAgentBuilder,
     bridge: StdioCallbackBridge,
     has_session_builder: bool,
+    /// Session store for loading sessions by ID when the Python builder
+    /// sets `resume_session_id`. Only populated in persistent mode.
+    session_store: Option<Arc<dyn meerkat::SessionStore>>,
 }
 
 #[async_trait]
@@ -364,6 +390,55 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                         }
                     }
                 }
+                // Apply resume_session_id: Python builder can request resuming
+                // an existing session. The gateway loads the session from the
+                // store and sets it on build.resume_session.
+                if let Some(resume_id) = result.get("resume_session_id").and_then(|v| v.as_str()) {
+                    if let Some(ref store) = self.session_store {
+                        let sid =
+                            meerkat_core::types::SessionId::parse(resume_id).map_err(|_| {
+                                SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: invalid resume_session_id: {resume_id}"
+                                )))
+                            })?;
+                        // Validate against any spawn-level resume already set.
+                        if let Some(existing) = modified_req
+                            .build
+                            .as_ref()
+                            .and_then(|b| b.resume_session.as_ref())
+                        {
+                            if existing.id() != &sid {
+                                return Err(SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: resume_session_id conflict: \
+                                     spawn set {} but hook set {resume_id}",
+                                    existing.id()
+                                ))));
+                            }
+                            // Same ID — already loaded, skip.
+                        } else {
+                            let session = store.load(&sid).await.map_err(|e| {
+                                SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: failed to load resume session {resume_id}: {e}"
+                                )))
+                            })?;
+                            let session = session.ok_or_else(|| {
+                                SessionError::Agent(AgentError::ToolError(format!(
+                                    "callback/build_agent: resume session not found: {resume_id}"
+                                )))
+                            })?;
+                            let build = modified_req.build.get_or_insert_with(|| {
+                                meerkat_core::service::SessionBuildOptions::default()
+                            });
+                            build.resume_session = Some(session);
+                        }
+                    } else {
+                        return Err(SessionError::Agent(AgentError::ToolError(
+                            "callback/build_agent: resume_session_id requires persistent mode \
+                             (no session store available in ephemeral mode)"
+                                .to_string(),
+                        )));
+                    }
+                }
                 // Callback tools: Python SDK provides tool names via add_tools()
                 // or register_tool(). Create a CallbackToolDispatcher that routes
                 // tool calls back to Python via callback/call_tool.
@@ -404,9 +479,12 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                 self.inner.build_agent(&modified_req, event_tx).await
             }
             Err(err) => {
-                eprintln!("callback/build_agent failed: {err}");
-                // Continue with default build — don't fail the session
-                self.inner.build_agent(req, event_tx).await
+                // Propagate the error — before_create failure aborts session creation.
+                // This is an intentional breaking change from v0.5.x where failures
+                // were silently swallowed with a fallback to default build.
+                Err(SessionError::Agent(AgentError::ToolError(format!(
+                    "callback/build_agent failed: {err}"
+                ))))
             }
         }
     }
@@ -416,6 +494,19 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
 #[tokio::main]
 async fn run_persistent() {
     use tokio::io::{AsyncBufReadExt, BufReader};
+
+    // Initialize tracing subscriber so meerkat-mob/meerkat-runtime errors
+    // are visible on stderr. Without this, all tracing events are silently
+    // dropped and runtime failures (agent build, LLM calls, comms drain)
+    // are invisible.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .init();
 
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
@@ -493,6 +584,44 @@ external_addressable = true
         std::process::exit(1);
     });
 
+    // Validate profile model names against the catalog.
+    // A wrong model name (e.g., "claude-sonnet-4-5-20250514" instead of "claude-sonnet-4-5")
+    // silently fails at LLM call time with no observable error. Catch it here.
+    {
+        let catalog = meerkat_models::catalog::catalog();
+        let known_models: std::collections::HashSet<&str> =
+            catalog.iter().map(|entry| entry.id).collect();
+
+        for (profile_name, profile) in &definition.profiles {
+            if !known_models.contains(profile.model.as_str()) {
+                let model = &profile.model;
+                // Find similar model names for the error hint
+                let prefix = model.split('-').take(3).collect::<Vec<_>>().join("-");
+                let mut suggestions: Vec<&str> = known_models
+                    .iter()
+                    .filter(|m| {
+                        m.starts_with(&prefix)
+                            || model
+                                .starts_with(&m.split('-').take(3).collect::<Vec<_>>().join("-"))
+                    })
+                    .copied()
+                    .collect();
+                suggestions.sort_unstable();
+                suggestions.truncate(5);
+                let hint = if suggestions.is_empty() {
+                    String::new()
+                } else {
+                    format!(". Did you mean one of: {}?", suggestions.join(", "))
+                };
+                fail_init(
+                    &request_id,
+                    -32602,
+                    format!("Profile '{profile_name}' uses unknown model '{model}'{hint}"),
+                );
+            }
+        }
+    }
+
     let modules: Vec<ModuleConfig> = params
         .get("modules")
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -510,6 +639,26 @@ external_addressable = true
 
     let has_session_builder = params
         .get("has_session_builder")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let persistent_state = params
+        .get("persistent_state")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+
+    let has_roster_provider = params
+        .get("has_roster_provider")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let has_topology_provider = params
+        .get("has_topology_provider")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let has_agent_customizer = params
+        .get("has_agent_customizer")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
@@ -584,28 +733,140 @@ external_addressable = true
         }
     });
 
-    // 5. Build session service with callback bridge
-    // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
-    // so agent-level persistence is not needed. This avoids failures on read-only
-    // filesystems (e.g., GKE containers) where the default JSONL store can't write.
-    let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
-    let factory = AgentFactory::new(temp_dir.path())
-        .comms(true)
-        .session_store(Arc::new(meerkat::MemoryStore::new()));
-    let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-    let callback_builder = StdioCallbackAgentBuilder {
-        inner: inner_builder,
-        bridge: bridge.clone(),
-        has_session_builder,
-    };
-    let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
-
-    let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
-        .with_options(MobBootstrapOptions {
-            allow_ephemeral_sessions: true,
-            notify_orchestrator_on_resume: true,
-            default_llm_client: None,
+    /// Helper: send a JSON-RPC error response for the init request and exit.
+    fn fail_init(request_id: &Value, code: i32, message: String) -> ! {
+        let error_response = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": { "code": code, "message": message }
         });
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string(&error_response)
+                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+        );
+        let _ = stdout.flush();
+        std::process::exit(1);
+    }
+
+    // 5. Build session service with callback bridge.
+    let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
+        if let Err(e) = std::fs::create_dir_all(state_path) {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("failed to create persistent state directory: {e}"),
+            );
+        }
+        let sqlite_path = state_path.join("sessions.db");
+        let session_store: Arc<dyn meerkat::SessionStore> =
+            match meerkat_store::SqliteSessionStore::open(sqlite_path) {
+                Ok(s) => Arc::new(s),
+                Err(e) => fail_init(
+                    &request_id,
+                    -32603,
+                    format!("failed to open SQLite session store: {e}"),
+                ),
+            };
+        let mob_storage = match MobStorage::redb(state_path.join("mob.redb")) {
+            Ok(s) => s,
+            Err(e) => fail_init(
+                &request_id,
+                -32603,
+                format!("failed to open redb mob storage: {e}"),
+            ),
+        };
+        // Match the ephemeral path's capability mask — only comms is enabled
+        // by default. Apps control additional capabilities via their mob
+        // definition profiles, not the gateway factory.
+        let factory = AgentFactory::new(state_path).comms(true);
+        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+        let callback_builder = StdioCallbackAgentBuilder {
+            inner: inner_builder,
+            bridge: bridge.clone(),
+            has_session_builder,
+            session_store: Some(session_store.clone()),
+        };
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::FsBlobStore::new(state_path.join("blobs")));
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+            Arc::new(meerkat_session::PersistentSessionService::new(
+                callback_builder,
+                16,
+                session_store,
+                None,
+                blob_store.clone(),
+            ));
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+            runtime_store,
+            blob_store,
+        ));
+        let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: None,
+            });
+        spec.runtime_adapter = Some(adapter);
+        (spec, None)
+    } else {
+        // Ephemeral mode (original behavior).
+        // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
+        // so agent-level persistence is not needed. This avoids failures on read-only
+        // filesystems (e.g., GKE containers) where the default JSONL store can't write.
+        let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
+        let factory = AgentFactory::new(temp_dir.path())
+            .comms(true)
+            .session_store(Arc::new(meerkat::MemoryStore::new()));
+        let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        let callback_builder = StdioCallbackAgentBuilder {
+            inner: inner_builder,
+            bridge: bridge.clone(),
+            has_session_builder,
+            session_store: None,
+        };
+        let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
+
+        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_options(MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: None,
+            });
+        (spec, Some(temp_dir))
+    };
+
+    // Wire callback/after_create — notify Python/TS SDK after each session creation.
+    // Uses notify_reliable to avoid silent drops under backpressure.
+    let mob_spec = if has_session_builder {
+        let after_bridge = bridge.clone();
+        mob_spec.with_after_create_hook(Arc::new(
+            move |session_id: meerkat_core::types::SessionId, ctx| {
+                let b = after_bridge.clone();
+                Box::pin(async move {
+                    b.notify_reliable(
+                        "callback/after_create",
+                        json!({
+                            "session_id": session_id.to_string(),
+                            "model": ctx.model,
+                            "labels": ctx.labels,
+                            "system_prompt": ctx.system_prompt,
+                        }),
+                    )
+                    .await;
+                })
+            },
+        ))
+    } else {
+        mob_spec
+    };
 
     let timeout = Duration::from_secs(30);
     let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
@@ -639,6 +900,120 @@ external_addressable = true
             })
         }));
     }
+
+    // 5c. Build identity-first runtime if providers are configured
+    let identity_ctx: Option<meerkat_mobkit::rpc::IdentityFirstContext> = if has_roster_provider {
+        use meerkat_mobkit::identity_first::{
+            DurabilityPolicy, IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore,
+            LocalLeaseProvider, RosterContext,
+            contracts::LeaseProvider as LeaseProviderTrait,
+            gateway_bridges::{
+                GatewayAgentCustomizer, GatewayRosterProvider, GatewayTopologyProvider,
+            },
+        };
+
+        // Build provider bridges
+        let continuity_store: Arc<dyn meerkat_mobkit::identity_first::ContinuityStore> =
+            if let Some(ref state_path) = persistent_state {
+                Arc::new(
+                    LocalContinuityStore::open(state_path.join("continuity.db")).unwrap_or_else(
+                        |e| {
+                            fail_init(
+                                &request_id,
+                                -32603,
+                                format!("failed to open continuity store: {e}"),
+                            );
+                        },
+                    ),
+                )
+            } else {
+                Arc::new(
+                    LocalContinuityStore::open(
+                        std::env::temp_dir()
+                            .join(format!("mobkit-continuity-{}.db", std::process::id())),
+                    )
+                    .unwrap_or_else(|e| {
+                        fail_init(
+                            &request_id,
+                            -32603,
+                            format!("failed to open continuity store: {e}"),
+                        );
+                    }),
+                )
+            };
+
+        let lease_provider: Arc<dyn LeaseProviderTrait> = Arc::new(LocalLeaseProvider::new());
+
+        // Construct the session bridge from the mob handle. The gateway
+        // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
+        // session_bridge() won't be set — build it directly.
+        let mob_handle = runtime.mob_handle();
+        let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(
+            meerkat_mobkit::identity_first::MobSessionBridge::new(mob_handle),
+        );
+
+        let irt = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store,
+            lease_provider,
+            runtime_instance_id: format!("gateway-{}", std::process::id()),
+            has_runtime_store: persistent_state.is_some(),
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(bridge_arc),
+            default_timeout: None,
+        });
+
+        // Build provider bridges for callbacks to Python
+        let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
+            Arc::new(GatewayRosterProvider::new(bridge.clone()));
+        let topology: Option<Arc<dyn meerkat_mobkit::identity_first::contracts::TopologyProvider>> =
+            if has_topology_provider {
+                Some(Arc::new(GatewayTopologyProvider::new(bridge.clone())))
+            } else {
+                None
+            };
+        let customizer: Option<
+            Arc<dyn meerkat_mobkit::identity_first::contracts::AgentCustomizer>,
+        > = if has_agent_customizer {
+            Some(Arc::new(GatewayAgentCustomizer::new(bridge.clone())))
+        } else {
+            None
+        };
+
+        // Call restore_flow to bootstrap identities from the roster provider
+        let roster_specs = roster
+            .roster(&RosterContext {
+                mob_definition: None,
+                previous_identities: Vec::new(),
+            })
+            .await
+            .unwrap_or_else(|e| {
+                fail_init(&request_id, -32603, format!("roster provider failed: {e}"));
+            });
+
+        if let Err(e) = meerkat_mobkit::identity_first::restore_flow(
+            &irt,
+            &roster_specs,
+            topology.as_deref(),
+            customizer.as_deref(),
+        )
+        .await
+        {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("identity-first restore_flow failed: {e}"),
+            );
+        }
+
+        Some(meerkat_mobkit::rpc::IdentityFirstContext {
+            runtime: Arc::new(irt),
+            roster_provider: roster,
+            topology_provider: topology,
+            customizer,
+        })
+    } else {
+        None
+    };
 
     // 6. Bind HTTP server on ephemeral port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -706,9 +1081,14 @@ external_addressable = true
                 },
                 _ = tokio::signal::ctrl_c() => break,
             };
-            let response =
-                handle_unified_rpc_json(&runtime, &request_line, timeout, Some(&http_base_url))
-                    .await;
+            let response = handle_unified_rpc_json(
+                &runtime,
+                &request_line,
+                timeout,
+                Some(&http_base_url),
+                identity_ctx.as_ref(),
+            )
+            .await;
             if !response.is_empty() {
                 let _ = stdout_tx.send(response).await;
             }
@@ -723,7 +1103,7 @@ external_addressable = true
     drop(stdout_tx);
     let _ = stdin_reader.await;
     let _ = stdout_writer.await;
-    drop(temp_dir);
+    drop(_temp_dir);
 }
 
 fn main() {

@@ -1,5 +1,7 @@
 //! MobKit core — orchestration engine for the Meerkat multi-agent runtime.
 
+pub mod identity_first;
+
 pub mod auth;
 pub mod baseline;
 pub mod config_convention;
@@ -55,14 +57,15 @@ pub use http_sse::{
     mob_events_sse_router,
 };
 pub use mob_handle_runtime::{
-    MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot, MobReconcileOptions,
-    MobReconcileReport, MobRuntimeError, PreBuildHook, RealMobRuntime,
+    AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot,
+    MobReconcileOptions, MobReconcileReport, MobRuntime, MobRuntimeError, RealMobRuntime,
+    SessionCreatedContext, SessionHook,
 };
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
 pub use rpc::{
-    JsonRpcError, JsonRpcRequest, JsonRpcResponse, MOBKIT_CONTRACT_VERSION,
+    IdentityFirstContext, JsonRpcError, JsonRpcRequest, JsonRpcResponse, MOBKIT_CONTRACT_VERSION,
     handle_console_ingress_json, handle_mobkit_rpc_json, handle_unified_rpc_json,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};

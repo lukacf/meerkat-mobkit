@@ -81,6 +81,24 @@ class SessionQuery:
         return result
 
 
+@dataclass(frozen=True)
+class SessionCreatedContext:
+    """Context delivered to SessionAgentBuilder.after_create after a session
+    is successfully created."""
+
+    model: str
+    labels: dict[str, str]
+    system_prompt: str | None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> SessionCreatedContext:
+        return cls(
+            model=data.get("model", ""),
+            labels=dict(data.get("labels") or {}),
+            system_prompt=data.get("system_prompt"),
+        )
+
+
 @dataclass
 class SessionBuildOptions:
     """Options passed to SessionAgentBuilder.build_agent().
@@ -93,6 +111,7 @@ class SessionBuildOptions:
     session_id: str | None = None
     labels: dict[str, str] = field(default_factory=dict)
     profile_name: str | None = None
+    resume_session_id: str | None = None
     _tools: list[str] = field(default_factory=list, repr=False)
     _tool_handlers: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -140,6 +159,8 @@ class SessionBuildOptions:
             result["labels"] = dict(self.labels)
         if self.profile_name is not None:
             result["profile_name"] = self.profile_name
+        if self.resume_session_id is not None:
+            result["resume_session_id"] = self.resume_session_id
         if self._tools:
             result["tools"] = self._tools
         return result

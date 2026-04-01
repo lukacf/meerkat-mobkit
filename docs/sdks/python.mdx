@@ -34,7 +34,60 @@ async def main():
 asyncio.run(main())
 ```
 
-## Primary API
+## Identity-First API
+
+For household-style apps (HomeCore), the identity-first API provides durable lifecycle management.
+Agents are addressed by stable identities (`identity:luka`, `triage:main`), not member IDs.
+
+```python
+from meerkat_mobkit import MobKit
+from meerkat_mobkit.identity_first_models import DispatchInput, DurableAgentSpec, ManagedPeerEdge
+
+# Boot with roster provider
+rt = await (
+    MobKit.builder()
+    .mob_inline(MOB_TOML)                 # or .mob("mob.toml")
+    .persistent_state(state_dir)
+    .roster(my_roster)                    # provides DurableAgentSpec list
+    .topology_provider(my_topology)       # optional: managed edges
+    .agent_customizer(my_customizer)      # optional: per-identity prompts
+    .gateway("./rpc_gateway")
+    .build()
+)
+
+# Identity-scoped agent handles
+triage = rt.agent("triage:main")
+luka = rt.agent("identity:luka")
+
+# Delivery
+await luka.send("Hello")                                          # Addressable only
+await triage.dispatch_text("School closed", origin="connector")   # Any identity
+
+# Observation (no mob_handle, no member IDs needed)
+inspection = await triage.inspect()   # output_preview, peer_reachable_count
+output = await triage.wait_for_output(timeout=90)
+await rt.wait_until_ready(["triage:main", "identity:luka"])
+
+# Status
+status = await luka.status()          # state, session_id, generation, labels
+
+# Lifecycle
+await luka.reset()                    # Destructive: new generation, new session
+await rt.agent("domain:calendar").respawn()  # Non-destructive recovery
+await rt.reconcile()                  # In-process roster reconciliation
+```
+
+### DispatchInput convenience constructors
+
+```python
+DispatchInput.system("text")
+DispatchInput.connector("event from slack", correlation_id="msg-1")
+DispatchInput.scheduler("nightly sync")
+```
+
+## Mob-Level API
+
+For direct mob-member operations (discovery-based), the mob handle API is still available.
 
 The app-facing surface has three categories. Each is a distinct concern — no method crosses categories.
 
@@ -146,15 +199,20 @@ rt = await (
 | Method | Description |
 |--------|-------------|
 | `.mob(path)` | Path to mob TOML config |
+| `.mob_inline(toml_str)` | Inline mob TOML string (no temp file) |
+| `.persistent_state(path)` | Enable persistent state at path |
+| `.roster(provider)` | Identity-first roster provider |
+| `.topology_provider(provider)` | Identity-first topology provider |
+| `.agent_customizer(customizer)` | Identity-first agent customizer |
 | `.session_service(builder, store)` | Session agent builder and optional store |
-| `.discovery(callback)` | Discovery callback |
+| `.discovery(callback)` | Discovery callback (mob-level) |
 | `.pre_spawn(callback)` | Pre-spawn callback |
 | `.gating(path)` | Gating config path |
 | `.routing(path)` | Routing config path |
 | `.scheduling(*files)` | Schedule config files |
 | `.memory(config)` | Memory configuration |
 | `.auth(config)` | Auth configuration |
-| `.gateway(bin_path)` | Path to mobkit-rpc binary |
+| `.gateway(bin_path)` | Path to rpc_gateway binary |
 | `.modules(specs)` | Module specifications |
 | `.build()` | Build and connect the runtime |
 

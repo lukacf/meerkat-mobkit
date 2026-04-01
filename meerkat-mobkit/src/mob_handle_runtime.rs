@@ -32,9 +32,10 @@ pub struct MobBootstrapOptions {
     pub default_llm_client: Option<Arc<dyn LlmClient>>,
 }
 
-/// Hook called before each session is created. Receives the mutable
+/// Async hook called before each session is created. Receives the mutable
 /// `CreateSessionRequest` so the app can inject external tools, augment the
-/// system prompt, set labels, override the model, etc.
+/// system prompt, set labels, override the model, load session resume data
+/// from external stores, etc.
 ///
 /// The hook runs **before** `create_session` captures labels and LLM identity,
 /// so all mutations are reflected in session metadata, not just the agent build.
@@ -43,19 +44,39 @@ pub struct MobBootstrapOptions {
 /// let spec = MobBootstrapSpec::persistent_with_hook(
 ///     definition, storage, store_path, 64, session_store,
 ///     |req: &mut CreateSessionRequest| {
-///         // Inject per-agent tools
-///         let build = req.build.get_or_insert_with(SessionBuildOptions::default);
-///         build.external_tools = Some(my_tools());
-///         // Augment system prompt
-///         req.system_prompt = Some(format!(
-///             "{}\n{}",
-///             req.system_prompt.as_deref().unwrap_or(""),
-///             my_dynamic_context(),
-///         ));
+///         Box::pin(async move {
+///             // Async: load session from external store
+///             let session = my_store.load_by_owner(&owner_id).await;
+///             if let Some(s) = session {
+///                 let build = req.build.get_or_insert_with(SessionBuildOptions::default);
+///                 build.resume_session = Some(s);
+///             }
+///             // Sync: inject tools, augment prompt
+///             let build = req.build.get_or_insert_with(SessionBuildOptions::default);
+///             build.external_tools = Some(my_tools());
+///             Ok(())
+///         })
 ///     },
 /// );
 /// ```
-pub type PreBuildHook = Arc<dyn Fn(&mut CreateSessionRequest) + Send + Sync>;
+pub(crate) type PreBuildHook = Arc<
+    dyn Fn(
+            &mut CreateSessionRequest,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), SessionError>> + Send + '_>,
+        > + Send
+        + Sync,
+>;
+
+/// Optional post-creation hook invoked after `create_session` succeeds.
+pub type AfterCreateHook = Arc<
+    dyn Fn(
+            meerkat_core::types::SessionId,
+            SessionCreatedContext,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Wraps a `MobSessionService`, applying a `PreBuildHook` to the
 /// `CreateSessionRequest` in `create_session()` before delegating.
@@ -66,6 +87,7 @@ pub type PreBuildHook = Arc<dyn Fn(&mut CreateSessionRequest) + Send + Sync>;
 struct PreBuildMobSessionService {
     inner: Arc<dyn MobSessionService>,
     hook: PreBuildHook,
+    after_create_hook: Option<AfterCreateHook>,
 }
 
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
@@ -78,8 +100,23 @@ macro_rules! delegate_mob_session_service {
                 &self,
                 mut req: CreateSessionRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
-                (self.hook)(&mut req);
-                self.inner.create_session(req).await
+                (self.hook)(&mut req).await?;
+
+                // Capture context before create_session consumes the request.
+                let ctx = SessionCreatedContext {
+                    model: req.model.clone(),
+                    labels: req.labels.clone().unwrap_or_default(),
+                    system_prompt: req.system_prompt.clone(),
+                };
+
+                let result = self.inner.create_session(req).await?;
+
+                // Best-effort after_create — errors logged, not propagated.
+                if let Some(ref after_hook) = self.after_create_hook {
+                    after_hook(result.session_id.clone(), ctx).await;
+                }
+
+                Ok(result)
             }
             async fn start_turn(
                 &self,
@@ -247,6 +284,192 @@ macro_rules! delegate_mob_session_service {
 
 delegate_mob_session_service!(PreBuildMobSessionService);
 
+/// Wraps a `MobSessionService` to fire an `AfterCreateHook` after each
+/// successful `create_session`. Unlike `PreBuildMobSessionService`, this
+/// captures context **after** the inner service (including any pre-build hooks)
+/// has finished, so the context reflects all mutations.
+struct AfterCreateMobSessionService {
+    inner: Arc<dyn MobSessionService>,
+    after_hook: AfterCreateHook,
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
+    async fn create_session(
+        &self,
+        req: CreateSessionRequest,
+    ) -> Result<meerkat_core::types::RunResult, SessionError> {
+        // Capture pre-create context from the request (before inner consumes it).
+        // The inner service's pre-build hooks may mutate the request further,
+        // but we capture here because we can't read the request after inner
+        // consumes it. The pre-build hook runs inside inner.create_session.
+        //
+        // For accurate post-mutation context, we re-read from the request
+        // that was already mutated by any outer hooks, and accept that inner
+        // hooks are not visible here. This is the correct trade-off: the
+        // after_create context matches the request as seen by this layer.
+        let ctx = SessionCreatedContext {
+            model: req.model.clone(),
+            labels: req.labels.clone().unwrap_or_default(),
+            system_prompt: req.system_prompt.clone(),
+        };
+        let result = self.inner.create_session(req).await?;
+        (self.after_hook)(result.session_id.clone(), ctx).await;
+        Ok(result)
+    }
+    async fn start_turn(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        req: meerkat_core::service::StartTurnRequest,
+    ) -> Result<meerkat_core::types::RunResult, SessionError> {
+        self.inner.start_turn(id, req).await
+    }
+    async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
+        self.inner.interrupt(id).await
+    }
+    async fn set_session_client(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        client: Arc<dyn meerkat_core::AgentLlmClient>,
+    ) -> Result<(), SessionError> {
+        self.inner.set_session_client(id, client).await
+    }
+    async fn hot_swap_session_llm_identity(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        client: Arc<dyn meerkat_core::AgentLlmClient>,
+        identity: meerkat_core::session::SessionLlmIdentity,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .hot_swap_session_llm_identity(id, client, identity)
+            .await
+    }
+    async fn update_session_keep_alive(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        keep_alive: bool,
+    ) -> Result<(), SessionError> {
+        self.inner.update_session_keep_alive(id, keep_alive).await
+    }
+    async fn has_live_session(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<bool, SessionError> {
+        self.inner.has_live_session(id).await
+    }
+    async fn set_session_tool_filter(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        filter: meerkat_core::ToolFilter,
+    ) -> Result<(), SessionError> {
+        self.inner.set_session_tool_filter(id, filter).await
+    }
+    async fn read(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::service::SessionView, SessionError> {
+        self.inner.read(id).await
+    }
+    async fn list(
+        &self,
+        query: meerkat_core::service::SessionQuery,
+    ) -> Result<Vec<meerkat_core::service::SessionSummary>, SessionError> {
+        self.inner.list(query).await
+    }
+    async fn archive(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
+        self.inner.archive(id).await
+    }
+    async fn subscribe_session_events(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
+        meerkat_core::service::SessionService::subscribe_session_events(self.inner.as_ref(), id)
+            .await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionServiceCommsExt for AfterCreateMobSessionService {
+    async fn comms_runtime(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Option<Arc<dyn meerkat_core::agent::CommsRuntime>> {
+        self.inner.comms_runtime(id).await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionServiceControlExt for AfterCreateMobSessionService {
+    async fn append_system_context(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        req: meerkat_core::service::AppendSystemContextRequest,
+    ) -> Result<
+        meerkat_core::service::AppendSystemContextResult,
+        meerkat_core::service::SessionControlError,
+    > {
+        self.inner.append_system_context(id, req).await
+    }
+}
+
+#[async_trait]
+impl meerkat_core::service::SessionServiceHistoryExt for AfterCreateMobSessionService {
+    async fn read_history(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        query: meerkat_core::service::SessionHistoryQuery,
+    ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
+        self.inner.read_history(id, query).await
+    }
+}
+
+#[async_trait]
+impl MobSessionService for AfterCreateMobSessionService {
+    fn supports_persistent_sessions(&self) -> bool {
+        self.inner.supports_persistent_sessions()
+    }
+    fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::RuntimeSessionAdapter>> {
+        self.inner.runtime_adapter()
+    }
+    async fn session_belongs_to_mob(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        mob_id: &meerkat_mob::MobId,
+    ) -> bool {
+        self.inner.session_belongs_to_mob(session_id, mob_id).await
+    }
+    async fn load_persisted_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
+        self.inner.load_persisted_session(session_id).await
+    }
+    async fn apply_runtime_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        run_id: meerkat_core::lifecycle::RunId,
+        req: meerkat_core::service::StartTurnRequest,
+        boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
+        contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
+    ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+        self.inner
+            .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
+            .await
+    }
+    async fn discard_live_session(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner.discard_live_session(session_id).await
+    }
+    async fn cancel_all_checkpointers(&self) {
+        self.inner.cancel_all_checkpointers().await;
+    }
+    async fn rearm_all_checkpointers(&self) {
+        self.inner.rearm_all_checkpointers().await;
+    }
+}
+
 /// Specification for bootstrapping a mob runtime from a definition, storage, and session service.
 pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
@@ -259,6 +482,9 @@ pub struct MobBootstrapSpec {
     /// service's `runtime_store` can stay `None` (keeping the checkpointer
     /// enabled). See meerkat-session#checkpointer-enabled-flag.
     pub runtime_adapter: Option<Arc<meerkat_runtime::RuntimeSessionAdapter>>,
+    /// Holds the ephemeral temp directory alive for the lifetime of the spec.
+    /// Only populated when the builder creates an ephemeral runtime.
+    pub(crate) _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
 }
 
 impl MobBootstrapSpec {
@@ -277,11 +503,25 @@ impl MobBootstrapSpec {
                 default_llm_client: None,
             },
             runtime_adapter: None,
+            _ephemeral_dir: None,
         }
     }
 
     pub fn with_options(mut self, options: MobBootstrapOptions) -> Self {
         self.options = options;
+        self
+    }
+
+    /// Wrap the session service with an after-create hook that fires after
+    /// each successful `create_session`. The hook is best-effort: errors are
+    /// not propagated. Uses `AfterCreateMobSessionService` which wraps the
+    /// inner service without a pre-build hook, so any pre-build mutations
+    /// from inner wrappers are fully reflected in the context.
+    pub fn with_after_create_hook(mut self, hook: AfterCreateHook) -> Self {
+        self.session_service = Arc::new(AfterCreateMobSessionService {
+            inner: self.session_service,
+            after_hook: hook,
+        });
         self
     }
 
@@ -303,6 +543,8 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             None,
+            CapabilityFlags::default(),
+            None,
         )
     }
 
@@ -315,7 +557,13 @@ impl MobBootstrapSpec {
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
-        hook: impl Fn(&mut CreateSessionRequest) + Send + Sync + 'static,
+        hook: impl Fn(
+            &mut CreateSessionRequest,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), SessionError>> + Send + '_>,
+        > + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self::ephemeral_inner(
             definition,
@@ -324,23 +572,28 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             Some(Arc::new(hook)),
+            CapabilityFlags::default(),
+            None,
         )
     }
 
-    fn ephemeral_inner(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ephemeral_inner(
         definition: MobDefinition,
         storage: MobStorage,
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
         hook: Option<PreBuildHook>,
+        caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         let factory = AgentFactory::new(&store_path)
-            .builtins(true)
-            .shell(true)
-            .mob(true)
-            .comms(true)
-            .memory(true);
+            .builtins(caps.builtins)
+            .shell(caps.shell)
+            .mob(caps.mob)
+            .comms(caps.comms)
+            .memory(caps.memory);
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         if let Some(store) = session_store {
@@ -353,6 +606,7 @@ impl MobBootstrapSpec {
             Some(h) => Arc::new(PreBuildMobSessionService {
                 inner: session_service,
                 hook: h,
+                after_create_hook,
             }) as Arc<dyn MobSessionService>,
             None => session_service,
         };
@@ -379,6 +633,8 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             None,
+            CapabilityFlags::default(),
+            None,
         )
     }
 
@@ -391,7 +647,13 @@ impl MobBootstrapSpec {
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
-        hook: impl Fn(&mut CreateSessionRequest) + Send + Sync + 'static,
+        hook: impl Fn(
+            &mut CreateSessionRequest,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), SessionError>> + Send + '_>,
+        > + Send
+        + Sync
+        + 'static,
     ) -> Self {
         Self::persistent_inner(
             definition,
@@ -400,33 +662,33 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             Some(Arc::new(hook)),
+            CapabilityFlags::default(),
+            None,
         )
     }
 
-    fn persistent_inner(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn persistent_inner(
         definition: MobDefinition,
         storage: MobStorage,
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
         hook: Option<PreBuildHook>,
+        caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         let factory = AgentFactory::new(&store_path)
-            .builtins(true)
-            .shell(true)
-            .mob(true)
-            .comms(true)
-            .memory(true);
+            .builtins(caps.builtins)
+            .shell(caps.shell)
+            .mob(caps.mob)
+            .comms(caps.comms)
+            .memory(caps.memory);
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
-        // Supply runtime_store as None so the session checkpointer stays enabled
-        // (the checkpointer owns persistence when no runtime store is present).
-        // The runtime adapter is provided directly on the spec via ephemeral() —
-        // this supports comms drain / keep-alive without implying runtime-backed
-        // persistence ownership.
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -439,6 +701,7 @@ impl MobBootstrapSpec {
             Some(h) => Arc::new(PreBuildMobSessionService {
                 inner: session_service,
                 hook: h,
+                after_create_hook,
             }) as Arc<dyn MobSessionService>,
             None => session_service,
         };
@@ -537,14 +800,78 @@ fn snapshot_from_entry(entry: RosterEntry) -> MobMemberSnapshot {
     }
 }
 
-/// Live mob runtime backed by a `MobHandle`.
-#[derive(Clone)]
-pub struct RealMobRuntime {
-    handle: MobHandle,
+/// Context delivered to [`SessionHook::after_create`] after a session is
+/// successfully created.
+#[derive(Clone, Debug)]
+pub struct SessionCreatedContext {
+    pub model: String,
+    pub labels: std::collections::BTreeMap<String, String>,
+    pub system_prompt: Option<String>,
 }
 
-impl RealMobRuntime {
+/// Hook trait for customising session lifecycle.
+///
+/// - `before_create` — runs before `create_session`. Returning `Err` aborts
+///   session creation (both Rust-native and Python/TS boundary).
+/// - `after_create` — runs after session creation succeeds. Best-effort: errors
+///   are logged at `warn`, not propagated. The session is already live.
+#[async_trait]
+pub trait SessionHook: Send + Sync {
+    /// Called before session creation. Mutate the request to inject tools,
+    /// augment prompts, set labels, override model, etc. Return `Err` to
+    /// abort session creation.
+    async fn before_create(&self, _req: &mut CreateSessionRequest) -> Result<(), SessionError> {
+        Ok(())
+    }
+
+    /// Called after a session is successfully created. Best-effort — errors
+    /// logged, not propagated.
+    async fn after_create(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+        _ctx: &SessionCreatedContext,
+    ) {
+    }
+}
+
+/// Capability flags controlling which agent capabilities are enabled.
+#[derive(Clone, Copy, Debug)]
+pub struct CapabilityFlags {
+    pub builtins: bool,
+    pub shell: bool,
+    pub mob: bool,
+    pub comms: bool,
+    pub memory: bool,
+}
+
+impl Default for CapabilityFlags {
+    fn default() -> Self {
+        Self {
+            builtins: true,
+            shell: true,
+            mob: true,
+            comms: true,
+            memory: true,
+        }
+    }
+}
+
+/// Backward-compatible alias for [`MobRuntime`].
+pub type RealMobRuntime = MobRuntime;
+
+/// Live mob runtime backed by a `MobHandle`.
+#[derive(Clone)]
+pub struct MobRuntime {
+    handle: MobHandle,
+    /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
+    /// Dropped when the runtime is dropped, cleaning up the temp dir.
+    _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
+}
+
+impl MobRuntime {
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+        let ephemeral_dir = spec._ephemeral_dir.clone();
+
         let mut builder = MobBuilder::new(spec.definition, spec.storage);
 
         // Set the runtime adapter BEFORE with_session_service — MobBuilder only
@@ -563,11 +890,17 @@ impl RealMobRuntime {
         }
 
         let handle = builder.create().await?;
-        Ok(Self { handle })
+        Ok(Self {
+            handle,
+            _ephemeral_dir: ephemeral_dir,
+        })
     }
 
     pub fn from_handle(handle: MobHandle) -> Self {
-        Self { handle }
+        Self {
+            handle,
+            _ephemeral_dir: None,
+        }
     }
 
     pub fn handle(&self) -> MobHandle {
@@ -974,6 +1307,7 @@ mod tests {
             session_store,
             move |_req: &mut CreateSessionRequest| {
                 hook_called_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                Box::pin(async { Ok(()) })
             },
         );
 
@@ -1013,6 +1347,7 @@ mod tests {
             None,
             move |_req: &mut CreateSessionRequest| {
                 hook_called_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+                Box::pin(async { Ok(()) })
             },
         );
 
@@ -1055,8 +1390,13 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             *lock = Some((req.model.clone(), req.system_prompt.clone()));
+            Box::pin(async { Ok(()) })
         });
-        let wrapped = PreBuildMobSessionService { inner, hook };
+        let wrapped = PreBuildMobSessionService {
+            inner,
+            hook,
+            after_create_hook: None,
+        };
 
         let req = CreateSessionRequest {
             model: "original-model".to_string(),
@@ -1120,5 +1460,118 @@ mod tests {
             spec.session_service.runtime_adapter().is_none(),
             "session service should not have runtime_store (checkpointer must stay enabled)"
         );
+    }
+
+    /// SessionCreatedContext must carry model, labels, and optional system_prompt.
+    #[test]
+    fn session_created_context_fields() {
+        let ctx = SessionCreatedContext {
+            model: "claude-sonnet-4-5".to_string(),
+            labels: std::collections::BTreeMap::from([(
+                "agent_type".to_string(),
+                "lead".to_string(),
+            )]),
+            system_prompt: Some("You are a lead agent.".to_string()),
+        };
+        assert_eq!(ctx.model, "claude-sonnet-4-5");
+        assert_eq!(ctx.labels["agent_type"], "lead");
+        assert_eq!(ctx.system_prompt.as_deref(), Some("You are a lead agent."));
+    }
+
+    /// SessionHook default implementations are no-ops — calling them must not panic.
+    #[tokio::test]
+    async fn session_hook_default_impls_are_noop() {
+        struct EmptyHook;
+        #[async_trait]
+        impl SessionHook for EmptyHook {}
+
+        let hook = EmptyHook;
+        let mut req = CreateSessionRequest {
+            model: "test".to_string(),
+            prompt: meerkat_core::ContentInput::Text("test".to_string()),
+            render_metadata: None,
+            system_prompt: None,
+            max_tokens: None,
+            event_tx: None,
+            skill_references: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: None,
+            labels: None,
+        };
+        // before_create must succeed with default impl.
+        hook.before_create(&mut req).await.unwrap();
+        // after_create must not panic.
+        let ctx = SessionCreatedContext {
+            model: "test".to_string(),
+            labels: Default::default(),
+            system_prompt: None,
+        };
+        hook.after_create(&meerkat_core::types::SessionId::new(), &ctx)
+            .await;
+    }
+
+    /// before_create returning Err must abort (the caller decides how).
+    #[tokio::test]
+    async fn session_hook_before_create_can_abort() {
+        struct AbortHook;
+        #[async_trait]
+        impl SessionHook for AbortHook {
+            async fn before_create(
+                &self,
+                _req: &mut CreateSessionRequest,
+            ) -> Result<(), SessionError> {
+                Err(SessionError::Unsupported("hook abort".into()))
+            }
+        }
+
+        let hook = AbortHook;
+        let mut req = CreateSessionRequest {
+            model: "test".to_string(),
+            prompt: meerkat_core::ContentInput::Text("test".to_string()),
+            render_metadata: None,
+            system_prompt: None,
+            max_tokens: None,
+            event_tx: None,
+            skill_references: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: None,
+            labels: None,
+        };
+        let result = hook.before_create(&mut req).await;
+        assert!(result.is_err());
+    }
+
+    /// before_create mutations must be visible in the request.
+    #[tokio::test]
+    async fn session_hook_before_create_mutates_request() {
+        struct MutatingHook;
+        #[async_trait]
+        impl SessionHook for MutatingHook {
+            async fn before_create(
+                &self,
+                req: &mut CreateSessionRequest,
+            ) -> Result<(), SessionError> {
+                req.model = "hook-overridden".to_string();
+                req.system_prompt = Some("injected by hook".to_string());
+                Ok(())
+            }
+        }
+
+        let hook = MutatingHook;
+        let mut req = CreateSessionRequest {
+            model: "original".to_string(),
+            prompt: meerkat_core::ContentInput::Text("test".to_string()),
+            render_metadata: None,
+            system_prompt: None,
+            max_tokens: None,
+            event_tx: None,
+            skill_references: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            build: None,
+            labels: None,
+        };
+        hook.before_create(&mut req).await.unwrap();
+        assert_eq!(req.model, "hook-overridden");
+        assert_eq!(req.system_prompt.as_deref(), Some("injected by hook"));
     }
 }

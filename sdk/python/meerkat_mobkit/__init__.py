@@ -20,7 +20,7 @@ from .builder import MobKit, MobKitBuilder
 from .runtime import MobKitRuntime, ToolCaller
 
 # Data models
-from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionQuery
+from .models import DiscoverySpec, PreSpawnData, SessionBuildOptions, SessionCreatedContext, SessionQuery
 
 # Agent builder protocol (public contract — CallbackDispatcher is internal)
 from .agent_builder import SessionAgentBuilder
@@ -116,6 +116,7 @@ __all__ = [
     "DiscoverySpec",
     "PreSpawnData",
     "SessionBuildOptions",
+    "SessionCreatedContext",
     "SessionQuery",
     # Agent builder
     "SessionAgentBuilder",

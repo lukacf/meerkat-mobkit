@@ -21,6 +21,11 @@ impl UnifiedRuntime {
         self.mob_runtime.handle()
     }
 
+    /// Access the underlying `MobRuntime`.
+    pub fn mob_runtime(&self) -> &crate::mob_handle_runtime::MobRuntime {
+        &self.mob_runtime
+    }
+
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
         let member_id = spec.meerkat_id.to_string();
         let profile = spec.profile_name.to_string();

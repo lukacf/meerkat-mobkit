@@ -24,10 +24,33 @@ It builds on [Meerkat](https://github.com/lukacf/meerkat), which provides the ag
 
 ```python
 from meerkat_mobkit import MobKit
+from meerkat_mobkit.identity_first_models import DurableAgentSpec
 
-async with await MobKit.builder().mob("mob.toml").gateway("./mobkit-rpc").build() as rt:
-    handle = rt.mob_handle()
-    await handle.send("agent-1", "Review PR #42")
+# Define your agents
+class MyRoster:
+    async def roster(self, ctx):
+        return [
+            DurableAgentSpec(identity="identity:luka", profile="personal", addressability="addressable"),
+            DurableAgentSpec(identity="triage:main", profile="triage", addressability="internal_only"),
+        ]
+
+# Boot
+rt = await (
+    MobKit.builder()
+    .mob("mob.toml")
+    .persistent_state("./state")
+    .roster(MyRoster())
+    .gateway("./rpc_gateway")
+    .build()
+)
+
+# Use identity-scoped handles
+luka = rt.agent("identity:luka")
+triage = rt.agent("triage:main")
+
+await triage.dispatch_text("New PR #42 needs review", origin="connector")
+await luka.send("What needs my attention?")
+output = await luka.wait_for_output(timeout=60)
 ```
 
 <p align="center">

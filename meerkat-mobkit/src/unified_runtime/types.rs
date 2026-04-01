@@ -88,13 +88,19 @@ pub enum UnifiedRuntimeBuilderField {
 pub enum UnifiedRuntimeBuilderError {
     MissingRequiredField(UnifiedRuntimeBuilderField),
     Bootstrap(UnifiedRuntimeBootstrapError),
+    /// Failed to read a definition TOML file or create a state directory.
+    Io(String),
+    /// Failed to parse a mob definition TOML.
+    DefinitionLoad(String),
+    /// Conflicting builder configuration (e.g., persistent_state + continuity_store).
+    ConflictingConfiguration(String),
 }
 
 impl Display for UnifiedRuntimeBuilderError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingRequiredField(UnifiedRuntimeBuilderField::MobSpec) => {
-                write!(f, "missing required builder field: mob_spec")
+                write!(f, "missing required builder field: mob_spec or definition")
             }
             Self::MissingRequiredField(UnifiedRuntimeBuilderField::ModuleConfig) => {
                 write!(f, "missing required builder field: module_config")
@@ -103,6 +109,9 @@ impl Display for UnifiedRuntimeBuilderError {
                 write!(f, "missing required builder field: timeout")
             }
             Self::Bootstrap(err) => write!(f, "{err}"),
+            Self::Io(msg) => write!(f, "{msg}"),
+            Self::DefinitionLoad(msg) => write!(f, "{msg}"),
+            Self::ConflictingConfiguration(msg) => write!(f, "conflicting configuration: {msg}"),
         }
     }
 }
