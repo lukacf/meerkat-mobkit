@@ -1793,6 +1793,18 @@ pub async fn handle_unified_rpc_json(
             let content = request_params.content.clone();
             let origin = request_params.origin.clone();
             let interaction_id = mint_interaction_id();
+            if let Ok(status) = identity_rt.status(&identity).await
+                && matches!(
+                    status.addressability,
+                    crate::identity_first::AgentAddressability::InternalOnly
+                )
+            {
+                return error_response(
+                    response_id,
+                    -32002,
+                    format!("not addressable: {}", identity.as_str()),
+                );
+            }
             let runtime_member_id = identity_rt
                 .runtime_id_for(&identity)
                 .await

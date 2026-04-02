@@ -437,7 +437,7 @@ fn replay_slice(
             latest_event_id: latest_event_id.unwrap_or_default(),
         });
     };
-    Ok(replay.split_off(start_idx))
+    Ok(replay.split_off(start_idx.saturating_add(1)))
 }
 
 fn current_time_ms() -> u64 {
@@ -488,9 +488,8 @@ mod tests {
             .replay_identity("identity:luka", Some(&first.event_id))
             .await
             .expect("known checkpoint");
-        assert_eq!(replay.len(), 2);
-        assert_eq!(replay[0].event_id, first.event_id);
-        assert_eq!(replay[1].event_id, second.event_id);
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].event_id, second.event_id);
 
         let err = store
             .replay_identity("identity:luka", Some("evt-too-old"))

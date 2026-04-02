@@ -29,9 +29,10 @@ use meerkat_client::TestClient;
 use meerkat_mob::{MobStorage, Prefab, ProfileName};
 use meerkat_mobkit::identity_first::contracts::RosterProvider;
 use meerkat_mobkit::identity_first::{
-    AgentAddressability, AgentIdentity, DurabilityPolicy, DurableAgentSpec, IdentityRuntime,
-    IdentityRuntimeConfig, LocalContinuityStore, LocalLeaseProvider, RosterContext, RosterError,
-    restore_flow,
+    AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
+    DurabilityPolicy, DurableAgentSpec, IdentityRuntime, IdentityRuntimeConfig,
+    LocalContinuityStore, LocalLeaseProvider, MemberInspection, RosterContext, RosterError,
+    SessionBridge, SessionSnapshot, restore_flow,
 };
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleInteractionAccepted, ConsolePolicy,
@@ -53,10 +54,68 @@ struct StaticRosterProvider {
     specs: Vec<DurableAgentSpec>,
 }
 
+struct MockSessionBridge;
+
 #[async_trait]
 impl RosterProvider for StaticRosterProvider {
     async fn roster(&self, _context: &RosterContext) -> Result<Vec<DurableAgentSpec>, RosterError> {
         Ok(self.specs.clone())
+    }
+}
+
+#[async_trait]
+impl SessionBridge for MockSessionBridge {
+    async fn create_session(
+        &self,
+        _identity: &AgentIdentity,
+        _runtime_id: &AgentRuntimeId,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        Ok(meerkat_core::types::SessionId::new())
+    }
+
+    async fn resume_session(
+        &self,
+        _identity: &AgentIdentity,
+        _runtime_id: &AgentRuntimeId,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        Ok(session_id.clone())
+    }
+
+    async fn deliver(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _content: &meerkat_core::ContentInput,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        Ok(meerkat_core::types::SessionId::new())
+    }
+
+    async fn checkpoint_session(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<SessionSnapshot, BridgeError> {
+        Ok(SessionSnapshot { data: Vec::new() })
+    }
+
+    async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+        Ok(())
+    }
+
+    async fn inspect_member(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+    ) -> Result<MemberInspection, BridgeError> {
+        Ok(MemberInspection {
+            output_preview: Some("phase0 inspect preview".to_string()),
+            is_final: false,
+            peer_reachable_count: 1,
+        })
     }
 }
 
@@ -143,10 +202,17 @@ async fn build_unified_runtime() -> Fixture {
 }
 
 fn make_identity_spec(identity: &str) -> DurableAgentSpec {
+    make_identity_spec_with_addressability(identity, AgentAddressability::Addressable)
+}
+
+fn make_identity_spec_with_addressability(
+    identity: &str,
+    addressability: AgentAddressability,
+) -> DurableAgentSpec {
     DurableAgentSpec {
         identity: AgentIdentity::parse(identity).expect("parse identity"),
         profile: ProfileName::from("lead"),
-        addressability: AgentAddressability::Addressable,
+        addressability,
         display_name: None,
         labels: BTreeMap::new(),
         context: None,
@@ -156,13 +222,30 @@ fn make_identity_spec(identity: &str) -> DurableAgentSpec {
 
 async fn build_identity_context(identity: &str) -> IdentityFirstContext {
     let spec = make_identity_spec(identity);
+    build_identity_context_for_spec(spec, None).await
+}
+
+async fn build_identity_context_with_bridge(identity: &str) -> IdentityFirstContext {
+    let spec = make_identity_spec(identity);
+    build_identity_context_for_spec(spec, Some(Arc::new(MockSessionBridge))).await
+}
+
+async fn build_identity_context_internal_only(identity: &str) -> IdentityFirstContext {
+    let spec = make_identity_spec_with_addressability(identity, AgentAddressability::InternalOnly);
+    build_identity_context_for_spec(spec, None).await
+}
+
+async fn build_identity_context_for_spec(
+    spec: DurableAgentSpec,
+    bridge: Option<Arc<dyn SessionBridge>>,
+) -> IdentityFirstContext {
     let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
         continuity_store: Arc::new(LocalContinuityStore::in_memory().expect("continuity store")),
         lease_provider: Arc::new(LocalLeaseProvider::new()),
         runtime_instance_id: "phase0-console-runtime".to_string(),
         has_runtime_store: false,
         durability_policy: DurabilityPolicy::SyncWriteThrough,
-        bridge: None,
+        bridge,
         default_timeout: None,
     }));
     restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
@@ -284,6 +367,103 @@ async fn phase0_contract_001b_mobkit_interact_rejects_unknown_identity_synchrono
     let error = response.error.expect("unknown identity should reject");
     assert_eq!(error.code, -32001);
     assert!(error.message.contains("unknown identity"));
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
+async fn phase0_contract_001c_mobkit_interact_rejects_internal_only_identity() {
+    let fixture = build_unified_runtime().await;
+    let identity_ctx = build_identity_context_internal_only("triage:main").await;
+
+    let response = parse_json_rpc(
+        &handle_unified_rpc_json(
+            &fixture.runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "req-2c",
+                "method": "mobkit/interact",
+                "params": {
+                    "identity": "triage:main",
+                    "content": "hello from phase 0",
+                    "origin": "console:panel-1"
+                }
+            })
+            .to_string(),
+            Duration::from_secs(1),
+            None,
+            Some(&identity_ctx),
+        )
+        .await,
+    );
+
+    let error = response
+        .error
+        .expect("internal-only identity should reject");
+    assert_eq!(error.code, -32002);
+    assert!(error.message.contains("not addressable"));
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
+async fn phase0_contract_001d_mobkit_interact_rejects_when_identity_queue_is_full() {
+    let fixture = build_unified_runtime().await;
+    let identity_ctx = build_identity_context_with_bridge("identity:luka").await;
+
+    for idx in 0..256 {
+        let response = parse_json_rpc(
+            &handle_unified_rpc_json(
+                &fixture.runtime,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": format!("seed-{idx}"),
+                    "method": "mobkit/interact",
+                    "params": {
+                        "identity": "identity:luka",
+                        "content": format!("hello {idx}"),
+                        "origin": "console:panel-capacity"
+                    }
+                })
+                .to_string(),
+                Duration::from_secs(1),
+                None,
+                Some(&identity_ctx),
+            )
+            .await,
+        );
+        assert!(
+            response.error.is_none(),
+            "seed request {idx} should be accepted"
+        );
+    }
+
+    let overflow = parse_json_rpc(
+        &handle_unified_rpc_json(
+            &fixture.runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "overflow",
+                "method": "mobkit/interact",
+                "params": {
+                    "identity": "identity:luka",
+                    "content": "one too many",
+                    "origin": "console:panel-capacity"
+                }
+            })
+            .to_string(),
+            Duration::from_secs(1),
+            None,
+            Some(&identity_ctx),
+        )
+        .await,
+    );
+
+    let error = overflow.error.expect("queue overflow should reject");
+    assert_eq!(error.code, -32003);
+    assert!(error.message.contains("interaction queue at capacity"));
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());

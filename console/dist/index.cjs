@@ -3389,6 +3389,7 @@ function summarizeFrameData(data) {
   if (typeof data === "object" && data !== null) {
     const record = data;
     if (typeof record.delta === "string" && record.delta.trim()) return record.delta;
+    if (typeof record.text === "string" && record.text.trim()) return record.text;
     if (typeof record.result === "string" && record.result.trim()) return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
@@ -3405,11 +3406,35 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "turn_completed",
   "text_complete",
   "interaction_started",
-  "interaction_complete",
-  "interaction_failed",
   "run_failed",
   "keep-alive"
 ]);
+function renderTerminalEntry(agent, frame, entryId) {
+  if (frame.event === "interaction_complete") {
+    const text = summarizeFrameData(frame.data).trim();
+    if (!text) return null;
+    const blocks = parseConversationRichBlocks(text);
+    return {
+      kind: "message",
+      id: entryId,
+      identity: agentIdentity(agent),
+      variant: blocks.length > 0 ? "rich" : "plain",
+      ...blocks.length > 0 ? { blocks } : { text }
+    };
+  }
+  if (frame.event === "interaction_failed" || frame.event === "run_failed") {
+    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
+    if (!text || text === `${frame.event}:`) return null;
+    return {
+      kind: "message",
+      id: entryId,
+      identity: SYSTEM_IDENTITY,
+      variant: "meta",
+      text
+    };
+  }
+  return null;
+}
 function mapFramesToTimelineEntries(agent, frames) {
   const entries = [];
   let pendingText = "";
@@ -3437,6 +3462,11 @@ function mapFramesToTimelineEntries(agent, frames) {
       continue;
     }
     flushPendingText();
+    const terminalEntry = renderTerminalEntry(agent, frame, entryId);
+    if (terminalEntry) {
+      entries.push(terminalEntry);
+      continue;
+    }
     if (frame.event === "tool_call") {
       const record = frame.data;
       const toolName = typeof record?.name === "string" ? record.name : "tool";
@@ -3520,6 +3550,21 @@ function errorMessage(error) {
 }
 
 // src/lib/network.ts
+function unwrapConsoleEnvelope(eventName, data) {
+  if (!data || typeof data !== "object") {
+    return { data };
+  }
+  const record = data;
+  if (typeof record.event_id === "string" && typeof record.event_type === "string" && typeof record.identity === "string" && "data" in record) {
+    const envelope = record;
+    return {
+      id: envelope.event_id,
+      event: envelope.event_type || eventName,
+      data: envelope.data
+    };
+  }
+  return { data };
+}
 function parseSseFrames(rawText) {
   const blocks = rawText.split(/\n\n+/).map((part) => part.trim()).filter(Boolean);
   const frames = [];
@@ -3553,7 +3598,12 @@ function parseSseFrames(rawText) {
         data = rawData;
       }
     }
-    frames.push({ id, event, data });
+    const normalized = unwrapConsoleEnvelope(event, data);
+    frames.push({
+      id: normalized.id || id,
+      event: normalized.event || event,
+      data: normalized.data
+    });
   }
   return frames;
 }

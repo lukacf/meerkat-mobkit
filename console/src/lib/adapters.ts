@@ -237,6 +237,7 @@ function summarizeFrameData(data: unknown): string {
   if (typeof data === "object" && data !== null) {
     const record = data as Record<string, unknown>;
     if (typeof record.delta === "string" && record.delta.trim()) return record.delta;
+    if (typeof record.text === "string" && record.text.trim()) return record.text;
     if (typeof record.result === "string" && record.result.trim()) return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
@@ -255,11 +256,42 @@ const HIDDEN_EVENTS = new Set([
   "turn_completed",
   "text_complete",
   "interaction_started",
-  "interaction_complete",
-  "interaction_failed",
   "run_failed",
   "keep-alive",
 ]);
+
+function renderTerminalEntry(
+  agent: ConsoleAgent | null,
+  frame: ConsoleFrame,
+  entryId: string,
+): ConversationTimelineEntry | null {
+  if (frame.event === "interaction_complete") {
+    const text = summarizeFrameData(frame.data).trim();
+    if (!text) return null;
+    const blocks = parseConversationRichBlocks(text);
+    return {
+      kind: "message",
+      id: entryId,
+      identity: agentIdentity(agent),
+      variant: blocks.length > 0 ? "rich" : "plain",
+      ...(blocks.length > 0 ? { blocks } : { text }),
+    };
+  }
+
+  if (frame.event === "interaction_failed" || frame.event === "run_failed") {
+    const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
+    if (!text || text === `${frame.event}:`) return null;
+    return {
+      kind: "message",
+      id: entryId,
+      identity: SYSTEM_IDENTITY,
+      variant: "meta",
+      text,
+    };
+  }
+
+  return null;
+}
 
 export function mapFramesToTimelineEntries(
   agent: ConsoleAgent | null,
@@ -300,6 +332,12 @@ export function mapFramesToTimelineEntries(
 
     // Flush any accumulated text before processing a non-text event
     flushPendingText();
+
+    const terminalEntry = renderTerminalEntry(agent, frame, entryId);
+    if (terminalEntry) {
+      entries.push(terminalEntry);
+      continue;
+    }
 
     // Tool calls → command block
     if (frame.event === "tool_call") {

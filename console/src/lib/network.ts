@@ -6,11 +6,36 @@ import {
 import type {
   ConsoleDockAddressedTarget,
   ConsoleFrame,
+  ConsoleIdentityStreamEvent,
   ConsoleInteractAccepted,
   ConsoleReplayUnavailablePayload,
   ConsoleSendMessageResult,
   ConsoleGatewayInteractionRejectedError,
 } from "../types";
+
+function unwrapConsoleEnvelope(
+  eventName: string,
+  data: unknown,
+): { id?: string; event?: string; data: unknown } {
+  if (!data || typeof data !== "object") {
+    return { data };
+  }
+  const record = data as Record<string, unknown>;
+  if (
+    typeof record.event_id === "string" &&
+    typeof record.event_type === "string" &&
+    typeof record.identity === "string" &&
+    "data" in record
+  ) {
+    const envelope = record as ConsoleIdentityStreamEvent;
+    return {
+      id: envelope.event_id,
+      event: envelope.event_type || eventName,
+      data: envelope.data,
+    };
+  }
+  return { data };
+}
 
 export function parseSseFrames(rawText: string): ConsoleFrame[] {
   const blocks = rawText
@@ -53,7 +78,12 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
       }
     }
 
-    frames.push({ id, event, data });
+    const normalized = unwrapConsoleEnvelope(event, data);
+    frames.push({
+      id: normalized.id || id,
+      event: normalized.event || event,
+      data: normalized.data,
+    });
   }
 
   return frames;

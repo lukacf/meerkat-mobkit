@@ -10,9 +10,10 @@ import {
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
+  mapFramesToTimelineEntries,
 } from "./adapters";
 import { normalizeAgents } from "./agents";
-import type { ConsoleExperience } from "../types";
+import type { ConsoleAgent, ConsoleExperience } from "../types";
 
 test("CHOKE-002 target: one identity stream fan-outs to multiple panel consumers without divergent frame identity", () => {
   const rawSse = [
@@ -266,6 +267,27 @@ test("E2E-017 target: mixed migration sessions reconcile identity and member add
 
   assert.equal(identityTarget.addressingMode, "identity");
   assert.equal(legacyTarget.addressingMode, "member");
+});
+
+test("terminal identity events surface transcript payloads instead of disappearing", () => {
+  const agent: ConsoleAgent = {
+    member_id: "member-luka",
+    agent_id: "member-luka",
+    label: "Luka",
+    kind: "identity",
+  };
+
+  const successEntries = mapFramesToTimelineEntries(agent, [
+    { id: "evt-1", event: "interaction_complete", data: { text: "done" } },
+  ]);
+  assert.equal(successEntries.length, 1);
+  assert.equal(successEntries[0]?.identity.role, "assistant");
+
+  const failureEntries = mapFramesToTimelineEntries(agent, [
+    { id: "evt-2", event: "interaction_failed", data: { reason: "lifecycle_mutation" } },
+  ]);
+  assert.equal(failureEntries.length, 1);
+  assert.equal(failureEntries[0]?.variant, "meta");
 });
 
 test("Panel-state target: same-target split panels and retargeted panels keep distinct local composer/transcript state keys", () => {

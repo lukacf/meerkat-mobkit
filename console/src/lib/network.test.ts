@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { queryEvents, sendAddressedInteraction } from "./network";
+import { parseSseFrames, queryEvents, sendAddressedInteraction } from "./network";
 
 test("queryEvents uses fallback events from no_event_log_configured envelopes", async () => {
   const originalFetch = globalThis.fetch;
@@ -156,4 +156,18 @@ test("sendAddressedInteraction falls back to member transport for member-address
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("parseSseFrames unwraps identity-stream envelopes to their nested payloads", () => {
+  const frames = parseSseFrames([
+    "id: evt-1",
+    "event: text_delta",
+    'data: {"event_id":"evt-1","interaction_id":"turn-1","identity":"identity:luka","event_type":"text_delta","timestamp_ms":2,"data":{"delta":"done"}}',
+    "",
+  ].join("\n"));
+
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0]?.id, "evt-1");
+  assert.equal(frames[0]?.event, "text_delta");
+  assert.deepEqual(frames[0]?.data, { delta: "done" });
 });
