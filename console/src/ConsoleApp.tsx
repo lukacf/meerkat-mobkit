@@ -4,13 +4,14 @@ import "./console-host.css";
 
 import {
   ConsoleActivityRail,
+  ConsoleComposer,
   ConsoleDock,
   ConsoleSidebar,
   ConsoleWorkbench,
   ConversationPane,
   useConsoleDockController,
 } from "@console-components";
-import type { ConversationTimelineEntry } from "@console-core";
+import type { ConsoleComposerToolbarItem, ConversationTimelineEntry } from "@console-core";
 
 import { normalizeAgents } from "./lib/agents";
 import {
@@ -24,57 +25,13 @@ import {
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
 import { fetchJson, sendInteraction } from "./lib/network";
-import { Icon } from "./icon";
+import { Icon, SpriteSheet } from "./icon";
 import type {
   ConsoleAgent,
   ConsoleExperience,
   ConsoleFrame,
   ConsoleModulesResponse,
 } from "./types";
-
-// ---------------------------------------------------------------------------
-// Chat composer (inline subcomponent)
-// ---------------------------------------------------------------------------
-
-function ChatComposer({
-  agentLabel,
-  disabled,
-  onSend,
-}: {
-  agentLabel: string;
-  disabled: boolean;
-  onSend: (text: string) => void;
-}) {
-  const [message, setMessage] = React.useState("");
-
-  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = message.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
-    setMessage("");
-  }
-
-  return (
-    <form className="mc-composer" data-testid="chat-form" onSubmit={handleSubmit}>
-      <textarea
-        name="message"
-        placeholder={`Message ${agentLabel}...`}
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            handleSubmit(e as unknown as React.FormEvent<HTMLFormElement>);
-          }
-        }}
-      />
-      <div className="mc-composer__actions">
-        <button disabled={disabled || !message.trim()} type="submit">Send</button>
-      </div>
-    </form>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Console app
@@ -89,6 +46,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
   const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
+  const [draftByMemberId, setDraftByMemberId] = React.useState<Record<string, string>>({});
+  const [sendingMembers, setSendingMembers] = React.useState<Set<string>>(new Set());
+  const [pinnedAgentIds, setPinnedAgentIds] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
 
@@ -152,8 +112,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   // ── Send message to agent ──
-  async function onSendMessage(memberId: string, text: string) {
+  async function onSendMessage(memberId: string) {
+    const text = (draftByMemberId[memberId] || "").trim();
+    if (!text || !memberId) return;
+
     const agent = agents.find((a) => a.member_id === memberId) || null;
+
+    // Clear draft and mark as sending
+    setDraftByMemberId((d) => ({ ...d, [memberId]: "" }));
+    setSendingMembers((s) => new Set(s).add(memberId));
 
     // Optimistic user entry
     const userEntry = createUserEntry(text);
@@ -179,7 +146,90 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         ...current,
         [memberId]: (current[memberId] || []).filter((e) => e.id !== userEntry.id),
       }));
+    } finally {
+      setSendingMembers((s) => {
+        const next = new Set(s);
+        next.delete(memberId);
+        return next;
+      });
     }
+  }
+
+  // ── Sidebar resize (mirrors meerkat-app pattern) ──
+  const SIDEBAR_MIN = 180;
+  const SIDEBAR_MAX = 420;
+
+  function handleSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const root = event.currentTarget.closest("[data-console-workbench]") as HTMLElement | null;
+    if (!root) return;
+
+    const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-sidebar-width") || "260", 10) || 260;
+    const handle = event.currentTarget;
+
+    if ("setPointerCapture" in handle) {
+      handle.setPointerCapture(event.pointerId);
+    }
+    document.documentElement.setAttribute("data-cc-resizing", "true");
+
+    function onPointerMove(e: PointerEvent) {
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)));
+      root!.style.setProperty("--cc-workbench-sidebar-width", `${next}px`);
+    }
+
+    function cleanup() {
+      document.documentElement.removeAttribute("data-cc-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  }
+
+  // ── Activity rail resize ──
+  const ACTIVITY_MIN = 200;
+  const ACTIVITY_MAX = 480;
+
+  function handleActivityResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const root = event.currentTarget.closest("[data-console-workbench]") as HTMLElement | null;
+    if (!root) return;
+
+    const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-activity-width") || "280", 10) || 280;
+    const handle = event.currentTarget;
+
+    if ("setPointerCapture" in handle) {
+      handle.setPointerCapture(event.pointerId);
+    }
+    document.documentElement.setAttribute("data-cc-resizing", "true");
+
+    function onPointerMove(e: PointerEvent) {
+      // Activity rail: dragging left makes it wider (reversed from sidebar)
+      const next = Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)));
+      root!.style.setProperty("--cc-workbench-activity-width", `${next}px`);
+    }
+
+    function cleanup() {
+      document.documentElement.removeAttribute("data-cc-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
   }
 
   // ── Loading / error states ──
@@ -192,17 +242,45 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   // ── Build view states ──
   const focusedMemberId = dock.focusedTarget?.id || "";
-  const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId });
-  const activityVS = buildActivityRailViewState({ agents, eventFrames: activityFrames });
+  const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
+  const activityVS = buildActivityRailViewState({ eventFrames: activityFrames });
 
   return (
     <div className="cc-theme-scope" data-cc-theme="dark" data-testid="meerkat-console">
+      <SpriteSheet />
       <ConsoleWorkbench
+        launcherResizeHandle={
+          <div
+            className="pane-resizer"
+            aria-hidden="true"
+            onPointerDown={handleSidebarResize}
+          />
+        }
         launcher={
           <ConsoleSidebar
             viewState={sidebarVS}
             Icon={Icon}
             onSelectItem={onSelectAgent}
+            onItemAction={(_block, _section, item) => {
+              // Toggle pin (only action on items)
+              setPinnedAgentIds((current) => {
+                const next = new Set(current);
+                if (next.has(item.id)) {
+                  next.delete(item.id);
+                } else {
+                  next.add(item.id);
+                }
+                return next;
+              });
+            }}
+            onItemContextMenu={(_block, _section, item, event) => {
+              event.preventDefault();
+              // Open agent in dock on right-click as well
+              const agent = agents.find((a) => a.member_id === item.id);
+              if (agent) {
+                dock.openTarget(buildDockTarget(agent), "replace_focused");
+              }
+            }}
           />
         }
         main={
@@ -213,6 +291,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             onCloseTab={(tab) => dock.closeTab(tab.id)}
             onFocusPanel={(panel) => dock.focusPanel(panel.id)}
             onSplitPanel={(panel, dir) => dock.splitPanel(panel.id, dir)}
+            onClosePanel={(panel) => dock.closePanel(panel.id)}
             onResizeSplit={(id, ratio) => dock.resizeSplit(id, ratio)}
             onCreateTab={() => dock.createTab()}
             renderPanelBody={(panel) => {
@@ -223,20 +302,63 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
                 agentLabel: panel.target?.title || "Agent",
                 entries,
               });
+              const draft = draftByMemberId[memberId] || "";
+              const isSending = sendingMembers.has(memberId);
+              const agent = agents.find((a) => a.member_id === memberId);
+              const agentLabel = panel.target?.title || "Agent";
+              const hasTarget = Boolean(memberId);
+
+              const mainRowItems: ConsoleComposerToolbarItem[] = [];
+
+              const footerLeftItems: ConsoleComposerToolbarItem[] = [
+                { id: "target", kind: "sub-pill", label: `To: ${agentLabel}`, iconName: "i-team" },
+                { id: "identity", kind: "sub-pill", label: agent?.member_id || memberId, iconName: "i-terminal" },
+              ];
+
+              const footerRightItems: ConsoleComposerToolbarItem[] = [
+                { id: "profile", kind: "sub-pill", label: agent?.profile || "lead" },
+                { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" },
+              ];
+
               return (
                 <ConversationPane
                   viewState={vs}
                   Icon={Icon}
                   footer={
-                    <ChatComposer
-                      agentLabel={panel.target?.title || "Agent"}
-                      disabled={!memberId}
-                      onSend={(text) => void onSendMessage(memberId, text)}
+                    <ConsoleComposer
+                      Icon={Icon}
+                      viewState={{
+                        value: draft,
+                        disabled: !hasTarget || isSending,
+                        placeholder: hasTarget
+                          ? `Message ${agentLabel}...`
+                          : "Select an agent from the sidebar",
+                        submitDisabled: !hasTarget || !draft.trim() || isSending,
+                        submitLabel: hasTarget ? `Send to ${agentLabel}` : "Select an agent first",
+                        mainRowItems,
+                        footerLeftItems,
+                        footerRightItems,
+                      }}
+                      onChange={(value) => setDraftByMemberId((d) => ({ ...d, [memberId]: value }))}
+                      onSubmit={() => void onSendMessage(memberId)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void onSendMessage(memberId);
+                        }
+                      }}
                     />
                   }
                 />
               );
             }}
+          />
+        }
+        activityRailResizeHandle={
+          <div
+            className="pane-resizer pane-resizer--activity"
+            aria-hidden="true"
+            onPointerDown={handleActivityResize}
           />
         }
         activityRail={

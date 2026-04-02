@@ -1,0 +1,10 @@
+{
+  "name": "@console-core",
+  "private": true,
+  "version": "0.0.0",
+  "main": "./index.js",
+  "exports": {
+    ".": "./src/index.ts",
+    "./runtime": "./index.js"
+  }
+}

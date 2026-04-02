@@ -1,5 +1,7 @@
 /* MobKit Console — host styles */
 
+/* ── Reset ── */
+
 *,
 *::before,
 *::after {
@@ -22,97 +24,191 @@ body {
   color: rgba(232, 234, 237, 0.96);
 }
 
+button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.sprite-root {
+  position: absolute;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ── Layout root ── */
+
 [data-testid="meerkat-console"] {
   height: 100%;
   width: 100%;
 }
 
-/* Tune shared component tokens for MobKit */
+/* ── Spacing tokens ── */
+
 .cc-theme-scope {
-  --cc-sidebar-safe-top: 12px;
-  --cc-sidebar-pad-left: 12px;
-  --cc-sidebar-pad-right: 12px;
   --cc-workbench-sidebar-width: 260px;
   --cc-workbench-activity-width: 280px;
+  --cc-sidebar-safe-top: 14px;
+  --cc-sidebar-pad-left: 14px;
+  --cc-sidebar-pad-right: 14px;
+}
+
+/* ── Workbench ── */
+
+.cc-workbench {
+  transition: none;
+}
+
+/* Sidebar: elevated surface matching dock panel tone */
+.cc-workbench__launcher {
+  background: rgba(21, 22, 27, 0.82);
+  border-right: 1px solid rgba(255, 255, 255, 0.058);
+}
+
+/* Main area: consistent gutter around the dock */
+.cc-workbench__main-body {
+  padding: 0 0 14px;
+}
+
+/* Activity rail: matching gutter on the right edge */
+.cc-workbench__activity {
+  padding: 10px 14px 14px 0;
+}
+
+/* ── Dock ── */
+
+/* Always show the tab strip, even with a single tab */
+.cc-dock.is-single-tab .cc-dock__tab-strip,
+.cc-dock.is-single-tab .cc-dock__tabs {
+  display: flex;
+}
+
+/* Tab strip: left padding so tabs don't smash against sidebar edge,
+   bottom border to visually connect to the panel content below */
+.cc-dock__tab-strip {
+  padding-left: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Keep the + button tight to tabs, not floating far right */
+.cc-dock__tab-actions {
+  margin-right: auto;
+}
+
+/* ── Activity rail: hide the non-functional control buttons ── */
+
+.cc-activity-rail__controls {
+  display: none;
+}
+
+/* ── Single panel: hide floating split actions until hover ── */
+
+.cc-dock.is-single-panel .cc-dock-panel__floating-actions {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.cc-dock.is-single-panel .cc-dock-panel:hover .cc-dock-panel__floating-actions {
+  opacity: 1;
+}
+
+/* ── Pane resizer ── */
+
+.pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--cc-workbench-sidebar-width, 260px);
+  width: 14px;
+  z-index: 50;
+  cursor: col-resize;
+  transform: translateX(-50%);
+  touch-action: none;
+  background: rgba(255, 255, 255, 0.001);
+}
+
+.pane-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  opacity: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0),
+    rgba(236, 239, 243, 0.14) 12%,
+    rgba(236, 239, 243, 0.21) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transition: opacity 120ms ease;
+}
+
+.pane-resizer--activity {
+  left: auto;
+  right: var(--cc-workbench-activity-width, 280px);
+}
+
+.pane-resizer:hover::before,
+[data-cc-resizing="true"] .pane-resizer::before {
+  opacity: 1;
+}
+
+/* ── Empty state: hide the placeholder mark circle, center vertically ── */
+
+.cc-empty-state__mark {
+  display: none;
+}
+
+.cc-conversation-pane__scroll {
+  display: flex;
+  flex-direction: column;
+}
+
+.cc-conversation-pane__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.cc-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Conversation pane ── */
+
+.cc-conversation-pane {
+  grid-template-rows: 1fr auto;
+  height: 100%;
 }
 
 /* ── Composer ── */
 
-.mc-composer {
-  display: flex;
-  gap: 8px;
-  padding: 12px 24px 16px;
-  align-items: flex-end;
+.cc-composer {
   max-width: var(--_cc-content-width);
   margin: 0 auto;
-  width: 100%;
-}
-
-.mc-composer textarea {
-  flex: 1 1 auto;
-  min-height: 40px;
-  max-height: 160px;
-  resize: none;
-  border: 1px solid var(--_cc-border-strong);
-  border-radius: 12px;
-  background: var(--_cc-surface-raised);
-  color: var(--_cc-foreground);
-  font: inherit;
-  font-size: var(--_cc-text-sm);
-  padding: 10px 14px;
-  outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
-  line-height: 1.4;
-}
-
-.mc-composer textarea:focus {
-  border-color: var(--_cc-member-accent);
-  box-shadow: 0 0 0 2px rgba(153, 210, 234, 0.15);
-}
-
-.mc-composer textarea::placeholder {
-  color: var(--_cc-foreground-subtle);
-}
-
-.mc-composer__actions {
-  flex-shrink: 0;
-}
-
-.mc-composer__actions button {
-  padding: 8px 18px;
-  border: none;
-  border-radius: 10px;
-  background: var(--_cc-member-accent);
-  color: #0d1117;
-  font: inherit;
-  font-size: var(--_cc-text-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: opacity 0.15s;
-  height: 40px;
-}
-
-.mc-composer__actions button:hover:not(:disabled) {
-  opacity: 0.85;
-}
-
-.mc-composer__actions button:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-/* ── Icon fallback ── */
-
-.mc-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-size: 10px;
-  font-weight: 700;
-  border-radius: 3px;
-  background: var(--_cc-surface-raised);
-  color: var(--_cc-foreground-muted);
-  flex-shrink: 0;
 }

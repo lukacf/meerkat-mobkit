@@ -1,0 +1,14 @@
+{
+  "name": "@console-components",
+  "private": true,
+  "version": "0.0.0",
+  "exports": {
+    ".": "./src/index.ts",
+    "./styles": "./src/styles/index.ts"
+  },
+  "peerDependencies": {
+    "@console-core": "0.0.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4"
+  }
+}

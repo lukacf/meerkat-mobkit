@@ -1,0 +1,100 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+
+import { ConsoleSidebar } from "./console-sidebar";
+
+function Icon({ name }: { name: string; className?: string }) {
+  return (
+    <svg>
+      <use href={`#${name}`} />
+    </svg>
+  );
+}
+
+describe("ConsoleSidebar", () => {
+  test("does not emit React key warnings for multi-action strips", () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    render(
+      <ConsoleSidebar
+        Icon={Icon}
+        viewState={{
+          blocks: [{
+            id: "primary",
+            kind: "action_strip",
+            actions: [
+              { id: "new_thread", label: "New thread", iconName: "i-new-thread" },
+              { id: "automations", label: "Automations", iconName: "i-clock" },
+              { id: "skills", label: "Skills", iconName: "i-cube" },
+            ],
+          }],
+        }}
+      />,
+    );
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  test("renders action strips, section headers, row actions, and trailing content", () => {
+    const onBlockAction = vi.fn();
+    const onSelectSection = vi.fn();
+    const onSectionAction = vi.fn();
+    const onSelectItem = vi.fn();
+    const onItemAction = vi.fn();
+
+    render(
+      <ConsoleSidebar
+        Icon={Icon}
+        onBlockAction={onBlockAction}
+        onItemAction={onItemAction}
+        onSelectItem={onSelectItem}
+        onSectionAction={onSectionAction}
+        onSelectSection={onSelectSection}
+        renderItemTrailing={({ item }) => <span>{`archive:${item.id}`}</span>}
+        viewState={{
+          blocks: [
+            {
+              id: "primary",
+              kind: "action_strip",
+              actions: [{ id: "new_thread", label: "New thread", iconName: "i-new-thread" }],
+            },
+            {
+              id: "threads",
+              kind: "list",
+              title: "Threads",
+              actions: [{ id: "filter_sort", label: "Filter and sort", iconName: "i-sliders" }],
+              sections: [{
+                id: "workspace",
+                title: "workspace",
+                iconName: "i-folder",
+                actions: [{ id: "create_thread", label: "New thread", iconName: "i-plus" }],
+                items: [{
+                  id: "thread-1",
+                  title: "Extract the console sidebar",
+                  unread: true,
+                  selected: true,
+                  badgeIconName: "i-open",
+                  actions: [{ id: "pin", label: "Pin thread", iconName: "i-pin" }],
+                }],
+              }],
+            },
+          ],
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole("button", { name: "New thread" })[0] as HTMLElement);
+    expect(onBlockAction).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "workspace" }));
+    expect(onSelectSection).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Pin thread" }));
+    expect(onItemAction).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText("Extract the console sidebar"));
+    expect(onSelectItem).toHaveBeenCalled();
+
+    expect(screen.getByText("archive:thread-1")).toBeInTheDocument();
+  });
+});

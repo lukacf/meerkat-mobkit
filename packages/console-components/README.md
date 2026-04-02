@@ -1,0 +1,96 @@
+# console-components
+
+`console-components` owns the reusable React surfaces for the shared console UI.
+
+## Stable public exports
+
+Components:
+
+- `ConversationEmptyState`
+- `ConversationPane`
+- `ConversationTranscript`
+- `ConsoleActivityRail`
+- `ConsoleDock`
+- `ConsoleSidebar`
+- `ConsoleWorkbench`
+
+Hooks:
+
+- `useConsoleDockController`
+
+Types:
+
+- `ConversationEmptyStateProps`
+- `ConversationPaneProps`
+- `ConversationTranscriptProps`
+- `ConsoleActivityRailProps`
+- `ConsoleDockController`
+- `ConsoleDockProps`
+- `ConsoleSidebarActionButtonScope`
+- `ConsoleSidebarItemTrailingRenderArgs`
+- `ConsoleSidebarProps`
+- `ConsoleSidebarSectionContainerRenderArgs`
+- `ConsoleSidebarSectionHeaderRenderArgs`
+- `ConsoleWorkbenchProps`
+- `IconRenderer`
+- `UseConsoleDockControllerOptions`
+
+## Shared stylesheet
+
+```ts
+import "@console-components/styles";
+```
+
+The shared stylesheet is organized by domain:
+
+- `tokens.css`
+- `themes.css`
+- `conversation.css`
+- `workbench.css`
+- `dock.css`
+- `sidebar.css`
+- `activity.css`
+
+## Host token contract
+
+Shared styles now speak only `--cc-*` tokens. Set them on a single host root or wrapper that contains the shared surfaces.
+
+Theme activation is wrapper-driven too:
+
+- Set `data-cc-theme="light"` on the wrapper to force light mode in a package-owned way.
+- Set `data-cc-theme="dark"` on a nested wrapper to force a local dark island inside a light host.
+- Hosts with their own theme system should mirror the resolved theme onto `data-cc-theme`.
+
+The most useful overrides are:
+
+- `--cc-window-scale`
+- `--cc-content-width`
+- `--cc-bubble-max-width`
+- `--cc-composer-width`
+- `--cc-workbench-sidebar-width`
+- `--cc-workbench-activity-width`
+- `--cc-sidebar-safe-top`
+- `--cc-sidebar-pad-left`
+- `--cc-sidebar-pad-right`
+- `--cc-member-accent`
+- `--cc-member-accent-soft`
+- `--cc-member-surface`
+
+## Integration model
+
+- Shared components render normalized props only.
+- Shared components do not import app stores, Electron APIs, or network code.
+- `useConsoleDockController` owns dock layout, tabs, splits, focus, and target placement only.
+- Hosts keep panel-local session state outside the shared hook.
+
+## Minimal recipe
+
+1. Import the shared stylesheet.
+2. Build a host target union on top of `ConsoleDockTarget`.
+3. Use `useConsoleDockController` with a host `createPanelState` callback.
+4. Render:
+   - `ConsoleSidebar`
+   - `ConsoleDock`
+   - `ConsoleActivityRail`
+   - `ConsoleWorkbench`
+5. Resolve each dock target into a `ConversationViewState` and panel footer/composer binding in host code.

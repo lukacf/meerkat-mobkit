@@ -158,9 +158,9 @@ async function runSmoke() {
     const rosterItems = dom.window.document.querySelectorAll(".cc-activity-rail__roster-item");
     assert(rosterItems.length >= 2, `expected at least 2 roster items, got ${rosterItems.length}`);
 
-    // 4. Verify chat composer is present
-    const composer = dom.window.document.querySelector("[data-testid=\"chat-form\"]");
-    assert(composer, "chat composer missing");
+    // 4. Verify shared composer is present
+    const composer = dom.window.document.querySelector(".cc-composer");
+    assert(composer, "shared composer missing");
 
     // 5. Verify the workbench layout has all three columns
     const workbench = dom.window.document.querySelector(".cc-workbench");

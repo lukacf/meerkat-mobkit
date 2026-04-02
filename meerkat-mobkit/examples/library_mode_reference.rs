@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_client::TestClient;
-use meerkat_mob::{MobDefinition, SpawnMemberSpec};
+use meerkat_mob::{MeerkatId, MobDefinition, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobKitConfig, PreSpawnData,
     RuntimeDecisionInputs, RuntimeOpsPolicy, SubscribeRequest, TrustedOidcRuntimeConfig,
@@ -117,18 +117,54 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn reference_member_specs() -> Vec<SpawnMemberSpec> {
-    ["router", "delivery"]
-        .into_iter()
-        .map(|member_id| {
-            SpawnMemberSpec::from_wire(
-                "lead".to_string(),
-                member_id.to_string(),
-                Some(format!("You are {member_id}. Keep responses concise.").into()),
-                None,
-                None,
-            )
-        })
-        .collect()
+    use std::collections::BTreeMap;
+
+    fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    vec![
+        // ── Coordinators ──
+        SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("triage:main"))
+            .with_labels(labels(&[
+                ("display_name", "Triage"),
+                ("group", "Coordinators"),
+            ])),
+        SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("router:main"))
+            .with_labels(labels(&[
+                ("display_name", "Router"),
+                ("group", "Coordinators"),
+            ])),
+        // ── Domain agents ──
+        SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("domain:billing"))
+            .with_labels(labels(&[("display_name", "Billing"), ("group", "Domain")])),
+        SpawnMemberSpec::new(
+            ProfileName::from("lead"),
+            MeerkatId::from("domain:delivery"),
+        )
+        .with_labels(labels(&[("display_name", "Delivery"), ("group", "Domain")])),
+        SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("domain:support"))
+            .with_labels(labels(&[("display_name", "Support"), ("group", "Domain")])),
+        // ── Internal ──
+        SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("gate:main")).with_labels(
+            labels(&[
+                ("display_name", "Gate"),
+                ("group", "Internal"),
+                ("addressable", "false"),
+                ("singleton", "true"),
+            ]),
+        ),
+        SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("monitor:health"))
+            .with_labels(labels(&[
+                ("display_name", "Health Monitor"),
+                ("group", "Internal"),
+                ("addressable", "false"),
+                ("singleton", "true"),
+            ])),
+    ]
 }
 
 fn trusted_modules_toml() -> String {

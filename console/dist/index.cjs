@@ -2410,8 +2410,8 @@ function ConsoleDock({
         activePanelCount <= 1 && "is-single-panel"
       ),
       children: [
-        hasMultipleTabs || hasTabToolbar ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("header", { className: clsx_default("cc-dock__tab-strip", !hasMultipleTabs && "is-toolbar-only"), children: [
-          hasMultipleTabs ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock__tabs", role: "tablist", "aria-label": "Dock tabs", children: normalized.tabs.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
+        hasMultipleTabs || hasTabToolbar ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("header", { className: clsx_default("cc-dock__tab-strip", !hasMultipleTabs && normalized.tabs.length === 0 && "is-toolbar-only"), children: [
+          normalized.tabs.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock__tabs", role: "tablist", "aria-label": "Dock tabs", children: normalized.tabs.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
             "div",
             {
               className: clsx_default("cc-dock-tab", tab.id === normalized.activeTabId && "is-active"),
@@ -2922,6 +2922,131 @@ function ConsoleWorkbench({
   );
 }
 
+// ../packages/console-components/src/composer/console-composer.tsx
+var import_jsx_runtime15 = require("react/jsx-runtime");
+function kindToClassName(kind, zone) {
+  switch (kind) {
+    case "pill":
+      return "cc-composer__pill";
+    case "pill-icon":
+      return "cc-composer__pill-icon";
+    case "sub-pill":
+      return "cc-composer__sub-pill";
+    case "icon":
+      return zone === "main" ? "cc-composer__icon-ghost" : "cc-composer__footer-icon";
+    default:
+      return "cc-composer__pill";
+  }
+}
+function visible(items) {
+  return items.filter((item) => !item.hidden);
+}
+function ConsoleComposer({
+  viewState,
+  Icon: Icon2,
+  className,
+  shellClassName,
+  footerClassName,
+  inputId,
+  inputRef,
+  shellId,
+  submitButtonId,
+  getToolbarButtonProps,
+  renderMainRow,
+  renderFooter,
+  onChange,
+  onFocus,
+  onKeyDown,
+  onSubmit
+}) {
+  const {
+    value,
+    disabled = false,
+    placeholder,
+    submitDisabled = false,
+    submitLabel = "Send prompt",
+    mainRowItems,
+    footerLeftItems,
+    footerRightItems
+  } = viewState;
+  const visibleMain = visible(mainRowItems);
+  const visibleFooterLeft = visible(footerLeftItems);
+  const visibleFooterRight = visible(footerRightItems);
+  const hasFooter = visibleFooterLeft.length > 0 || visibleFooterRight.length > 0;
+  function renderToolbarButton(item, zone) {
+    const baseClass = kindToClassName(item.kind, zone);
+    const extra = getToolbarButtonProps?.({ zone, item });
+    const { ref, className: extraClass, ...restExtra } = extra ?? {};
+    return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(
+      "button",
+      {
+        className: clsx_default(baseClass, item.hasMenu && "has-menu", extraClass),
+        disabled: item.disabled,
+        type: "button",
+        ref,
+        ...restExtra,
+        children: [
+          item.iconName && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(import_jsx_runtime15.Fragment, { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(Icon2, { name: item.iconName }),
+            " "
+          ] }) : null,
+          item.label ?? null,
+          item.hasMenu && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(import_jsx_runtime15.Fragment, { children: [
+            " ",
+            /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(Icon2, { className: "chev", name: "i-chevron" })
+          ] }) : null
+        ]
+      },
+      item.id
+    );
+  }
+  const defaultMainRow = /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: "cc-composer__main-row", children: [
+    visibleMain.map((item) => renderToolbarButton(item, "main")),
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(
+      "button",
+      {
+        className: "cc-composer__send-btn",
+        disabled: submitDisabled,
+        id: submitButtonId,
+        title: submitLabel,
+        type: "button",
+        onClick: onSubmit,
+        children: "\u2191"
+      }
+    )
+  ] });
+  const mainRow = renderMainRow ? renderMainRow({ items: visibleMain, defaultMainRow }) : defaultMainRow;
+  const defaultFooter = hasFooter ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: clsx_default("cc-composer__footer", footerClassName), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-composer__footer-left", children: visibleFooterLeft.map((item) => renderToolbarButton(item, "footer-left")) }),
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-composer__footer-right", children: visibleFooterRight.map((item) => renderToolbarButton(item, "footer-right")) })
+  ] }) : null;
+  const footer = renderFooter ? renderFooter({
+    leftItems: visibleFooterLeft,
+    rightItems: visibleFooterRight,
+    defaultFooter
+  }) : defaultFooter;
+  return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("section", { className: clsx_default("cc-composer", className), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: clsx_default("cc-composer__shell", shellClassName), id: shellId, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(
+        "textarea",
+        {
+          ref: inputRef,
+          className: "cc-composer__textarea",
+          disabled,
+          id: inputId,
+          placeholder,
+          value,
+          onChange: (event) => onChange(event.currentTarget.value),
+          onFocus,
+          onKeyDown
+        }
+      ),
+      mainRow
+    ] }),
+    footer
+  ] });
+}
+
 // src/lib/agents.ts
 function normalizeAgents(experience, modules) {
   const snapshotAgents = experience?.agent_sidebar?.live_snapshot?.agents;
@@ -2961,37 +3086,107 @@ function buildDockTarget(agent) {
     subtitle
   };
 }
-function groupLabel(agent) {
+function agentGroupKey(agent) {
   return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
 }
-function buildSidebarViewState(args) {
-  const grouped = /* @__PURE__ */ new Map();
-  for (const agent of args.agents) {
-    const label = groupLabel(agent);
-    const bucket = grouped.get(label) || [];
-    bucket.push(agent);
-    grouped.set(label, bucket);
+function agentStateTone(state) {
+  switch (state) {
+    case "running":
+      return "accent";
+    case "active":
+      return "positive";
+    case "idle":
+      return "muted";
+    case "error":
+      return "negative";
+    default:
+      return "muted";
   }
+}
+function sectionIconForGroup(group) {
+  const lower = group.toLowerCase();
+  if (lower.includes("coordinator") || lower.includes("system")) return "i-bolt";
+  if (lower.includes("domain") || lower.includes("specialist")) return "i-cube";
+  if (lower.includes("internal") || lower.includes("infra")) return "i-gear";
+  if (lower.includes("personal") || lower.includes("identity")) return "i-team";
+  return "i-folder";
+}
+function buildSidebarViewState(args) {
+  const { agents, selectedMemberId, pinnedAgentIds = /* @__PURE__ */ new Set(), sortMode = "group" } = args;
+  const sorted = [...agents].sort((a, b) => {
+    const aPinned = pinnedAgentIds.has(a.member_id) ? 0 : 1;
+    const bPinned = pinnedAgentIds.has(b.member_id) ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+    if (sortMode === "alpha") return a.label.localeCompare(b.label);
+    if (sortMode === "status") {
+      const stateOrder = (s) => s === "running" ? 0 : s === "active" ? 1 : 2;
+      const diff = stateOrder(a.state) - stateOrder(b.state);
+      if (diff !== 0) return diff;
+    }
+    return a.label.localeCompare(b.label);
+  });
+  const grouped = /* @__PURE__ */ new Map();
+  for (const agent of sorted) {
+    const key = agentGroupKey(agent);
+    const bucket = grouped.get(key) || [];
+    bucket.push(agent);
+    grouped.set(key, bucket);
+  }
+  const sections = Array.from(grouped.entries()).map(([group, members]) => ({
+    id: group,
+    title: group,
+    iconName: sectionIconForGroup(group),
+    meta: [{ id: "count", label: `${members.length}` }],
+    actions: [
+      { id: "spawn_in_group", label: `Spawn agent in ${group}`, iconName: "i-plus" }
+    ],
+    items: members.map((agent) => {
+      const isAddressable = agent.addressable || agent.affordances?.can_send_message;
+      const isPinned = pinnedAgentIds.has(agent.member_id);
+      return {
+        id: agent.member_id,
+        title: agent.label,
+        subtitle: agent.member_id,
+        selected: agent.member_id === selectedMemberId,
+        pinned: isPinned,
+        disabled: !isAddressable,
+        meta: [
+          ...agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : []
+        ],
+        actions: [
+          {
+            id: "toggle_pin",
+            label: isPinned ? "Unpin agent" : "Pin agent",
+            iconName: "i-pin",
+            active: isPinned
+          }
+        ]
+      };
+    })
+  }));
   return {
-    blocks: [{
-      id: "agents",
-      kind: "list",
-      title: "Agents",
-      sections: Array.from(grouped.entries()).map(([label, members]) => ({
-        id: label,
-        title: label,
-        items: members.map((agent) => ({
-          id: agent.member_id,
-          title: agent.label,
-          subtitle: [agent.profile, agent.kind].filter(Boolean).join(" \xB7 ") || "member",
-          selected: agent.member_id === args.selectedMemberId,
-          meta: [
-            ...agent.state ? [{ id: "state", label: agent.state, tone: agent.state === "running" ? "accent" : "muted" }] : [],
-            ...agent.addressable || agent.affordances?.can_send_message ? [{ id: "addressable", label: "addressable", tone: "muted" }] : []
-          ]
-        }))
-      }))
-    }]
+    blocks: [
+      // Action strip: top-level controls
+      {
+        id: "controls",
+        kind: "action_strip",
+        actions: [
+          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
+          { id: "reconcile", label: "Reconcile", iconName: "i-refresh" }
+        ]
+      },
+      // Agent list — "Agents" header with inline sort/add actions (like meerkat-app "Threads")
+      {
+        id: "agents",
+        kind: "list",
+        title: "Agents",
+        actions: [
+          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
+          { id: "filter_sort", label: "Sort & filter", iconName: "i-sliders" }
+        ],
+        sections
+      }
+    ]
   };
 }
 var USER_IDENTITY = {
@@ -3115,31 +3310,12 @@ function buildConversationViewState(args) {
     groups,
     turnDiff: null,
     emptyState: args.entries.length === 0 ? {
-      title: `Talk to ${args.agentLabel}`,
+      title: args.agentLabel,
       subtitle: "Send a message to start the conversation."
     } : null
   };
 }
 function buildActivityRailViewState(args) {
-  const stateGroups = /* @__PURE__ */ new Map();
-  for (const agent of args.agents) {
-    const state = agent.state || "unknown";
-    const bucket = stateGroups.get(state) || [];
-    bucket.push({
-      id: agent.member_id,
-      focusId: agent.member_id,
-      title: agent.label,
-      subtitle: agent.profile || agent.kind || "member",
-      meta: agent.member_id
-    });
-    stateGroups.set(state, bucket);
-  }
-  const rosterGroups = Array.from(stateGroups.entries()).map(([state, items]) => ({
-    id: state,
-    title: state.charAt(0).toUpperCase() + state.slice(1),
-    meta: `${items.length}`,
-    items
-  }));
   const pulseItems = args.eventFrames.slice(0, 50).map((frame, index) => ({
     id: `event:${frame.id || index}`,
     title: frame.event || "event",
@@ -3148,14 +3324,6 @@ function buildActivityRailViewState(args) {
   }));
   return {
     panels: [
-      {
-        id: "roster",
-        kind: "roster",
-        title: "Agents",
-        meta: `${args.agents.length}`,
-        groups: rosterGroups,
-        emptyText: "No agents loaded"
-      },
       {
         id: "pulse",
         kind: "pulse",
@@ -3343,49 +3511,144 @@ async function sendInteraction(baseUrl, memberId, message) {
 }
 
 // src/icon.tsx
-var import_jsx_runtime15 = require("react/jsx-runtime");
+var import_jsx_runtime16 = require("react/jsx-runtime");
+function SpriteSheet() {
+  return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("svg", { className: "sprite-root", width: "0", height: "0", style: { position: "absolute" }, "aria-hidden": "true", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-plus", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 5v14M5 12h14" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-compose", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m4 20 4.5-1 9.5-9.5-3.5-3.5L5 15.5 4 20z" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m13.5 4.5 3.5 3.5" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M9 19h11" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-new-thread", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("rect", { x: "4", y: "4", width: "16", height: "16", rx: "3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m9 15 5.5-5.5 2 2L11 17H9v-2z" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m13 9 2 2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-bolt", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M13 2 6 13h5l-1 9 8-12h-5z" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-sliders", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M4 6h16M4 12h16M4 18h16" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "8", cy: "12", r: "2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-folder", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-play", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m9 7 9 5-9 5z" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-stop", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M8 8h8v8H8z" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-chevron", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m7 10 5 5 5-5" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-terminal", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m4 6 7 6-7 6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M13 18h7" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-team", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "9", cy: "9", r: "3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "17", cy: "10", r: "2.5" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M4 19a5 5 0 0 1 10 0" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M13.5 19a4 4 0 0 1 7 0" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-branch", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M6 3v6a4 4 0 0 0 4 4h8" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M14 7h4v4" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "6", cy: "3", r: "2" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "6", cy: "15", r: "2" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "18", cy: "13", r: "2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-shield", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-dot", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "12", cy: "12", r: "4" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-clock", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "12", cy: "12", r: "9" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 7v6l4 2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-cube", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m12 3 8 4.5v9L12 21l-8-4.5v-9z" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m12 12 8-4.5" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m12 12-8-4.5" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-sidebar-toggle", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("rect", { x: "3", y: "5", width: "18", height: "14", rx: "2" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M9 5v14" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m14 12 3-3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m14 12 3 3" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-open", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M4 12V6a2 2 0 0 1 2-2h12" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M20 4v6h-6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m20 4-9 9" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M20 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-swap", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M15 7h6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m18 4 3 3-3 3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M9 17H3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m6 14-3 3 3 3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M21 7H9a4 4 0 0 0-4 4v6" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-copy", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("rect", { x: "9", y: "9", width: "11", height: "11", rx: "2" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("rect", { x: "4", y: "4", width: "11", height: "11", rx: "2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-check", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m5 12 4.2 4.2L19 6.5" }) }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-archive", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M4 7h16" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M6 7v11a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M9 11h6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M10 3h4l1 2H9l1-2z" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-square-plus", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("rect", { x: "3", y: "3", width: "18", height: "18", rx: "3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 8v8M8 12h8" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-info", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "12", cy: "12", r: "9" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 10v6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 7h.01" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-refresh", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M21 12a9 9 0 0 1-15.4 6.4" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M3 12A9 9 0 0 1 18.4 5.6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M3 16v-4h4" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M21 8v4h-4" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-mic", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M19 11a7 7 0 0 1-14 0" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 18v3" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M8 21h8" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-ellipsis", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "5", cy: "12", r: "2" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "12", cy: "12", r: "2" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "19", cy: "12", r: "2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-gear", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8z" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.2 2.2M16.9 16.9l2.2 2.2M19.1 4.9l-2.2 2.2M7.1 16.9l-2.2 2.2" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-search", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("circle", { cx: "11", cy: "11", r: "6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m20 20-4.35-4.35" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("symbol", { id: "i-pin", viewBox: "0 0 24 24", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m14 4 6 6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M11 7l6 6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m8 10 6 6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "M6 12l6 6" }),
+      /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m11 13-7 7" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-star", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.2 6.4 20.2l1.1-6.2L3 9.6l6.2-.9L12 3z" }) })
+  ] });
+}
 function Icon({ name, className }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("span", { className: `mc-icon${className ? ` ${className}` : ""}`, "aria-label": name, role: "img", children: name.replace(/^i-/, "").charAt(0).toUpperCase() });
+  return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("svg", { className, "aria-label": name, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("use", { href: `#${name}` }) });
 }
 
 // src/ConsoleApp.tsx
-var import_jsx_runtime16 = require("react/jsx-runtime");
-function ChatComposer({
-  agentLabel,
-  disabled,
-  onSend
-}) {
-  const [message, setMessage] = import_react6.default.useState("");
-  function handleSubmit(event) {
-    event.preventDefault();
-    const trimmed = message.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
-    setMessage("");
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime16.jsxs)("form", { className: "mc-composer", "data-testid": "chat-form", onSubmit: handleSubmit, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-      "textarea",
-      {
-        name: "message",
-        placeholder: `Message ${agentLabel}...`,
-        value: message,
-        onChange: (e) => setMessage(e.target.value),
-        onKeyDown: (e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            handleSubmit(e);
-          }
-        }
-      }
-    ),
-    /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "mc-composer__actions", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("button", { disabled: disabled || !message.trim(), type: "submit", children: "Send" }) })
-  ] });
-}
+var import_jsx_runtime17 = require("react/jsx-runtime");
 function ConsoleApp({ baseUrl }) {
   const [agents, setAgents] = import_react6.default.useState([]);
   const [entriesByMemberId, setEntriesByMemberId] = import_react6.default.useState({});
   const [activityFrames, setActivityFrames] = import_react6.default.useState([]);
+  const [draftByMemberId, setDraftByMemberId] = import_react6.default.useState({});
+  const [sendingMembers, setSendingMembers] = import_react6.default.useState(/* @__PURE__ */ new Set());
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react6.default.useState(/* @__PURE__ */ new Set());
   const [loading, setLoading] = import_react6.default.useState(true);
   const [error, setError] = import_react6.default.useState("");
   const dock = useConsoleDockController({
@@ -3432,8 +3695,12 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildDockTarget(agent), "replace_focused");
     }
   }
-  async function onSendMessage(memberId, text) {
+  async function onSendMessage(memberId) {
+    const text = (draftByMemberId[memberId] || "").trim();
+    if (!text || !memberId) return;
     const agent = agents.find((a) => a.member_id === memberId) || null;
+    setDraftByMemberId((d) => ({ ...d, [memberId]: "" }));
+    setSendingMembers((s) => new Set(s).add(memberId));
     const userEntry = createUserEntry(text);
     setEntriesByMemberId((current) => ({
       ...current,
@@ -3453,96 +3720,230 @@ function ConsoleApp({ baseUrl }) {
         ...current,
         [memberId]: (current[memberId] || []).filter((e) => e.id !== userEntry.id)
       }));
+    } finally {
+      setSendingMembers((s) => {
+        const next = new Set(s);
+        next.delete(memberId);
+        return next;
+      });
     }
+  }
+  const SIDEBAR_MIN = 180;
+  const SIDEBAR_MAX = 420;
+  function handleSidebarResize(event) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const root = event.currentTarget.closest("[data-console-workbench]");
+    if (!root) return;
+    const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-sidebar-width") || "260", 10) || 260;
+    const handle = event.currentTarget;
+    if ("setPointerCapture" in handle) {
+      handle.setPointerCapture(event.pointerId);
+    }
+    document.documentElement.setAttribute("data-cc-resizing", "true");
+    function onPointerMove(e) {
+      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)));
+      root.style.setProperty("--cc-workbench-sidebar-width", `${next}px`);
+    }
+    function cleanup() {
+      document.documentElement.removeAttribute("data-cc-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+  }
+  const ACTIVITY_MIN = 200;
+  const ACTIVITY_MAX = 480;
+  function handleActivityResize(event) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const root = event.currentTarget.closest("[data-console-workbench]");
+    if (!root) return;
+    const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-activity-width") || "280", 10) || 280;
+    const handle = event.currentTarget;
+    if ("setPointerCapture" in handle) {
+      handle.setPointerCapture(event.pointerId);
+    }
+    document.documentElement.setAttribute("data-cc-resizing", "true");
+    function onPointerMove(e) {
+      const next = Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)));
+      root.style.setProperty("--cc-workbench-activity-width", `${next}px`);
+    }
+    function cleanup() {
+      document.documentElement.removeAttribute("data-cc-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
   }
   if (loading) {
-    return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
   }
   if (error) {
-    return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { "data-testid": "console-error", children: error });
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-error", children: error });
   }
   const focusedMemberId = dock.focusedTarget?.id || "";
-  const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId });
-  const activityVS = buildActivityRailViewState({ agents, eventFrames: activityFrames });
-  return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("div", { className: "cc-theme-scope", "data-cc-theme": "dark", "data-testid": "meerkat-console", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-    ConsoleWorkbench,
-    {
-      launcher: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-        ConsoleSidebar,
-        {
-          viewState: sidebarVS,
-          Icon,
-          onSelectItem: onSelectAgent
-        }
-      ),
-      main: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-        ConsoleDock,
-        {
-          viewState: dock.viewState,
-          Icon,
-          onSelectTab: (tab) => dock.selectTab(tab.id),
-          onCloseTab: (tab) => dock.closeTab(tab.id),
-          onFocusPanel: (panel) => dock.focusPanel(panel.id),
-          onSplitPanel: (panel, dir) => dock.splitPanel(panel.id, dir),
-          onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
-          onCreateTab: () => dock.createTab(),
-          renderPanelBody: (panel) => {
-            const memberId = panel.target?.id || "";
-            const entries = entriesByMemberId[memberId] || [];
-            const vs = buildConversationViewState({
-              memberId,
-              agentLabel: panel.target?.title || "Agent",
-              entries
-            });
-            return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-              ConversationPane,
-              {
-                viewState: vs,
-                Icon,
-                footer: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-                  ChatComposer,
-                  {
-                    agentLabel: panel.target?.title || "Agent",
-                    disabled: !memberId,
-                    onSend: (text) => void onSendMessage(memberId, text)
-                  }
-                )
-              }
-            );
+  const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
+  const activityVS = buildActivityRailViewState({ eventFrames: activityFrames });
+  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-theme-scope", "data-cc-theme": "dark", "data-testid": "meerkat-console", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(SpriteSheet, {}),
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+      ConsoleWorkbench,
+      {
+        launcherResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          "div",
+          {
+            className: "pane-resizer",
+            "aria-hidden": "true",
+            onPointerDown: handleSidebarResize
           }
-        }
-      ),
-      activityRail: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)(
-        ConsoleActivityRail,
-        {
-          viewState: activityVS,
-          Icon,
-          onTogglePicker: () => {
-          },
-          onCollapse: () => {
-          },
-          renderSlotPreview: () => null,
-          onSelectItem: (focusId) => {
-            const agent = agents.find((a) => a.member_id === focusId);
-            if (agent) {
-              dock.openTarget(buildDockTarget(agent), "replace_focused");
+        ),
+        launcher: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          ConsoleSidebar,
+          {
+            viewState: sidebarVS,
+            Icon,
+            onSelectItem: onSelectAgent,
+            onItemAction: (_block, _section, item) => {
+              setPinnedAgentIds((current) => {
+                const next = new Set(current);
+                if (next.has(item.id)) {
+                  next.delete(item.id);
+                } else {
+                  next.add(item.id);
+                }
+                return next;
+              });
+            },
+            onItemContextMenu: (_block, _section, item, event) => {
+              event.preventDefault();
+              const agent = agents.find((a) => a.member_id === item.id);
+              if (agent) {
+                dock.openTarget(buildDockTarget(agent), "replace_focused");
+              }
             }
           }
-        }
-      )
-    }
-  ) });
+        ),
+        main: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          ConsoleDock,
+          {
+            viewState: dock.viewState,
+            Icon,
+            onSelectTab: (tab) => dock.selectTab(tab.id),
+            onCloseTab: (tab) => dock.closeTab(tab.id),
+            onFocusPanel: (panel) => dock.focusPanel(panel.id),
+            onSplitPanel: (panel, dir) => dock.splitPanel(panel.id, dir),
+            onClosePanel: (panel) => dock.closePanel(panel.id),
+            onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
+            onCreateTab: () => dock.createTab(),
+            renderPanelBody: (panel) => {
+              const memberId = panel.target?.id || "";
+              const entries = entriesByMemberId[memberId] || [];
+              const vs = buildConversationViewState({
+                memberId,
+                agentLabel: panel.target?.title || "Agent",
+                entries
+              });
+              const draft = draftByMemberId[memberId] || "";
+              const isSending = sendingMembers.has(memberId);
+              const agent = agents.find((a) => a.member_id === memberId);
+              const agentLabel = panel.target?.title || "Agent";
+              const hasTarget = Boolean(memberId);
+              const mainRowItems = [];
+              const footerLeftItems = [
+                { id: "target", kind: "sub-pill", label: `To: ${agentLabel}`, iconName: "i-team" },
+                { id: "identity", kind: "sub-pill", label: agent?.member_id || memberId, iconName: "i-terminal" }
+              ];
+              const footerRightItems = [
+                { id: "profile", kind: "sub-pill", label: agent?.profile || "lead" },
+                { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
+              ];
+              return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+                ConversationPane,
+                {
+                  viewState: vs,
+                  Icon,
+                  footer: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+                    ConsoleComposer,
+                    {
+                      Icon,
+                      viewState: {
+                        value: draft,
+                        disabled: !hasTarget || isSending,
+                        placeholder: hasTarget ? `Message ${agentLabel}...` : "Select an agent from the sidebar",
+                        submitDisabled: !hasTarget || !draft.trim() || isSending,
+                        submitLabel: hasTarget ? `Send to ${agentLabel}` : "Select an agent first",
+                        mainRowItems,
+                        footerLeftItems,
+                        footerRightItems
+                      },
+                      onChange: (value) => setDraftByMemberId((d) => ({ ...d, [memberId]: value })),
+                      onSubmit: () => void onSendMessage(memberId),
+                      onKeyDown: (e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void onSendMessage(memberId);
+                        }
+                      }
+                    }
+                  )
+                }
+              );
+            }
+          }
+        ),
+        activityRailResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          "div",
+          {
+            className: "pane-resizer pane-resizer--activity",
+            "aria-hidden": "true",
+            onPointerDown: handleActivityResize
+          }
+        ),
+        activityRail: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          ConsoleActivityRail,
+          {
+            viewState: activityVS,
+            Icon,
+            onTogglePicker: () => {
+            },
+            onCollapse: () => {
+            },
+            renderSlotPreview: () => null,
+            onSelectItem: (focusId) => {
+              const agent = agents.find((a) => a.member_id === focusId);
+              if (agent) {
+                dock.openTarget(buildDockTarget(agent), "replace_focused");
+              }
+            }
+          }
+        )
+      }
+    )
+  ] });
 }
 
 // src/index.tsx
-var import_jsx_runtime17 = require("react/jsx-runtime");
+var import_jsx_runtime18 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
     throw new Error("target element is required");
   }
   const baseUrl = options.baseUrl || "";
   const root = (0, import_client.createRoot)(target);
-  root.render(/* @__PURE__ */ (0, import_jsx_runtime17.jsx)(ConsoleApp, { baseUrl }));
+  root.render(/* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ConsoleApp, { baseUrl }));
   return {
     unmount() {
       root.unmount();

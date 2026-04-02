@@ -5,13 +5,16 @@
   "type": "commonjs",
   "main": "index.cjs",
   "scripts": {
+    "dev": "vite",
     "build": "npm install --silent --no-fund --no-audit && node build.cjs",
     "smoke": "npm run build --silent && node smoke.cjs",
     "e2e:browser": "npm run build --silent && node browser-e2e.cjs"
   },
   "dependencies": {
+    "@vitejs/plugin-react": "4.5.2",
     "clsx": "2.1.1",
     "esbuild": "0.25.10",
+    "vite": "6.4.1",
     "jsdom": "24.1.0",
     "playwright": "1.55.0",
     "react": "19.1.0",

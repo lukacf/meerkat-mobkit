@@ -5,7 +5,6 @@ import type {
   ConversationIdentity,
   ConsoleActivityRailViewState,
   ConsoleActivityPulseItem,
-  ConsoleActivityItem,
   ConsoleDockTarget,
 } from "@console-core";
 import {
@@ -36,46 +35,121 @@ export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
 // Sidebar
 // ---------------------------------------------------------------------------
 
-function groupLabel(agent: ConsoleAgent): string {
+function agentGroupKey(agent: ConsoleAgent): string {
   return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
+}
+
+function agentStateTone(state: string | undefined): "accent" | "positive" | "muted" | "negative" {
+  switch (state) {
+    case "running": return "accent";
+    case "active": return "positive";
+    case "idle": return "muted";
+    case "error": return "negative";
+    default: return "muted";
+  }
+}
+
+function sectionIconForGroup(group: string): string | null {
+  const lower = group.toLowerCase();
+  if (lower.includes("coordinator") || lower.includes("system")) return "i-bolt";
+  if (lower.includes("domain") || lower.includes("specialist")) return "i-cube";
+  if (lower.includes("internal") || lower.includes("infra")) return "i-gear";
+  if (lower.includes("personal") || lower.includes("identity")) return "i-team";
+  return "i-folder";
 }
 
 export function buildSidebarViewState(args: {
   agents: ConsoleAgent[];
   selectedMemberId: string;
+  pinnedAgentIds?: Set<string>;
+  sortMode?: "group" | "alpha" | "status";
 }): ConsoleSidebarViewState {
+  const { agents, selectedMemberId, pinnedAgentIds = new Set(), sortMode = "group" } = args;
+
+  // Sort agents within groups
+  const sorted = [...agents].sort((a, b) => {
+    // Pinned first
+    const aPinned = pinnedAgentIds.has(a.member_id) ? 0 : 1;
+    const bPinned = pinnedAgentIds.has(b.member_id) ? 0 : 1;
+    if (aPinned !== bPinned) return aPinned - bPinned;
+
+    if (sortMode === "alpha") return a.label.localeCompare(b.label);
+    if (sortMode === "status") {
+      const stateOrder = (s: string | undefined) => s === "running" ? 0 : s === "active" ? 1 : 2;
+      const diff = stateOrder(a.state) - stateOrder(b.state);
+      if (diff !== 0) return diff;
+    }
+    return a.label.localeCompare(b.label);
+  });
+
+  // Group agents
   const grouped = new Map<string, ConsoleAgent[]>();
-  for (const agent of args.agents) {
-    const label = groupLabel(agent);
-    const bucket = grouped.get(label) || [];
+  for (const agent of sorted) {
+    const key = agentGroupKey(agent);
+    const bucket = grouped.get(key) || [];
     bucket.push(agent);
-    grouped.set(label, bucket);
+    grouped.set(key, bucket);
   }
 
+  // Build sections
+  const sections = Array.from(grouped.entries()).map(([group, members]) => ({
+    id: group,
+    title: group,
+    iconName: sectionIconForGroup(group),
+    meta: [{ id: "count", label: `${members.length}` }] as { id: string; label: string; tone?: "default" | "muted" | "accent" | "positive" | "negative" }[],
+    actions: [
+      { id: "spawn_in_group", label: `Spawn agent in ${group}`, iconName: "i-plus" },
+    ],
+    items: members.map((agent) => {
+      const isAddressable = agent.addressable || agent.affordances?.can_send_message;
+      const isPinned = pinnedAgentIds.has(agent.member_id);
+      return {
+        id: agent.member_id,
+        title: agent.label,
+        subtitle: agent.member_id,
+        selected: agent.member_id === selectedMemberId,
+        pinned: isPinned,
+        disabled: !isAddressable,
+        meta: [
+          ...(agent.state
+            ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }]
+            : []),
+        ],
+        actions: [
+          {
+            id: "toggle_pin",
+            label: isPinned ? "Unpin agent" : "Pin agent",
+            iconName: "i-pin",
+            active: isPinned,
+          },
+        ],
+      };
+    }),
+  }));
+
   return {
-    blocks: [{
-      id: "agents",
-      kind: "list",
-      title: "Agents",
-      sections: Array.from(grouped.entries()).map(([label, members]) => ({
-        id: label,
-        title: label,
-        items: members.map((agent) => ({
-          id: agent.member_id,
-          title: agent.label,
-          subtitle: [agent.profile, agent.kind].filter(Boolean).join(" \u00b7 ") || "member",
-          selected: agent.member_id === args.selectedMemberId,
-          meta: [
-            ...(agent.state
-              ? [{ id: "state", label: agent.state, tone: agent.state === "running" ? "accent" as const : "muted" as const }]
-              : []),
-            ...((agent.addressable || agent.affordances?.can_send_message)
-              ? [{ id: "addressable", label: "addressable", tone: "muted" as const }]
-              : []),
-          ],
-        })),
-      })),
-    }],
+    blocks: [
+      // Action strip: top-level controls
+      {
+        id: "controls",
+        kind: "action_strip" as const,
+        actions: [
+          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
+          { id: "reconcile", label: "Reconcile", iconName: "i-refresh" },
+        ],
+      },
+      // Agent list — "Agents" header with inline sort/add actions (like meerkat-app "Threads")
+      {
+        id: "agents",
+        kind: "list" as const,
+        title: "Agents",
+        actions: [
+          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
+          { id: "filter_sort", label: "Sort & filter", iconName: "i-sliders" },
+        ],
+        sections,
+      },
+    ],
   };
 }
 
@@ -243,7 +317,7 @@ export function buildConversationViewState(args: {
     groups,
     turnDiff: null,
     emptyState: args.entries.length === 0 ? {
-      title: `Talk to ${args.agentLabel}`,
+      title: args.agentLabel,
       subtitle: "Send a message to start the conversation.",
     } : null,
   };
@@ -254,32 +328,9 @@ export function buildConversationViewState(args: {
 // ---------------------------------------------------------------------------
 
 export function buildActivityRailViewState(args: {
-  agents: ConsoleAgent[];
   eventFrames: ConsoleFrame[];
 }): ConsoleActivityRailViewState {
-  // Roster panel: agents grouped by state
-  const stateGroups = new Map<string, ConsoleActivityItem[]>();
-  for (const agent of args.agents) {
-    const state = agent.state || "unknown";
-    const bucket = stateGroups.get(state) || [];
-    bucket.push({
-      id: agent.member_id,
-      focusId: agent.member_id,
-      title: agent.label,
-      subtitle: agent.profile || agent.kind || "member",
-      meta: agent.member_id,
-    });
-    stateGroups.set(state, bucket);
-  }
-
-  const rosterGroups = Array.from(stateGroups.entries()).map(([state, items]) => ({
-    id: state,
-    title: state.charAt(0).toUpperCase() + state.slice(1),
-    meta: `${items.length}`,
-    items,
-  }));
-
-  // Pulse panel: recent event frames
+  // Chronological event feed only
   const pulseItems: ConsoleActivityPulseItem[] = args.eventFrames
     .slice(0, 50)
     .map((frame, index) => ({
@@ -291,14 +342,6 @@ export function buildActivityRailViewState(args: {
 
   return {
     panels: [
-      {
-        id: "roster",
-        kind: "roster" as const,
-        title: "Agents",
-        meta: `${args.agents.length}`,
-        groups: rosterGroups,
-        emptyText: "No agents loaded",
-      },
       {
         id: "pulse",
         kind: "pulse" as const,
