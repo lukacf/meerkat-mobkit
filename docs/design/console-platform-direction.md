@@ -1,4 +1,4 @@
-# MobKit Console: Unified Platform Direction (v4)
+# MobKit Console: Unified Platform Direction (v5)
 
 ## Framing
 
@@ -18,46 +18,59 @@ HomeCore and OB3 are instances of the same product category. The core console ne
 
 **Gap:** Neither `dispatch()` (returns `(FencingToken, bool)`) nor `send()` (blocks until completion) on `IdentityRuntime` provides what the console needs: a **non-blocking identity-addressed send that returns a correlation token, with events streamed on a persistent connection**.
 
-### New runtime API surface required
+### New runtime API surface required [NEW]
 
-A new RPC method (e.g., `mobkit/interact`) that:
+A new RPC method (e.g., `mobkit/interact`):
 
 - **Request:** `{ identity: string, content: string, origin?: string }`
 - **Response:** `{ interaction_id: string, identity: string }` — the `interaction_id` is the per-turn UI correlation token
 - **Semantics:** Non-blocking. Enqueues the turn and returns immediately with the correlation token. Does NOT block until completion.
 
+This method does not exist today. It requires new gateway handler + runtime plumbing to bridge identity-addressed non-blocking send with interaction tracking.
+
 ### Per-identity SSE connection model [NEW]
 
 The current `POST /interactions/stream` is ephemeral (one connection per send, drained and closed). The identity model requires a **persistent SSE connection per identity** that carries all events, with concurrent interactions multiplexed and filtered by `interaction_id`.
 
-Design decisions needed:
-- Connection lifecycle: opened when a dock panel targets an identity, closed when the panel is closed or the identity changes
+**Endpoint:** `GET /identity/{identity}/stream` (conventional for long-lived SSE) or `POST /console/subscribe` with identity parameter. Endpoint design TBD.
+
+**Blocking design decision — must be resolved before implementation:**
+
+Multi-panel stream ownership: when two dock panels target the same identity, do they share one SSE connection (refcounted) or open separate connections? This affects reconnection semantics, buffering, duplicate event delivery, and how the console host manages dock tabs. **Recommended:** shared refcounted connection per identity, managed by a connection pool in `lib/network.ts`. Panels subscribe/unsubscribe; the pool opens/closes the underlying SSE connection.
+
+Additional connection design:
+- Connection lifecycle: opened when first panel targets an identity, closed when last panel releases it
 - Reconnection: host reconnects with `Last-Event-ID` for gap recovery
-- Two panels targeting the same identity: share one SSE connection (refcounted) or separate connections?
-- Buffering: events between disconnect and reconnect
+- Buffering: events between disconnect and reconnect are replayed on reconnect via `Last-Event-ID`
 
-### Mandatory event envelope fields
+### Event envelope fields
 
-Every streamed frame must carry:
+Every streamed frame carries:
 
 ```typescript
 {
-  event_id: string;          // unique, monotonic for ordering
-  interaction_id: string;    // correlation token from mobkit/interact response
-  identity: string;          // stable identity attribution (NOT member_id)
-  event_type: string;        // "text_delta", "tool_call", "tool_result", "run_completed", etc.
+  event_id: string;              // unique, monotonic for ordering
+  interaction_id?: string;       // present on turn events, absent on lifecycle/system events
+  identity: string;              // stable identity attribution (NOT member_id)
+  event_type: string;            // "text_delta", "tool_call", "tool_result", "run_completed", etc.
   timestamp_ms: number;
-  data: unknown;             // event-type-specific payload
+  data: unknown;                 // event-type-specific payload
 }
 ```
+
+`interaction_id` is **optional**. Turn events (text_delta, tool_call, tool_result, interaction_complete) carry it. Lifecycle/system events (agent_spawned, lease_expired, peer_wired, topology_changed) are identity-attributed but have no interaction — they flow on the same per-identity SSE stream with `interaction_id` absent. The host filters by `interaction_id` when isolating a turn, and shows all events when rendering the activity feed.
 
 **Terminal event:** `event_type: "interaction_complete"` or `"interaction_failed"` with the matching `interaction_id`. Signals the host to stop waiting for more frames for that turn.
 
 ### Console codebase changes
 
-- `lib/network.ts` — new `openIdentityStream(identity)` (persistent) + `interact(identity, content)` alongside existing member-addressed functions. Both may coexist during migration.
+- `lib/network.ts` — new `openIdentityStream(identity)` (persistent, refcounted connection pool) + `interact(identity, content)` alongside existing member-addressed functions. Both coexist during migration.
 - `lib/adapters.ts` — dock targets keyed by identity, sidebar built from `IdentityStatus[]` when available
 - `ConsoleApp.tsx` — send flow uses `mobkit/interact`, SSE subscription by identity with `interaction_id` filtering
+
+### Migration coexistence
+
+When `identity_status` is absent from the experience (pre-migration host or non-identity-first runtime), the sidebar adapter falls back to `agent_sidebar` member rows. Dock targets use `member_id`. Send uses `mobkit/send_message`. The adapter is a simple fallback: `identity_status ?? agent_sidebar`. The dock target type does not change — it gains an optional `addressingMode: "identity" | "member"` field so the send flow knows which path to use.
 
 ---
 
@@ -78,12 +91,13 @@ The experience endpoint adds new optional sections and per-section metadata. The
 | `flows` | **[EXISTS]** | Scheduling, dispatch methods |
 | `gating` | **[NEW]** | Pending entries, audit trail, risk tiers, action capabilities. Optional |
 | `identity_status` | **[NEW]** | Per-identity continuity generation, lease health, session mapping. Optional |
-| `routing` | **[NEW]** | Ingress events, dispatch outcomes, retry/dead-letter state. Optional |
+| `routing` | **[NEW]** | Deferred — see Routing section below |
 
 ### Per-section metadata [NEW]
 
 ```typescript
 {
+  schema_version: string;    // e.g., "1" — lightweight, for cross-host evolution
   refresh: 
     | { mode: "poll", interval_ms: number }
     | { mode: "stream", topic: string, update_semantics: "full_snapshot" | "append" | "patch" }
@@ -91,15 +105,25 @@ The experience endpoint adds new optional sections and per-section metadata. The
 }
 ```
 
-- `refresh` is required on all sections. Defines how the host gets updates. `update_semantics` specifies whether stream events are full replacement snapshots, append-only entries, or typed patches/deltas.
-- `capabilities` is optional — only meaningful for sections with write actions (gating, routing). Omitted for read-only sections (topology, health).
-- No `schema_version` (the shape is the version) or `scope` (unclear semantics) until there's concrete need.
+- `schema_version` is required. Lightweight — stays "1" until a breaking change. Cheap insurance for a multi-host platform contract.
+- `refresh` is required. Defines how the host gets updates. `update_semantics` specifies whether stream events are full replacement snapshots, append-only entries, or typed patches/deltas.
+- `capabilities` is optional — only meaningful for sections with write actions (gating). Omitted for read-only sections (topology, health).
+
+### Client-side data management
+
+The experience endpoint returns sections with refresh metadata. The host's `ConsoleApp` is responsible for:
+- Fetching initial experience
+- Starting polling or SSE subscriptions per section based on declared refresh
+- Storing section data and notifying consuming components
+- Handling shared consumption (e.g., topology data used by both the graph panel and the inspection panel)
+
+This is a **host responsibility**, not a shared utility. Hosts use their own state management (Zustand, React Query, plain React state). A recommended pattern will be documented, but the shared layer does not prescribe a data manager — it prescribes the data shapes and refresh contracts.
 
 ---
 
 ## Tier 1 — Identity inspection panel [NEW]
 
-A shared inspect view per identity. Shows what the data model can actually provide today, grows as the data model grows.
+A shared inspect view per identity. Shows what the data model can actually provide; grows as the data model grows. Does NOT fake fields that lack backing data.
 
 ### Data sources
 
@@ -111,10 +135,10 @@ A shared inspect view per identity. Shows what the data model can actually provi
 | Peer reachable count | `mobkit/inspect_identity` | **[EXISTS]** |
 | Current session ID + member mapping | `mobkit/status_identity` | **[EXISTS]** |
 | Topology peers (wired-to) | experience `topology` section | **[EXISTS]** for modules, **[NEW]** for identity graph |
-| Recent tool calls | event log filtered by identity + tool_call_id | **[NEW]** — depends on identity-attributed tool events in the event model |
-| Last activity timestamp | event log filtered by identity | **[NEW]** — depends on identity attribution on events |
+| Recent tool calls | **[NEW]** — requires: (1) identity-attributed events in the event model, (2) tool_call_id on tool events, (3) `mobkit/query_events` supporting identity-based filtering (currently does not). All three are new work. |
+| Last activity timestamp | **[NEW]** — same dependency as above: identity-attributed events + identity-based event query. Currently `query_events` does not filter by identity and drops agent events that lack displayable payloads. |
 
-The inspection panel renders what's available. "Recent tool calls" and "last activity" appear when the event model provides identity-attributed, tool-call-id-tagged events suitable for reconstruction. Until then, those fields are absent, not faked.
+The inspection panel renders fields backed by [EXISTS] sources on day one. "Recent tool calls" and "last activity" appear only when the event model, event persistence, and query API all support identity-attributed, tool-call-id-tagged events. The panel grows incrementally — it does not block on the full event model.
 
 Dock panel kind: `"identity-inspect"`. Shared view state type in `@console-core`.
 
@@ -128,7 +152,7 @@ Dock panel kind: `"identity-inspect"`. Shared view state type in `@console-core`
 
 - Virtualized scrolling (1000+ items without DOM bloat)
 - Text search filter
-- Category/agent filter chips (by identity when identity-attributed events are available)
+- Category/agent filter chips (by identity when identity-attributed events are available, falls back to member_id/agent_id)
 - Pause/resume toggle
 - Click-to-navigate (focuses relevant identity in dock)
 - Auto-scroll with "N new events" indicator when scrolled up
@@ -139,8 +163,6 @@ Dock panel kind: `"identity-inspect"`. Shared view state type in `@console-core`
 - Eviction: circular buffer (drop oldest when full)
 - Backward pagination: host-provided `onLoadMore?: () => Promise<items[]>` for scrolling into history beyond the buffer
 - Shared component manages DOM virtualization; host manages the data buffer
-
-**Identity attribution dependency:** Filtering/grouping by identity requires events to carry stable identity attribution in the envelope. This is a runtime requirement (see Tier 1 event envelope). Until available, filtering falls back to member_id/agent_id.
 
 Host provides `renderItem`. Pulse/Roster/Feed stay for summary use cases.
 
@@ -158,9 +180,10 @@ interface ConversationRichToolCallBlock {
   arguments: string;
   result?: string;
   status: "pending" | "success" | "error";
-  collapsible: boolean;
 }
 ```
+
+Tool call blocks are always collapsible (args and result expand/collapse independently). No `collapsible` field — it's an invariant of the block type.
 
 ### Pairing by `tool_call_id`, not adjacency
 
@@ -202,9 +225,11 @@ Host overlays via callback. Base graph and layout is shared; hosts annotate node
 
 ## Tier 2 — Generic gating/approvals surface [NEW]
 
-MobKit owns gating primitives **[EXISTS]**: `GatingEvaluateResult`, `GatingDecisionResult`, `GatingAuditEntry`, `GatingPendingEntry`.
+MobKit owns gating data types **[EXISTS]**: `GatingEvaluateResult`, `GatingDecisionResult`, `GatingAuditEntry`, `GatingPendingEntry`.
 
-Console surface for these **[NEW]**.
+The runtime currently exposes **[EXISTS]** a single decision path centered on `mobkit/gating/decide` plus pending query and audit query.
+
+Console surface **[NEW]** — requires new work at multiple layers:
 
 ### Read side
 
@@ -212,26 +237,29 @@ Console surface for these **[NEW]**.
 - Approved/denied/escalated history
 - Audit trail per decision
 
-### Write/action side — entry-addressed operations
+### Write/action side [NEW — requires new gateway RPCs + gating module extension]
 
-Each pending entry has a `pending_entry_id`. Actions target a specific entry:
+The current `mobkit/gating/decide` is a programmatic API called by code, not an RPC endpoint shaped for human operators. Console-friendly action methods need to be designed. Two approaches:
 
-```typescript
-// Request shape for all gating actions
-{
-  pending_entry_id: string;
-  rationale?: string;          // optional comment/reason
-}
+**Option A — Extend `mobkit/gating/decide` for console use:**
 
-// Methods declared in experience gating.capabilities:
-"mobkit/gating/approve"    → { pending_entry_id, rationale? }
-"mobkit/gating/deny"       → { pending_entry_id, rationale? }
-"mobkit/gating/escalate"   → { pending_entry_id, rationale? }
+The existing `decide` method gains an optional `rationale` field and the console calls it with outcome values (approve/deny/escalate). No new RPC methods needed.
+
+**Option B — New console-specific action methods:**
+
+```
+mobkit/gating/approve    → { pending_entry_id, rationale? }
+mobkit/gating/deny       → { pending_entry_id, rationale? }
+mobkit/gating/escalate   → { pending_entry_id, rationale? }
 ```
 
+These are **[NEW]** gateway handlers that wrap the underlying gating module. They require: gateway RPC registration, auth/permission checks (who can approve?), and gating module support for accepting external human decisions.
+
+**Whichever approach is chosen:**
 - Actions are **idempotent**: approving an already-approved entry is a no-op, not an error
 - Response: `{ entry_id, outcome: "approved" | "denied" | "escalated", resolved_at }`
 - `rationale` support declared in capabilities: `capabilities: ["approve", "deny", "escalate", "rationale"]`
+- Action methods are declared in the experience `gating` section capabilities, so the shared panel knows what buttons to render
 
 The shared panel renders action buttons based on declared capabilities. Hosts specialize the **entry context rendering** (what policy information is shown alongside the action), not the action mechanics.
 
@@ -239,18 +267,11 @@ Optional — only rendered when `gating` is present in the experience contract.
 
 ---
 
-## Tier 2 — Routing/delivery surface [NEW]
+## Tier 2 — Routing/delivery surface [NEW — deferred]
 
-Separate from `flows` (scheduling). The shared platform layer covers:
+Routing/delivery is expected to become a shared experience section when HomeCore and OB3 routing implementations converge on a common data model. Until then, hosts handle routing visibility in custom dock panels via `renderPanelBody`.
 
-- Ingress event received (source, timestamp, payload summary)
-- Target identity (who it was routed to)
-- Dispatch outcome (delivered, queued, failed, dead-lettered)
-- Retry/dead-letter state
-
-Host-specific overlays (NOT shared): household notification semantics, channel-specific rendering, business routing reasons. The shared component provides the timeline/list chrome; hosts provide domain-specific entry content rendering.
-
-**Note:** `list_routes`, `retry_delivery`, `inspect_connector` are NOT current RPCs. This section should be added to the experience contract **when a real shared abstraction emerges from actual HomeCore/OB3 routing implementations**, not designed ahead of the data model. Until then, hosts handle routing visibility in their own custom dock panels.
+No shared routing RPCs, data types, or experience section fields are specified at this time. When a real shared abstraction emerges from actual integration work, it will be added as a new experience section separate from `flows` (scheduling).
 
 ---
 
@@ -273,9 +294,11 @@ Host derives the phase from the event stream. Shared component renders the appro
 
 `pinned` + `unread` on `ConsoleSidebarItem` is sufficient for initial integration. May need: watchlist with alert thresholds, degraded-state badges, sticky activity filters in future iterations. Not a blocker.
 
-### Per-agent lifecycle actions [EXISTS for RPCs, NEW for console wiring]
+### Per-agent lifecycle actions [EXISTS for identity-first RPCs on IdentityRuntime, NEW for console-facing HTTP/RPC surface]
 
-Context menu: retire, respawn, reset, inspect. Action strip for global flow triggers (host-configurable). Wired to existing identity-first RPCs.
+The identity-first lifecycle methods (retire, respawn, reset, inspect) exist on `IdentityRuntime` in the Rust core **[EXISTS]**. However, the console-facing HTTP/RPC surface currently exposes only member-oriented retire/respawn **[EXISTS]** and does not expose the full identity-first lifecycle set **[NEW]**. Wiring identity-first lifecycle actions through the console RPC layer requires new gateway handlers.
+
+Console UI: context menu on sidebar items (retire, respawn, reset, inspect). Action strip for global flow triggers (host-configurable via action strip items).
 
 ---
 
@@ -294,4 +317,4 @@ Context menu: retire, respawn, reset, inspect. Action strip for global flow trig
 
 ## Architectural principle
 
-The experience endpoint describes what data is available, with protocol metadata per section (refresh behavior, capabilities for actionable sections). The host decides what panels to show. Shared components render normalized view states via callbacks and slots. MobKit owns generic operator primitives (identity, gating, topology, lifecycle, activity). Hosts own domain-specific rendering and policy semantics. MobKit knows nothing about Slack, reviews, households, or domain-specific gate policies — but it provides typed extension points for hosts that do.
+The experience endpoint describes what data is available, with protocol metadata per section (schema version, refresh behavior, capabilities for actionable sections). The host decides what panels to show. Shared components render normalized view states via callbacks and slots. MobKit owns generic operator primitives (identity, gating, topology, lifecycle, activity). Hosts own domain-specific rendering and policy semantics. MobKit knows nothing about Slack, reviews, households, or domain-specific gate policies — but it provides typed extension points for hosts that do.
