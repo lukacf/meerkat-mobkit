@@ -328,10 +328,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
                 { id: "identity", kind: "sub-pill", label: agent?.member_id || memberId, iconName: "i-terminal" },
               ];
 
-              const footerRightItems: ConsoleComposerToolbarItem[] = [
-                { id: "profile", kind: "sub-pill", label: agent?.profile || "lead" },
-                { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" },
-              ];
+              const footerRightItems: ConsoleComposerToolbarItem[] = [];
+              if (agent?.profile) {
+                footerRightItems.push({ id: "profile", kind: "sub-pill", label: agent.profile });
+              }
+              footerRightItems.push({
+                id: "state",
+                kind: "sub-pill",
+                label: agent?.state || "unknown",
+                iconName: "i-dot",
+              });
 
               return (
                 <ConversationPane

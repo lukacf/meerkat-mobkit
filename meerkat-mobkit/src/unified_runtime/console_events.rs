@@ -5,13 +5,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde_json::{Value, json};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::console_contracts::{ConsoleIdentityEventEnvelope, ReplayUnavailableError};
+use crate::console_contracts::{
+    ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope, ReplayUnavailableError,
+    SYSTEM_EVENT_IDENTITY,
+};
 use crate::types::{EventEnvelope, UnifiedEvent};
 use crate::unified_runtime::EventQuery;
 
 const IDENTITY_REPLAY_CAP: usize = 1024;
 const ALL_EVENTS_REPLAY_CAP: usize = 4096;
 const EVENT_CHANNEL_CAP: usize = 512;
+const PENDING_INTERACTION_CAP: usize = 256;
 
 #[derive(Clone)]
 pub(crate) struct ConsoleEventStore {
@@ -42,7 +46,7 @@ impl ConsoleEventStore {
         let bootstrap = ConsoleIdentityEventEnvelope {
             event_id: "console-evt-1".to_string(),
             interaction_id: None,
-            identity: "identity:system".to_string(),
+            identity: SYSTEM_EVENT_IDENTITY.to_string(),
             event_type: "runtime_bootstrapped".to_string(),
             timestamp_ms: current_time_ms(),
             data: json!({
@@ -140,7 +144,7 @@ impl ConsoleEventStore {
         replay_slice(
             events,
             last_event_id,
-            "identity",
+            crate::console_contracts::IDENTITY_STREAM_NAME,
             state.all_events.back().map(|event| event.event_id.clone()),
         )
     }
@@ -162,7 +166,7 @@ impl ConsoleEventStore {
         replay_slice(
             state.all_events.clone(),
             last_event_id,
-            "all_events",
+            ALL_EVENTS_STREAM_NAME,
             state.all_events.back().map(|event| event.event_id.clone()),
         )
     }
@@ -216,18 +220,21 @@ impl ConsoleEventStore {
         interaction_id: &str,
         origin: &str,
         content: &str,
-    ) {
+    ) -> Result<(), &'static str> {
         {
             let mut state = self.state.write().await;
-            state
+            let queue = state
                 .pending_by_identity
                 .entry(identity.to_string())
-                .or_default()
-                .push_back(PendingInteraction {
-                    interaction_id: interaction_id.to_string(),
-                    origin: origin.to_string(),
-                    content: content.to_string(),
-                });
+                .or_default();
+            if queue.len() >= PENDING_INTERACTION_CAP {
+                return Err("interaction queue at capacity");
+            }
+            queue.push_back(PendingInteraction {
+                interaction_id: interaction_id.to_string(),
+                origin: origin.to_string(),
+                content: content.to_string(),
+            });
             if let Some(runtime_member_id) =
                 runtime_member_id.filter(|value| !value.trim().is_empty())
             {
@@ -236,6 +243,7 @@ impl ConsoleEventStore {
                     .insert(runtime_member_id.to_string(), identity.to_string());
             }
         }
+        Ok(())
     }
 
     pub(crate) async fn accept_interaction(&self, identity: &str, interaction_id: &str) {
@@ -439,6 +447,9 @@ fn current_time_ms() -> u64 {
         .unwrap_or_default()
 }
 
+/// Runtime IDs currently follow `{identity}:gen{digits}` in the identity runtime.
+/// If that format changes, this projection returns `None` and the caller must
+/// fall back to explicit runtime-to-identity registration instead of guessing.
 fn derive_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
     let (identity, generation_suffix) = runtime_id.rsplit_once(":gen")?;
     if generation_suffix.is_empty() || !generation_suffix.chars().all(|ch| ch.is_ascii_digit()) {
@@ -486,7 +497,7 @@ mod tests {
             .await
             .expect_err("unknown checkpoint");
         assert_eq!(err.error, "replay_unavailable");
-        assert_eq!(err.stream, "identity");
+        assert_eq!(err.stream, crate::console_contracts::IDENTITY_STREAM_NAME);
         assert_eq!(err.latest_event_id, second.event_id);
     }
 
@@ -527,7 +538,8 @@ mod tests {
                 "console:panel-1",
                 "hello",
             )
-            .await;
+            .await
+            .expect("reserve interaction");
         store.accept_interaction("identity:luka", "turn-1").await;
         store
             .project_unified_event(&EventEnvelope {
@@ -581,7 +593,8 @@ mod tests {
                 "console:panel-1",
                 "hello",
             )
-            .await;
+            .await
+            .expect("reserve interaction");
         store.accept_interaction("identity:luka", "turn-1").await;
         store
             .record_lifecycle(
@@ -615,7 +628,8 @@ mod tests {
                 "console:panel-1",
                 "hello",
             )
-            .await;
+            .await
+            .expect("reserve interaction");
         store
             .project_unified_event(&EventEnvelope {
                 event_id: "evt-agent-early".to_string(),
@@ -642,5 +656,59 @@ mod tests {
         assert_eq!(events[0].event_type, "text_delta");
         assert_eq!(events[0].interaction_id.as_deref(), Some("turn-early"));
         assert_eq!(events[1].event_type, "interaction_started");
+    }
+
+    #[tokio::test]
+    async fn reserve_interaction_rejects_when_identity_queue_reaches_cap() {
+        let store = ConsoleEventStore::new();
+        for idx in 0..PENDING_INTERACTION_CAP {
+            store
+                .reserve_interaction(
+                    "identity:luka",
+                    Some("identity:luka:gen0"),
+                    &format!("turn-{idx}"),
+                    "console:panel-1",
+                    "hello",
+                )
+                .await
+                .expect("queue should accept within cap");
+        }
+
+        let err = store
+            .reserve_interaction(
+                "identity:luka",
+                Some("identity:luka:gen0"),
+                "turn-overflow",
+                "console:panel-1",
+                "hello",
+            )
+            .await
+            .expect_err("queue should reject beyond cap");
+        assert_eq!(err, "interaction queue at capacity");
+    }
+
+    #[tokio::test]
+    async fn replay_all_retains_latest_4096_events() {
+        let store = ConsoleEventStore::new();
+        for idx in 0..(ALL_EVENTS_REPLAY_CAP + 8) {
+            store
+                .append(
+                    "identity:luka",
+                    Some("turn-1".to_string()),
+                    "text_delta",
+                    json!({ "idx": idx }),
+                )
+                .await;
+        }
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        assert_eq!(replay.len(), ALL_EVENTS_REPLAY_CAP);
+        assert_eq!(
+            replay.first().and_then(|event| event.data["idx"].as_u64()),
+            Some(8)
+        );
     }
 }

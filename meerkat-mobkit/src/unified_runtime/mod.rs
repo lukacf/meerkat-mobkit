@@ -282,10 +282,10 @@ impl UnifiedRuntime {
         interaction_id: &str,
         origin: &str,
         content: &str,
-    ) {
+    ) -> Result<(), &'static str> {
         self.console_events
             .reserve_interaction(identity, runtime_member_id, interaction_id, origin, content)
-            .await;
+            .await
     }
 
     pub(crate) async fn accept_console_interaction(&self, identity: &str, interaction_id: &str) {

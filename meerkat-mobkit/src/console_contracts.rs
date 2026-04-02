@@ -3,6 +3,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const IDENTITY_STREAM_NAME: &str = "identity";
+pub const ALL_EVENTS_STREAM_NAME: &str = "all_events";
+pub const ALL_EVENTS_CONTROL_IDENTITY: &str = "console:all";
+pub const SYSTEM_EVENT_IDENTITY: &str = "_system";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleInteractionRequest {
     pub identity: String,

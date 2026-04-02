@@ -13,9 +13,11 @@ use meerkat_mob::MobState;
 use meerkat_mob::{MeerkatId, PeerTarget, ProfileName, SpawnMemberSpec};
 use serde_json::{Value, json};
 use std::convert::Infallible;
+use tracing::warn;
 
 use crate::console_contracts::{
-    ConsoleIdentityEventEnvelope, IdentityStreamRequest, ReplayUnavailableError,
+    ALL_EVENTS_CONTROL_IDENTITY, ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope,
+    IDENTITY_STREAM_NAME, IdentityStreamRequest, ReplayUnavailableError,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -294,13 +296,13 @@ async fn console_identity_stream_handler(
             }
         },
         None => {
-            if let Some(response) = replay_unavailable_response(&headers, "identity") {
+            if let Some(response) = replay_unavailable_response(&headers, IDENTITY_STREAM_NAME) {
                 return response.into_response();
             }
             Vec::new()
         }
     };
-    let subscribed = console_stream_control_envelope("identity", Some(identity.clone()));
+    let subscribed = console_stream_control_envelope(IDENTITY_STREAM_NAME, Some(identity.clone()));
     if let Some(store) = &state.console_events {
         store
             .note_identity_stream_checkpoint(&identity, subscribed.event_id.clone())
@@ -311,30 +313,21 @@ async fn console_identity_stream_handler(
         .as_ref()
         .map(ConsoleEventStore::subscribe);
     let stream = stream! {
-        yield Ok::<Event, Infallible>(
-            Event::default()
-                .id(subscribed.event_id.clone())
-                .event(&subscribed.event_type)
-                .data(serde_json::to_string(&subscribed).unwrap_or_else(|_| "{}".to_string()))
-        );
+        if let Some(event) = sse_event_from_envelope(&subscribed) {
+            yield Ok::<Event, Infallible>(event);
+        }
         for envelope in replayed {
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .id(envelope.event_id.clone())
-                    .event(&envelope.event_type)
-                    .data(serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string()))
-            );
+            if let Some(event) = sse_event_from_envelope(&envelope) {
+                yield Ok::<Event, Infallible>(event);
+            }
         }
         if let Some(ref mut rx) = rx {
             loop {
                 match rx.recv().await {
                     Ok(envelope) if envelope.identity == identity => {
-                        yield Ok::<Event, Infallible>(
-                            Event::default()
-                                .id(envelope.event_id.clone())
-                                .event(&envelope.event_type)
-                                .data(serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string()))
-                        );
+                        if let Some(event) = sse_event_from_envelope(&envelope) {
+                            yield Ok::<Event, Infallible>(event);
+                        }
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
@@ -389,13 +382,13 @@ async fn console_events_stream_handler(
             }
         },
         None => {
-            if let Some(response) = replay_unavailable_response(&headers, "all_events") {
+            if let Some(response) = replay_unavailable_response(&headers, ALL_EVENTS_STREAM_NAME) {
                 return response.into_response();
             }
             Vec::new()
         }
     };
-    let subscribed = console_stream_control_envelope("all_events", None);
+    let subscribed = console_stream_control_envelope(ALL_EVENTS_STREAM_NAME, None);
     if let Some(store) = &state.console_events {
         store
             .note_all_stream_checkpoint(subscribed.event_id.clone())
@@ -406,30 +399,21 @@ async fn console_events_stream_handler(
         .as_ref()
         .map(ConsoleEventStore::subscribe);
     let stream = stream! {
-        yield Ok::<Event, Infallible>(
-            Event::default()
-                .id(subscribed.event_id.clone())
-                .event(&subscribed.event_type)
-                .data(serde_json::to_string(&subscribed).unwrap_or_else(|_| "{}".to_string()))
-        );
+        if let Some(event) = sse_event_from_envelope(&subscribed) {
+            yield Ok::<Event, Infallible>(event);
+        }
         for envelope in replayed {
-            yield Ok::<Event, Infallible>(
-                Event::default()
-                    .id(envelope.event_id.clone())
-                    .event(&envelope.event_type)
-                    .data(serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string()))
-            );
+            if let Some(event) = sse_event_from_envelope(&envelope) {
+                yield Ok::<Event, Infallible>(event);
+            }
         }
         if let Some(ref mut rx) = rx {
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
-                        yield Ok::<Event, Infallible>(
-                            Event::default()
-                                .id(envelope.event_id.clone())
-                                .event(&envelope.event_type)
-                                .data(serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string()))
-                        );
+                        if let Some(event) = sse_event_from_envelope(&envelope) {
+                            yield Ok::<Event, Infallible>(event);
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -483,11 +467,15 @@ fn replay_unavailable_response(
                 error: "replay_unavailable".to_string(),
                 stream: stream_name.to_string(),
                 requested_last_event_id: requested_last_event_id.to_string(),
-                latest_event_id: String::new(),
+                latest_event_id: stream_head_event_id(stream_name),
             })
             .unwrap_or_else(|_| serde_json::json!({ "error": "replay_unavailable" })),
         ),
     ))
+}
+
+fn stream_head_event_id(stream_name: &str) -> String {
+    format!("console-stream-{stream_name}-{}", current_time_ms())
 }
 
 fn console_stream_control_envelope(
@@ -495,14 +483,34 @@ fn console_stream_control_envelope(
     identity: Option<String>,
 ) -> ConsoleIdentityEventEnvelope {
     ConsoleIdentityEventEnvelope {
-        event_id: format!("console-stream-{stream_name}-{}", current_time_ms()),
+        event_id: stream_head_event_id(stream_name),
         interaction_id: None,
-        identity: identity.unwrap_or_else(|| "console:all".to_string()),
+        identity: identity.unwrap_or_else(|| ALL_EVENTS_CONTROL_IDENTITY.to_string()),
         event_type: "subscribed".to_string(),
         timestamp_ms: current_time_ms(),
         data: serde_json::json!({
             "stream": stream_name,
         }),
+    }
+}
+
+fn sse_event_from_envelope(envelope: &ConsoleIdentityEventEnvelope) -> Option<Event> {
+    match serde_json::to_string(envelope) {
+        Ok(data) => Some(
+            Event::default()
+                .id(envelope.event_id.clone())
+                .event(&envelope.event_type)
+                .data(data),
+        ),
+        Err(err) => {
+            warn!(
+                event_id = %envelope.event_id,
+                event_type = %envelope.event_type,
+                identity = %envelope.identity,
+                "skipping unserializable console SSE envelope: {err}"
+            );
+            None
+        }
     }
 }
 

@@ -1,12 +1,44 @@
 {
   "contract_version": "0.3.0",
   "version_pin": "v0.3.0",
+  "spec_source": {
+    "rct_spec_markdown": ".rct/spec.md",
+    "rct_spec_yaml": ".rct/spec.yaml"
+  },
+  "type_refs": {
+    "experience": "TYPE-005",
+    "identity_status_row": "TYPE-006",
+    "activity_filter_preset": "TYPE-012",
+    "identity_stream_request": "TYPE-003",
+    "console_identity_event_envelope": "TYPE-004",
+    "replay_unavailable_error": "TYPE-018",
+    "console_interaction_request": "TYPE-001",
+    "console_interaction_accepted": "TYPE-002",
+    "console_interaction_rejected_error": "TYPE-019"
+  },
+  "breaking_changes": [
+    {
+      "id": "BC-001",
+      "surface": "identity-first status and inspect payloads",
+      "change": "addressability wire values are lowercase",
+      "previous_examples": [
+        "Addressable",
+        "InternalOnly"
+      ],
+      "current_examples": [
+        "addressable",
+        "internal_only"
+      ],
+      "action_required": "Clients matching on addressability strings must update to lowercase wire enums."
+    }
+  ],
   "surfaces": {
     "rest": {
       "experience": {
         "method": "GET",
         "path": "/console/experience",
         "response": {
+          "type_ref": "TYPE-005",
           "required_top_level_fields": [
             "contract_version",
             "runtime_capabilities",
@@ -32,18 +64,101 @@
         }
       }
     },
+    "rpc": {
+      "console_rpc_endpoint": {
+        "method": "POST",
+        "path": "/console/rpc",
+        "protocol": "JSON-RPC 2.0"
+      },
+      "methods": {
+        "mobkit/interact": {
+          "request": {
+            "type_ref": "TYPE-001",
+            "required_fields": [
+              "identity",
+              "content",
+              "origin"
+            ]
+          },
+          "success": {
+            "type_ref": "TYPE-002"
+          },
+          "errors": [
+            {
+              "type_ref": "TYPE-019",
+              "codes": [
+                -32001,
+                -32002,
+                -32003,
+                -32004,
+                -32602,
+                -32603
+              ]
+            }
+          ]
+        },
+        "mobkit/send_message": {
+          "status": "legacy_compatibility_path",
+          "note": "Still supported for member-addressed panels during migration."
+        }
+      }
+    },
     "sse": {
       "agent_events": {
         "method": "POST",
-        "path": "/console/identity/stream"
+        "path": "/console/identity/stream",
+        "status": "compatibility_alias_for_identity_events"
+      },
+      "identity_events": {
+        "method": "POST",
+        "path": "/console/identity/stream",
+        "request": {
+          "type_ref": "TYPE-003",
+          "required_fields": [
+            "identity"
+          ]
+        },
+        "events": {
+          "type_ref": "TYPE-004"
+        },
+        "errors": [
+          {
+            "status": 409,
+            "type_ref": "TYPE-018"
+          },
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "reason": "console stream requires a valid auth token"
+            }
+          }
+        ]
       },
       "all_events": {
         "method": "GET",
-        "path": "/console/events/stream"
+        "path": "/console/events/stream",
+        "events": {
+          "type_ref": "TYPE-004"
+        },
+        "errors": [
+          {
+            "status": 409,
+            "type_ref": "TYPE-018"
+          },
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "reason": "console stream requires a valid auth token"
+            }
+          }
+        ]
       },
-      "mob_events": {
-        "method": "GET",
-        "path": "/mob/events"
+      "legacy_member_stream": {
+        "method": "POST",
+        "path": "/interactions/stream",
+        "status": "legacy_compatibility_path"
       },
       "activity_feed_keep_alive_event": "keep-alive"
     }

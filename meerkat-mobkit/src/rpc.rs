@@ -1803,7 +1803,7 @@ pub async fn handle_unified_rpc_json(
                 map_dispatch_origin(&request_params.origin),
             )
             .with_correlation(interaction_id.clone());
-            runtime
+            if let Err(message) = runtime
                 .reserve_console_interaction(
                     identity.as_str(),
                     runtime_member_id.as_deref(),
@@ -1811,7 +1811,10 @@ pub async fn handle_unified_rpc_json(
                     &origin,
                     &content,
                 )
-                .await;
+                .await
+            {
+                return error_response(response_id, -32003, message);
+            }
             let dispatch_result =
                 AssertUnwindSafe(identity_rt.dispatch(&identity, &dispatch_input))
                     .catch_unwind()

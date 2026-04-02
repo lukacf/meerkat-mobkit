@@ -256,6 +256,40 @@ async fn phase0_contract_001a_mobkit_interact_rejects_invalid_params() {
 }
 
 #[tokio::test]
+async fn phase0_contract_001b_mobkit_interact_rejects_unknown_identity_synchronously() {
+    let fixture = build_unified_runtime().await;
+    let identity_ctx = build_identity_context("identity:luka").await;
+
+    let response = parse_json_rpc(
+        &handle_unified_rpc_json(
+            &fixture.runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "req-2b",
+                "method": "mobkit/interact",
+                "params": {
+                    "identity": "identity:missing",
+                    "content": "hello from phase 0",
+                    "origin": "console:panel-1"
+                }
+            })
+            .to_string(),
+            Duration::from_secs(1),
+            None,
+            Some(&identity_ctx),
+        )
+        .await,
+    );
+
+    let error = response.error.expect("unknown identity should reject");
+    assert_eq!(error.code, -32001);
+    assert!(error.message.contains("unknown identity"));
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
 async fn phase0_contract_002_console_identity_stream_mounts_and_validates_request() {
     let app = console_json_router(decision_state(false));
 
@@ -358,7 +392,11 @@ async fn phase0_contract_002b_console_events_stream_returns_typed_replay_unavail
     assert_eq!(replay_error.error, "replay_unavailable");
     assert_eq!(replay_error.stream, "all_events");
     assert_eq!(replay_error.requested_last_event_id, "evt-999");
-    assert_eq!(replay_error.latest_event_id, "");
+    assert!(
+        replay_error
+            .latest_event_id
+            .starts_with("console-stream-all_events-")
+    );
 }
 
 #[tokio::test]

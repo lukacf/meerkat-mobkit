@@ -18,6 +18,8 @@ export default defineConfig({
     port: 5199,
     proxy: {
       "/console/experience": "http://127.0.0.1:63210",
+      "/console/events": "http://127.0.0.1:63210",
+      "/console/identity": "http://127.0.0.1:63210",
       "/console/modules": "http://127.0.0.1:63210",
       "/console/rpc": "http://127.0.0.1:63210",
       "/interactions": "http://127.0.0.1:63210",

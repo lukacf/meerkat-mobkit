@@ -4142,10 +4142,16 @@ function ConsoleApp({ baseUrl }) {
                 { id: "target", kind: "sub-pill", label: `To: ${agentLabel}`, iconName: "i-team" },
                 { id: "identity", kind: "sub-pill", label: agent?.member_id || memberId, iconName: "i-terminal" }
               ];
-              const footerRightItems = [
-                { id: "profile", kind: "sub-pill", label: agent?.profile || "lead" },
-                { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
-              ];
+              const footerRightItems = [];
+              if (agent?.profile) {
+                footerRightItems.push({ id: "profile", kind: "sub-pill", label: agent.profile });
+              }
+              footerRightItems.push({
+                id: "state",
+                kind: "sub-pill",
+                label: agent?.state || "unknown",
+                iconName: "i-dot"
+              });
               return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
                 ConversationPane,
                 {

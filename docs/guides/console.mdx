@@ -170,26 +170,31 @@ interface ConsoleAgent {
 }
 ```
 
+Identity-first status and inspect payloads use lowercase wire enums for addressability:
+`"addressable"` and `"internal_only"`.
+
 ## Messaging protocol
 
 <Steps>
-  <Step title="Open SSE stream">
-    Post to `/interactions/stream` with `member_id` before sending. This ensures no events are missed if the agent responds quickly.
+  <Step title="Open the right stream first">
+    Identity-addressed panels post to `/console/identity/stream` with `{ "identity": "identity:luka" }` before sending. Legacy member-addressed panels still use `/interactions/stream` with `member_id`. Opening the stream first avoids dropping fast responses.
   </Step>
   <Step title="Send message">
-    Call the `mobkit/send_message` RPC method:
+    Identity-addressed panels call `mobkit/interact`:
     ```json
-    { "member_id": "domain:billing", "message": "What is the current status?" }
+    { "identity": "identity:luka", "content": "What is on my calendar tomorrow?", "origin": "console:panel-1" }
     ```
-    Returns `{ "accepted": true, "member_id": "...", "session_id": "..." }`.
+    Returns `{ "interaction_id": "...", "identity": "..." }`.
+
+    Legacy member-addressed panels still use `mobkit/send_message` and receive `{ "accepted": true, "member_id": "...", "session_id": "..." }`.
   </Step>
   <Step title="Receive response frames">
-    The SSE stream delivers frames filtered by session ID:
+    The identity stream delivers canonical console envelopes filtered by `interaction_id`:
     ```
-    event: text_delta
-    data: {"type":"text_delta","delta":"The current status is..."}
+    event: interaction_complete
+    data: {"event_id":"evt-1","interaction_id":"turn-1","identity":"identity:luka","event_type":"interaction_complete","timestamp_ms":2,"data":{"text":"done"}}
     ```
-    Infrastructure events (`run_started`, `turn_completed`, etc.) are shown in the activity rail but filtered from the conversation transcript.
+    The all-events rail uses `GET /console/events/stream`. Legacy member/session streams continue to work during migration, but new hosts should prefer the identity-native feeds.
   </Step>
 </Steps>
 
@@ -203,7 +208,14 @@ interface ConsoleAgent {
 | `/console/experience` | GET | Experience metadata (JSON) |
 | `/console/modules` | GET | Loaded modules list (JSON) |
 | `/console/rpc` | POST | JSON-RPC 2.0 endpoint |
+| `/console/identity/stream` | POST | Identity-scoped SSE stream |
+| `/console/events/stream` | GET | All-events SSE stream |
 | `/interactions/stream` | POST | Interaction-scoped SSE stream |
+
+Primary RPC methods:
+
+- `mobkit/interact` — identity-addressed, non-blocking interaction accept
+- `mobkit/send_message` — legacy member-addressed send path
 
 ## Authentication
 
