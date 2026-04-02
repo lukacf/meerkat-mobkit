@@ -67,7 +67,7 @@ svg {
 .cc-theme-scope {
   --cc-workbench-sidebar-width: 260px;
   --cc-workbench-activity-width: 280px;
-  --cc-sidebar-safe-top: 14px;
+  --cc-sidebar-safe-top: 8px;
   --cc-sidebar-pad-left: 14px;
   --cc-sidebar-pad-right: 14px;
 }
@@ -84,17 +84,27 @@ svg {
   border-right: 1px solid rgba(255, 255, 255, 0.058);
 }
 
-/* Main area: consistent gutter around the dock */
+/* Main area: no outer padding — panel fills flush */
 .cc-workbench__main-body {
-  padding: 0 0 14px;
+  padding: 0;
 }
 
-/* Activity rail: matching gutter on the right edge */
+/* Activity rail: left gap from panel, right edge padding, top aligns with panel content */
 .cc-workbench__activity {
-  padding: 10px 14px 14px 0;
+  padding: 0 14px 0 14px;
 }
 
 /* ── Dock ── */
+
+/* Single panel: same surface color as split panels but flush/flat (no rounded corners) */
+.cc-dock-panel.is-solitary {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008) 22%, rgba(255, 255, 255, 0.003) 100%),
+    rgba(21, 22, 27, 0.82);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
 
 /* Always show the tab strip, even with a single tab */
 .cc-dock.is-single-tab .cc-dock__tab-strip,
@@ -102,11 +112,9 @@ svg {
   display: flex;
 }
 
-/* Tab strip: left padding so tabs don't smash against sidebar edge,
-   bottom border to visually connect to the panel content below */
+/* Tab strip: top margin from page edge, left padding */
 .cc-dock__tab-strip {
-  padding-left: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  padding: 8px 8px 0 8px;
 }
 
 /* Keep the + button tight to tabs, not floating far right */
@@ -114,10 +122,20 @@ svg {
   margin-right: auto;
 }
 
-/* ── Activity rail: hide the non-functional control buttons ── */
+/* Remove dock gap in single-panel mode so tab strip + panel are flush */
+.cc-dock.is-single-panel {
+  gap: 0;
+}
+
+/* ── Activity rail ── */
 
 .cc-activity-rail__controls {
   display: none;
+}
+
+/* Align rail content top with the panel content (below tab strip ~42px) */
+.cc-activity-rail {
+  padding-top: 42px;
 }
 
 /* ── Single panel: hide floating split actions until hover ── */
