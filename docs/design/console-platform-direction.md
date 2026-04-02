@@ -325,9 +325,104 @@ type ResponsePhase = "waiting" | "tool-executing" | "generating" | null;
 
 Host derives the phase from the event stream. Shared component renders the appropriate indicator. `"thinking"` omitted until the event model supports a thinking event from providers.
 
-### Watch/monitoring semantics [EXISTS]
+### Watch/monitoring semantics [EXISTS partial, NEW full spec]
 
-`pinned` + `unread` on `ConsoleSidebarItem` is sufficient for initial integration. May need: watchlist with alert thresholds, degraded-state badges, sticky activity filters in future iterations. Not a blocker.
+**Current state [EXISTS]:** `ConsoleSidebarItem` has `pinned: boolean` (sorts to top, shows pin icon) and `unread: boolean` (bold title). These cover basic "I selected this" and "something happened" states.
+
+**Full monitoring model [NEW]:**
+
+#### Watchlist
+
+Operators need to explicitly monitor a subset of identities. Watching is distinct from pinning (layout preference) and selection (current focus).
+
+```typescript
+interface WatchState {
+  watched: boolean;          // operator opted in to monitoring this identity
+  alertLevel: "normal" | "elevated" | "critical" | null;  // threshold-based
+}
+```
+
+- `watched` on `ConsoleSidebarItem` — when true, the identity's events are highlighted in the activity log, and state changes trigger visual alerts
+- `alertLevel` drives visual treatment: `"normal"` = standard watched indicator, `"elevated"` = amber badge, `"critical"` = red badge + optional notification
+- Host sets `alertLevel` based on domain-specific rules (e.g., OB3: agent processing for >60s = elevated; HomeCore: gate decision pending >5m = critical)
+
+**Sidebar rendering:**
+- Watched items show a persistent indicator (eye icon or status dot), not just on hover
+- Alert level maps to badge color: `"elevated"` → amber, `"critical"` → red
+- Unwatched items with `unread: true` still show a subtle unread indicator
+
+#### Degraded-state badges
+
+Independent of chat activity. An identity can be degraded (lease expired, error state, peer unreachable) without any unread messages.
+
+```typescript
+interface DegradedState {
+  degraded: boolean;
+  reason?: string;           // "lease_expired" | "error" | "peer_unreachable" | "stalled"
+}
+```
+
+- Rendered as a warning badge on the sidebar item, independent of `unread`
+- Host derives degraded state from `mobkit/status_identity` (lifecycle state) and `mobkit/inspect_identity` (peer reachable count, is_final)
+- The shared sidebar component renders the badge; the host provides the data
+
+#### Sticky activity filters
+
+The activity log should support persistent filter presets tied to the watchlist.
+
+```typescript
+interface ActivityFilterPreset {
+  id: string;
+  label: string;                    // "Watched only", "Critical", "All"
+  identityFilter: "all" | "watched" | "watched_critical";
+  eventTypeFilter?: string[];       // optional: only show specific event types
+}
+```
+
+- The virtualized activity log accepts `filterPresets: ActivityFilterPreset[]` and `activePresetId: string`
+- Preset chips render above the event list (shared component)
+- "Watched only" filters the all-events stream to identities in the operator's watchlist
+- "Critical" filters to identities with `alertLevel: "critical"`
+- Presets are host-configured (different operators may want different defaults)
+- The active preset persists across page refreshes (host stores in localStorage or similar)
+
+#### Data flow
+
+```
+Host derives watch/alert/degraded state from:
+  - operator preference (watched: true/false, stored client-side)
+  - mobkit/status_identity (lifecycle state → degraded)
+  - mobkit/inspect_identity (peer health → degraded)
+  - domain rules (processing time → alertLevel)
+    ↓
+Host builds ConsoleSidebarItem with:
+  - pinned, unread (existing)
+  - watched, alertLevel (new fields on view state)
+  - degraded, degradedReason (new fields on view state)
+    ↓
+Shared sidebar component renders:
+  - pin icon (existing)
+  - watch indicator + alert badge (new)
+  - degraded warning badge (new)
+    ↓
+Activity log filters by watchlist when preset is active
+```
+
+**New fields on `ConsoleSidebarItem` [NEW in @console-core]:**
+
+```typescript
+// Added to existing ConsoleSidebarItem
+{
+  watched?: boolean;
+  alertLevel?: "normal" | "elevated" | "critical" | null;
+  degraded?: boolean;
+  degradedReason?: string;
+}
+```
+
+**New fields on `ConsoleSidebarMeta` [EXISTS — alertLevel maps to tone]:**
+
+Alert levels map naturally to existing `ConsoleSidebarMetaTone`: `"elevated"` → `"negative"` (amber), `"critical"` → `"negative"` (red). A new tone `"warning"` may be needed for the amber case to distinguish from error-red.
 
 ### Per-agent lifecycle actions [EXISTS for identity-first RPCs on IdentityRuntime, NEW for console-facing HTTP/RPC surface]
 
