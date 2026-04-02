@@ -96,7 +96,7 @@ The experience endpoint adds new optional sections and per-section metadata. The
 ```typescript
 {
   schema_version: string;    // e.g., "1" — lightweight, for cross-host evolution
-  refresh: 
+  refresh:
     | { mode: "poll", interval_ms: number }
     | { mode: "stream", topic: string, update_semantics: "full_snapshot" | "append" }
   capabilities?: string[]   // only for actionable sections: ["approve", "deny", "escalate"]
