@@ -78,12 +78,12 @@ fn decision_state() -> meerkat_mobkit::RuntimeDecisionState {
 #[test]
 fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced() {
     let artifact: Value = serde_json::from_str(include_str!(
-        "../../docs/rct/console-rest-sse-contract-v0.2.0.json"
+        "../../docs/rct/console-rest-sse-contract-v0.3.0.json"
     ))
     .expect("contract artifact json should parse");
 
-    assert_eq!(artifact["contract_version"], json!("0.2.0"));
-    assert_eq!(artifact["version_pin"], json!("v0.2.0"));
+    assert_eq!(artifact["contract_version"], json!("0.3.0"));
+    assert_eq!(artifact["version_pin"], json!("v0.3.0"));
 
     let state = decision_state();
 
@@ -158,6 +158,9 @@ fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced(
     let agent_events_path = artifact["surfaces"]["sse"]["agent_events"]["path"]
         .as_str()
         .expect("agent events path must be present");
+    let all_events_path = artifact["surfaces"]["sse"]["all_events"]["path"]
+        .as_str()
+        .expect("all-events path must be present");
     let keep_alive_event = artifact["surfaces"]["sse"]["activity_feed_keep_alive_event"]
         .as_str()
         .expect("keep-alive event must be present");
@@ -165,6 +168,10 @@ fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced(
     assert_eq!(
         experience_response.body["chat_inspector"]["observe_route"],
         json!(agent_events_path)
+    );
+    assert_eq!(
+        experience_response.body["activity_feed"]["source_route"],
+        json!(all_events_path)
     );
     assert_eq!(
         experience_response.body["activity_feed"]["keep_alive"]["event"],

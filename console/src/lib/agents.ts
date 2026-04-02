@@ -9,10 +9,25 @@ export function normalizeAgents(
   experience: ConsoleExperience | null,
   modules: unknown[]
 ): ConsoleAgent[] {
+  const identityStatusRows = Array.isArray(experience?.identity_status?.rows)
+    ? experience.identity_status.rows
+    : [];
+  const normalizedIdentityStatusRows = identityStatusRows
+    .map((entry) => normalizeIdentityStatusRow(entry))
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  const identityStatusByIdentity = new Map(
+    normalizedIdentityStatusRows.map((row) => [row.identity, row] as const),
+  );
+
   const snapshotAgents = experience?.agent_sidebar?.live_snapshot?.agents;
   if (Array.isArray(snapshotAgents) && snapshotAgents.length > 0) {
     return snapshotAgents.map((entry: ConsoleExperienceAgentSnapshotRow) => {
-      const statusRow = normalizeIdentityStatusRow(entry);
+      const entryIdentity = typeof entry.identity === "string" ? entry.identity.trim() : "";
+      const entryMemberId = typeof entry.member_id === "string" ? entry.member_id.trim() : "";
+      const statusRow =
+        identityStatusByIdentity.get(entryIdentity) ||
+        identityStatusByIdentity.get(entryMemberId) ||
+        normalizeIdentityStatusRow(entry);
       const watchFields = normalizeSidebarWatchFields(entry);
       const responsePhase = normalizeResponsePhase(entry.response_phase);
 
@@ -55,7 +70,6 @@ export function normalizeAgents(
     });
   }
 
-  const identityStatusRows = experience?.identity_status?.rows;
   if (Array.isArray(identityStatusRows) && identityStatusRows.length > 0) {
     return identityStatusRows.map((entry) => {
       const statusRow = normalizeIdentityStatusRow(entry);

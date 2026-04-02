@@ -29,6 +29,16 @@ export interface MobKitDockTarget extends ConsoleDockTarget {
   identity?: string;
 }
 
+export function buildPanelConversationKey(
+  panelId: string,
+  target: Pick<MobKitDockTarget, "identity" | "memberId" | "id" | "addressingMode"> | null,
+): string {
+  const targetKey = target?.addressingMode === "identity"
+    ? target.identity || target.memberId || target.id
+    : target?.memberId || target?.id || "none";
+  return `panel:${panelId}:${targetKey}`;
+}
+
 export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
   const identity = typeof agent.identity === "string" && agent.identity.trim()

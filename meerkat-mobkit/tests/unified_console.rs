@@ -161,6 +161,15 @@ async fn spawn_console_members(runtime: &UnifiedRuntime) {
     }
 }
 
+async fn spawn_named_members(runtime: &UnifiedRuntime, member_ids: &[&str]) {
+    for member_id in member_ids {
+        runtime
+            .spawn(console_member_spec(member_id))
+            .await
+            .expect("spawn named console member");
+    }
+}
+
 async fn get_console_experience(app: &Router) -> Value {
     let response = app
         .clone()
@@ -322,7 +331,7 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         ])
     );
 
-    assert_eq!(console_json["contract_version"], json!("0.2.0"));
+    assert_eq!(console_json["contract_version"], json!("0.3.0"));
     assert_eq!(
         console_json["runtime_capabilities"],
         json!({
@@ -339,6 +348,40 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
                 }
             }
         })
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
+async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ() {
+    let fixture = build_runtime_fixture().await;
+    spawn_named_members(&fixture.runtime, &["triage", "billing"]).await;
+
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let console_json = get_console_experience(&app).await;
+
+    assert_eq!(
+        console_json["topology"]["live_snapshot"]["nodes"],
+        json!(["delivery", "router"])
+    );
+    assert_eq!(
+        console_json["health_overview"]["live_snapshot"]["loaded_modules"],
+        json!(["delivery", "router"])
+    );
+    assert_eq!(
+        console_json["health_overview"]["live_snapshot"]["loaded_module_count"],
+        json!(2)
+    );
+    assert_eq!(
+        console_json["agent_sidebar"]["live_snapshot"]["agents"]
+            .as_array()
+            .expect("agents array")
+            .len(),
+        2
     );
 
     let shutdown = fixture.runtime.shutdown().await;
@@ -374,20 +417,44 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
 
     let after_retire = get_console_experience(&app).await;
     assert_eq!(
+        after_retire["agent_sidebar"]["live_snapshot"]["agents"],
+        json!([
+            {
+                "agent_id": "router",
+                "member_id": "router",
+                "label": "router",
+                "kind": "mob_agent",
+                "profile": "lead",
+                "state": "active",
+                "wired_to": [],
+                "labels": {},
+                "group": "lead",
+                "addressable": true,
+                "affordances": {
+                    "addressable": true,
+                    "can_respawn": true,
+                    "can_retire": true,
+                    "can_send_message": true,
+                    "runtime_mode": "mob_agent"
+                }
+            }
+        ])
+    );
+    assert_eq!(
         after_retire["topology"]["live_snapshot"]["nodes"],
-        json!(["router"])
+        json!(["delivery", "router"])
     );
     assert_eq!(
         after_retire["topology"]["live_snapshot"]["node_count"],
-        json!(1)
+        json!(2)
     );
     assert_eq!(
         after_retire["health_overview"]["live_snapshot"]["loaded_modules"],
-        json!(["router"])
+        json!(["delivery", "router"])
     );
     assert_eq!(
         after_retire["health_overview"]["live_snapshot"]["loaded_module_count"],
-        json!(1)
+        json!(2)
     );
 
     let shutdown = fixture.runtime.shutdown().await;

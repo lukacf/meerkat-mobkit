@@ -15,56 +15,13 @@
     clippy::unwrap_in_result,
     clippy::useless_vec
 )]
-use std::time::Duration;
-
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsoleLiveSnapshot,
-    ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec, MobKitConfig, ModuleConfig, PreSpawnData,
-    RestartPolicy, RuntimeDecisionInputs, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
-    build_runtime_decision_state, handle_console_rest_json_route,
-    handle_console_rest_json_route_with_snapshot, handle_mobkit_rpc_json, start_mobkit_runtime,
+    ConsolePolicy, ConsoleRestJsonRequest, RuntimeDecisionInputs, RuntimeOpsPolicy,
+    TrustedOidcRuntimeConfig, build_runtime_decision_state, handle_console_rest_json_route,
+    handle_console_rest_json_route_with_snapshot,
 };
-use serde_json::{Value, json};
-
-fn shell_module(id: &str, script: &str) -> ModuleConfig {
-    ModuleConfig {
-        id: id.to_string(),
-        command: "sh".to_string(),
-        args: vec!["-c".to_string(), script.to_string()],
-        restart_policy: RestartPolicy::Never,
-    }
-}
-
-fn runtime_with_router_and_delivery() -> meerkat_mobkit::MobkitRuntimeHandle {
-    let config = MobKitConfig {
-        modules: vec![
-            shell_module(
-                "router",
-                r#"printf '%s\n' '{"event_id":"evt-router","source":"module","timestamp_ms":10,"event":{"kind":"module","module":"router","event_type":"response","payload":{"via":"router","ok":true}}}'"#,
-            ),
-            shell_module(
-                "delivery",
-                r#"printf '%s\n' '{"event_id":"evt-delivery","source":"module","timestamp_ms":20,"event":{"kind":"module","module":"delivery","event_type":"ready","payload":{"sink":"memory"}}}'"#,
-            ),
-        ],
-        discovery: DiscoverySpec {
-            namespace: "phase8".to_string(),
-            modules: vec!["router".to_string()],
-        },
-        pre_spawn: vec![
-            PreSpawnData {
-                module_id: "router".to_string(),
-                env: vec![],
-            },
-            PreSpawnData {
-                module_id: "delivery".to_string(),
-                env: vec![],
-            },
-        ],
-    };
-
-    start_mobkit_runtime(config, vec![], Duration::from_secs(1)).expect("runtime starts")
-}
+use serde_json::json;
 
 fn release_json() -> String {
     include_str!("../../docs/rct/release-targets.json").to_string()
@@ -120,10 +77,6 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
     .expect("decision state builds")
 }
 
-fn parse_response(line: &str) -> Value {
-    serde_json::from_str(line).expect("valid rpc response json")
-}
-
 #[test]
 fn phase8_console_001_capability_driven_rendering_contract() {
     let state = decision_state(true);
@@ -150,7 +103,7 @@ fn phase8_console_001_capability_driven_rendering_contract() {
 
     assert_eq!(allowed.status, 200);
     assert_eq!(modules_response.status, 200);
-    assert_eq!(allowed.body["contract_version"], json!("0.2.0"));
+    assert_eq!(allowed.body["contract_version"], json!("0.3.0"));
     assert_eq!(
         allowed.body["base_panel"]["panel_id"],
         json!("console.home")
@@ -258,11 +211,11 @@ fn phase8_console_001_capability_driven_rendering_contract() {
     assert_eq!(allowed.body["chat_inspector"]["schema_version"], json!("1"));
     assert_eq!(
         allowed.body["chat_inspector"]["send_method"],
-        json!("mobkit/send_message")
+        json!("mobkit/interact")
     );
     assert_eq!(
         allowed.body["chat_inspector"]["observe_route"],
-        json!("/interactions/stream")
+        json!("/console/identity/stream")
     );
     assert_eq!(
         allowed.body["topology"]["panel_id"],
@@ -428,55 +381,33 @@ fn phase8_req_003_choke_104_unified_activity_feed_contract_over_events() {
             auth: None,
         },
     );
-    let mut runtime = runtime_with_router_and_delivery();
-    let subscribed = parse_response(&handle_mobkit_rpc_json(
-        &mut runtime,
-        r#"{"jsonrpc":"2.0","id":"phase8-events","method":"mobkit/events/subscribe","params":{"scope":"mob"}}"#,
-        Duration::from_secs(1),
-    ));
-    runtime.shutdown();
 
     assert_eq!(
-        experience.body["activity_feed"]["source_method"],
-        json!("mobkit/events/subscribe")
+        experience.body["activity_feed"]["source_route"],
+        json!("/console/events/stream")
     );
     assert_eq!(
-        experience.body["activity_feed"]["supported_scopes"],
-        json!(["mob", "agent", "interaction"])
+        experience.body["activity_feed"]["request_contract"]["last_event_id_header"],
+        json!("optional Last-Event-ID checkpoint from prior event_id")
     );
     assert_eq!(
         experience.body["activity_feed"]["panel_id"],
         json!("console.activity_feed")
     );
     assert_eq!(
-        experience.body["activity_feed"]["default_scope"],
-        json!("mob")
+        experience.body["activity_feed"]["event_contract"]["envelope_fields"],
+        json!([
+            "event_id",
+            "interaction_id",
+            "identity",
+            "event_type",
+            "timestamp_ms",
+            "data"
+        ])
     );
     assert_eq!(
-        experience.body["activity_feed"]["keep_alive"]["interval_ms"],
-        subscribed["result"]["keep_alive"]["interval_ms"]
-    );
-    assert_eq!(
-        experience.body["activity_feed"]["keep_alive"]["event"],
-        subscribed["result"]["keep_alive"]["event"]
-    );
-    assert_eq!(
-        experience.body["activity_feed"]["keep_alive"]["comment_frame"],
-        subscribed["result"]["keep_alive_comment"]
-    );
-    assert_eq!(
-        subscribed["result"]["events"][0]["event_id"],
-        json!("evt-router")
-    );
-    assert_eq!(
-        subscribed["result"]["events"][0]["event"]["event_type"],
-        json!("response")
-    );
-    assert!(
-        subscribed["result"]["event_frames"][0]
-            .as_str()
-            .expect("event frame string")
-            .starts_with("id: evt-router\nevent: response\ndata: {")
+        experience.body["activity_feed"]["event_contract"]["event_type_path"],
+        json!("event_type")
     );
 }
 

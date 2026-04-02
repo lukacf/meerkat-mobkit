@@ -275,7 +275,7 @@ impl UnifiedRuntime {
         }
     }
 
-    pub(crate) async fn record_console_interaction(
+    pub(crate) async fn reserve_console_interaction(
         &self,
         identity: &str,
         runtime_member_id: Option<&str>,
@@ -284,7 +284,19 @@ impl UnifiedRuntime {
         content: &str,
     ) {
         self.console_events
-            .record_interaction(identity, runtime_member_id, interaction_id, origin, content)
+            .reserve_interaction(identity, runtime_member_id, interaction_id, origin, content)
+            .await;
+    }
+
+    pub(crate) async fn accept_console_interaction(&self, identity: &str, interaction_id: &str) {
+        self.console_events
+            .accept_interaction(identity, interaction_id)
+            .await;
+    }
+
+    pub(crate) async fn discard_console_interaction(&self, identity: &str, interaction_id: &str) {
+        self.console_events
+            .discard_interaction(identity, interaction_id)
             .await;
     }
 

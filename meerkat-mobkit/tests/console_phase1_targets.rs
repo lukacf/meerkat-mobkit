@@ -224,7 +224,7 @@ async fn build_identity_context(identity: &str) -> IdentityFirstContext {
         bridge: None,
         default_timeout: None,
     }));
-    restore_flow(&runtime, &[spec.clone()], None, None)
+    restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
         .await
         .expect("restore flow");
     IdentityFirstContext {
@@ -249,7 +249,7 @@ async fn build_identity_context_with_bridge(
         bridge: Some(Arc::new(MockSessionBridge)),
         default_timeout: None,
     }));
-    restore_flow(&runtime, &[spec.clone()], None, None)
+    restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
         .await
         .expect("restore flow");
     IdentityFirstContext {
@@ -361,7 +361,6 @@ async fn collected_sse_envelopes(
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_001_interact_queue_identity_stream_correlation_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -417,7 +416,6 @@ async fn choke_001_interact_queue_identity_stream_correlation_target_defined_red
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_001a_legacy_events_console_envelope_projection_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let (_, envelope, _) = first_sse_envelope(
@@ -438,7 +436,6 @@ async fn choke_001a_legacy_events_console_envelope_projection_target_defined_red
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_001b_interaction_id_terminal_projection_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -493,7 +490,6 @@ async fn choke_001b_interaction_id_terminal_projection_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_007_event_log_identity_query_recent_history_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -545,7 +541,6 @@ async fn choke_007_event_log_identity_query_recent_history_target_defined_red() 
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_014_all_events_feed_filters_non_identity_frames_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let (_, envelope, _) = first_sse_envelope(
@@ -566,7 +561,6 @@ async fn choke_014_all_events_feed_filters_non_identity_frames_target_defined_re
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_013_accepted_interaction_async_failure_terminal_event_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -618,7 +612,6 @@ async fn choke_013_accepted_interaction_async_failure_terminal_event_target_defi
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_015_interact_lifecycle_race_terminal_outcome_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -692,7 +685,6 @@ async fn choke_015_interact_lifecycle_race_terminal_outcome_target_defined_red()
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_008_gating_capabilities_write_path_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let evaluated = parse_result(
@@ -747,7 +739,6 @@ async fn choke_008_gating_capabilities_write_path_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_012_retire_reconnect_replay_window_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -837,7 +828,6 @@ async fn choke_012_retire_reconnect_replay_window_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_005_status_inspect_topology_compose_identity_panel_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context_with_bridge(&fixture, "identity:luka").await;
@@ -887,7 +877,6 @@ async fn choke_005_status_inspect_topology_compose_identity_panel_target_defined
 }
 
 #[tokio::test]
-#[ignore]
 async fn choke_010_lifecycle_actions_refresh_console_surfaces_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -948,7 +937,6 @@ async fn choke_010_lifecycle_actions_refresh_console_surfaces_target_defined_red
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_002_identity_native_console_turn_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -999,7 +987,6 @@ async fn e2e_002_identity_native_console_turn_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_005_mixed_event_classes_on_one_identity_stream_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -1063,7 +1050,6 @@ async fn e2e_005_mixed_event_classes_on_one_identity_stream_target_defined_red()
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_006_day_one_identity_inspect_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context_with_bridge(&fixture, "identity:luka").await;
@@ -1113,7 +1099,6 @@ async fn e2e_006_day_one_identity_inspect_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_007_virtualized_all_events_activity_log_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let (_, envelope, raw_text) = first_sse_envelope(
@@ -1133,7 +1118,6 @@ async fn e2e_007_virtualized_all_events_activity_log_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_003_two_panels_one_identity_stream_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -1183,7 +1167,6 @@ async fn e2e_003_two_panels_one_identity_stream_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_004_reconnect_and_replay_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -1263,7 +1246,6 @@ async fn e2e_004_reconnect_and_replay_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_009_optional_gating_surface_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let response = parse_result(
@@ -1290,7 +1272,6 @@ async fn e2e_009_optional_gating_surface_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_012_console_lifecycle_actions_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -1335,7 +1316,6 @@ async fn e2e_012_console_lifecycle_actions_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_013_concurrent_turns_one_identity_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;
@@ -1409,7 +1389,6 @@ async fn e2e_013_concurrent_turns_one_identity_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_015_replay_window_exhausted_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let response = runtime_console_router(&fixture)
@@ -1435,7 +1414,6 @@ async fn e2e_015_replay_window_exhausted_target_defined_red() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn e2e_018_mobkit_interact_rejection_target_defined_red() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context("identity:luka").await;

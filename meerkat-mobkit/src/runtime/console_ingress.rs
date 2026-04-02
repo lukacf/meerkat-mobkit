@@ -474,17 +474,13 @@ fn build_console_experience_contract(
                 "update_semantics": "append",
             },
             "transport": "sse",
-            "source_method": EVENTS_SUBSCRIBE_METHOD,
-            "supported_scopes": ["mob", "agent", "interaction"],
-            "default_scope": "mob",
+            "source_route": "/console/events/stream",
             "request_contract": {
-                "scope": "mob|agent|interaction",
-                "agent_id": "required when scope=agent",
-                "last_event_id": "optional checkpoint from prior event_id",
+                "last_event_id_header": "optional Last-Event-ID checkpoint from prior event_id",
             },
             "event_contract": {
-                "envelope_fields": ["event_id", "source", "timestamp_ms", "event"],
-                "event_type_path": "event.event_type",
+                "envelope_fields": ["event_id", "interaction_id", "identity", "event_type", "timestamp_ms", "data"],
+                "event_type_path": "event_type",
                 "frame_format": "id: <event_id>\\nevent: <event_type>\\ndata: <event_json>\\n\\n",
             },
             "keep_alive": {
@@ -502,20 +498,22 @@ fn build_console_experience_contract(
                 "topic": "selected_identity",
                 "update_semantics": "append",
             },
-            "send_method": "mobkit/send_message",
-            "observe_route": "/interactions/stream",
+            "send_method": "mobkit/interact",
+            "observe_route": "/console/identity/stream",
             "transport": "rpc+sse",
             "request_contract": {
-                "member_id": "required target member id",
-                "message": "required user text to send",
+                "identity": "required target identity",
+                "content": "required user text to send",
+                "origin": "required caller identifier for audit and routing",
             },
             "response_contract": {
-                "accepted": "boolean request acceptance flag",
-                "member_id": "echoed target member id",
-                "session_id": "accepting Meerkat session id for correlation",
+                "interaction_id": "per-turn console correlation token",
+                "identity": "echoed target identity",
             },
             "event_contract": {
-                "agent_event_type_path": "type",
+                "envelope_fields": ["event_id", "interaction_id", "identity", "event_type", "timestamp_ms", "data"],
+                "event_type_path": "event_type",
+                "interaction_id_field": "interaction_id",
             }
         },
         "topology": {

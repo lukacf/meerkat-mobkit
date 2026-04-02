@@ -5,7 +5,12 @@ import {
   type ToolCallAccumulatorState,
 } from "@console-core";
 import { parseSseFrames } from "./network";
-import { buildDockTarget, buildRoutingSectionView, buildSidebarViewState } from "./adapters";
+import {
+  buildDockTarget,
+  buildPanelConversationKey,
+  buildRoutingSectionView,
+  buildSidebarViewState,
+} from "./adapters";
 import { normalizeAgents } from "./agents";
 import type { ConsoleExperience } from "../types";
 
@@ -261,4 +266,32 @@ test("E2E-017 target: mixed migration sessions reconcile identity and member add
 
   assert.equal(identityTarget.addressingMode, "identity");
   assert.equal(legacyTarget.addressingMode, "member");
+});
+
+test("Panel-state target: same-target split panels and retargeted panels keep distinct local composer/transcript state keys", () => {
+  const identityTarget = {
+    id: "member-luka",
+    kind: "agent-chat" as const,
+    addressingMode: "identity" as const,
+    memberId: "member-luka",
+    identity: "identity:luka",
+    title: "Luka",
+  };
+  const legacyTarget = {
+    id: "legacy-router",
+    kind: "agent-chat" as const,
+    addressingMode: "member" as const,
+    memberId: "legacy-router",
+    title: "Legacy Router",
+  };
+
+  const splitPanelA = buildPanelConversationKey("panel-a", identityTarget);
+  const splitPanelB = buildPanelConversationKey("panel-b", identityTarget);
+  const retargetedPanel = buildPanelConversationKey("panel-a", legacyTarget);
+
+  assert.notEqual(splitPanelA, splitPanelB);
+  assert.notEqual(splitPanelA, retargetedPanel);
+  assert.equal(splitPanelA, "panel:panel-a:identity:luka");
+  assert.equal(splitPanelB, "panel:panel-b:identity:luka");
+  assert.equal(retargetedPanel, "panel:panel-a:legacy-router");
 });

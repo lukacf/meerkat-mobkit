@@ -80,3 +80,53 @@ test("normalizeAgents falls back to identity_status rows when sidebar snapshot i
   assert.deepEqual(agent?.labels, { team: "console" });
   assert.deepEqual(agent?.affordances, { can_send_message: false });
 });
+
+test("normalizeAgents enriches sidebar snapshot rows with identity_status when both surfaces exist", () => {
+  const agents = normalizeAgents(
+    {
+      agent_sidebar: {
+        live_snapshot: {
+          agents: [
+            {
+              agent_id: "domain:billing",
+              member_id: "domain:billing",
+              label: "Billing",
+              kind: "module_agent",
+              state: "running",
+              addressable: true,
+            },
+          ],
+        },
+      },
+      identity_status: {
+        schema_version: "1",
+        refresh: { mode: "poll", interval_ms: 5000 },
+        rows: [
+          {
+            identity: "domain:billing",
+            display_name: "Billing",
+            profile: "operator",
+            state: "running",
+            addressability: "addressable",
+            labels: { team: "finance" },
+            generation: 2,
+            checkpoint_version: 3,
+            lease_healthy: true,
+          },
+        ],
+      },
+    },
+    [],
+  );
+
+  assert.equal(agents.length, 1);
+  const agent = agents[0];
+  assert.equal(agent?.identity, "domain:billing");
+  assert.equal(agent?.member_id, "domain:billing");
+  assert.equal(agent?.addressability, "addressable");
+  assert.equal(agent?.addressable, true);
+  assert.equal(agent?.generation, 2);
+  assert.equal(agent?.checkpoint_version, 3);
+  assert.equal(agent?.lease_healthy, true);
+  assert.deepEqual(agent?.labels, { team: "finance" });
+});

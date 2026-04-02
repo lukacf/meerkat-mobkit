@@ -18,13 +18,14 @@ import {
   buildActivityRailViewState,
   buildConversationViewState,
   buildDockTarget,
+  buildPanelConversationKey,
   buildSidebarViewState,
   createUserEntry,
   mapFramesToTimelineEntries,
   type MobKitDockTarget,
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
-import { fetchJson, sendInteraction } from "./lib/network";
+import { fetchJson, sendAddressedInteraction } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
 import type {
   ConsoleAgent,
@@ -44,10 +45,10 @@ interface ConsoleAppProps {
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // ── Data state ──
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
-  const [entriesByMemberId, setEntriesByMemberId] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
+  const [entriesByPanelId, setEntriesByPanelId] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
-  const [draftByMemberId, setDraftByMemberId] = React.useState<Record<string, string>>({});
-  const [sendingMembers, setSendingMembers] = React.useState<Set<string>>(new Set());
+  const [draftByPanelId, setDraftByPanelId] = React.useState<Record<string, string>>({});
+  const [sendingPanels, setSendingPanels] = React.useState<Set<string>>(new Set());
   const [pinnedAgentIds, setPinnedAgentIds] = React.useState<Set<string>>(new Set());
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
@@ -112,44 +113,55 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   // ── Send message to agent ──
-  async function onSendMessage(memberId: string) {
-    const text = (draftByMemberId[memberId] || "").trim();
+  async function onSendMessage(panelId: string, target: MobKitDockTarget | null) {
+    const panelKey = buildPanelConversationKey(panelId, target);
+    const memberId = target?.memberId || target?.id || "";
+    const text = (draftByPanelId[panelKey] || "").trim();
     if (!text || !memberId) return;
 
     const agent = agents.find((a) => a.member_id === memberId) || null;
 
     // Clear draft and mark as sending
-    setDraftByMemberId((d) => ({ ...d, [memberId]: "" }));
-    setSendingMembers((s) => new Set(s).add(memberId));
+    setDraftByPanelId((d) => ({ ...d, [panelKey]: "" }));
+    setSendingPanels((s) => new Set(s).add(panelKey));
 
     // Optimistic user entry
     const userEntry = createUserEntry(text);
-    setEntriesByMemberId((current) => ({
+    setEntriesByPanelId((current) => ({
       ...current,
-      [memberId]: [...(current[memberId] || []), userEntry],
+      [panelKey]: [...(current[panelKey] || []), userEntry],
     }));
 
     try {
-      const result = await sendInteraction(baseUrl, memberId, text);
+      const result = await sendAddressedInteraction(
+        baseUrl,
+        {
+          addressingMode: target?.addressingMode || "member",
+          memberId,
+          ...(target?.identity ? { identity: target.identity } : {}),
+        },
+        text,
+        `console:${panelId}`,
+      );
       const agentEntries = mapFramesToTimelineEntries(agent, result.frames);
 
-      setEntriesByMemberId((current) => ({
+      setEntriesByPanelId((current) => ({
         ...current,
-        [memberId]: [...(current[memberId] || []), ...agentEntries],
+        [panelKey]: [...(current[panelKey] || []), ...agentEntries],
       }));
 
       setActivityFrames((current) => [...result.frames, ...current].slice(0, 64));
     } catch (submitError) {
       setError(errorMessage(submitError));
       // Roll back optimistic user entry
-      setEntriesByMemberId((current) => ({
+      setEntriesByPanelId((current) => ({
         ...current,
-        [memberId]: (current[memberId] || []).filter((e) => e.id !== userEntry.id),
+        [panelKey]: (current[panelKey] || []).filter((e) => e.id !== userEntry.id),
       }));
     } finally {
-      setSendingMembers((s) => {
+      setSendingPanels((s) => {
         const next = new Set(s);
-        next.delete(memberId);
+        next.delete(panelKey);
         return next;
       });
     }
@@ -296,14 +308,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             onCreateTab={() => dock.createTab()}
             renderPanelBody={(panel) => {
               const memberId = panel.target?.id || "";
-              const entries = entriesByMemberId[memberId] || [];
+              const panelKey = buildPanelConversationKey(panel.id, panel.target as MobKitDockTarget | null);
+              const entries = entriesByPanelId[panelKey] || [];
               const vs = buildConversationViewState({
                 memberId,
                 agentLabel: panel.target?.title || "Agent",
                 entries,
               });
-              const draft = draftByMemberId[memberId] || "";
-              const isSending = sendingMembers.has(memberId);
+              const draft = draftByPanelId[panelKey] || "";
+              const isSending = sendingPanels.has(panelKey);
               const agent = agents.find((a) => a.member_id === memberId);
               const agentLabel = panel.target?.title || "Agent";
               const hasTarget = Boolean(memberId);
@@ -339,12 +352,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
                         footerLeftItems,
                         footerRightItems,
                       }}
-                      onChange={(value) => setDraftByMemberId((d) => ({ ...d, [memberId]: value }))}
-                      onSubmit={() => void onSendMessage(memberId)}
+                      onChange={(value) => setDraftByPanelId((d) => ({ ...d, [panelKey]: value }))}
+                      onSubmit={() => void onSendMessage(panel.id, panel.target as MobKitDockTarget | null)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
-                          void onSendMessage(memberId);
+                          void onSendMessage(panel.id, panel.target as MobKitDockTarget | null);
                         }
                       }}
                     />

@@ -209,7 +209,7 @@ impl ConsoleEventStore {
         events
     }
 
-    pub(crate) async fn record_interaction(
+    pub(crate) async fn reserve_interaction(
         &self,
         identity: &str,
         runtime_member_id: Option<&str>,
@@ -236,17 +236,42 @@ impl ConsoleEventStore {
                     .insert(runtime_member_id.to_string(), identity.to_string());
             }
         }
+    }
+
+    pub(crate) async fn accept_interaction(&self, identity: &str, interaction_id: &str) {
+        let pending = {
+            let state = self.state.read().await;
+            state.pending_by_identity.get(identity).and_then(|queue| {
+                queue
+                    .iter()
+                    .find(|pending| pending.interaction_id == interaction_id)
+                    .cloned()
+            })
+        };
+        let Some(pending) = pending else {
+            return;
+        };
         self.append(
             identity,
             Some(interaction_id.to_string()),
             "interaction_started",
             json!({
                 "status": "accepted",
-                "origin": origin,
-                "content": content,
+                "origin": pending.origin,
+                "content": pending.content,
             }),
         )
         .await;
+    }
+
+    pub(crate) async fn discard_interaction(&self, identity: &str, interaction_id: &str) {
+        let mut state = self.state.write().await;
+        if let Some(queue) = state.pending_by_identity.get_mut(identity) {
+            queue.retain(|pending| pending.interaction_id != interaction_id);
+            if queue.is_empty() {
+                state.pending_by_identity.remove(identity);
+            }
+        }
     }
 
     pub(crate) async fn record_lifecycle(&self, identity: &str, event_type: &str, data: Value) {
@@ -423,6 +448,7 @@ fn derive_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::types::EventEnvelope;
@@ -494,7 +520,7 @@ mod tests {
     async fn projected_agent_events_follow_pending_interaction_until_terminal() {
         let store = ConsoleEventStore::new();
         store
-            .record_interaction(
+            .reserve_interaction(
                 "identity:luka",
                 Some("identity:luka:gen0"),
                 "turn-1",
@@ -502,6 +528,7 @@ mod tests {
                 "hello",
             )
             .await;
+        store.accept_interaction("identity:luka", "turn-1").await;
         store
             .project_unified_event(&EventEnvelope {
                 event_id: "evt-agent-1".to_string(),
@@ -547,7 +574,7 @@ mod tests {
     async fn lifecycle_mutation_fails_pending_interactions() {
         let store = ConsoleEventStore::new();
         store
-            .record_interaction(
+            .reserve_interaction(
                 "identity:luka",
                 Some("identity:luka:gen0"),
                 "turn-1",
@@ -555,6 +582,7 @@ mod tests {
                 "hello",
             )
             .await;
+        store.accept_interaction("identity:luka", "turn-1").await;
         store
             .record_lifecycle(
                 "identity:luka",
@@ -574,5 +602,45 @@ mod tests {
         assert_eq!(events[1].event_type, "interaction_failed");
         assert_eq!(events[1].data["lifecycle_event"], json!("identity_retired"));
         assert_eq!(events[2].event_type, "identity_retired");
+    }
+
+    #[tokio::test]
+    async fn reserved_interaction_correlates_events_before_acceptance() {
+        let store = ConsoleEventStore::new();
+        store
+            .reserve_interaction(
+                "identity:luka",
+                Some("identity:luka:gen0"),
+                "turn-early",
+                "console:panel-1",
+                "hello",
+            )
+            .await;
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-agent-early".to_string(),
+                source: "agent".to_string(),
+                timestamp_ms: 10,
+                event: UnifiedEvent::Agent {
+                    agent_id: "identity:luka:gen0".to_string(),
+                    event_type: "text_delta".to_string(),
+                    payload: Some(json!({ "delta": "hi" })),
+                },
+            })
+            .await;
+        store
+            .accept_interaction("identity:luka", "turn-early")
+            .await;
+
+        let events = store
+            .query(&EventQuery {
+                identity: Some("identity:luka".to_string()),
+                ..EventQuery::default()
+            })
+            .await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "text_delta");
+        assert_eq!(events[0].interaction_id.as_deref(), Some("turn-early"));
+        assert_eq!(events[1].event_type, "interaction_started");
     }
 }

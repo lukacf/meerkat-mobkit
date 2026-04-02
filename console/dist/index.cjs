@@ -542,6 +542,18 @@ function normalizeSidebarWatchFields(value) {
   }
   return normalized;
 }
+function normalizeConsoleInteractionAccepted(value) {
+  const record = value && typeof value === "object" ? value : null;
+  if (!record) {
+    return null;
+  }
+  const interactionId = trimString(record.interaction_id);
+  const identity = trimString(record.identity);
+  if (!interactionId || !identity) {
+    return null;
+  }
+  return { interaction_id: interactionId, identity };
+}
 function normalizeIdentityStatusRow(value) {
   const record = value && typeof value === "object" ? value : null;
   if (!record) {
@@ -3161,10 +3173,17 @@ function ConsoleComposer({
 
 // src/lib/agents.ts
 function normalizeAgents(experience, modules) {
+  const identityStatusRows = Array.isArray(experience?.identity_status?.rows) ? experience.identity_status.rows : [];
+  const normalizedIdentityStatusRows = identityStatusRows.map((entry) => normalizeIdentityStatusRow(entry)).filter((entry) => entry !== null);
+  const identityStatusByIdentity = new Map(
+    normalizedIdentityStatusRows.map((row) => [row.identity, row])
+  );
   const snapshotAgents = experience?.agent_sidebar?.live_snapshot?.agents;
   if (Array.isArray(snapshotAgents) && snapshotAgents.length > 0) {
     return snapshotAgents.map((entry) => {
-      const statusRow = normalizeIdentityStatusRow(entry);
+      const entryIdentity = typeof entry.identity === "string" ? entry.identity.trim() : "";
+      const entryMemberId = typeof entry.member_id === "string" ? entry.member_id.trim() : "";
+      const statusRow = identityStatusByIdentity.get(entryIdentity) || identityStatusByIdentity.get(entryMemberId) || normalizeIdentityStatusRow(entry);
       const watchFields = normalizeSidebarWatchFields(entry);
       const responsePhase = normalizeResponsePhase(entry.response_phase);
       return {
@@ -3189,7 +3208,6 @@ function normalizeAgents(experience, modules) {
       };
     });
   }
-  const identityStatusRows = experience?.identity_status?.rows;
   if (Array.isArray(identityStatusRows) && identityStatusRows.length > 0) {
     return identityStatusRows.map((entry) => {
       const statusRow = normalizeIdentityStatusRow(entry);
@@ -3224,6 +3242,10 @@ function normalizeAgents(experience, modules) {
 }
 
 // src/lib/adapters.ts
+function buildPanelConversationKey(panelId, target) {
+  const targetKey = target?.addressingMode === "identity" ? target.identity || target.memberId || target.id : target?.memberId || target?.id || "none";
+  return `panel:${panelId}:${targetKey}`;
+}
 function buildDockTarget(agent) {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
   const identity = typeof agent.identity === "string" && agent.identity.trim() ? agent.identity.trim() : void 0;
@@ -3582,7 +3604,27 @@ var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_failed",
   "run_failed"
 ]);
-function hasMatchingTerminalEvent(rawText, sessionId) {
+function matchesCorrelation(data, correlation, allowUnscoped = true) {
+  if (!correlation?.sessionId && !correlation?.interactionId) {
+    return true;
+  }
+  if (data === null || typeof data !== "object") {
+    return allowUnscoped;
+  }
+  const record = data;
+  const hasScopedField = "session_id" in record || "interaction_id" in record;
+  if (!hasScopedField) {
+    return allowUnscoped;
+  }
+  if (correlation.sessionId && record.session_id === correlation.sessionId) {
+    return true;
+  }
+  if (correlation.interactionId && record.interaction_id === correlation.interactionId) {
+    return true;
+  }
+  return false;
+}
+function hasMatchingTerminalEvent(rawText, correlation) {
   const blocks = rawText.split(/\n\n+/);
   for (let i = 0; i < blocks.length - 1; i++) {
     const block = blocks[i].trim();
@@ -3594,16 +3636,16 @@ function hasMatchingTerminalEvent(rawText, sessionId) {
       else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
     }
     if (!TERMINAL_SSE_EVENTS.has(eventName)) continue;
-    if (!sessionId) return true;
+    if (!correlation?.sessionId && !correlation?.interactionId) return true;
     try {
       const data = JSON.parse(dataLines.join("\n"));
-      if (data.session_id === sessionId) return true;
+      if (matchesCorrelation(data, correlation, false)) return true;
     } catch {
     }
   }
   return false;
 }
-async function drainInteractionResponse(response, sessionId) {
+async function drainInteractionResponse(response, correlation) {
   if (!response.ok) {
     const text = await response.text();
     let parsed = null;
@@ -3629,7 +3671,7 @@ async function drainInteractionResponse(response, sessionId) {
   const decoder = new TextDecoder();
   let rawText = "";
   try {
-    while (!hasMatchingTerminalEvent(rawText, sessionId)) {
+    while (!hasMatchingTerminalEvent(rawText, correlation)) {
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -3647,12 +3689,9 @@ async function drainInteractionResponse(response, sessionId) {
     }
   }
   const frames = parseSseFrames(rawText);
-  if (!sessionId) return frames;
+  if (!correlation?.sessionId && !correlation?.interactionId) return frames;
   return frames.filter((frame) => {
-    const data = frame.data;
-    if (data === null || typeof data !== "object") return false;
-    if ("session_id" in data) return data.session_id === sessionId;
-    return true;
+    return matchesCorrelation(frame.data, correlation, true);
   });
 }
 async function sendInteraction(baseUrl, memberId, message) {
@@ -3676,12 +3715,63 @@ async function sendInteraction(baseUrl, memberId, message) {
   try {
     frames = await drainInteractionResponse(
       await streamResponsePromise,
-      sendResult.session_id
+      { sessionId: sendResult.session_id }
     );
   } catch {
     frames = [];
   }
   return { sendResult, frames };
+}
+async function sendInteract(baseUrl, identity, content, origin) {
+  const accepted = await rpc(baseUrl, "mobkit/interact", {
+    identity,
+    content,
+    origin
+  });
+  const normalized = normalizeConsoleInteractionAccepted(accepted);
+  if (!normalized) {
+    throw new Error("mobkit/interact returned an invalid acceptance payload");
+  }
+  return normalized;
+}
+async function sendAddressedInteraction(baseUrl, target, message, origin = "console") {
+  if (target.addressingMode === "identity") {
+    const identity = target.identity?.trim();
+    if (!identity) {
+      throw new Error("identity-addressed send requires target.identity");
+    }
+    const streamAbort = new AbortController();
+    const streamResponsePromise = fetch(`${baseUrl}/console/identity/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identity }),
+      signal: streamAbort.signal
+    });
+    void streamResponsePromise.catch(() => {
+    });
+    let sendResult;
+    try {
+      sendResult = await sendInteract(baseUrl, identity, message, origin);
+    } catch (err) {
+      streamAbort.abort();
+      throw err;
+    }
+    let frames;
+    try {
+      frames = await drainInteractionResponse(
+        await streamResponsePromise,
+        { interactionId: sendResult.interaction_id }
+      );
+    } catch {
+      frames = [];
+    }
+    return { sendResult, frames };
+  }
+  const memberId = target.memberId?.trim();
+  if (!memberId) {
+    throw new Error("member-addressed send requires target.memberId");
+  }
+  return sendInteraction(baseUrl, memberId, message);
 }
 
 // src/icon.tsx
@@ -3818,10 +3908,10 @@ function Icon({ name, className }) {
 var import_jsx_runtime17 = require("react/jsx-runtime");
 function ConsoleApp({ baseUrl }) {
   const [agents, setAgents] = import_react6.default.useState([]);
-  const [entriesByMemberId, setEntriesByMemberId] = import_react6.default.useState({});
+  const [entriesByPanelId, setEntriesByPanelId] = import_react6.default.useState({});
   const [activityFrames, setActivityFrames] = import_react6.default.useState([]);
-  const [draftByMemberId, setDraftByMemberId] = import_react6.default.useState({});
-  const [sendingMembers, setSendingMembers] = import_react6.default.useState(/* @__PURE__ */ new Set());
+  const [draftByPanelId, setDraftByPanelId] = import_react6.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react6.default.useState(/* @__PURE__ */ new Set());
   const [pinnedAgentIds, setPinnedAgentIds] = import_react6.default.useState(/* @__PURE__ */ new Set());
   const [loading, setLoading] = import_react6.default.useState(true);
   const [error, setError] = import_react6.default.useState("");
@@ -3869,35 +3959,46 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildDockTarget(agent), "replace_focused");
     }
   }
-  async function onSendMessage(memberId) {
-    const text = (draftByMemberId[memberId] || "").trim();
+  async function onSendMessage(panelId, target) {
+    const panelKey = buildPanelConversationKey(panelId, target);
+    const memberId = target?.memberId || target?.id || "";
+    const text = (draftByPanelId[panelKey] || "").trim();
     if (!text || !memberId) return;
     const agent = agents.find((a) => a.member_id === memberId) || null;
-    setDraftByMemberId((d) => ({ ...d, [memberId]: "" }));
-    setSendingMembers((s) => new Set(s).add(memberId));
+    setDraftByPanelId((d) => ({ ...d, [panelKey]: "" }));
+    setSendingPanels((s) => new Set(s).add(panelKey));
     const userEntry = createUserEntry(text);
-    setEntriesByMemberId((current) => ({
+    setEntriesByPanelId((current) => ({
       ...current,
-      [memberId]: [...current[memberId] || [], userEntry]
+      [panelKey]: [...current[panelKey] || [], userEntry]
     }));
     try {
-      const result = await sendInteraction(baseUrl, memberId, text);
+      const result = await sendAddressedInteraction(
+        baseUrl,
+        {
+          addressingMode: target?.addressingMode || "member",
+          memberId,
+          ...target?.identity ? { identity: target.identity } : {}
+        },
+        text,
+        `console:${panelId}`
+      );
       const agentEntries = mapFramesToTimelineEntries(agent, result.frames);
-      setEntriesByMemberId((current) => ({
+      setEntriesByPanelId((current) => ({
         ...current,
-        [memberId]: [...current[memberId] || [], ...agentEntries]
+        [panelKey]: [...current[panelKey] || [], ...agentEntries]
       }));
       setActivityFrames((current) => [...result.frames, ...current].slice(0, 64));
     } catch (submitError) {
       setError(errorMessage(submitError));
-      setEntriesByMemberId((current) => ({
+      setEntriesByPanelId((current) => ({
         ...current,
-        [memberId]: (current[memberId] || []).filter((e) => e.id !== userEntry.id)
+        [panelKey]: (current[panelKey] || []).filter((e) => e.id !== userEntry.id)
       }));
     } finally {
-      setSendingMembers((s) => {
+      setSendingPanels((s) => {
         const next = new Set(s);
-        next.delete(memberId);
+        next.delete(panelKey);
         return next;
       });
     }
@@ -4024,14 +4125,15 @@ function ConsoleApp({ baseUrl }) {
             onCreateTab: () => dock.createTab(),
             renderPanelBody: (panel) => {
               const memberId = panel.target?.id || "";
-              const entries = entriesByMemberId[memberId] || [];
+              const panelKey = buildPanelConversationKey(panel.id, panel.target);
+              const entries = entriesByPanelId[panelKey] || [];
               const vs = buildConversationViewState({
                 memberId,
                 agentLabel: panel.target?.title || "Agent",
                 entries
               });
-              const draft = draftByMemberId[memberId] || "";
-              const isSending = sendingMembers.has(memberId);
+              const draft = draftByPanelId[panelKey] || "";
+              const isSending = sendingPanels.has(panelKey);
               const agent = agents.find((a) => a.member_id === memberId);
               const agentLabel = panel.target?.title || "Agent";
               const hasTarget = Boolean(memberId);
@@ -4063,12 +4165,12 @@ function ConsoleApp({ baseUrl }) {
                         footerLeftItems,
                         footerRightItems
                       },
-                      onChange: (value) => setDraftByMemberId((d) => ({ ...d, [memberId]: value })),
-                      onSubmit: () => void onSendMessage(memberId),
+                      onChange: (value) => setDraftByPanelId((d) => ({ ...d, [panelKey]: value })),
+                      onSubmit: () => void onSendMessage(panel.id, panel.target),
                       onKeyDown: (e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();
-                          void onSendMessage(memberId);
+                          void onSendMessage(panel.id, panel.target);
                         }
                       }
                     }

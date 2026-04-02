@@ -530,7 +530,7 @@ impl MobkitRuntimeHandle {
                 "reason": reason,
                 "approval_route_id": pending_entry.approval_route_id,
                 "approval_delivery_id": pending_entry.approval_delivery_id,
-                "next_pending_id": next_pending_id.clone(),
+                "next_pending_id": next_pending_id,
             }),
         });
         Ok(GatingDecisionResult {

@@ -62,11 +62,11 @@ describe("constants", () => {
 describe("parseStatusResult", () => {
   it("parses valid wire-format object", () => {
     const result = parseStatusResult({
-      contract_version: "0.2.0",
+      contract_version: "0.3.0",
       running: true,
       loaded_modules: ["mod_a", "mod_b"],
     });
-    assert.equal(result.contractVersion, "0.2.0");
+    assert.equal(result.contractVersion, "0.3.0");
     assert.equal(result.running, true);
     assert.deepEqual(result.loadedModules, ["mod_a", "mod_b"]);
   });

@@ -1,9 +1,12 @@
 import {
   normalizeConsoleInteractionRejectedError,
+  normalizeConsoleInteractionAccepted,
   normalizeReplayUnavailableError,
 } from "@console-core";
 import type {
+  ConsoleDockAddressedTarget,
   ConsoleFrame,
+  ConsoleInteractAccepted,
   ConsoleReplayUnavailablePayload,
   ConsoleSendMessageResult,
   ConsoleGatewayInteractionRejectedError,
@@ -118,6 +121,36 @@ const TERMINAL_SSE_EVENTS = new Set([
   "run_failed",
 ]);
 
+interface TerminalCorrelation {
+  sessionId?: string;
+  interactionId?: string;
+}
+
+function matchesCorrelation(
+  data: unknown,
+  correlation?: TerminalCorrelation,
+  allowUnscoped = true,
+): boolean {
+  if (!correlation?.sessionId && !correlation?.interactionId) {
+    return true;
+  }
+  if (data === null || typeof data !== "object") {
+    return allowUnscoped;
+  }
+  const record = data as Record<string, unknown>;
+  const hasScopedField = "session_id" in record || "interaction_id" in record;
+  if (!hasScopedField) {
+    return allowUnscoped;
+  }
+  if (correlation.sessionId && record.session_id === correlation.sessionId) {
+    return true;
+  }
+  if (correlation.interactionId && record.interaction_id === correlation.interactionId) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Scan complete SSE blocks (delimited by double-newline) for a terminal
  * event: line.  The last block is skipped because it may be incomplete.
@@ -126,7 +159,7 @@ const TERMINAL_SSE_EVENTS = new Set([
  * sessions (concurrent turns, other clients) are ignored so they cannot
  * prematurely satisfy the stop condition.
  */
-function hasMatchingTerminalEvent(rawText: string, sessionId?: string): boolean {
+function hasMatchingTerminalEvent(rawText: string, correlation?: TerminalCorrelation): boolean {
   const blocks = rawText.split(/\n\n+/);
   for (let i = 0; i < blocks.length - 1; i++) {
     const block = blocks[i].trim();
@@ -138,10 +171,10 @@ function hasMatchingTerminalEvent(rawText: string, sessionId?: string): boolean 
       else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
     }
     if (!TERMINAL_SSE_EVENTS.has(eventName)) continue;
-    if (!sessionId) return true;
+    if (!correlation?.sessionId && !correlation?.interactionId) return true;
     try {
       const data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
-      if (data.session_id === sessionId) return true;
+      if (matchesCorrelation(data, correlation, false)) return true;
     } catch {
       // unparseable data — treat as unmatched
     }
@@ -151,7 +184,7 @@ function hasMatchingTerminalEvent(rawText: string, sessionId?: string): boolean 
 
 async function drainInteractionResponse(
   response: Response,
-  sessionId?: string
+  correlation?: TerminalCorrelation,
 ): Promise<ConsoleFrame[]> {
   if (!response.ok) {
     const text = await response.text();
@@ -181,7 +214,7 @@ async function drainInteractionResponse(
   let rawText = "";
 
   try {
-    while (!hasMatchingTerminalEvent(rawText, sessionId)) {
+    while (!hasMatchingTerminalEvent(rawText, correlation)) {
       const { value, done } = await reader.read();
       if (done) {
         break;
@@ -201,15 +234,12 @@ async function drainInteractionResponse(
   }
 
   const frames = parseSseFrames(rawText);
-  if (!sessionId) return frames;
+  if (!correlation?.sessionId && !correlation?.interactionId) return frames;
 
-  // Filter to frames that either belong to this session or carry no session_id
-  // (infrastructure frames like "subscribed" belong to no turn).
+  // Filter to frames that either belong to the active turn or carry no
+  // correlation field (infrastructure frames like "subscribed").
   return frames.filter((frame) => {
-    const data = frame.data as Record<string, unknown> | null;
-    if (data === null || typeof data !== "object") return false;
-    if ("session_id" in data) return data.session_id === sessionId;
-    return true;
+    return matchesCorrelation(frame.data, correlation, true);
   });
 }
 
@@ -221,6 +251,18 @@ export async function observeInteraction(
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ member_id: memberId }),
+  });
+  return drainInteractionResponse(response);
+}
+
+export async function observeIdentityInteraction(
+  baseUrl: string,
+  identity: string,
+): Promise<ConsoleFrame[]> {
+  const response = await fetch(`${baseUrl}/console/identity/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ identity }),
   });
   return drainInteractionResponse(response);
 }
@@ -334,11 +376,78 @@ export async function sendInteraction(
   try {
     frames = await drainInteractionResponse(
       await streamResponsePromise,
-      sendResult.session_id,
+      { sessionId: sendResult.session_id },
     );
   } catch {
     frames = [];
   }
 
   return { sendResult, frames };
+}
+
+async function sendInteract(
+  baseUrl: string,
+  identity: string,
+  content: string,
+  origin: string,
+): Promise<ConsoleInteractAccepted> {
+  const accepted = await rpc<unknown>(baseUrl, "mobkit/interact", {
+    identity,
+    content,
+    origin,
+  });
+  const normalized = normalizeConsoleInteractionAccepted(accepted);
+  if (!normalized) {
+    throw new Error("mobkit/interact returned an invalid acceptance payload");
+  }
+  return normalized;
+}
+
+export async function sendAddressedInteraction(
+  baseUrl: string,
+  target: ConsoleDockAddressedTarget,
+  message: string,
+  origin = "console",
+): Promise<{ sendResult: ConsoleSendMessageResult | ConsoleInteractAccepted; frames: ConsoleFrame[] }> {
+  if (target.addressingMode === "identity") {
+    const identity = target.identity?.trim();
+    if (!identity) {
+      throw new Error("identity-addressed send requires target.identity");
+    }
+
+    const streamAbort = new AbortController();
+    const streamResponsePromise = fetch(`${baseUrl}/console/identity/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identity }),
+      signal: streamAbort.signal,
+    });
+    void streamResponsePromise.catch(() => {});
+
+    let sendResult: ConsoleInteractAccepted;
+    try {
+      sendResult = await sendInteract(baseUrl, identity, message, origin);
+    } catch (err) {
+      streamAbort.abort();
+      throw err;
+    }
+
+    let frames: ConsoleFrame[];
+    try {
+      frames = await drainInteractionResponse(
+        await streamResponsePromise,
+        { interactionId: sendResult.interaction_id },
+      );
+    } catch {
+      frames = [];
+    }
+
+    return { sendResult, frames };
+  }
+
+  const memberId = target.memberId?.trim();
+  if (!memberId) {
+    throw new Error("member-addressed send requires target.memberId");
+  }
+  return sendInteraction(baseUrl, memberId, message);
 }

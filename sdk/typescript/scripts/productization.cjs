@@ -15,7 +15,7 @@ const {
 } = require("../dist/index.cjs");
 
 const results = [];
-const EXPECTED_CONTRACT_VERSION = "0.2.0";
+const EXPECTED_CONTRACT_VERSION = "0.3.0";
 
 async function check(name, fn) {
   try {

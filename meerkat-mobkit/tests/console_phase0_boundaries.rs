@@ -165,7 +165,7 @@ async fn build_identity_context(identity: &str) -> IdentityFirstContext {
         bridge: None,
         default_timeout: None,
     }));
-    restore_flow(&runtime, &[spec.clone()], None, None)
+    restore_flow(&runtime, std::slice::from_ref(&spec), None, None)
         .await
         .expect("restore flow");
     IdentityFirstContext {

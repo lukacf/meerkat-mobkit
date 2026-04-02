@@ -80,6 +80,27 @@ fn governance_contracts_rejects_invalid_governance_state() {
 }
 
 #[test]
+fn governance_contracts_rejects_missing_governance_state() {
+    let valid_traceability = "\
+| REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |\n\
+|--------|-------|----------------|----------------|----------|--------|\n\
+| TYPE-001 | P0 | .rct/* | - | .rct/outputs/P0/ | MISSING |\n";
+    let err = validate_governance_contracts(
+        "project: test\n",
+        "governance_state: realignment_in_progress\n",
+        "governance_state: realignment_in_progress\n",
+        valid_traceability,
+    )
+    .expect_err("missing governance_state must fail");
+    assert_eq!(
+        err,
+        GovernanceValidationError::MissingGovernanceState {
+            file: ".rct/spec.yaml".to_string(),
+        }
+    );
+}
+
+#[test]
 fn governance_contracts_rejects_unknown_traceability_status() {
     let markdown = "\
 | REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |\n\

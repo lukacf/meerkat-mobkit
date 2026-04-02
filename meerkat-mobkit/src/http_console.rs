@@ -1230,13 +1230,14 @@ async fn build_live_snapshot(
 ) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
     let members = runtime.discover().await;
-    // Prefer live mob members whenever the runtime can enumerate them.
-    // Fall back to configured module IDs only when there is no live member view.
-    let loaded_modules = if !members.is_empty() {
+    // Use configured module IDs when available because topology and health
+    // surfaces describe loaded modules, not live mob members.
+    // Fall back to member IDs only for pure mob runtimes with no module config.
+    let loaded_modules = if config_module_ids.is_empty() {
         let mut mods: Vec<String> = members
             .iter()
             .filter(|member| member.state != MEMBER_STATE_RETIRING)
-            .map(|m| m.meerkat_id.clone())
+            .map(|member| member.meerkat_id.clone())
             .collect();
         mods.sort();
         mods

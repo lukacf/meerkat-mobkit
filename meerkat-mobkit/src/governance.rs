@@ -228,28 +228,15 @@ fn status_requires_evidence(status: &str) -> bool {
     !matches!(status, "MISSING" | "DEFERRED" | "STUBBED")
 }
 
-fn validate_governance_state_if_present(
-    file_name: &str,
-    content: &str,
-) -> Result<(), GovernanceValidationError> {
-    if content
-        .lines()
-        .any(|line| line.trim_start().starts_with("governance_state:"))
-    {
-        return validate_governance_state(file_name, content);
-    }
-    Ok(())
-}
-
 pub fn validate_governance_contracts(
     spec_yaml: &str,
     plan_yaml: &str,
     checklist_yaml: &str,
     traceability_markdown: &str,
 ) -> Result<(), GovernanceValidationError> {
-    validate_governance_state_if_present(".rct/spec.yaml", spec_yaml)?;
-    validate_governance_state_if_present(".rct/plan.yaml", plan_yaml)?;
-    validate_governance_state_if_present(".rct/checklist.yaml", checklist_yaml)?;
+    validate_governance_state(".rct/spec.yaml", spec_yaml)?;
+    validate_governance_state(".rct/plan.yaml", plan_yaml)?;
+    validate_governance_state(".rct/checklist.yaml", checklist_yaml)?;
     validate_traceability_statuses(traceability_markdown)?;
     Ok(())
 }

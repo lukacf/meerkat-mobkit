@@ -1,8 +1,10 @@
 //! JSON-RPC request handling for both module-only and unified runtime modes.
 
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, resume_unwind};
 use std::time::Duration;
 
+use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,7 +55,7 @@ use session_store_methods::{
 use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
-pub const MOBKIT_CONTRACT_VERSION: &str = "0.2.0";
+pub const MOBKIT_CONTRACT_VERSION: &str = "0.3.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1801,16 +1803,29 @@ pub async fn handle_unified_rpc_json(
                 map_dispatch_origin(&request_params.origin),
             )
             .with_correlation(interaction_id.clone());
-            match identity_rt.dispatch(&identity, &dispatch_input).await {
-                Ok((_token, _durable)) => {
+            runtime
+                .reserve_console_interaction(
+                    identity.as_str(),
+                    runtime_member_id.as_deref(),
+                    &interaction_id,
+                    &origin,
+                    &content,
+                )
+                .await;
+            let dispatch_result =
+                AssertUnwindSafe(identity_rt.dispatch(&identity, &dispatch_input))
+                    .catch_unwind()
+                    .await;
+            match dispatch_result {
+                Err(panic_payload) => {
                     runtime
-                        .record_console_interaction(
-                            identity.as_str(),
-                            runtime_member_id.as_deref(),
-                            &interaction_id,
-                            &origin,
-                            &content,
-                        )
+                        .discard_console_interaction(identity.as_str(), &interaction_id)
+                        .await;
+                    resume_unwind(panic_payload);
+                }
+                Ok(Ok((_token, _durable))) => {
+                    runtime
+                        .accept_console_interaction(identity.as_str(), &interaction_id)
                         .await;
                     if !identity_rt.has_session_bridge() {
                         runtime
@@ -1837,7 +1852,12 @@ pub async fn handle_unified_rpc_json(
                         error: None,
                     }
                 }
-                Err(e) => identity_error_response(response_id, &e),
+                Ok(Err(e)) => {
+                    runtime
+                        .discard_console_interaction(identity.as_str(), &interaction_id)
+                        .await;
+                    identity_error_response(response_id, &e)
+                }
             }
         }
         "mobkit/send" => {

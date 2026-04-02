@@ -36,7 +36,7 @@ EXPECTED_CAPABILITY_METHODS = [
     "mobkit/gating/decide",
     "mobkit/gating/audit",
 ]
-EXPECTED_CONTRACT_VERSION = "0.2.0"
+EXPECTED_CONTRACT_VERSION = "0.3.0"
 
 
 def _pick_free_port() -> int:

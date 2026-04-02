@@ -200,10 +200,12 @@ async fn phase0_contract_006_query_events_forwards_identity_filter_and_payloads(
     assert_eq!(events[0]["event"]["payload"]["type"], json!("text_delta"));
     assert_eq!(events[0]["event"]["payload"]["delta"], json!("hello"));
 
-    let seen_queries = query_log.lock().expect("query log");
-    assert_eq!(seen_queries.len(), 1);
-    assert_eq!(seen_queries[0].identity.as_deref(), Some("identity:luka"));
-    assert_eq!(seen_queries[0].limit, Some(10));
+    {
+        let seen_queries = query_log.lock().expect("query log");
+        assert_eq!(seen_queries.len(), 1);
+        assert_eq!(seen_queries[0].identity.as_deref(), Some("identity:luka"));
+        assert_eq!(seen_queries[0].limit, Some(10));
+    }
 
     let shutdown = runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
