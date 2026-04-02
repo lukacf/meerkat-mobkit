@@ -182,6 +182,14 @@ fn phase8_console_001_capability_driven_rendering_contract() {
         allowed.body["agent_sidebar"]["panel_id"],
         json!("console.agent_sidebar")
     );
+    assert_eq!(allowed.body["agent_sidebar"]["schema_version"], json!("1"));
+    assert_eq!(
+        allowed.body["agent_sidebar"]["refresh"],
+        json!({
+            "mode": "poll",
+            "interval_ms": 5000
+        })
+    );
     assert_eq!(
         allowed.body["agent_sidebar"]["source_method"],
         json!("mobkit/status")
@@ -216,9 +224,38 @@ fn phase8_console_001_capability_driven_rendering_contract() {
         ])
     );
     assert_eq!(
+        allowed.body["identity_status"]["schema_version"],
+        json!("1")
+    );
+    assert_eq!(
+        allowed.body["identity_status"]["refresh"],
+        json!({
+            "mode": "poll",
+            "interval_ms": 5000
+        })
+    );
+    assert_eq!(
+        allowed.body["identity_status"]["rows"],
+        json!([
+            {
+                "identity":"router",
+                "state":"unknown",
+                "addressability":"addressable",
+                "labels":{},
+            },
+            {
+                "identity":"delivery",
+                "state":"unknown",
+                "addressability":"addressable",
+                "labels":{},
+            }
+        ])
+    );
+    assert_eq!(
         allowed.body["chat_inspector"]["panel_id"],
         json!("console.chat_inspector")
     );
+    assert_eq!(allowed.body["chat_inspector"]["schema_version"], json!("1"));
     assert_eq!(
         allowed.body["chat_inspector"]["send_method"],
         json!("mobkit/send_message")
@@ -231,6 +268,7 @@ fn phase8_console_001_capability_driven_rendering_contract() {
         allowed.body["topology"]["panel_id"],
         json!("console.topology")
     );
+    assert_eq!(allowed.body["topology"]["schema_version"], json!("1"));
     assert_eq!(
         allowed.body["topology"]["source_method"],
         json!("mobkit/status")
@@ -252,6 +290,10 @@ fn phase8_console_001_capability_driven_rendering_contract() {
     assert_eq!(
         allowed.body["health_overview"]["panel_id"],
         json!("console.health_overview")
+    );
+    assert_eq!(
+        allowed.body["health_overview"]["schema_version"],
+        json!("1")
     );
     assert_eq!(
         allowed.body["health_overview"]["source_method"],
@@ -317,6 +359,61 @@ fn phase8_console_live_snapshot_prefers_runtime_state_over_config_modules() {
     assert_eq!(
         response.body["health_overview"]["live_snapshot"]["running"],
         json!(false)
+    );
+}
+
+#[test]
+fn phase0_contract_010_console_experience_preserves_watch_and_degraded_fields() {
+    let state = decision_state(false);
+    let runtime_snapshot = ConsoleLiveSnapshot::new(
+        Some("runtime-1".to_string()),
+        true,
+        vec!["router".to_string()],
+        vec![meerkat_mobkit::ConsoleAgentLiveSnapshot {
+            agent_id: "identity:luka".to_string(),
+            member_id: "member-luka".to_string(),
+            label: "Luka".to_string(),
+            kind: "identity".to_string(),
+            profile: Some("lead".to_string()),
+            state: Some("running".to_string()),
+            session_id: Some("sess-1".to_string()),
+            watched: Some(true),
+            alert_level: Some("critical".to_string()),
+            degraded: Some(true),
+            degraded_reason: Some("lease_expired".to_string()),
+        }],
+        Vec::new(),
+        false,
+    );
+
+    let response = handle_console_rest_json_route_with_snapshot(
+        &state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/experience".to_string(),
+            auth: None,
+        },
+        Some(&runtime_snapshot),
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.body["agent_sidebar"]["live_snapshot"]["agents"],
+        json!([
+            {
+                "agent_id":"identity:luka",
+                "member_id":"member-luka",
+                "label":"Luka",
+                "kind":"identity",
+                "profile":"lead",
+                "state":"running",
+                "session_id":"sess-1",
+                "watched": true,
+                "alertLevel":"critical",
+                "degraded": true,
+                "degradedReason":"lease_expired",
+            }
+        ])
     );
 }
 

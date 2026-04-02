@@ -12,11 +12,13 @@ use meerkat_mob::{AttributedEvent, MeerkatId, MobEventRouterHandle, MobHandle, S
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
+use self::console_events::ConsoleEventStore;
 use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime};
 use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_with_options};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
 
 pub mod builder;
+pub(crate) mod console_events;
 pub mod cross_mob;
 pub mod edge_reconcile;
 pub mod edge_types;
@@ -112,6 +114,7 @@ pub struct UnifiedRuntime {
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
     event_log: Option<event_log::EventLogHandle>,
+    console_events: ConsoleEventStore,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -153,6 +156,7 @@ impl UnifiedRuntime {
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
             event_log: None,
+            console_events: ConsoleEventStore::new(),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             session_bridge: None,
@@ -224,6 +228,10 @@ impl UnifiedRuntime {
         self.event_log = Some(handle);
     }
 
+    pub(crate) fn console_events(&self) -> ConsoleEventStore {
+        self.console_events.clone()
+    }
+
     /// Return the session bridge for identity-first operations, if configured.
     pub fn session_bridge(&self) -> Option<&Arc<dyn crate::identity_first::bridge::SessionBridge>> {
         self.session_bridge.as_ref()
@@ -253,11 +261,61 @@ impl UnifiedRuntime {
         }
     }
 
+    pub async fn query_console_events(
+        &self,
+        query: &EventQuery,
+    ) -> Vec<crate::console_contracts::ConsoleIdentityEventEnvelope> {
+        self.console_events.query(query).await
+    }
+
     /// Ingest an event into the event log (if configured). Non-blocking.
     pub(crate) fn ingest_event(&self, event: &EventEnvelope<UnifiedEvent>) {
         if let Some(ref log) = self.event_log {
             log.ingest(event.clone());
         }
+    }
+
+    pub(crate) async fn record_console_interaction(
+        &self,
+        identity: &str,
+        runtime_member_id: Option<&str>,
+        interaction_id: &str,
+        origin: &str,
+        content: &str,
+    ) {
+        self.console_events
+            .record_interaction(identity, runtime_member_id, interaction_id, origin, content)
+            .await;
+    }
+
+    pub(crate) async fn record_console_lifecycle(
+        &self,
+        identity: &str,
+        event_type: &str,
+        data: serde_json::Value,
+    ) {
+        self.console_events
+            .record_lifecycle(identity, event_type, data)
+            .await;
+    }
+
+    pub(crate) async fn fail_console_interaction(
+        &self,
+        identity: &str,
+        interaction_id: &str,
+        reason: &str,
+        data: serde_json::Value,
+    ) {
+        self.console_events
+            .fail_interaction(identity, interaction_id, reason, data)
+            .await;
+    }
+
+    pub(crate) async fn project_console_event_from_unified(
+        &self,
+        event: &EventEnvelope<UnifiedEvent>,
+    ) {
+        self.console_events.project_unified_event(event).await;
     }
 
     /// Fire an error event to the registered hook, if any.
@@ -321,6 +379,7 @@ fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<Uni
         event: UnifiedEvent::Agent {
             agent_id: attributed.source.to_string(),
             event_type: agent_event_type(&attributed.envelope.payload).to_string(),
+            payload: serde_json::to_value(&attributed.envelope.payload).ok(),
         },
     }
 }

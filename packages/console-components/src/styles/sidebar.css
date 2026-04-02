@@ -99,6 +99,11 @@
   color: rgba(214, 220, 229, 0.88);
 }
 
+.cc-sidebar-meta.is-warning,
+.cc-sidebar-row__meta-item.is-warning {
+  color: rgba(244, 191, 102, 0.92);
+}
+
 .cc-sidebar-meta__icon {
   width: calc(12px * var(--_cc-window-scale));
   height: calc(12px * var(--_cc-window-scale));

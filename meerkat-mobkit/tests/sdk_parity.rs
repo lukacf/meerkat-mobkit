@@ -36,7 +36,7 @@ struct ScriptSummary {
 }
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
 fn assert_command_success(
@@ -211,7 +211,7 @@ fn phase11_sdk_001_sdk_002_choke_110_and_e2e_1101_parity_contracts() {
     let ts_summary = run_parity_script(
         "TypeScript",
         "node",
-        &["sdk/typescript/scripts/parity.js"],
+        &["sdk/typescript/scripts/parity.cjs"],
         &[],
     );
     assert_shared_sdk_coverage(&ts_summary, "typescript");

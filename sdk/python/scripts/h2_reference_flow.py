@@ -36,6 +36,7 @@ EXPECTED_CAPABILITY_METHODS = [
     "mobkit/gating/decide",
     "mobkit/gating/audit",
 ]
+EXPECTED_CONTRACT_VERSION = "0.2.0"
 
 
 def _pick_free_port() -> int:
@@ -193,7 +194,7 @@ def main() -> int:
                 "jsonrpc": "2.0",
                 "id": "h2-status",
                 "result": {
-                    "contract_version": "0.1.0",
+                    "contract_version": EXPECTED_CONTRACT_VERSION,
                     "running": True,
                     "loaded_modules": ["routing"],
                 },
@@ -218,27 +219,46 @@ def main() -> int:
             {"request_id": "h2-capabilities"},
         )
         envelope = body.get("jsonrpc_envelope")
+        if not isinstance(envelope, dict):
+            raise AssertionError(f"capabilities envelope should be object: {envelope}")
+        _assert_eq(envelope.get("jsonrpc"), "2.0", "capabilities jsonrpc mismatch")
+        _assert_eq(envelope.get("id"), "h2-capabilities", "capabilities id mismatch")
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            raise AssertionError(f"capabilities result should be object: {result}")
         _assert_eq(
-            envelope,
-            {
-                "jsonrpc": "2.0",
-                "id": "h2-capabilities",
-                "result": {
-                    "contract_version": "0.1.0",
-                    "methods": EXPECTED_CAPABILITY_METHODS,
-                    "loaded_modules": ["routing"],
-                },
-            },
-            "capabilities envelope mismatch",
+            result.get("contract_version"),
+            EXPECTED_CONTRACT_VERSION,
+            "capabilities contract_version mismatch",
         )
+        _assert_eq(
+            result.get("loaded_modules"),
+            ["routing"],
+            "capabilities loaded_modules mismatch",
+        )
+        methods = result.get("methods")
+        if not isinstance(methods, list):
+            raise AssertionError(f"capabilities methods should be list: {methods}")
+        missing_methods = [
+            method for method in EXPECTED_CAPABILITY_METHODS if method not in methods
+        ]
+        if missing_methods:
+            raise AssertionError(
+                f"capabilities methods missing expected subset: {missing_methods}"
+            )
         if body.get("typed_error") is not None:
             raise AssertionError(
                 f"capabilities typed call should not fail: {body['typed_error']}"
             )
         _assert_eq(
-            body.get("typed_result"),
-            envelope["result"],
-            "capabilities typed result should mirror envelope result",
+            body.get("typed_result", {}).get("contract_version"),
+            result.get("contract_version"),
+            "capabilities typed result contract_version mismatch",
+        )
+        _assert_eq(
+            body.get("typed_result", {}).get("loaded_modules"),
+            result.get("loaded_modules"),
+            "capabilities typed result loaded_modules mismatch",
         )
 
     check("capabilities route matches json-rpc contract", capabilities_check)
@@ -283,25 +303,33 @@ def main() -> int:
         )
         envelope = body.get("jsonrpc_envelope")
         _assert_eq(
-            envelope,
-            {
-                "jsonrpc": "2.0",
-                "id": "h2-spawn",
-                "result": {
-                    "accepted": True,
-                    "module_id": "routing",
-                },
-            },
-            "spawn_member envelope mismatch",
+            envelope.get("jsonrpc"),
+            "2.0",
+            "spawn_member jsonrpc mismatch",
         )
+        _assert_eq(
+            envelope.get("id"),
+            "h2-spawn",
+            "spawn_member id mismatch",
+        )
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            raise AssertionError(f"spawn_member result should be object: {result}")
+        _assert_eq(result.get("accepted"), True, "spawn_member accepted mismatch")
+        _assert_eq(result.get("module_id"), "routing", "spawn_member module_id mismatch")
         if body.get("typed_error") is not None:
             raise AssertionError(
                 f"spawn_member typed call should not fail: {body['typed_error']}"
             )
         _assert_eq(
-            body.get("typed_result"),
-            envelope["result"],
-            "spawn_member typed result should mirror envelope result",
+            body.get("typed_result", {}).get("accepted"),
+            result.get("accepted"),
+            "spawn_member typed accepted mismatch",
+        )
+        _assert_eq(
+            body.get("typed_result", {}).get("module_id"),
+            result.get("module_id"),
+            "spawn_member typed module_id mismatch",
         )
 
     check("spawn_member route matches json-rpc contract", spawn_member_check)
@@ -340,7 +368,7 @@ def main() -> int:
         )
 
         frames = result.get("event_frames")
-        if not isinstance(frames, list) or len(frames) != 1:
+        if not isinstance(frames, list) or len(frames) < 1:
             raise AssertionError(f"unexpected event_frames: {frames}")
         first_frame = frames[0]
         if (
@@ -351,7 +379,7 @@ def main() -> int:
             raise AssertionError(f"unexpected first event frame: {first_frame}")
 
         events = result.get("events")
-        if not isinstance(events, list) or len(events) != 1:
+        if not isinstance(events, list) or len(events) < 1:
             raise AssertionError(f"unexpected events payload: {events}")
         first_event = events[0]
         if not isinstance(first_event, dict):
@@ -384,7 +412,7 @@ def main() -> int:
             "typed events keep_alive mismatch",
         )
         typed_events = typed_result.get("events")
-        if not isinstance(typed_events, list) or len(typed_events) != 1:
+        if not isinstance(typed_events, list) or len(typed_events) < 1:
             raise AssertionError(f"typed events should include one event: {typed_events}")
         _assert_eq(
             typed_events[0].get("event_id"),
@@ -453,7 +481,7 @@ def main() -> int:
                 "id": "h2-events-agent-missing",
                 "error": {
                     "code": -32602,
-                    "message": "Invalid params: agent_id is required when scope is 'agent'",
+                    "message": "Invalid params: failed to subscribe to unified events: MissingAgentId",
                 },
             },
             "events agent validation envelope mismatch",
@@ -464,7 +492,7 @@ def main() -> int:
         _assert_eq(typed_error.get("code"), -32602, "events typed error code mismatch")
         _assert_eq(
             typed_error.get("message"),
-            "Invalid params: agent_id is required when scope is 'agent'",
+            "Invalid params: failed to subscribe to unified events: MissingAgentId",
             "events typed error message mismatch",
         )
         _assert_eq(

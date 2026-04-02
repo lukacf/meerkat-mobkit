@@ -1,4 +1,44 @@
 export type {
+  ActivityFilterPreset,
+  ConsoleDockTargetAddressingMode,
+  ConsoleIdentityEventEnvelope,
+  ConsoleInteractionAccepted,
+  ConsoleInteractionRejectedError,
+  ConsoleInteractionRequest,
+  ExperienceSectionMeta,
+  ExperienceSectionRefresh,
+  GatingActionRequest,
+  GatingActionResult,
+  IdentityStreamRequest,
+  IdentityStatusRow,
+  IdentityInspectViewState,
+  ReplayUnavailableError,
+  ResponsePhase,
+  RoutingSectionView,
+  SidebarWatchFields,
+  ToolCallAccumulatorState,
+} from "./control-plane";
+export {
+  normalizeActivityFilterPreset,
+  normalizeConsoleIdentityEventEnvelope,
+  normalizeConsoleInteractionAccepted,
+  normalizeConsoleDockTargetAddressingMode,
+  normalizeConsoleInteractionRejectedError,
+  normalizeConsoleInteractionRequest,
+  normalizeExperienceSectionMeta,
+  normalizeGatingActionRequest,
+  normalizeGatingActionResult,
+  normalizeIdentityStreamRequest,
+  normalizeIdentityInspectViewState,
+  normalizeIdentityStatusRow,
+  normalizeReplayUnavailableError,
+  normalizeResponsePhase,
+  normalizeRoutingSectionView,
+  normalizeSidebarWatchFields,
+  normalizeToolCallAccumulatorState,
+} from "./control-plane";
+
+export type {
   ConversationEmptyStateSpec,
   ConversationEmptySuggestion,
   ConversationIdentity,
@@ -124,6 +164,7 @@ export type {
   ConversationRichParagraphBlock,
   ConversationRichTableBlock,
   ConversationRichThinkingBlock,
+  ConversationRichToolCallBlock,
   ConversationTableAlignment,
 } from "./rich-content";
 export {

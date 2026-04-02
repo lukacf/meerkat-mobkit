@@ -127,6 +127,7 @@ fn external_normalization_path_over_mixed_subprocess_outputs() {
         UnifiedEvent::Agent {
             agent_id: "a-1".to_string(),
             event_type: "tick".to_string(),
+            payload: None,
         }
     );
 

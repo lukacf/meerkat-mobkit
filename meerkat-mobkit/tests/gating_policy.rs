@@ -156,6 +156,70 @@ fn runtime_for_gating_with_forced_failed_delivery() -> meerkat_mobkit::MobkitRun
 }
 
 #[test]
+fn phase0_contract_008_gating_escalate_returns_successor_pending_entry() {
+    let mut runtime = runtime_for_gating();
+    let evaluated = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":"phase0-gating-evaluate",
+            "method":"mobkit/gating/evaluate",
+            "params":{
+                "action":"publish_release",
+                "actor_id":"alice",
+                "risk_tier":"r3",
+                "requested_approver":"bob",
+                "approval_timeout_ms":60_000
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    let escalated = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        &json!({
+            "jsonrpc":"2.0",
+            "id":"phase0-gating-escalate",
+            "method":"mobkit/gating/decide",
+            "params":{
+                "pending_id": evaluated["result"]["pending_id"].clone(),
+                "approver_id":"bob",
+                "decision":"escalate",
+                "reason":"needs higher approval"
+            }
+        })
+        .to_string(),
+        Duration::from_secs(1),
+    ));
+    let pending = parse_response(&handle_mobkit_rpc_json(
+        &mut runtime,
+        r#"{"jsonrpc":"2.0","id":"phase0-gating-pending","method":"mobkit/gating/pending","params":{}}"#,
+        Duration::from_secs(1),
+    ));
+    runtime.shutdown();
+
+    let next_pending_id = escalated["result"]["next_pending_id"]
+        .as_str()
+        .expect("escalate should return next_pending_id");
+    assert_eq!(escalated["result"]["decision"], json!("escalate"));
+    assert_eq!(escalated["result"]["outcome"], json!("pending_approval"));
+    assert_ne!(
+        next_pending_id,
+        evaluated["result"]["pending_id"]
+            .as_str()
+            .expect("evaluate pending id")
+    );
+    assert_eq!(
+        pending["result"]["pending"][0]["pending_id"],
+        json!(next_pending_id)
+    );
+    assert_eq!(
+        pending["result"]["pending"][0]["requested_approver"],
+        Value::Null
+    );
+}
+
+#[test]
 #[ignore]
 fn phase12_r3_approval_flow_enforces_approver_constraints_and_audits() {
     let mut runtime = runtime_for_gating_with_routing_delivery();

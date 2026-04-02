@@ -468,9 +468,51 @@ impl MobkitRuntimeHandle {
             });
         }
 
+        let mut next_pending_id = None;
         let (outcome, event_type) = match decision {
             GatingDecision::Approve => (GatingOutcome::Allowed, "approval_decided"),
             GatingDecision::Reject => (GatingOutcome::SafeDraft, "rejection_decided"),
+            GatingDecision::Escalate => {
+                let successor_sequence = self.next_gating_sequence();
+                let successor_pending_id = format!("gate-pending-{successor_sequence:06}");
+                let successor_entry = GatingPendingEntry {
+                    pending_id: successor_pending_id.clone(),
+                    action_id: pending_entry.action_id.clone(),
+                    action: pending_entry.action.clone(),
+                    actor_id: pending_entry.actor_id.clone(),
+                    risk_tier: pending_entry.risk_tier.clone(),
+                    requested_approver: None,
+                    approval_recipient: pending_entry.approval_recipient.clone(),
+                    approval_channel: pending_entry.approval_channel.clone(),
+                    approval_route_id: None,
+                    approval_delivery_id: None,
+                    created_at_ms: current_time_ms(),
+                    deadline_at_ms: pending_entry.deadline_at_ms,
+                };
+                self.upsert_gating_pending_entry(successor_entry.clone());
+                next_pending_id = Some(successor_pending_id.clone());
+                self.append_gating_audit(GatingAuditEntry {
+                    audit_id: String::new(),
+                    timestamp_ms: 0,
+                    event_type: "pending_created".to_string(),
+                    action_id: successor_entry.action_id.clone(),
+                    pending_id: Some(successor_pending_id),
+                    actor_id: successor_entry.actor_id.clone(),
+                    risk_tier: successor_entry.risk_tier.clone(),
+                    outcome: GatingOutcome::PendingApproval,
+                    detail: serde_json::json!({
+                        "escalated_from_pending_id": pending_id.clone(),
+                        "requested_approver": successor_entry.requested_approver,
+                        "approval_recipient": successor_entry.approval_recipient,
+                        "approval_channel": successor_entry.approval_channel,
+                        "approval_route_id": successor_entry.approval_route_id,
+                        "approval_delivery_id": successor_entry.approval_delivery_id,
+                        "deadline_at_ms": successor_entry.deadline_at_ms,
+                        "action": successor_entry.action,
+                    }),
+                });
+                (GatingOutcome::PendingApproval, "escalation_decided")
+            }
         };
         let decided_at_ms = current_time_ms();
         self.append_gating_audit(GatingAuditEntry {
@@ -488,6 +530,7 @@ impl MobkitRuntimeHandle {
                 "reason": reason,
                 "approval_route_id": pending_entry.approval_route_id,
                 "approval_delivery_id": pending_entry.approval_delivery_id,
+                "next_pending_id": next_pending_id.clone(),
             }),
         });
         Ok(GatingDecisionResult {
@@ -498,6 +541,7 @@ impl MobkitRuntimeHandle {
             outcome,
             decided_at_ms,
             reason,
+            next_pending_id,
         })
     }
 

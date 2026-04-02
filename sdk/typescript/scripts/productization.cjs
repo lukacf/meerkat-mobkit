@@ -15,6 +15,7 @@ const {
 } = require("../dist/index.cjs");
 
 const results = [];
+const EXPECTED_CONTRACT_VERSION = "0.2.0";
 
 async function check(name, fn) {
   try {
@@ -52,7 +53,7 @@ async function run() {
         jsonrpc: "2.0",
         id: request.id,
         result: {
-          contract_version: "0.1.0",
+          contract_version: EXPECTED_CONTRACT_VERSION,
           running: true,
           loaded_modules: ["routing", "delivery"],
         },
@@ -64,7 +65,7 @@ async function run() {
         jsonrpc: "2.0",
         id: request.id,
         result: {
-          contract_version: "0.1.0",
+          contract_version: EXPECTED_CONTRACT_VERSION,
           methods: [
             "mobkit/status",
             "mobkit/capabilities",
@@ -171,7 +172,7 @@ async function run() {
   await check("async client status typed result", async () => {
     const status = await client.status("ts-prod-status");
     assertDeepEqual(status, {
-      contract_version: "0.1.0",
+      contract_version: EXPECTED_CONTRACT_VERSION,
       running: true,
       loaded_modules: ["routing", "delivery"],
     }, "unexpected status");
@@ -244,7 +245,7 @@ async function run() {
     const factoryClient = MobkitAsyncClient.fromGatewayBin(gatewayBin);
     const status = await factoryClient.status("ts-prod-factory-gateway-status");
     assertDeepEqual(status, {
-      contract_version: "0.1.0",
+      contract_version: EXPECTED_CONTRACT_VERSION,
       running: true,
       loaded_modules: ["routing"],
     }, "unexpected fromGatewayBin status");
@@ -281,7 +282,7 @@ async function run() {
             jsonrpc: "2.0",
             id: payload.id,
             result: {
-              contract_version: "0.1.0",
+              contract_version: EXPECTED_CONTRACT_VERSION,
               running: true,
               loaded_modules: ["routing", "delivery"],
             },
@@ -292,7 +293,7 @@ async function run() {
 
     const status = await factoryClient.status("ts-prod-factory-http-status");
     assertDeepEqual(status, {
-      contract_version: "0.1.0",
+      contract_version: EXPECTED_CONTRACT_VERSION,
       running: true,
       loaded_modules: ["routing", "delivery"],
     }, "unexpected fromHttp status");

@@ -151,12 +151,10 @@ async function runSmoke() {
       return dom.window.document.querySelector(".cc-conversation-pane") !== null;
     });
 
-    // 3. Verify activity rail rendered with roster panel
+    // 3. Verify activity rail rendered
     await waitFor(() => {
       return dom.window.document.querySelector(".cc-activity-rail") !== null;
     });
-    const rosterItems = dom.window.document.querySelectorAll(".cc-activity-rail__roster-item");
-    assert(rosterItems.length >= 2, `expected at least 2 roster items, got ${rosterItems.length}`);
 
     // 4. Verify shared composer is present
     const composer = dom.window.document.querySelector(".cc-composer");

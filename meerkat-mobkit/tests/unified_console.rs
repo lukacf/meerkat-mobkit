@@ -25,7 +25,7 @@ use axum::http::{Request, StatusCode};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
-use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
+use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
@@ -103,10 +103,20 @@ async fn build_runtime_fixture() -> RuntimeFixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let mut definition = Prefab::CodingSwarm.definition();
-    for profile in definition.profiles.values_mut() {
-        profile.model = "gpt-5.2".to_string();
-    }
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "phase-h1-console-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse console mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_options(MobBootstrapOptions {

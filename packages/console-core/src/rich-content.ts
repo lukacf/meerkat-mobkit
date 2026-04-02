@@ -53,6 +53,15 @@ export interface ConversationRichCommandBlock {
   footer?: string;
 }
 
+export interface ConversationRichToolCallBlock {
+  type: "tool-call";
+  toolCallId: string;
+  name: string;
+  arguments: string;
+  result?: string;
+  status: "pending" | "success" | "error";
+}
+
 export interface ConversationRichFileChangeBlock {
   type: "file-change";
   verb: string;

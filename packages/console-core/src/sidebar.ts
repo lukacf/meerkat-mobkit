@@ -1,4 +1,6 @@
-export type ConsoleSidebarMetaTone = "default" | "muted" | "accent" | "positive" | "negative";
+import { normalizeSidebarWatchFields, type SidebarWatchFields } from "./control-plane";
+
+export type ConsoleSidebarMetaTone = "default" | "muted" | "accent" | "positive" | "negative" | "warning";
 export type ConsoleSidebarBlockKind = "action_strip" | "list";
 
 export interface ConsoleSidebarMeta {
@@ -16,7 +18,7 @@ export interface ConsoleSidebarAction {
   disabled?: boolean;
 }
 
-export interface ConsoleSidebarItem {
+export interface ConsoleSidebarItem extends SidebarWatchFields {
   id: string;
   title: string;
   subtitle?: string | null;
@@ -66,6 +68,7 @@ function normalizeActions(actions: ConsoleSidebarAction[] | null | undefined): C
 function normalizeItems(items: ConsoleSidebarItem[] | null | undefined): ConsoleSidebarItem[] {
   return (items || []).filter((item) => Boolean(item?.id && item?.title)).map((item) => ({
     ...item,
+    ...normalizeSidebarWatchFields(item),
     meta: normalizeMeta(item.meta),
     actions: normalizeActions(item.actions),
   }));

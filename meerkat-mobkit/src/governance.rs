@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::Deserialize;
+
 pub const STRICT_TRACEABILITY_STATUSES: &[&str] = &[
     "TYPED",
     "WIRED",
@@ -49,6 +51,19 @@ impl fmt::Display for GovernanceValidationError {
 
 impl std::error::Error for GovernanceValidationError {}
 
+#[derive(Debug, Deserialize)]
+struct TraceabilityDocument {
+    #[serde(default)]
+    rows: Vec<TraceabilityRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TraceabilityRow {
+    status: String,
+    #[serde(default)]
+    evidence: Vec<String>,
+}
+
 pub fn validate_governance_state(
     file_name: &str,
     content: &str,
@@ -77,6 +92,16 @@ pub fn validate_governance_state(
 }
 
 pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceValidationError> {
+    if looks_like_markdown_table(markdown) {
+        return validate_markdown_traceability_statuses(markdown);
+    }
+
+    validate_yaml_traceability_statuses(markdown)
+}
+
+fn validate_markdown_traceability_statuses(
+    markdown: &str,
+) -> Result<(), GovernanceValidationError> {
     let mut seen_rows = false;
     let mut status_column = None;
     let mut evidence_or_link_column = None;
@@ -127,16 +152,16 @@ pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceVa
         }
 
         seen_rows = true;
-        let evidence = columns[evidence_or_link_column].trim_matches('`').trim();
-        if is_missing_evidence(evidence) {
-            return Err(GovernanceValidationError::MissingTraceabilityEvidence { line: idx + 1 });
-        }
         let status = columns[status_column].trim_matches('`');
         if !STRICT_TRACEABILITY_STATUSES.contains(&status) {
             return Err(GovernanceValidationError::InvalidTraceabilityStatus {
                 line: idx + 1,
                 status: status.to_string(),
             });
+        }
+        let evidence = columns[evidence_or_link_column].trim_matches('`').trim();
+        if status_requires_evidence(status) && is_missing_evidence(evidence) {
+            return Err(GovernanceValidationError::MissingTraceabilityEvidence { line: idx + 1 });
         }
     }
 
@@ -145,6 +170,37 @@ pub fn validate_traceability_statuses(markdown: &str) -> Result<(), GovernanceVa
     }
 
     Ok(())
+}
+
+fn validate_yaml_traceability_statuses(yaml: &str) -> Result<(), GovernanceValidationError> {
+    let document: TraceabilityDocument = serde_yaml::from_str(yaml)
+        .map_err(|_| GovernanceValidationError::InvalidTraceabilityRow { line: 1 })?;
+
+    if document.rows.is_empty() {
+        return Err(GovernanceValidationError::NoTraceabilityRows);
+    }
+
+    for (index, row) in document.rows.iter().enumerate() {
+        if !STRICT_TRACEABILITY_STATUSES.contains(&row.status.as_str()) {
+            return Err(GovernanceValidationError::InvalidTraceabilityStatus {
+                line: index + 1,
+                status: row.status.clone(),
+            });
+        }
+        if status_requires_evidence(&row.status)
+            && row.evidence.iter().all(|entry| is_missing_evidence(entry))
+        {
+            return Err(GovernanceValidationError::MissingTraceabilityEvidence { line: index + 1 });
+        }
+    }
+
+    Ok(())
+}
+
+fn looks_like_markdown_table(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.trim_start().starts_with('|'))
 }
 
 fn is_evidence_or_link_column(column: &str) -> bool {
@@ -168,15 +224,32 @@ fn is_missing_evidence(value: &str) -> bool {
     )
 }
 
+fn status_requires_evidence(status: &str) -> bool {
+    !matches!(status, "MISSING" | "DEFERRED" | "STUBBED")
+}
+
+fn validate_governance_state_if_present(
+    file_name: &str,
+    content: &str,
+) -> Result<(), GovernanceValidationError> {
+    if content
+        .lines()
+        .any(|line| line.trim_start().starts_with("governance_state:"))
+    {
+        return validate_governance_state(file_name, content);
+    }
+    Ok(())
+}
+
 pub fn validate_governance_contracts(
     spec_yaml: &str,
     plan_yaml: &str,
     checklist_yaml: &str,
     traceability_markdown: &str,
 ) -> Result<(), GovernanceValidationError> {
-    validate_governance_state(".rct/spec.yaml", spec_yaml)?;
-    validate_governance_state(".rct/plan.yaml", plan_yaml)?;
-    validate_governance_state(".rct/checklist.yaml", checklist_yaml)?;
+    validate_governance_state_if_present(".rct/spec.yaml", spec_yaml)?;
+    validate_governance_state_if_present(".rct/plan.yaml", plan_yaml)?;
+    validate_governance_state_if_present(".rct/checklist.yaml", checklist_yaml)?;
     validate_traceability_statuses(traceability_markdown)?;
     Ok(())
 }

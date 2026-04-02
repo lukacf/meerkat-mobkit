@@ -275,6 +275,7 @@ fn parse_gating_decision(raw: &str) -> Result<GatingDecision, GatingParamsError>
     match normalized.as_str() {
         "approve" => Ok(GatingDecision::Approve),
         "reject" => Ok(GatingDecision::Reject),
+        "escalate" => Ok(GatingDecision::Escalate),
         "" => Err(GatingParamsError::DecisionRequired),
         _ => Err(GatingParamsError::UnknownDecision(raw.to_string())),
     }

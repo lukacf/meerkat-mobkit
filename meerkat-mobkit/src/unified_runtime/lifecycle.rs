@@ -174,6 +174,7 @@ impl UnifiedRuntime {
                     if let crate::types::UnifiedEvent::Agent {
                         ref agent_id,
                         ref event_type,
+                        ..
                     } = unified_event.event
                         && event_type == "run_failed"
                     {
@@ -187,6 +188,8 @@ impl UnifiedRuntime {
                     }
                     // Ingest into event log (non-blocking, buffered)
                     self.ingest_event(&unified_event);
+                    self.project_console_event_from_unified(&unified_event)
+                        .await;
                     self.module_runtime
                         .lock()
                         .await

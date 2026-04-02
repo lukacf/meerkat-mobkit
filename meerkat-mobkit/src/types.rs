@@ -21,6 +21,8 @@ pub enum UnifiedEvent {
     Agent {
         agent_id: String,
         event_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<Value>,
     },
     Module(ModuleEvent),
 }

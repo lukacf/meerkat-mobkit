@@ -134,13 +134,27 @@ fn read_http_request(stream: &mut TcpStream) -> CapturedHttpRequest {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set read timeout");
+    let deadline = Instant::now() + Duration::from_secs(5);
     let mut bytes = Vec::new();
     let mut content_length = None;
     let mut headers_end = None;
     let mut chunk = [0_u8; 4096];
 
     loop {
-        let read = stream.read(&mut chunk).expect("read mock request");
+        let read = match stream.read(&mut chunk) {
+            Ok(read) => read,
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                assert!(Instant::now() < deadline, "timed out reading mock request");
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(err) => panic!("read mock request: {err}"),
+        };
         if read == 0 {
             break;
         }

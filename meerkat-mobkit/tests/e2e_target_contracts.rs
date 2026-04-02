@@ -359,6 +359,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "interaction.start".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -368,6 +369,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-beta".to_string(),
                 event_type: "interaction.start".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -377,6 +379,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "tick".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -386,6 +389,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-beta".to_string(),
                 event_type: "tick".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -395,6 +399,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "tick".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -404,6 +409,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "interaction.reply".to_string(),
+                payload: None,
             },
         },
     ]);

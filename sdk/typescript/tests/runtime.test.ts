@@ -893,7 +893,28 @@ describe("MobHandle.queryEvents()", () => {
     assert.deepEqual(result, []);
   });
 
-  it("returns empty array when no_event_log_configured", async () => {
+  it("returns fallback events when no_event_log_configured includes events", async () => {
+    const { handle, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      status: "no_event_log_configured",
+      events: [
+        {
+          id: "evt-9",
+          seq: 9,
+          timestamp_ms: 9000,
+          member_id: "m-9",
+          event: { Agent: { agent_id: "a-9", event_type: "text_delta", payload: { delta: "hi" } } },
+        },
+      ],
+    }));
+
+    const result = await handle.queryEvents({ limit: 10 });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].id, "evt-9");
+    assert.equal(result[0].event.kind, "agent");
+  });
+
+  it("returns empty array when no_event_log_configured omits events", async () => {
     const { handle, setResponse } = createMockRuntime();
     setResponse(() => ({ status: "no_event_log_configured" }));
 

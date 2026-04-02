@@ -491,6 +491,117 @@ function ConversationEmptyState({
   ] });
 }
 
+// ../packages/console-core/src/control-plane.ts
+function trimString(value) {
+  if (typeof value !== "string") {
+    return void 0;
+  }
+  const trimmed = value.trim();
+  return trimmed || void 0;
+}
+function stringRecord(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, raw]) => {
+      const normalizedKey = trimString(key);
+      const normalizedValue = trimString(raw);
+      return normalizedKey && normalizedValue ? [normalizedKey, normalizedValue] : null;
+    }).filter((entry) => Boolean(entry))
+  );
+}
+function normalizeResponsePhase(value) {
+  switch (value) {
+    case "waiting":
+    case "tool-executing":
+    case "generating":
+      return value;
+    case null:
+    case void 0:
+      return null;
+    default:
+      return null;
+  }
+}
+function normalizeSidebarWatchFields(value) {
+  const record = value && typeof value === "object" ? value : {};
+  const normalized = {};
+  if (typeof record.watched === "boolean") {
+    normalized.watched = record.watched;
+  }
+  if (record.alertLevel === "elevated" || record.alertLevel === "critical" || record.alertLevel === null) {
+    normalized.alertLevel = record.alertLevel;
+  }
+  if (typeof record.degraded === "boolean") {
+    normalized.degraded = record.degraded;
+  }
+  const degradedReason = trimString(record.degradedReason);
+  if (degradedReason) {
+    normalized.degradedReason = degradedReason;
+  }
+  return normalized;
+}
+function normalizeIdentityStatusRow(value) {
+  const record = value && typeof value === "object" ? value : null;
+  if (!record) {
+    return null;
+  }
+  const identity = trimString(record.identity);
+  const state = trimString(record.state);
+  if (!identity || !state) {
+    return null;
+  }
+  const addressability = record.addressability === "internal_only" ? "internal_only" : record.addressability === "addressable" ? "addressable" : null;
+  if (!addressability) {
+    return null;
+  }
+  return {
+    identity,
+    state,
+    addressability,
+    labels: stringRecord(record.labels),
+    ...trimString(record.display_name) ? { display_name: trimString(record.display_name) } : {},
+    ...trimString(record.profile) ? { profile: trimString(record.profile) } : {},
+    ...typeof record.generation === "number" && Number.isFinite(record.generation) ? { generation: record.generation } : {},
+    ...typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version) ? { checkpoint_version: record.checkpoint_version } : {},
+    ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {}
+  };
+}
+function normalizeReplayUnavailableError(value) {
+  const record = value && typeof value === "object" ? value : null;
+  if (!record || record.error !== "replay_unavailable") {
+    return null;
+  }
+  const stream = record.stream === "identity" || record.stream === "all_events" ? record.stream : null;
+  const requested = trimString(record.requested_last_event_id);
+  const latest = trimString(record.latest_event_id);
+  if (!stream || !requested || !latest) {
+    return null;
+  }
+  return {
+    error: "replay_unavailable",
+    stream,
+    requested_last_event_id: requested,
+    latest_event_id: latest
+  };
+}
+function normalizeConsoleInteractionRejectedError(value) {
+  const record = value && typeof value === "object" ? value : null;
+  if (!record) {
+    return null;
+  }
+  const code = record.code;
+  const message = trimString(record.message);
+  if (code !== -32001 && code !== -32002 && code !== -32003 && code !== -32004 && code !== -32602 && code !== -32603) {
+    return null;
+  }
+  if (!message) {
+    return null;
+  }
+  return { code, message };
+}
+
 // ../packages/console-core/src/rich-content.ts
 var FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
 var TERMINAL_DURATION_RE = /^Worked for\s+.+$/i;
@@ -1568,6 +1679,7 @@ function normalizeActions(actions) {
 function normalizeItems(items) {
   return (items || []).filter((item) => Boolean(item?.id && item?.title)).map((item) => ({
     ...item,
+    ...normalizeSidebarWatchFields(item),
     meta: normalizeMeta(item.meta),
     actions: normalizeActions(item.actions)
   }));
@@ -3051,19 +3163,54 @@ function ConsoleComposer({
 function normalizeAgents(experience, modules) {
   const snapshotAgents = experience?.agent_sidebar?.live_snapshot?.agents;
   if (Array.isArray(snapshotAgents) && snapshotAgents.length > 0) {
-    return snapshotAgents.map((entry) => ({
-      agent_id: String(entry.agent_id || entry.member_id || ""),
-      member_id: String(entry.member_id || entry.agent_id || ""),
-      label: String(entry.label || entry.member_id || entry.agent_id || "unknown"),
-      kind: String(entry.kind || "module_agent"),
-      ...entry.profile !== void 0 && { profile: String(entry.profile) },
-      ...entry.state !== void 0 && { state: String(entry.state) },
-      ...entry.wired_to !== void 0 && { wired_to: entry.wired_to },
-      ...entry.labels !== void 0 && { labels: entry.labels },
-      ...entry.group !== void 0 && { group: String(entry.group) },
-      ...entry.addressable !== void 0 && { addressable: Boolean(entry.addressable) },
-      ...entry.affordances !== void 0 && { affordances: entry.affordances }
-    }));
+    return snapshotAgents.map((entry) => {
+      const statusRow = normalizeIdentityStatusRow(entry);
+      const watchFields = normalizeSidebarWatchFields(entry);
+      const responsePhase = normalizeResponsePhase(entry.response_phase);
+      return {
+        ...statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {},
+        agent_id: String(entry.agent_id || statusRow?.identity || entry.identity || entry.member_id || ""),
+        member_id: String(entry.member_id || statusRow?.identity || entry.identity || entry.agent_id || ""),
+        label: String(entry.label || statusRow?.display_name || entry.display_name || statusRow?.identity || entry.identity || entry.member_id || entry.agent_id || "unknown"),
+        kind: String(entry.kind || statusRow?.profile || entry.profile || "module_agent"),
+        ...statusRow?.profile !== void 0 ? { profile: statusRow.profile } : entry.profile !== void 0 ? { profile: String(entry.profile) } : {},
+        ...statusRow?.state !== void 0 ? { state: statusRow.state } : entry.state !== void 0 ? { state: String(entry.state) } : {},
+        ...statusRow?.addressability ? { addressability: statusRow.addressability } : {},
+        ...statusRow?.generation !== void 0 ? { generation: statusRow.generation } : {},
+        ...statusRow?.checkpoint_version !== void 0 ? { checkpoint_version: statusRow.checkpoint_version } : {},
+        ...statusRow?.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
+        ...responsePhase !== null && { response_phase: responsePhase },
+        ...entry.wired_to !== void 0 && { wired_to: entry.wired_to },
+        ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : entry.labels !== void 0 ? { labels: entry.labels } : {},
+        ...entry.group !== void 0 && { group: String(entry.group) },
+        ...entry.addressable !== void 0 ? { addressable: Boolean(entry.addressable) } : statusRow?.addressability ? { addressable: statusRow.addressability === "addressable" } : {},
+        ...entry.affordances !== void 0 && { affordances: entry.affordances },
+        ...watchFields
+      };
+    });
+  }
+  const identityStatusRows = experience?.identity_status?.rows;
+  if (Array.isArray(identityStatusRows) && identityStatusRows.length > 0) {
+    return identityStatusRows.map((entry) => {
+      const statusRow = normalizeIdentityStatusRow(entry);
+      const identity = statusRow?.identity || "";
+      return {
+        identity,
+        agent_id: String(identity),
+        member_id: identity ? `identity-only:${identity}` : "",
+        label: String(statusRow?.display_name || identity || "unknown"),
+        kind: String(statusRow?.profile || "identity"),
+        ...statusRow?.profile !== void 0 ? { profile: statusRow.profile } : {},
+        ...statusRow?.state !== void 0 ? { state: statusRow.state } : {},
+        ...statusRow?.addressability ? { addressability: statusRow.addressability } : {},
+        ...statusRow?.generation !== void 0 ? { generation: statusRow.generation } : {},
+        ...statusRow?.checkpoint_version !== void 0 ? { checkpoint_version: statusRow.checkpoint_version } : {},
+        ...statusRow?.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
+        ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
+        addressable: false,
+        affordances: { can_send_message: false }
+      };
+    });
   }
   if (Array.isArray(modules) && modules.length > 0) {
     return modules.map((moduleId) => ({
@@ -3079,9 +3226,14 @@ function normalizeAgents(experience, modules) {
 // src/lib/adapters.ts
 function buildDockTarget(agent) {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
+  const identity = typeof agent.identity === "string" && agent.identity.trim() ? agent.identity.trim() : void 0;
+  const addressingMode = identity ? "identity" : "member";
   return {
     id: agent.member_id,
     kind: "agent-chat",
+    addressingMode,
+    memberId: agent.member_id,
+    ...identity ? { identity } : {},
     title: agent.label,
     subtitle
   };
@@ -3143,6 +3295,7 @@ function buildSidebarViewState(args) {
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
       const isPinned = pinnedAgentIds.has(agent.member_id);
+      const watchFields = normalizeSidebarWatchFields(agent);
       return {
         id: agent.member_id,
         title: agent.label,
@@ -3150,6 +3303,7 @@ function buildSidebarViewState(args) {
         selected: agent.member_id === selectedMemberId,
         pinned: isPinned,
         disabled: !isAddressable,
+        ...watchFields,
         meta: [
           ...agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : []
         ],
@@ -3406,6 +3560,12 @@ async function rpc(baseUrl, method, params) {
   }
   const result = await response.json();
   if (result.error) {
+    const typedError = normalizeConsoleInteractionRejectedError(result.error);
+    if (typedError) {
+      const error = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
+      error.rpcError = typedError;
+      throw error;
+    }
     throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return result.result;
@@ -3446,6 +3606,20 @@ function hasMatchingTerminalEvent(rawText, sessionId) {
 async function drainInteractionResponse(response, sessionId) {
   if (!response.ok) {
     const text = await response.text();
+    let parsed = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    const replayError = normalizeReplayUnavailableError(parsed);
+    if (replayError) {
+      const error = new Error(
+        `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`
+      );
+      error.replayError = replayError;
+      throw error;
+    }
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
   if (!response.body || typeof response.body.getReader !== "function") {

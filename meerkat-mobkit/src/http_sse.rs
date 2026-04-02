@@ -28,9 +28,33 @@ use meerkat_mob::MobError;
 pub(crate) const DEFAULT_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const KEEP_ALIVE_TEXT: &str = "keep-alive";
 
+pub(crate) fn console_agent_event_payload(event: &AgentEvent) -> Value {
+    let mut payload = serde_json::to_value(event).unwrap_or_else(|_| json!({}));
+    let record = match payload.as_object_mut() {
+        Some(record) => record,
+        None => return payload,
+    };
+    let is_tool_event = matches!(
+        agent_event_type(event),
+        "tool_call_requested"
+            | "tool_result_received"
+            | "tool_execution_started"
+            | "tool_execution_completed"
+            | "tool_execution_timed_out"
+    );
+    if is_tool_event
+        && !record.contains_key("tool_call_id")
+        && let Some(id) = record.get("id").cloned()
+    {
+        record.insert("tool_call_id".to_string(), id);
+    }
+    payload
+}
+
 pub fn agent_event_sse(interaction_id: &str, seq: u64, event: &AgentEvent) -> Event {
     let event_name = agent_event_name(event);
-    let payload = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+    let payload = serde_json::to_string(&console_agent_event_payload(event))
+        .unwrap_or_else(|_| "{}".to_string());
     Event::default()
         .id(format!("{interaction_id}:{seq}"))
         .event(event_name)
@@ -115,7 +139,7 @@ async fn agent_events_sse_handler(
         tokio::pin!(event_stream);
         while let Some(envelope) = event_stream.next().await {
             let event_name = agent_event_type(&envelope.payload).to_string();
-            let payload = serde_json::to_string(&envelope.payload)
+            let payload = serde_json::to_string(&console_agent_event_payload(&envelope.payload))
                 .unwrap_or_else(|_| "{}".to_string());
             yield Ok::<Event, Infallible>(
                 Event::default()
@@ -164,7 +188,7 @@ async fn mob_events_sse_handler(State(state): State<MobSseState>) -> impl IntoRe
             let data = json!({
                 "member_id": &source,
                 "source": &source,
-                "payload": attributed.envelope.payload,
+                "payload": console_agent_event_payload(&attributed.envelope.payload),
             });
             yield Ok::<Event, Infallible>(
                 Event::default()

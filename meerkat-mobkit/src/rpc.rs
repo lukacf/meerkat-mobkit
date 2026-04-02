@@ -6,6 +6,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::console_contracts::{ConsoleInteractionAccepted, ConsoleInteractionRequest};
 use crate::runtime::{
     BigQuerySessionStoreAdapter, BigQuerySessionStoreError, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
@@ -995,6 +996,20 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/member_current_session_id",
                 "mobkit/member_session_ref",
             ];
+            if identity_ctx.is_some() {
+                methods.extend_from_slice(&[
+                    "mobkit/interact",
+                    "mobkit/send",
+                    "mobkit/dispatch",
+                    "mobkit/status_identity",
+                    "mobkit/respawn",
+                    "mobkit/retire",
+                    "mobkit/reset",
+                    "mobkit/delete_identity",
+                    "mobkit/inspect_identity",
+                    "mobkit/reconcile_identity",
+                ]);
+            }
             // Cross-mob directory always advertised when configured
             if runtime.has_contact_directory() {
                 methods.push("mobkit/cross_mob/directory");
@@ -1743,6 +1758,88 @@ pub async fn handle_unified_rpc_json(
             mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await
         }
         // ----- identity-first methods -----
+        "mobkit/interact" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let request_params: ConsoleInteractionRequest =
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(params) => params,
+                    Err(_) => {
+                        return error_response(
+                            response_id,
+                            -32602,
+                            "invalid params: expected { identity, content, origin }",
+                        );
+                    }
+                };
+            if let Err(message) = request_params.validate() {
+                return error_response(response_id, -32602, format!("invalid params: {message}"));
+            }
+            let identity =
+                match crate::identity_first::AgentIdentity::parse(&request_params.identity) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return error_response(
+                            response_id,
+                            -32602,
+                            format!("invalid identity: {e}"),
+                        );
+                    }
+                };
+            let content = request_params.content.clone();
+            let origin = request_params.origin.clone();
+            let interaction_id = mint_interaction_id();
+            let runtime_member_id = identity_rt
+                .runtime_id_for(&identity)
+                .await
+                .ok()
+                .map(|runtime_id| runtime_id.to_string());
+            let dispatch_input = crate::identity_first::DispatchInput::with_origin(
+                request_params.content,
+                map_dispatch_origin(&request_params.origin),
+            )
+            .with_correlation(interaction_id.clone());
+            match identity_rt.dispatch(&identity, &dispatch_input).await {
+                Ok((_token, _durable)) => {
+                    runtime
+                        .record_console_interaction(
+                            identity.as_str(),
+                            runtime_member_id.as_deref(),
+                            &interaction_id,
+                            &origin,
+                            &content,
+                        )
+                        .await;
+                    if !identity_rt.has_session_bridge() {
+                        runtime
+                            .fail_console_interaction(
+                                identity.as_str(),
+                                &interaction_id,
+                                "execution_unavailable",
+                                serde_json::json!({
+                                    "reason": "no_session_bridge",
+                                }),
+                            )
+                            .await;
+                    }
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(
+                            serde_json::to_value(ConsoleInteractionAccepted {
+                                interaction_id,
+                                identity: identity.as_str().to_string(),
+                            })
+                            .unwrap_or_else(|_| serde_json::json!({})),
+                        ),
+                        error: None,
+                    }
+                }
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
         "mobkit/send" => {
             let identity_rt = match identity_ctx {
                 Some(ctx) => &*ctx.runtime,
@@ -1862,11 +1959,17 @@ pub async fn handle_unified_rpc_json(
                         "agent_runtime_id": status.agent_runtime_id.as_ref().map(super::identity_first::AgentRuntimeId::as_str),
                         "session_id": status.session_id.as_ref().map(ToString::to_string),
                         "profile": status.profile.as_ref().map(meerkat_mob::ProfileName::as_str),
-                        "addressability": format!("{:?}", status.addressability),
+                        "addressability": addressability_json(status.addressability),
                         "display_name": status.display_name.as_ref().map(super::identity_first::DisplayName::as_str),
                         "labels": status.labels,
                         "generation": status.generation.map(super::identity_first::ContinuityGeneration::get),
                         "checkpoint_version": status.checkpoint_version.map(super::identity_first::CheckpointVersion::get),
+                        "lease_healthy": status.lease.as_ref().map(|lease| lease.healthy),
+                        "lease": status.lease.as_ref().map(|lease| serde_json::json!({
+                            "fencing_token": lease.fencing_token.get(),
+                            "ttl_remaining_ms": lease.ttl_remaining.as_millis() as u64,
+                            "healthy": lease.healthy,
+                        })),
                     });
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -1895,18 +1998,30 @@ pub async fn handle_unified_rpc_json(
                 }
             };
             match identity_rt.respawn(&identity).await {
-                Ok(record) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
-                        "identity": record.identity.as_str(),
-                        "agent_runtime_id": record.agent_runtime_id.as_str(),
-                        "session_id": record.session_id.to_string(),
-                        "generation": record.generation.get(),
-                        "checkpoint_version": record.checkpoint_version.get(),
-                    })),
-                    error: None,
-                },
+                Ok(record) => {
+                    runtime
+                        .record_console_lifecycle(
+                            identity.as_str(),
+                            "identity_respawned",
+                            serde_json::json!({
+                                "generation": record.generation.get(),
+                                "checkpoint_version": record.checkpoint_version.get(),
+                            }),
+                        )
+                        .await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "identity": record.identity.as_str(),
+                            "agent_runtime_id": record.agent_runtime_id.as_str(),
+                            "session_id": record.session_id.to_string(),
+                            "generation": record.generation.get(),
+                            "checkpoint_version": record.checkpoint_version.get(),
+                        })),
+                        error: None,
+                    }
+                }
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
@@ -1927,12 +2042,21 @@ pub async fn handle_unified_rpc_json(
                 }
             };
             match identity_rt.retire(&identity).await {
-                Ok(token) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({ "fencing_token": token.get() })),
-                    error: None,
-                },
+                Ok(token) => {
+                    runtime
+                        .record_console_lifecycle(
+                            identity.as_str(),
+                            "identity_retired",
+                            serde_json::json!({ "fencing_token": token.get() }),
+                        )
+                        .await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({ "fencing_token": token.get() })),
+                        error: None,
+                    }
+                }
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
@@ -1953,18 +2077,30 @@ pub async fn handle_unified_rpc_json(
                 }
             };
             match identity_rt.reset(&identity).await {
-                Ok(record) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
-                        "identity": record.identity.as_str(),
-                        "agent_runtime_id": record.agent_runtime_id.as_str(),
-                        "session_id": record.session_id.to_string(),
-                        "generation": record.generation.get(),
-                        "checkpoint_version": record.checkpoint_version.get(),
-                    })),
-                    error: None,
-                },
+                Ok(record) => {
+                    runtime
+                        .record_console_lifecycle(
+                            identity.as_str(),
+                            "identity_reset",
+                            serde_json::json!({
+                                "generation": record.generation.get(),
+                                "checkpoint_version": record.checkpoint_version.get(),
+                            }),
+                        )
+                        .await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "identity": record.identity.as_str(),
+                            "agent_runtime_id": record.agent_runtime_id.as_str(),
+                            "session_id": record.session_id.to_string(),
+                            "generation": record.generation.get(),
+                            "checkpoint_version": record.checkpoint_version.get(),
+                        })),
+                        error: None,
+                    }
+                }
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
@@ -2010,18 +2146,41 @@ pub async fn handle_unified_rpc_json(
                     return error_response(response_id, -32602, format!("invalid identity: {e}"));
                 }
             };
+            let status = identity_rt.status(&identity).await;
             match identity_rt.inspect(&identity).await {
-                Ok(inspection) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
-                        "identity": identity_str,
-                        "output_preview": inspection.output_preview,
-                        "is_final": inspection.is_final,
-                        "peer_reachable_count": inspection.peer_reachable_count,
-                    })),
-                    error: None,
-                },
+                Ok(inspection) => {
+                    let status = status.ok();
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "identity": identity_str,
+                            "state": status.as_ref().map(|status| format!("{:?}", status.state)),
+                            "profile": status.as_ref().and_then(|status| status.profile.as_ref().map(meerkat_mob::ProfileName::as_str)),
+                            "addressability": status.as_ref().map(|status| addressability_json(status.addressability)),
+                            "display_name": status.as_ref().and_then(|status| status.display_name.as_ref().map(super::identity_first::DisplayName::as_str)),
+                            "labels": status.as_ref().map(|status| status.labels.clone()).unwrap_or_default(),
+                            "generation": status.as_ref().and_then(|status| status.generation.map(super::identity_first::ContinuityGeneration::get)),
+                            "checkpoint_version": status.as_ref().and_then(|status| status.checkpoint_version.map(super::identity_first::CheckpointVersion::get)),
+                            "lease_healthy": status.as_ref().and_then(|status| status.lease.as_ref().map(|lease| lease.healthy)),
+                            "continuity": status.as_ref().map(|status| serde_json::json!({
+                                "generation": status.generation.map(super::identity_first::ContinuityGeneration::get),
+                                "checkpoint_version": status.checkpoint_version.map(super::identity_first::CheckpointVersion::get),
+                                "session_id": status.session_id.as_ref().map(ToString::to_string),
+                                "agent_runtime_id": status.agent_runtime_id.as_ref().map(super::identity_first::AgentRuntimeId::as_str),
+                            })).unwrap_or_else(|| serde_json::json!({})),
+                            "lease": status.as_ref().and_then(|status| status.lease.as_ref().map(|lease| serde_json::json!({
+                                "fencing_token": lease.fencing_token.get(),
+                                "ttl_remaining_ms": lease.ttl_remaining.as_millis() as u64,
+                                "healthy": lease.healthy,
+                            }))),
+                            "output_preview": inspection.output_preview,
+                            "is_final": inspection.is_final,
+                            "peer_reachable_count": inspection.peer_reachable_count,
+                        })),
+                        error: None,
+                    }
+                }
                 Err(e) => identity_error_response(response_id, &e),
             }
         }
@@ -2197,6 +2356,31 @@ fn build_models_catalog_result() -> Value {
 
 fn identity_not_configured(response_id: Value) -> String {
     error_response(response_id, -32601, "identity-first runtime not configured")
+}
+
+fn map_dispatch_origin(origin: &str) -> crate::identity_first::DispatchOrigin {
+    match origin.split(':').next().unwrap_or("system") {
+        "connector" => crate::identity_first::DispatchOrigin::Connector,
+        "scheduler" => crate::identity_first::DispatchOrigin::Scheduler,
+        "policy" => crate::identity_first::DispatchOrigin::Policy,
+        "flow" => crate::identity_first::DispatchOrigin::Flow,
+        _ => crate::identity_first::DispatchOrigin::System,
+    }
+}
+
+fn mint_interaction_id() -> String {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("turn-{now_ns}")
+}
+
+fn addressability_json(addressability: crate::identity_first::AgentAddressability) -> &'static str {
+    match addressability {
+        crate::identity_first::AgentAddressability::Addressable => "addressable",
+        crate::identity_first::AgentAddressability::InternalOnly => "internal_only",
+    }
 }
 
 fn identity_error_response(

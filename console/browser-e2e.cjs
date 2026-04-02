@@ -139,8 +139,8 @@ async function runBrowserProof() {
     await page.waitForSelector(".cc-activity-rail", { timeout: 10_000 });
 
     // Send a message via the composer
-    await page.fill('textarea[name="message"]', "browser proof message");
-    await page.click('[data-testid="chat-form"] button[type="submit"]');
+    await page.fill(".cc-composer__textarea", "browser proof message");
+    await page.click(".cc-composer__send-btn");
 
     // Wait for activity pulse to show events
     await page.waitForFunction(

@@ -5,6 +5,7 @@ pub mod identity_first;
 pub mod auth;
 pub mod baseline;
 pub mod config_convention;
+pub mod console_contracts;
 pub mod contact_directory;
 pub mod decisions;
 pub mod governance;
@@ -32,6 +33,10 @@ pub use baseline::{
     REQUIRED_MEERKAT_SYMBOLS, verify_meerkat_baseline_symbols,
 };
 pub use config_convention::ConventionalPaths;
+pub use console_contracts::{
+    ConsoleIdentityEventEnvelope, ConsoleInteractionAccepted, ConsoleInteractionRejectedError,
+    ConsoleInteractionRequest, IdentityStreamRequest, ReplayUnavailableError,
+};
 pub use decisions::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
     DecisionPolicyError, MetricsPolicy, REQUIRED_RELEASE_TARGETS, ReleaseMetadata,

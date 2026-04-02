@@ -6,7 +6,7 @@ use axum::Router;
 use axum::routing::get;
 use meerkat_mob::MeerkatId;
 
-use crate::http_console::{console_frontend_router, console_json_router_with_runtime};
+use crate::http_console::{console_frontend_router, console_json_router_with_runtime_and_events};
 use crate::http_interactions::interaction_stream_router;
 use crate::http_sse::{agent_events_sse_router, mob_events_sse_router};
 use crate::runtime::RuntimeDecisionState;
@@ -15,11 +15,13 @@ use super::UnifiedRuntime;
 
 impl UnifiedRuntime {
     pub fn build_console_json_router(&self, decisions: RuntimeDecisionState) -> Router {
-        console_json_router_with_runtime(
+        console_json_router_with_runtime_and_events(
             decisions,
             self.mob_runtime.clone(),
             self.contact_directory.clone(),
             self.event_log_store(),
+            Some(self.console_events()),
+            true,
         )
     }
 

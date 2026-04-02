@@ -1,4 +1,13 @@
-import type { ConsoleFrame, ConsoleSendMessageResult } from "../types";
+import {
+  normalizeConsoleInteractionRejectedError,
+  normalizeReplayUnavailableError,
+} from "@console-core";
+import type {
+  ConsoleFrame,
+  ConsoleReplayUnavailablePayload,
+  ConsoleSendMessageResult,
+  ConsoleGatewayInteractionRejectedError,
+} from "../types";
 
 export function parseSseFrames(rawText: string): ConsoleFrame[] {
   const blocks = rawText
@@ -79,6 +88,12 @@ async function rpc<T>(
 
   const result = await response.json();
   if (result.error) {
+    const typedError = normalizeConsoleInteractionRejectedError(result.error) as ConsoleGatewayInteractionRejectedError | null;
+    if (typedError) {
+      const error = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
+      (error as Error & { rpcError?: ConsoleGatewayInteractionRejectedError }).rpcError = typedError;
+      throw error;
+    }
     throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
 
@@ -140,6 +155,20 @@ async function drainInteractionResponse(
 ): Promise<ConsoleFrame[]> {
   if (!response.ok) {
     const text = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+    const replayError = normalizeReplayUnavailableError(parsed) as ConsoleReplayUnavailablePayload | null;
+    if (replayError) {
+      const error = new Error(
+        `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`,
+      );
+      (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
+      throw error;
+    }
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
 
@@ -207,10 +236,14 @@ function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
   // UnifiedEvent is serde(tag = "kind", rename_all = "snake_case"), so the
   // wire format is {"kind": "agent", ...} / {"kind": "module", ...}.
   if (event.kind === "agent") {
+    const payload =
+      typeof event.payload === "object" && event.payload !== null
+        ? event.payload
+        : null;
     return {
       id: String(record.id ?? `event:${index}`),
       event: String(event.event_type ?? "agent_event"),
-      data: event,
+      data: payload ?? event,
     };
   }
 
@@ -241,30 +274,26 @@ export async function queryEvents(
     limit,
   });
 
-  if (
-    typeof result === "object" &&
-    result !== null &&
-    (result as Record<string, unknown>).status === "no_event_log_configured"
-  ) {
+  let events = result;
+  if (typeof result === "object" && result !== null) {
+    const record = result as Record<string, unknown>;
+    if (record.status === "no_event_log_configured") {
+      events = Array.isArray(record.events) ? record.events : [];
+    }
+  }
+
+  if (!Array.isArray(events)) {
     return [];
   }
 
-  if (!Array.isArray(result)) {
-    return [];
-  }
-
-  // UnifiedEvent::Agent stores only agent_id + event_type — the actual
-  // text/payload is not persisted. Skip agent-kind rows so history only
-  // includes events that carry displayable content (module events with payload).
-  return result
+  return events
     .filter((raw) => {
       if (typeof raw !== "object" || raw === null) return true;
       const ev = (raw as Record<string, unknown>).event;
-      return !(
-        typeof ev === "object" &&
-        ev !== null &&
-        (ev as Record<string, unknown>).kind === "agent"
-      );
+      if (typeof ev !== "object" || ev === null) return true;
+      const eventRecord = ev as Record<string, unknown>;
+      if (eventRecord.kind !== "agent") return true;
+      return typeof eventRecord.payload === "object" && eventRecord.payload !== null;
     })
     .map((event, index) => persistedEventToFrame(event, index));
 }

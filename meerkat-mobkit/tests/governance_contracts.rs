@@ -25,27 +25,32 @@ use meerkat_mobkit::{
 
 fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+        .join("..")
         .canonicalize()
         .expect("project root should resolve")
 }
 
 fn read_traceability_from_repo(root: &Path) -> String {
-    let primary = root.join(".rct/traceability.md");
-    match std::fs::read_to_string(&primary) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            let fallback = root.join("docs/rct/traceability.md");
-            std::fs::read_to_string(&fallback).unwrap_or_else(|fallback_err| {
-                panic!(
-                    "traceability read failed for {} and {}: {fallback_err}",
-                    primary.display(),
-                    fallback.display()
-                )
-            })
+    for candidate in [
+        root.join(".rct/traceability.yaml"),
+        root.join("docs/rct/traceability.yaml"),
+        root.join(".rct/traceability.md"),
+        root.join("docs/rct/traceability.md"),
+    ] {
+        match std::fs::read_to_string(&candidate) {
+            Ok(contents) => return contents,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => panic!(
+                "traceability read failed for {}: {err}",
+                candidate.display()
+            ),
         }
-        Err(err) => panic!("traceability read failed for {}: {err}", primary.display()),
     }
+
+    panic!(
+        "traceability read failed: no supported traceability artifact found under {}",
+        root.display()
+    )
 }
 
 #[test]
@@ -141,6 +146,51 @@ fn governance_contracts_rejects_placeholder_traceability_evidence() {
         err,
         GovernanceValidationError::MissingTraceabilityEvidence { .. }
     ));
+}
+
+#[test]
+fn governance_contracts_accepts_yaml_traceability_with_missing_rows_unimplemented() {
+    let yaml = r#"
+rows:
+  - id: TYPE-001
+    status: MISSING
+    evidence: []
+"#;
+
+    validate_traceability_statuses(yaml).expect("yaml traceability should validate");
+}
+
+#[test]
+fn governance_contracts_rejects_yaml_traceability_missing_typed_evidence() {
+    let yaml = r#"
+rows:
+  - id: TYPE-001
+    status: TYPED
+    evidence: []
+"#;
+
+    let err = validate_traceability_statuses(yaml)
+        .expect_err("typed yaml rows without evidence must fail validation");
+    assert!(matches!(
+        err,
+        GovernanceValidationError::MissingTraceabilityEvidence { .. }
+    ));
+}
+
+#[test]
+fn governance_contracts_accepts_markdown_traceability_after_leading_prose() {
+    let markdown = r#"
+# Traceability
+
+Intro text before the table is allowed.
+
+| REQ-ID | Phase | Implemented In | Runtime Caller | Evidence | Status |
+|--------|-------|----------------|----------------|----------|--------|
+| TYPE-001 | P0 | .rct/* | - | .rct/phase-0-evidence.txt | TYPED |
+"#;
+
+    validate_traceability_statuses(markdown)
+        .expect("markdown traceability with leading prose should validate");
 }
 
 #[test]

@@ -29,6 +29,22 @@ pub struct ConsoleAgentLiveSnapshot {
     pub state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watched: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "alertLevel"
+    )]
+    pub alert_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degraded: Option<bool>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "degradedReason"
+    )]
+    pub degraded_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,6 +190,10 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             profile: None,
             state: Some("idle".to_string()),
             session_id: None,
+            watched: None,
+            alert_level: None,
+            degraded: None,
+            degraded_reason: None,
         })
         .collect::<Vec<_>>();
     ConsoleLiveSnapshot::new(
@@ -190,6 +210,18 @@ fn build_console_experience_contract(
     modules: &[String],
     live_snapshot: &ConsoleLiveSnapshot,
 ) -> Value {
+    fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
+        agent.profile.is_some()
+            || agent.session_id.is_some()
+            || agent.watched.is_some()
+            || agent.alert_level.is_some()
+            || agent.degraded.is_some()
+            || agent.degraded_reason.is_some()
+            || agent.kind != "module_agent"
+            || agent.member_id != agent.agent_id
+            || agent.label != agent.agent_id
+    }
+
     let module_panels = modules
         .iter()
         .map(|module_id| {
@@ -274,7 +306,58 @@ fn build_console_experience_contract(
             .collect()
     };
 
+    let sidebar_agents: Vec<Value> =
+        if live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty() {
+            sidebar_agents
+        } else if live_snapshot.agents.iter().any(has_extended_agent_contract) {
+            live_snapshot
+                .agents
+                .iter()
+                .map(|agent| {
+                    let mut record = serde_json::Map::new();
+                    record.insert(
+                        "agent_id".to_string(),
+                        Value::String(agent.agent_id.clone()),
+                    );
+                    record.insert(
+                        "member_id".to_string(),
+                        Value::String(agent.member_id.clone()),
+                    );
+                    record.insert("label".to_string(), Value::String(agent.label.clone()));
+                    record.insert("kind".to_string(), Value::String(agent.kind.clone()));
+                    if let Some(profile) = &agent.profile {
+                        record.insert("profile".to_string(), Value::String(profile.clone()));
+                    }
+                    if let Some(state) = &agent.state {
+                        record.insert("state".to_string(), Value::String(state.clone()));
+                    }
+                    if let Some(session_id) = &agent.session_id {
+                        record.insert("session_id".to_string(), Value::String(session_id.clone()));
+                    }
+                    if let Some(watched) = agent.watched {
+                        record.insert("watched".to_string(), Value::Bool(watched));
+                    }
+                    if let Some(alert_level) = &agent.alert_level {
+                        record.insert("alertLevel".to_string(), Value::String(alert_level.clone()));
+                    }
+                    if let Some(degraded) = agent.degraded {
+                        record.insert("degraded".to_string(), Value::Bool(degraded));
+                    }
+                    if let Some(degraded_reason) = &agent.degraded_reason {
+                        record.insert(
+                            "degradedReason".to_string(),
+                            Value::String(degraded_reason.clone()),
+                        );
+                    }
+                    Value::Object(record)
+                })
+                .collect()
+        } else {
+            sidebar_agents
+        };
+
     let has_mob = live_snapshot.has_mob_runtime;
+    let identity_status_rows = build_identity_status_rows(&sidebar_agents);
 
     // P3: Build per-profile capability hints from roster data.
     let profile_capabilities: BTreeMap<String, Value> = {
@@ -337,6 +420,11 @@ fn build_console_experience_contract(
         "agent_sidebar": {
             "panel_id": "console.agent_sidebar",
             "title": "Agents",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "poll",
+                "interval_ms": 5000,
+            },
             "source_method": if has_mob { "mobkit/list_members" } else { "mobkit/status" },
             "refresh_policy": {
                 "mode": "pull",
@@ -365,9 +453,26 @@ fn build_console_experience_contract(
                 "agents": sidebar_agents,
             }
         },
+        "identity_status": {
+            "panel_id": "console.identity_status",
+            "title": "Identity Status",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "poll",
+                "interval_ms": 5000,
+            },
+            "source_method": if has_mob { "mobkit/list_members" } else { "mobkit/status" },
+            "rows": identity_status_rows,
+        },
         "activity_feed": {
             "panel_id": "console.activity_feed",
             "title": "Activity",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "stream",
+                "topic": "all_events",
+                "update_semantics": "append",
+            },
             "transport": "sse",
             "source_method": EVENTS_SUBSCRIBE_METHOD,
             "supported_scopes": ["mob", "agent", "interaction"],
@@ -391,6 +496,12 @@ fn build_console_experience_contract(
         "chat_inspector": {
             "panel_id": "console.chat_inspector",
             "title": "Chat Inspector",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "stream",
+                "topic": "selected_identity",
+                "update_semantics": "append",
+            },
             "send_method": "mobkit/send_message",
             "observe_route": "/interactions/stream",
             "transport": "rpc+sse",
@@ -410,6 +521,11 @@ fn build_console_experience_contract(
         "topology": {
             "panel_id": "console.topology",
             "title": "Topology",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "poll",
+                "interval_ms": 5000,
+            },
             "source_method": "mobkit/status",
             "route_method": "mobkit/routing/routes/list",
             "refresh_policy": {
@@ -428,6 +544,11 @@ fn build_console_experience_contract(
         "health_overview": {
             "panel_id": "console.health_overview",
             "title": "Health",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "poll",
+                "interval_ms": 5000,
+            },
             "source_method": "mobkit/status",
             "activity_source_method": EVENTS_SUBSCRIBE_METHOD,
             "refresh_policy": {
@@ -447,6 +568,11 @@ fn build_console_experience_contract(
         "flows": {
             "panel_id": "console.flows",
             "title": "Flows",
+            "schema_version": "1",
+            "refresh": {
+                "mode": "poll",
+                "interval_ms": 10000,
+            },
             "evaluate_method": "mobkit/scheduling/evaluate",
             "dispatch_method": "mobkit/scheduling/dispatch",
             "refresh_policy": {
@@ -473,6 +599,11 @@ fn build_console_experience_contract(
             serde_json::json!({
                 "panel_id": "console.session_history",
                 "title": "Session History",
+                "schema_version": "1",
+                "refresh": {
+                    "mode": "poll",
+                    "interval_ms": 5000,
+                },
                 "source_method": "mobkit/query_events",
                 "transport": "rpc",
                 "available": true,
@@ -493,11 +624,75 @@ fn build_console_experience_contract(
             serde_json::json!({
                 "panel_id": "console.session_history",
                 "title": "Session History",
+                "schema_version": "1",
+                "refresh": {
+                    "mode": "poll",
+                    "interval_ms": 5000,
+                },
                 "available": false,
                 "reason": "session history requires a mob runtime with mobkit/query_events support",
             })
         }
     })
+}
+
+fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
+    sidebar_agents
+        .iter()
+        .map(|agent| {
+            let identity = agent
+                .get("identity")
+                .and_then(Value::as_str)
+                .or_else(|| agent.get("member_id").and_then(Value::as_str))
+                .unwrap_or_default();
+            let display_name = agent
+                .get("label")
+                .and_then(Value::as_str)
+                .filter(|label| *label != identity);
+            let profile = agent.get("profile").and_then(Value::as_str);
+            let state = agent
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let labels = agent
+                .get("labels")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let addressability = if agent
+                .get("addressable")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
+                "addressable"
+            } else {
+                "internal_only"
+            };
+            let mut row = serde_json::json!({
+                "identity": identity,
+                "state": state,
+                "addressability": addressability,
+                "labels": labels,
+            });
+            if let Some(display_name) = display_name {
+                row["display_name"] = Value::String(display_name.to_string());
+            }
+            if let Some(profile) = profile {
+                row["profile"] = Value::String(profile.to_string());
+            }
+            if let Some(generation) = agent.get("generation").and_then(Value::as_u64) {
+                row["generation"] = Value::from(generation);
+            }
+            if let Some(checkpoint_version) =
+                agent.get("checkpoint_version").and_then(Value::as_u64)
+            {
+                row["checkpoint_version"] = Value::from(checkpoint_version);
+            }
+            if let Some(lease_healthy) = agent.get("lease_healthy").and_then(Value::as_bool) {
+                row["lease_healthy"] = Value::from(lease_healthy);
+            }
+            row
+        })
+        .collect()
 }
 
 fn split_path_and_query(path: &str) -> (&str, BTreeMap<String, String>) {

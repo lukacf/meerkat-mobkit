@@ -825,6 +825,31 @@ describe("parsePersistedEvent", () => {
     if (result.event.kind === "agent") {
       assert.equal(result.event.agentId, "agent-1");
       assert.equal(result.event.eventType, "text_delta");
+      assert.equal(result.event.payload, null);
+    }
+  });
+
+  it("parses Agent unified event payload when present", () => {
+    const result = parsePersistedEvent({
+      id: "evt-1b",
+      seq: 6,
+      timestamp_ms: 1700000000002,
+      member_id: "mem-1",
+      event: {
+        Agent: {
+          agent_id: "agent-1",
+          event_type: "tool_execution_completed",
+          payload: { type: "tool_execution_completed", tool_call_id: "tool-1", result: "done" },
+        },
+      },
+    });
+    assert.equal(result.event.kind, "agent");
+    if (result.event.kind === "agent") {
+      assert.deepEqual(result.event.payload, {
+        type: "tool_execution_completed",
+        tool_call_id: "tool-1",
+        result: "done",
+      });
     }
   });
 
@@ -1021,6 +1046,7 @@ describe("eventQueryToDict", () => {
       sinceMs: 1000,
       untilMs: 2000,
       memberId: "mem-1",
+      identity: "identity:luka",
       eventTypes: ["text_delta", "run_completed"],
       limit: 50,
       afterSeq: 10,
@@ -1028,6 +1054,7 @@ describe("eventQueryToDict", () => {
     assert.equal(result.since_ms, 1000);
     assert.equal(result.until_ms, 2000);
     assert.equal(result.member_id, "mem-1");
+    assert.equal(result.identity, "identity:luka");
     assert.deepEqual(result.event_types, ["text_delta", "run_completed"]);
     assert.equal(result.limit, 50);
     assert.equal(result.after_seq, 10);

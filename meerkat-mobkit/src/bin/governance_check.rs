@@ -31,21 +31,23 @@ fn read_required(path: &PathBuf) -> Result<String, String> {
 }
 
 fn read_traceability(root: &Path) -> Result<String, String> {
-    let primary = root.join(".rct/traceability.md");
-    match fs::read_to_string(&primary) {
-        Ok(contents) => Ok(contents),
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            let fallback = root.join("docs/rct/traceability.md");
-            fs::read_to_string(&fallback).map_err(|fallback_err| {
-                format!(
-                    "failed to read {} (missing) and {}: {fallback_err}",
-                    primary.display(),
-                    fallback.display(),
-                )
-            })
+    for candidate in [
+        root.join(".rct/traceability.yaml"),
+        root.join("docs/rct/traceability.yaml"),
+        root.join(".rct/traceability.md"),
+        root.join("docs/rct/traceability.md"),
+    ] {
+        match fs::read_to_string(&candidate) {
+            Ok(contents) => return Ok(contents),
+            Err(err) if err.kind() == ErrorKind::NotFound => continue,
+            Err(err) => return Err(format!("failed to read {}: {err}", candidate.display())),
         }
-        Err(err) => Err(format!("failed to read {}: {err}", primary.display())),
     }
+
+    Err(format!(
+        "failed to read traceability artifact from any supported path under {}",
+        root.display()
+    ))
 }
 
 fn project_root() -> PathBuf {

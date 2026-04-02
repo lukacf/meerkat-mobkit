@@ -1,4 +1,6 @@
 import type {
+  ConsoleDockTargetAddressingMode,
+  ConsoleSidebarMetaTone,
   ConsoleSidebarViewState,
   ConversationViewState,
   ConversationTimelineEntry,
@@ -6,9 +8,12 @@ import type {
   ConsoleActivityRailViewState,
   ConsoleActivityPulseItem,
   ConsoleDockTarget,
+  RoutingSectionView,
 } from "@console-core";
 import {
   groupConversationTimelineEntries,
+  normalizeRoutingSectionView,
+  normalizeSidebarWatchFields,
   parseConversationRichBlocks,
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
@@ -19,13 +24,23 @@ import type { ConsoleAgent, ConsoleFrame } from "../types";
 
 export interface MobKitDockTarget extends ConsoleDockTarget {
   kind: "agent-chat";
+  addressingMode: ConsoleDockTargetAddressingMode;
+  memberId: string;
+  identity?: string;
 }
 
 export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
+  const identity = typeof agent.identity === "string" && agent.identity.trim()
+    ? agent.identity.trim()
+    : undefined;
+  const addressingMode: ConsoleDockTargetAddressingMode = identity ? "identity" : "member";
   return {
     id: agent.member_id,
     kind: "agent-chat",
+    addressingMode,
+    memberId: agent.member_id,
+    ...(identity ? { identity } : {}),
     title: agent.label,
     subtitle,
   };
@@ -39,7 +54,7 @@ function agentGroupKey(agent: ConsoleAgent): string {
   return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
 }
 
-function agentStateTone(state: string | undefined): "accent" | "positive" | "muted" | "negative" {
+function agentStateTone(state: string | undefined): ConsoleSidebarMetaTone {
   switch (state) {
     case "running": return "accent";
     case "active": return "positive";
@@ -103,6 +118,7 @@ export function buildSidebarViewState(args: {
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
       const isPinned = pinnedAgentIds.has(agent.member_id);
+      const watchFields = normalizeSidebarWatchFields(agent);
       return {
         id: agent.member_id,
         title: agent.label,
@@ -110,6 +126,7 @@ export function buildSidebarViewState(args: {
         selected: agent.member_id === selectedMemberId,
         pinned: isPinned,
         disabled: !isAddressable,
+        ...watchFields,
         meta: [
           ...(agent.state
             ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }]
@@ -151,6 +168,28 @@ export function buildSidebarViewState(args: {
       },
     ],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+export function buildRoutingSectionView(args: {
+  routesResponse: unknown;
+  historyResponse: unknown;
+}): RoutingSectionView {
+  const routesRecord = typeof args.routesResponse === "object" && args.routesResponse !== null
+    ? args.routesResponse as Record<string, unknown>
+    : {};
+  const historyRecord = typeof args.historyResponse === "object" && args.historyResponse !== null
+    ? args.historyResponse as Record<string, unknown>
+    : {};
+  const normalized = normalizeRoutingSectionView({
+    routes: Array.isArray(routesRecord.routes) ? routesRecord.routes : [],
+    deliveries: Array.isArray(historyRecord.deliveries) ? historyRecord.deliveries : [],
+  });
+
+  return normalized ?? { routes: [], deliveries: [] };
 }
 
 // ---------------------------------------------------------------------------
