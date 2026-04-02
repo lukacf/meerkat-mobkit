@@ -96,13 +96,13 @@ svg {
 
 /* ── Dock ── */
 
-/* Single panel: same surface color as split panels but flush/flat (no rounded corners) */
+/* Single panel: same surface, rounded on the right side only */
 .cc-dock-panel.is-solitary {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008) 22%, rgba(255, 255, 255, 0.003) 100%),
     rgba(21, 22, 27, 0.82);
   border: none;
-  border-radius: 0;
+  border-radius: 0 16px 16px 0;
   box-shadow: none;
 }
 
@@ -120,6 +120,22 @@ svg {
 /* Keep the + button tight to tabs, not floating far right */
 .cc-dock__tab-actions {
   margin-right: auto;
+}
+
+/* Flat tab: no bottom rounding, no bezel/glow, clean surface */
+.cc-dock-tab,
+.cc-dock-tab.is-active {
+  border-radius: 8px 8px 0 0;
+  border: none;
+  box-shadow: none;
+}
+
+.cc-dock-tab {
+  background: transparent;
+}
+
+.cc-dock-tab.is-active {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 /* Remove dock gap in single-panel mode so tab strip + panel are flush */
