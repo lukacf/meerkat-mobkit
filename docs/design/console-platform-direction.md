@@ -22,7 +22,7 @@ HomeCore and OB3 are instances of the same product category. The core console ne
 
 A new RPC method (e.g., `mobkit/interact`):
 
-- **Request:** `{ identity: string, content: string, origin?: string }`
+- **Request:** `{ identity: string, content: string, origin: string }` — `origin` identifies the caller for audit logging and dispatch routing (e.g., `"console"`, `"console:panel-3"`, `"connector:slack"`). Required — every interaction has a source.
 - **Response:** `{ interaction_id: string, identity: string }` — the `interaction_id` is the per-turn UI correlation token
 - **Semantics:** Non-blocking. Enqueues the turn and returns immediately with the correlation token. Does NOT block until completion.
 
@@ -32,13 +32,11 @@ This method does not exist today. It requires new gateway handler + runtime plum
 
 The current `POST /interactions/stream` is ephemeral (one connection per send, drained and closed). The identity model requires a **persistent SSE connection per identity** that carries all events, with concurrent interactions multiplexed and filtered by `interaction_id`.
 
-**Endpoint:** `GET /identity/{identity}/stream` (conventional for long-lived SSE) or `POST /console/subscribe` with identity parameter. Endpoint design TBD.
+**Endpoint:** `POST /console/identity/stream` with `{ identity: string }` in the request body. POST-based because `AgentIdentity` is an opaque string that may contain characters not safe for URL paths (e.g., `identity:luka`, `family-group:main`). POST avoids encoding issues while remaining conventional for SSE subscription endpoints that need parameters.
 
-**Blocking design decision — must be resolved before implementation:**
+**Multi-panel stream ownership:** shared refcounted connection per identity, managed by a connection pool in `lib/network.ts`. When the first dock panel targets an identity, the pool opens the SSE connection. Additional panels targeting the same identity share it (refcount increments). When the last panel releases, the connection closes. Panels subscribe/unsubscribe from the pool; they never manage SSE connections directly.
 
-Multi-panel stream ownership: when two dock panels target the same identity, do they share one SSE connection (refcounted) or open separate connections? This affects reconnection semantics, buffering, duplicate event delivery, and how the console host manages dock tabs. **Recommended:** shared refcounted connection per identity, managed by a connection pool in `lib/network.ts`. Panels subscribe/unsubscribe; the pool opens/closes the underlying SSE connection.
-
-Additional connection design:
+**Connection design:**
 - Connection lifecycle: opened when first panel targets an identity, closed when last panel releases it
 - Reconnection: host reconnects with `Last-Event-ID` for gap recovery
 - Buffering: events between disconnect and reconnect are replayed on reconnect via `Last-Event-ID`
@@ -91,7 +89,7 @@ The experience endpoint adds new optional sections and per-section metadata. The
 | `flows` | **[EXISTS]** | Scheduling, dispatch methods |
 | `gating` | **[NEW]** | Pending entries, audit trail, risk tiers, action capabilities. Optional |
 | `identity_status` | **[NEW]** | Per-identity continuity generation, lease health, session mapping. Optional |
-| `routing` | **[NEW]** | Deferred — see Routing section below |
+| `routing` | **[NEW]** section, **[EXISTS]** RPCs | Routes, delivery records, attempt history. RPCs exist; experience section + console panel are new |
 
 ### Per-section metadata [NEW]
 
@@ -100,13 +98,13 @@ The experience endpoint adds new optional sections and per-section metadata. The
   schema_version: string;    // e.g., "1" — lightweight, for cross-host evolution
   refresh: 
     | { mode: "poll", interval_ms: number }
-    | { mode: "stream", topic: string, update_semantics: "full_snapshot" | "append" | "patch" }
+    | { mode: "stream", topic: string, update_semantics: "full_snapshot" | "append" }
   capabilities?: string[]   // only for actionable sections: ["approve", "deny", "escalate"]
 }
 ```
 
 - `schema_version` is required. Lightweight — stays "1" until a breaking change. Cheap insurance for a multi-host platform contract.
-- `refresh` is required. Defines how the host gets updates. `update_semantics` specifies whether stream events are full replacement snapshots, append-only entries, or typed patches/deltas.
+- `refresh` is required. Defines how the host gets updates. `update_semantics` specifies whether stream events are full replacement snapshots or append-only entries. (`"patch"` omitted — no section currently needs diff-based updates. Add when there's a concrete need with a pinned format like JSON Patch RFC 6902.)
 - `capabilities` is optional — only meaningful for sections with write actions (gating). Omitted for read-only sections (topology, health).
 
 ### Client-side data management
@@ -165,6 +163,14 @@ Dock panel kind: `"identity-inspect"`. Shared view state type in `@console-core`
 - Shared component manages DOM virtualization; host manages the data buffer
 
 Host provides `renderItem`. Pulse/Roster/Feed stay for summary use cases.
+
+### Activity log data source
+
+The activity log shows all events from all identities — architecturally separate from per-identity conversation streams. Data sources:
+
+- **All-events SSE stream [EXISTS as `mobkit/subscribe`]:** The current `mobkit/subscribe` RPC supports `scope: "mob"` which streams all mob events. Under the identity-native model, this stream must carry the same envelope format as per-identity streams (with `identity` attribution and optional `interaction_id`), so the shared virtualized list component works consistently across both feeds.
+- **New endpoint [NEW]:** `GET /console/events/stream` — a dedicated all-events SSE endpoint for the activity log, carrying identity-attributed events in the standard envelope format. Alternatively, the existing `mobkit/subscribe` can be enhanced to emit identity-attributed envelopes.
+- **The activity log does NOT merge per-identity streams client-side.** It uses a single all-events stream. Per-identity streams are for conversation panels only.
 
 ---
 
@@ -267,11 +273,40 @@ Optional — only rendered when `gating` is present in the experience contract.
 
 ---
 
-## Tier 2 — Routing/delivery surface [NEW — deferred]
+## Tier 2 — Routing/delivery surface [NEW section, EXISTS RPCs]
 
-Routing/delivery is expected to become a shared experience section when HomeCore and OB3 routing implementations converge on a common data model. Until then, hosts handle routing visibility in custom dock panels via `renderPanelBody`.
+Separate from `flows` (scheduling). The routing and delivery RPCs already exist in MobKit:
 
-No shared routing RPCs, data types, or experience section fields are specified at this time. When a real shared abstraction emerges from actual integration work, it will be added as a new experience section separate from `flows` (scheduling).
+| RPC | Status | What it does |
+|---|---|---|
+| `mobkit/routing/resolve` | **[EXISTS]** | Resolve a recipient to a route (route_id, channel, sink, target_module) |
+| `mobkit/routing/routes/list` | **[EXISTS]** | List configured routes |
+| `mobkit/routing/routes/add` | **[EXISTS]** | Add a route |
+| `mobkit/routing/routes/delete` | **[EXISTS]** | Remove a route |
+| `mobkit/delivery/send` | **[EXISTS]** | Send a payload via a resolved route |
+| `mobkit/delivery/history` | **[EXISTS]** | Query delivery records (status, attempts, retry info) |
+
+The data types also exist: `RoutingResolution` (route_id, recipient, channel, sink, target_module, retry_max, backoff_ms, rate_limit_per_minute), `DeliveryRecord` (delivery_id, route_id, recipient, status, attempts[], idempotency_key), `DeliveryAttempt` (attempt number, status, backoff_ms).
+
+### What's new
+
+**Experience `routing` section [NEW]:**
+
+```typescript
+routing: {
+  schema_version: "1",
+  capabilities: ["list_routes", "resolve", "delivery_history"],
+  refresh: { mode: "poll", interval_ms: 10000 }
+}
+```
+
+**Console panel [NEW]:** A shared routing/delivery panel that shows:
+
+- Configured routes (from `mobkit/routing/routes/list`)
+- Recent deliveries with status (from `mobkit/delivery/history`) — delivered, failed, retrying
+- Per-delivery attempt history (attempt count, backoff, final status)
+
+Host-specific overlays (NOT shared): household notification semantics, Slack channel rendering, business-specific routing reasons. The shared component provides the route list + delivery timeline chrome; hosts provide domain-specific context rendering where needed.
 
 ---
 
