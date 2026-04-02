@@ -168,7 +168,7 @@ Host provides `renderItem`. Pulse/Roster/Feed stay for summary use cases.
 
 The activity log shows all events from all identities — architecturally separate from per-identity conversation streams. Data sources:
 
-- **All-events SSE stream [EXISTS as `mobkit/subscribe`]:** The current `mobkit/subscribe` RPC supports `scope: "mob"` which streams all mob events. Under the identity-native model, this stream must carry the same envelope format as per-identity streams (with `identity` attribution and optional `interaction_id`), so the shared virtualized list component works consistently across both feeds.
+- **All-events SSE stream [EXISTS as `mobkit/subscribe`, NEW for identity attribution]:** The current `mobkit/subscribe` RPC supports `scope: "mob"` which streams all mob events. Under the identity-native model, this stream must carry the same envelope format as per-identity streams (with `identity` attribution and optional `interaction_id`) **[NEW — current events are member/session-shaped and lack identity attribution; adding identity to the all-events envelope is runtime work]**, so the shared virtualized list component works consistently across both feeds.
 - **New endpoint [NEW]:** `GET /console/events/stream` — a dedicated all-events SSE endpoint for the activity log, carrying identity-attributed events in the standard envelope format. Alternatively, the existing `mobkit/subscribe` can be enhanced to emit identity-attributed envelopes.
 - **The activity log does NOT merge per-identity streams client-side.** It uses a single all-events stream. Per-identity streams are for conversation panels only.
 
@@ -338,12 +338,12 @@ Operators need to explicitly monitor a subset of identities. Watching is distinc
 ```typescript
 interface WatchState {
   watched: boolean;          // operator opted in to monitoring this identity
-  alertLevel: "normal" | "elevated" | "critical" | null;  // threshold-based
+  alertLevel: "elevated" | "critical" | null;  // threshold-based
 }
 ```
 
 - `watched` on `ConsoleSidebarItem` — when true, the identity's events are highlighted in the activity log, and state changes trigger visual alerts
-- `alertLevel` drives visual treatment: `"normal"` = standard watched indicator, `"elevated"` = amber badge, `"critical"` = red badge + optional notification
+- `alertLevel` drives visual treatment: `null` = standard watched indicator (no alert), `"elevated"` = amber badge, `"critical"` = red badge + optional notification
 - Host sets `alertLevel` based on domain-specific rules (e.g., OB3: agent processing for >60s = elevated; HomeCore: gate decision pending >5m = critical)
 
 **Sidebar rendering:**
@@ -414,7 +414,7 @@ Activity log filters by watchlist when preset is active
 // Added to existing ConsoleSidebarItem
 {
   watched?: boolean;
-  alertLevel?: "normal" | "elevated" | "critical" | null;
+  alertLevel?: "elevated" | "critical" | null;
   degraded?: boolean;
   degradedReason?: string;
 }
@@ -422,7 +422,7 @@ Activity log filters by watchlist when preset is active
 
 **New fields on `ConsoleSidebarMeta` [EXISTS — alertLevel maps to tone]:**
 
-Alert levels map naturally to existing `ConsoleSidebarMetaTone`: `"elevated"` → `"negative"` (amber), `"critical"` → `"negative"` (red). A new tone `"warning"` may be needed for the amber case to distinguish from error-red.
+Alert levels map to `ConsoleSidebarMetaTone`: `"elevated"` → new `"warning"` tone (amber), `"critical"` → `"negative"` (red). `null` (no alert) shows no badge beyond the watched indicator.
 
 ### Per-agent lifecycle actions [EXISTS for identity-first RPCs on IdentityRuntime, NEW for console-facing HTTP/RPC surface]
 
@@ -437,7 +437,7 @@ Console UI: context menu on sidebar items (retire, respawn, reset, inspect). Act
 | Surface | Who | Extension point |
 |---|---|---|
 | Household state projections | HomeCore | Custom dock panel `kind` + `renderPanelBody` |
-| Connector/routing dashboard | HomeCore | Custom dock panel (until shared routing section matures) |
+| Connector-specific routing context | HomeCore | Host overlay on shared routing panel (business routing reasons, channel semantics) |
 | Domain-specific tool renderer | Both | `renderToolBlock` callback |
 | Flow trigger actions | Both | Action strip items + `onBlockAction` |
 | Domain-specific context menu | Both | `onItemContextMenu` callback |
