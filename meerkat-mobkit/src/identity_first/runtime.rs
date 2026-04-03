@@ -250,6 +250,11 @@ impl IdentityRuntime {
         }
     }
 
+    #[must_use]
+    pub fn has_session_bridge(&self) -> bool {
+        self.bridge.is_some()
+    }
+
     /// Emit an event for the given identity. Best-effort — no error if no subscribers.
     async fn emit_event(&self, identity: &AgentIdentity, event: IdentityEvent) {
         let channels = self.event_channels.read().await;

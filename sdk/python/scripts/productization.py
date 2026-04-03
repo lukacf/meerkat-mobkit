@@ -46,6 +46,7 @@ async def main() -> int:
     checks: list[dict[str, Any]] = []
     gateway_bin = os.environ.get("MOBKIT_RPC_GATEWAY_BIN")
     client_module = sys.modules[MobkitAsyncTypedClient.__module__]
+    expected_contract_version = "0.3.0"
 
     async def check(name: str, fn: Callable[[], Awaitable[None]]) -> None:
         try:
@@ -67,7 +68,7 @@ async def main() -> int:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "contract_version": "0.1.0",
+                    "contract_version": expected_contract_version,
                     "running": True,
                     "loaded_modules": ["routing", "delivery"],
                 },
@@ -78,7 +79,7 @@ async def main() -> int:
                 "jsonrpc": "2.0",
                 "id": request_id,
                 "result": {
-                    "contract_version": "0.1.0",
+                    "contract_version": expected_contract_version,
                     "methods": [
                         "mobkit/status",
                         "mobkit/capabilities",
@@ -180,7 +181,7 @@ async def main() -> int:
         _assert_eq(
             status,
             {
-                "contract_version": "0.1.0",
+                "contract_version": expected_contract_version,
                 "running": True,
                 "loaded_modules": ["routing", "delivery"],
             },
@@ -268,7 +269,7 @@ async def main() -> int:
         _assert_eq(
             status,
             {
-                "contract_version": "0.1.0",
+                "contract_version": expected_contract_version,
                 "running": True,
                 "loaded_modules": ["routing"],
             },
@@ -320,7 +321,7 @@ async def main() -> int:
                     "jsonrpc": "2.0",
                     "id": payload["id"],
                     "result": {
-                        "contract_version": "0.1.0",
+                        "contract_version": expected_contract_version,
                         "running": True,
                         "loaded_modules": ["routing", "delivery"],
                     },
@@ -342,7 +343,7 @@ async def main() -> int:
         _assert_eq(
             status,
             {
-                "contract_version": "0.1.0",
+                "contract_version": expected_contract_version,
                 "running": True,
                 "loaded_modules": ["routing", "delivery"],
             },

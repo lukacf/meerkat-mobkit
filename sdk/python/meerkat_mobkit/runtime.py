@@ -727,10 +727,11 @@ class MobHandle:
             after_seq=after_seq,
         )
         raw = await self._runtime._rpc("mobkit/query_events", query.to_dict())
+        events = raw
         if isinstance(raw, dict) and raw.get("status") == "no_event_log_configured":
-            return []
-        if isinstance(raw, list):
-            return [PersistedEvent.from_dict(e) for e in raw]
+            events = raw.get("events", [])
+        if isinstance(events, list):
+            return [PersistedEvent.from_dict(e) for e in events]
         return []
 
     # -----------------------------------------------------------------

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::{MobStorage, Prefab, SpawnMemberSpec};
+use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, UnifiedRuntime,
 };
@@ -32,10 +32,20 @@ fn mob_spec(temp_dir: &tempfile::TempDir) -> MobBootstrapSpec {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let mut definition = Prefab::CodingSwarm.definition();
-    for profile in definition.profiles.values_mut() {
-        profile.model = "gpt-5.2".to_string();
-    }
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "shutdown-drain-mob"
+
+[profiles.worker]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+    )
+    .expect("parse mob definition");
 
     MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service).with_options(
         MobBootstrapOptions {
@@ -102,7 +112,7 @@ async fn shutdown_drain_report_fields_populated_with_active_members() {
         .expect("build");
 
     runtime
-        .spawn(member_spec("lead", "drain-lead-1"))
+        .spawn(member_spec("worker", "drain-worker-1"))
         .await
         .expect("spawn member");
 

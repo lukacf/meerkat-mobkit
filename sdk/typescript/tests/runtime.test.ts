@@ -94,7 +94,7 @@ describe("MobHandle.status()", () => {
   it("sends mobkit/status and parses the result", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      contract_version: "0.2.0",
+      contract_version: "0.3.0",
       running: true,
       loaded_modules: ["mod-a", "mod-b"],
     }));
@@ -102,7 +102,7 @@ describe("MobHandle.status()", () => {
     const result = await handle.status();
     assert.equal(calls.length, 1);
     assert.equal(calls[0].method, "mobkit/status");
-    assert.equal(result.contractVersion, "0.2.0");
+    assert.equal(result.contractVersion, "0.3.0");
     assert.equal(result.running, true);
     assert.deepEqual(result.loadedModules, ["mod-a", "mod-b"]);
   });
@@ -112,14 +112,14 @@ describe("MobHandle.capabilities()", () => {
   it("sends mobkit/capabilities and parses the result", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      contract_version: "0.2.0",
+      contract_version: "0.3.0",
       methods: ["mobkit/status", "mobkit/capabilities"],
       loaded_modules: ["mod-a"],
     }));
 
     const result = await handle.capabilities();
     assert.equal(calls[0].method, "mobkit/capabilities");
-    assert.equal(result.contractVersion, "0.2.0");
+    assert.equal(result.contractVersion, "0.3.0");
     assert.deepEqual(result.methods, ["mobkit/status", "mobkit/capabilities"]);
     assert.deepEqual(result.loadedModules, ["mod-a"]);
   });
@@ -893,7 +893,28 @@ describe("MobHandle.queryEvents()", () => {
     assert.deepEqual(result, []);
   });
 
-  it("returns empty array when no_event_log_configured", async () => {
+  it("returns fallback events when no_event_log_configured includes events", async () => {
+    const { handle, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      status: "no_event_log_configured",
+      events: [
+        {
+          id: "evt-9",
+          seq: 9,
+          timestamp_ms: 9000,
+          member_id: "m-9",
+          event: { Agent: { agent_id: "a-9", event_type: "text_delta", payload: { delta: "hi" } } },
+        },
+      ],
+    }));
+
+    const result = await handle.queryEvents({ limit: 10 });
+    assert.equal(result.length, 1);
+    assert.equal(result[0].id, "evt-9");
+    assert.equal(result[0].event.kind, "agent");
+  });
+
+  it("returns empty array when no_event_log_configured omits events", async () => {
     const { handle, setResponse } = createMockRuntime();
     setResponse(() => ({ status: "no_event_log_configured" }));
 

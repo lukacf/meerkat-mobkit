@@ -1,0 +1,106 @@
+import { render, screen } from "@testing-library/react";
+
+import type { ConversationTimelineGroup } from "@console-core";
+
+import { ConversationMessageGroup } from "./conversation-message-group";
+
+function Icon({ name }: { name: string; className?: string }) {
+  return <span>{name}</span>;
+}
+
+describe("ConversationMessageGroup", () => {
+  test("passes the shared icon renderer through to user message copy affordances", () => {
+    const group: ConversationTimelineGroup = {
+      id: "user-group",
+      identity: { id: "user", label: "You", role: "user" },
+      copyText: "Create an arbitrary markdown table.",
+      entries: [{
+        id: "user-1",
+        kind: "message",
+        variant: "plain",
+        identity: { id: "user", label: "You", role: "user" },
+        text: "Create an arbitrary markdown table.",
+      }],
+    };
+
+    render(<ConversationMessageGroup group={group} Icon={Icon} />);
+
+    expect(screen.getByRole("button", { name: /copy message/i })).toHaveTextContent("i-copy");
+    expect(screen.queryByText(/^Copy$/)).not.toBeInTheDocument();
+  });
+
+  test("hides the outer copy button when a single rich entry already has targeted copy controls", () => {
+    const group: ConversationTimelineGroup = {
+      id: "assistant-group",
+      identity: { id: "assistant", label: "Assistant", role: "assistant" },
+      copyText: "const ready = true;",
+      entries: [{
+        id: "assistant-code",
+        kind: "message",
+        variant: "rich",
+        identity: { id: "assistant", label: "Assistant", role: "assistant" },
+        text: "const ready = true;",
+        blocks: [{
+          type: "code",
+          language: "ts",
+          body: "const ready = true;",
+        }],
+      }],
+    };
+
+    render(<ConversationMessageGroup group={group} Icon={Icon} />);
+
+    expect(screen.queryByRole("button", { name: /copy response/i })).not.toBeInTheDocument();
+  });
+
+  test("renders participant identity metadata and keeps a grouped copy affordance", () => {
+    const group: ConversationTimelineGroup = {
+      id: "builder-group",
+      identity: {
+        id: "builder",
+        label: "Builder",
+        role: "other",
+        presentation: "participant",
+        showLabel: true,
+        meta: "implementation",
+        avatarLabel: "BLD",
+      },
+      copyText: "I normalized the transcript.\n\nI removed the app-global diff stat classes.",
+      entries: [
+        {
+          id: "builder-1",
+          kind: "message",
+          variant: "plain",
+          identity: {
+            id: "builder",
+            label: "Builder",
+            role: "other",
+            presentation: "participant",
+            showLabel: true,
+          },
+          text: "I normalized the transcript.",
+        },
+        {
+          id: "builder-2",
+          kind: "message",
+          variant: "plain",
+          identity: {
+            id: "builder",
+            label: "Builder",
+            role: "other",
+            presentation: "participant",
+            showLabel: true,
+          },
+          text: "I removed the app-global diff stat classes.",
+        },
+      ],
+    };
+
+    render(<ConversationMessageGroup group={group} Icon={Icon} />);
+
+    expect(screen.getByText("Builder")).toBeInTheDocument();
+    expect(screen.getByText("implementation")).toBeInTheDocument();
+    expect(screen.getByText("BLD")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /copy response/i })).toHaveTextContent("i-copy");
+  });
+});

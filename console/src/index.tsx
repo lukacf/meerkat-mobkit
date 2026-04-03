@@ -9,7 +9,7 @@ interface CreateConsoleAppOptions {
 
 export function createConsoleApp(
   target: Element | DocumentFragment | null,
-  options: CreateConsoleAppOptions = {}
+  options: CreateConsoleAppOptions = {},
 ): { unmount: () => void } {
   if (!target) {
     throw new Error("target element is required");

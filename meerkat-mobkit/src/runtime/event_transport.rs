@@ -35,6 +35,7 @@ pub fn normalize_event_line(line: &str) -> Result<EventEnvelope<UnifiedEvent>, N
 
     let agent_id = required_string(object.get("agent_id"), "agent_id")?;
     let event_type = required_string(object.get("event_type"), "event_type")?;
+    let payload = object.get("payload").cloned();
 
     enforce_source_consistency(EventEnvelope {
         event_id,
@@ -43,6 +44,7 @@ pub fn normalize_event_line(line: &str) -> Result<EventEnvelope<UnifiedEvent>, N
         event: UnifiedEvent::Agent {
             agent_id,
             event_type,
+            payload,
         },
     })
 }

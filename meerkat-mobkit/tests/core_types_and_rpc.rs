@@ -58,6 +58,7 @@ fn type_001_event_envelope_and_events_round_trip() {
         event: UnifiedEvent::Agent {
             agent_id: "agent-1".to_string(),
             event_type: "heartbeat".to_string(),
+            payload: Some(json!({"status": "ok"})),
         },
     };
 
@@ -214,6 +215,7 @@ fn choke_001_mixed_agent_and_module_lines_normalize_through_shared_runtime_path(
         UnifiedEvent::Agent {
             agent_id: "a-1".to_string(),
             event_type: "tick".to_string(),
+            payload: None,
         }
     );
 

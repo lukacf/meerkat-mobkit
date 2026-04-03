@@ -1,14 +1,41 @@
+import type {
+  ActivityFilterPreset,
+  ConsoleDockTargetAddressingMode,
+  ConsoleIdentityEventEnvelope,
+  ConsoleInteractionAccepted,
+  ConsoleInteractionRejectedError,
+  ConsoleInteractionRequest,
+  ExperienceSectionMeta,
+  GatingActionRequest,
+  GatingActionResult,
+  IdentityStreamRequest,
+  IdentityStatusRow,
+  IdentityInspectViewState,
+  ReplayUnavailableError,
+  ResponsePhase,
+  RoutingSectionView,
+  SidebarWatchFields,
+  ToolCallAccumulatorState,
+} from "@console-core";
+
 export interface ConsoleFrame {
   id: string;
   event: string;
   data: unknown;
 }
 
+export type ConsoleInteractRequest = ConsoleInteractionRequest;
+export type ConsoleInteractAccepted = ConsoleInteractionAccepted;
+export type ConsoleIdentityStreamSubscription = IdentityStreamRequest;
+export type ConsoleIdentityStreamEvent = ConsoleIdentityEventEnvelope;
+
 export interface ConsoleSendMessageResult {
   accepted?: boolean;
   member_id?: string;
   session_id?: string;
 }
+
+export type ConsoleGatewayInteractionRejectedError = ConsoleInteractionRejectedError;
 
 export interface ConsoleAgentAffordances {
   addressable?: boolean;
@@ -18,19 +45,41 @@ export interface ConsoleAgentAffordances {
   runtime_mode?: string;
 }
 
-export interface ConsoleAgent {
+export interface ConsoleAgent extends SidebarWatchFields {
+  identity?: string;
   agent_id: string;
   member_id: string;
   label: string;
   kind: string;
   profile?: string;
   state?: string;
+  addressability?: IdentityStatusRow["addressability"];
+  generation?: number;
+  checkpoint_version?: number;
+  lease_healthy?: boolean;
+  response_phase?: ResponsePhase;
   wired_to?: string[];
   labels?: Record<string, string>;
   group?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
 }
+
+export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatusRow>, SidebarWatchFields {
+  agent_id?: string;
+  member_id?: string;
+  label?: string;
+  kind?: string;
+  state?: string;
+  response_phase?: ResponsePhase;
+  wired_to?: string[];
+  labels?: Record<string, string>;
+  group?: string;
+  addressable?: boolean;
+  affordances?: ConsoleAgentAffordances;
+}
+
+type ConsoleExperienceSection<T> = T & Partial<ExperienceSectionMeta>;
 
 export interface ProfileCapabilities {
   instance_count?: number;
@@ -50,56 +99,75 @@ export interface RuntimeCapabilities {
 export interface ConsoleExperience {
   contract_version?: string;
   runtime_capabilities?: RuntimeCapabilities;
-  agent_sidebar?: {
+  agent_sidebar?: ConsoleExperienceSection<{
     title?: string;
     live_snapshot?: {
-      agents?: Array<{
-        agent_id?: string;
-        member_id?: string;
-        label?: string;
-        kind?: string;
-        profile?: string;
-        state?: string;
-        wired_to?: string[];
-        labels?: Record<string, string>;
-        group?: string;
-        addressable?: boolean;
-        affordances?: ConsoleAgentAffordances;
-      }>;
+      agents?: ConsoleExperienceAgentSnapshotRow[];
     };
-  };
-  activity_feed?: {
+  }>;
+  activity_feed?: ConsoleExperienceSection<{
     title?: string;
-  };
-  chat_inspector?: {
+    filter_presets?: ActivityFilterPreset[];
+    active_preset_id?: string;
+  }>;
+  identity_status?: ConsoleExperienceSection<{
     title?: string;
-  };
-  flows?: {
+    rows?: IdentityStatusRow[];
+  }>;
+  chat_inspector?: ConsoleExperienceSection<{
+    title?: string;
+    inspect_identity_method?: string;
+    live_snapshot?: IdentityInspectViewState | null;
+  }>;
+  flows?: ConsoleExperienceSection<{
     title?: string;
     evaluate_method?: string;
     dispatch_method?: string;
-  };
-  session_history?: {
+  }>;
+  session_history?: ConsoleExperienceSection<{
     title?: string;
     source_method?: string;
-  };
-  topology?: {
+  }>;
+  routing?: ConsoleExperienceSection<RoutingSectionView & {
+    title?: string;
+  }>;
+  gating?: ConsoleExperienceSection<{
+    title?: string;
+    decide_method?: string;
+    pending?: unknown[];
+    audit?: unknown[];
+  }>;
+  topology?: ConsoleExperienceSection<{
     title?: string;
     live_snapshot?: {
       nodes?: unknown[];
       node_count?: number;
     };
-  };
-  health_overview?: {
+  }>;
+  health_overview?: ConsoleExperienceSection<{
     title?: string;
     live_snapshot?: {
       loaded_modules?: unknown[];
       loaded_module_count?: number;
       running?: boolean;
     };
-  };
+  }>;
 }
 
 export interface ConsoleModulesResponse {
   modules?: unknown[];
 }
+
+export interface ConsoleGatingActionPayload extends GatingActionRequest {}
+
+export interface ConsoleGatingActionResponse extends GatingActionResult {}
+
+export interface ConsoleReplayUnavailablePayload extends ReplayUnavailableError {}
+
+export interface ConsoleDockAddressedTarget {
+  addressingMode: ConsoleDockTargetAddressingMode;
+  identity?: string;
+  memberId?: string;
+}
+
+export interface ConsoleToolAccumulatorSnapshot extends ToolCallAccumulatorState {}

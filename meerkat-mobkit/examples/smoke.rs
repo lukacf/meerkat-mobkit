@@ -60,6 +60,7 @@ fn main() {
             event: UnifiedEvent::Agent {
                 agent_id: "user-bridge".to_string(),
                 event_type: "message_received".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -69,6 +70,7 @@ fn main() {
             event: UnifiedEvent::Agent {
                 agent_id: "user-bridge".to_string(),
                 event_type: "message_sent".to_string(),
+                payload: None,
             },
         },
     ];

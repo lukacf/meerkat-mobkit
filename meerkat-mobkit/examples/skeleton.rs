@@ -58,6 +58,7 @@ fn main() {
         event: UnifiedEvent::Agent {
             agent_id: "bootstrap-agent".to_string(),
             event_type: "ready".to_string(),
+            payload: None,
         },
     }];
 

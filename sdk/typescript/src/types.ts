@@ -554,6 +554,7 @@ export interface UnifiedAgentEvent {
   readonly kind: "agent";
   readonly agentId: string;
   readonly eventType: string;
+  readonly payload?: Record<string, unknown> | null;
 }
 
 export interface UnifiedModuleEvent {
@@ -573,6 +574,10 @@ function parseUnifiedEvent(raw: unknown): UnifiedEvent {
       kind: "agent",
       agentId: String(agent.agent_id ?? ""),
       eventType: String(agent.event_type ?? ""),
+      payload:
+        typeof agent.payload === "object" && agent.payload !== null
+          ? asRecord(agent.payload)
+          : null,
     };
   }
   if ("Module" in d) {
@@ -624,6 +629,7 @@ export interface EventQuery {
   readonly sinceMs?: number;
   readonly untilMs?: number;
   readonly memberId?: string;
+  readonly identity?: string;
   readonly eventTypes?: readonly string[];
   readonly limit?: number;
   readonly afterSeq?: number;
@@ -634,6 +640,7 @@ export function eventQueryToDict(query: EventQuery): Record<string, unknown> {
   if (query.sinceMs !== undefined) d.since_ms = query.sinceMs;
   if (query.untilMs !== undefined) d.until_ms = query.untilMs;
   if (query.memberId !== undefined) d.member_id = query.memberId;
+  if (query.identity !== undefined) d.identity = query.identity;
   if (query.eventTypes !== undefined && query.eventTypes.length > 0) {
     d.event_types = [...query.eventTypes];
   }

@@ -50,7 +50,7 @@ const H2_REFERENCE_CHECKS: [&str; 10] = [
 ];
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
 fn assert_command_success(

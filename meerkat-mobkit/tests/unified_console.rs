@@ -25,7 +25,7 @@ use axum::http::{Request, StatusCode};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
-use meerkat_mob::{MeerkatId, MobStorage, Prefab, SpawnMemberSpec};
+use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
@@ -103,10 +103,20 @@ async fn build_runtime_fixture() -> RuntimeFixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let mut definition = Prefab::CodingSwarm.definition();
-    for profile in definition.profiles.values_mut() {
-        profile.model = "gpt-5.2".to_string();
-    }
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "phase-h1-console-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse console mob definition");
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
         .with_options(MobBootstrapOptions {
@@ -148,6 +158,15 @@ async fn spawn_console_members(runtime: &UnifiedRuntime) {
             .spawn(console_member_spec(member_id))
             .await
             .expect("spawn console member");
+    }
+}
+
+async fn spawn_named_members(runtime: &UnifiedRuntime, member_ids: &[&str]) {
+    for member_id in member_ids {
+        runtime
+            .spawn(console_member_spec(member_id))
+            .await
+            .expect("spawn named console member");
     }
 }
 
@@ -312,7 +331,7 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
         ])
     );
 
-    assert_eq!(console_json["contract_version"], json!("0.2.0"));
+    assert_eq!(console_json["contract_version"], json!("0.3.0"));
     assert_eq!(
         console_json["runtime_capabilities"],
         json!({
@@ -329,6 +348,40 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
                 }
             }
         })
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
+async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ() {
+    let fixture = build_runtime_fixture().await;
+    spawn_named_members(&fixture.runtime, &["triage", "billing"]).await;
+
+    let app = fixture
+        .runtime
+        .build_reference_app_router(decision_state(false));
+    let console_json = get_console_experience(&app).await;
+
+    assert_eq!(
+        console_json["topology"]["live_snapshot"]["nodes"],
+        json!(["delivery", "router"])
+    );
+    assert_eq!(
+        console_json["health_overview"]["live_snapshot"]["loaded_modules"],
+        json!(["delivery", "router"])
+    );
+    assert_eq!(
+        console_json["health_overview"]["live_snapshot"]["loaded_module_count"],
+        json!(2)
+    );
+    assert_eq!(
+        console_json["agent_sidebar"]["live_snapshot"]["agents"]
+            .as_array()
+            .expect("agents array")
+            .len(),
+        2
     );
 
     let shutdown = fixture.runtime.shutdown().await;
@@ -364,20 +417,44 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
 
     let after_retire = get_console_experience(&app).await;
     assert_eq!(
+        after_retire["agent_sidebar"]["live_snapshot"]["agents"],
+        json!([
+            {
+                "agent_id": "router",
+                "member_id": "router",
+                "label": "router",
+                "kind": "mob_agent",
+                "profile": "lead",
+                "state": "active",
+                "wired_to": [],
+                "labels": {},
+                "group": "lead",
+                "addressable": true,
+                "affordances": {
+                    "addressable": true,
+                    "can_respawn": true,
+                    "can_retire": true,
+                    "can_send_message": true,
+                    "runtime_mode": "mob_agent"
+                }
+            }
+        ])
+    );
+    assert_eq!(
         after_retire["topology"]["live_snapshot"]["nodes"],
-        json!(["router"])
+        json!(["delivery", "router"])
     );
     assert_eq!(
         after_retire["topology"]["live_snapshot"]["node_count"],
-        json!(1)
+        json!(2)
     );
     assert_eq!(
         after_retire["health_overview"]["live_snapshot"]["loaded_modules"],
-        json!(["router"])
+        json!(["delivery", "router"])
     );
     assert_eq!(
         after_retire["health_overview"]["live_snapshot"]["loaded_module_count"],
-        json!(1)
+        json!(2)
     );
 
     let shutdown = fixture.runtime.shutdown().await;

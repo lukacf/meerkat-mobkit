@@ -342,14 +342,22 @@ async fn http_get_response(address: SocketAddr, path: &str) -> String {
 }
 
 async fn build_unified_runtime_fixture(module_config: MobKitConfig) -> UnifiedRuntimeFixture {
+    build_unified_runtime_fixture_with_agent_events(module_config, Vec::new()).await
+}
+
+async fn build_unified_runtime_fixture_with_agent_events(
+    module_config: MobKitConfig,
+    module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
+) -> UnifiedRuntimeFixture {
     let temp_dir = tempfile::tempdir().expect("temp dir");
-    let runtime = UnifiedRuntime::bootstrap(
-        build_phase1_mob_spec(&temp_dir),
-        module_config,
-        Duration::from_secs(2),
-    )
-    .await
-    .expect("bootstrap unified runtime");
+    let runtime = UnifiedRuntime::builder()
+        .mob_spec(build_phase1_mob_spec(&temp_dir))
+        .module_config(module_config)
+        .module_agent_events(module_agent_events)
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("bootstrap unified runtime");
 
     UnifiedRuntimeFixture {
         _temp_dir: temp_dir,
@@ -604,6 +612,7 @@ fn req_003_event_bus_merges_agent_and_module_events_with_deterministic_order() {
             event: UnifiedEvent::Agent {
                 agent_id: "a-1".to_string(),
                 event_type: "heartbeat".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -613,6 +622,7 @@ fn req_003_event_bus_merges_agent_and_module_events_with_deterministic_order() {
             event: UnifiedEvent::Agent {
                 agent_id: "a-2".to_string(),
                 event_type: "heartbeat".to_string(),
+                payload: None,
             },
         },
     ];
@@ -854,17 +864,20 @@ async fn choke_001_unified_subscribe_merges_module_and_agent_events() {
         pre_spawn: vec![],
     };
 
-    let fixture = build_unified_runtime_fixture(config).await;
-    fixture
-        .runtime
-        .spawn(spawn_spec("worker", "worker-1"))
-        .await
-        .expect("spawn worker");
-    fixture
-        .runtime
-        .send_message("worker-1", "Reply with one sentence.".to_string())
-        .await
-        .expect("send_message should succeed");
+    let fixture = build_unified_runtime_fixture_with_agent_events(
+        config,
+        vec![EventEnvelope {
+            event_id: "evt-agent-worker-1".to_string(),
+            source: "agent".to_string(),
+            timestamp_ms: 11,
+            event: UnifiedEvent::Agent {
+                agent_id: "worker-1".to_string(),
+                event_type: "interaction_complete".to_string(),
+                payload: Some(json!({"text":"seeded worker event"})),
+            },
+        }],
+    )
+    .await;
 
     let ready_deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {

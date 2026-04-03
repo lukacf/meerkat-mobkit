@@ -1,24 +1,34 @@
 //! HTTP routes for the admin console REST API.
 
+use async_stream::stream;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::IntoResponse;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerSpec;
 use meerkat_mob::MobState;
 use meerkat_mob::{MeerkatId, PeerTarget, ProfileName, SpawnMemberSpec};
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::convert::Infallible;
+use tracing::warn;
 
+use crate::console_contracts::{
+    ALL_EVENTS_CONTROL_IDENTITY, ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope,
+    IDENTITY_STREAM_NAME, IdentityStreamRequest, ReplayUnavailableError,
+};
 use crate::contact_directory::ContactDirectory;
-use crate::mob_handle_runtime::MobRuntime;
+use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
+use crate::mob_handle_runtime::{MEMBER_STATE_RETIRING, MobRuntime};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
     extract_bearer_token_from_header, handle_console_rest_json_route_with_snapshot,
     validate_console_token,
 };
+use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
 
 #[derive(Clone)]
@@ -27,10 +37,13 @@ pub struct ConsoleJsonState {
     pub runtime: Option<MobRuntime>,
     pub contact_directory: Option<ContactDirectory>,
     pub event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    pub(crate) console_events: Option<ConsoleEventStore>,
+    pub(crate) stream_routes_enabled: bool,
 }
 
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
 const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../console-dist/console-app.js");
+const CONSOLE_FRONTEND_APP_CSS: &str = include_str!("../console-dist/console-app.css");
 
 pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     console_json_router_with_state(ConsoleJsonState {
@@ -38,6 +51,8 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         runtime: None,
         contact_directory: None,
         event_log: None,
+        console_events: None,
+        stream_routes_enabled: true,
     })
 }
 
@@ -47,11 +62,31 @@ pub fn console_json_router_with_runtime(
     contact_directory: Option<ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
 ) -> Router {
+    console_json_router_with_runtime_and_events(
+        decisions,
+        runtime,
+        contact_directory,
+        event_log,
+        None,
+        false,
+    )
+}
+
+pub(crate) fn console_json_router_with_runtime_and_events(
+    decisions: RuntimeDecisionState,
+    runtime: MobRuntime,
+    contact_directory: Option<ContactDirectory>,
+    event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    console_events: Option<ConsoleEventStore>,
+    stream_routes_enabled: bool,
+) -> Router {
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: Some(runtime),
         contact_directory,
         event_log,
+        console_events,
+        stream_routes_enabled,
     })
 }
 
@@ -63,14 +98,28 @@ pub fn console_frontend_router() -> Router {
             "/console/assets/console-app.js",
             get(console_frontend_app_js_handler),
         )
+        .route(
+            "/console/assets/console-app.css",
+            get(console_frontend_app_css_handler),
+        )
 }
 
 fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
-    Router::new()
+    let router = Router::new()
         .route("/console/experience", get(console_json_handler))
         .route("/console/modules", get(console_json_handler))
-        .route("/console/rpc", post(console_rpc_handler))
-        .with_state(state)
+        .route("/console/rpc", post(console_rpc_handler));
+    let router = if state.stream_routes_enabled {
+        router
+            .route(
+                "/console/identity/stream",
+                post(console_identity_stream_handler),
+            )
+            .route("/console/events/stream", get(console_events_stream_handler))
+    } else {
+        router
+    };
+    router.with_state(state)
 }
 
 pub async fn console_json_handler(
@@ -151,33 +200,18 @@ pub async fn console_rpc_handler(
     // - When require_app_auth is true: validate bearer token (OIDC + allowlist)
     // - When require_app_auth is false: only allow read-only methods
     //   (mutating operations require auth to be configured)
-    if state.decisions.console.require_app_auth {
-        // Accept token from Bearer header OR auth_token query param
-        let bearer_token = headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(extract_bearer_token_from_header)
-            .map(String::from);
-        let query_token = uri.query().and_then(|q| {
-            q.split('&')
-                .find_map(|pair| pair.strip_prefix("auth_token=").map(String::from))
-        });
-        let token_valid = bearer_token
-            .or(query_token)
-            .is_some_and(|token| validate_console_token(&state.decisions, &token));
-        if !token_valid {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json::<Value>(serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": parsed_request.id.unwrap_or(Value::Null),
-                    "error": {
-                        "code": -32600,
-                        "message": "unauthorized: console rpc requires a valid auth token",
-                    }
-                })),
-            );
-        }
+    if !console_request_authorized(&state, &headers, &uri) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json::<Value>(serde_json::json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": parsed_request.id.unwrap_or(Value::Null),
+                "error": {
+                    "code": -32600,
+                    "message": "unauthorized: console rpc requires a valid auth token",
+                }
+            })),
+        );
     }
     // No auth configured: all methods allowed. The operator has explicitly
     // opted out of authentication (require_app_auth = false), so the console
@@ -211,6 +245,280 @@ pub async fn console_rpc_handler(
     )
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
+}
+
+async fn console_identity_stream_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Json(request): Json<IdentityStreamRequest>,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json::<Value>(serde_json::json!({
+                "error": "unauthorized",
+                "reason": "console stream requires a valid auth token",
+            })),
+        )
+            .into_response();
+    }
+    if let Err(message) = request.validate() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json::<Value>(serde_json::json!({ "error": message })),
+        )
+            .into_response();
+    }
+    let identity = request.identity;
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let replayed = match &state.console_events {
+        Some(store) => match store
+            .replay_identity(&identity, last_event_id.as_deref())
+            .await
+        {
+            Ok(events) => events,
+            Err(err) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json::<Value>(serde_json::to_value(err).unwrap_or_else(|_| {
+                        json!({
+                            "error": "replay_unavailable"
+                        })
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => {
+            if let Some(response) = replay_unavailable_response(&headers, IDENTITY_STREAM_NAME) {
+                return response.into_response();
+            }
+            Vec::new()
+        }
+    };
+    let subscribed = console_stream_control_envelope(IDENTITY_STREAM_NAME, Some(identity.clone()));
+    if let Some(store) = &state.console_events {
+        store
+            .note_identity_stream_checkpoint(&identity, subscribed.event_id.clone())
+            .await;
+    }
+    let mut rx = state
+        .console_events
+        .as_ref()
+        .map(ConsoleEventStore::subscribe);
+    let stream = stream! {
+        if let Some(event) = sse_event_from_envelope(&subscribed) {
+            yield Ok::<Event, Infallible>(event);
+        }
+        for envelope in replayed {
+            if let Some(event) = sse_event_from_envelope(&envelope) {
+                yield Ok::<Event, Infallible>(event);
+            }
+        }
+        if let Some(ref mut rx) = rx {
+            loop {
+                match rx.recv().await {
+                    Ok(envelope) if envelope.identity == identity => {
+                        if let Some(event) = sse_event_from_envelope(&envelope) {
+                            yield Ok::<Event, Infallible>(event);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+                .text(KEEP_ALIVE_TEXT),
+        )
+        .into_response()
+}
+
+async fn console_events_stream_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json::<Value>(serde_json::json!({
+                "error": "unauthorized",
+                "reason": "console stream requires a valid auth token",
+            })),
+        )
+            .into_response();
+    }
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let replayed = match &state.console_events {
+        Some(store) => match store.replay_all(last_event_id.as_deref()).await {
+            Ok(events) => events,
+            Err(err) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json::<Value>(serde_json::to_value(err).unwrap_or_else(|_| {
+                        json!({
+                            "error": "replay_unavailable"
+                        })
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => {
+            if let Some(response) = replay_unavailable_response(&headers, ALL_EVENTS_STREAM_NAME) {
+                return response.into_response();
+            }
+            Vec::new()
+        }
+    };
+    let subscribed = console_stream_control_envelope(ALL_EVENTS_STREAM_NAME, None);
+    if let Some(store) = &state.console_events {
+        store
+            .note_all_stream_checkpoint(subscribed.event_id.clone())
+            .await;
+    }
+    let mut rx = state
+        .console_events
+        .as_ref()
+        .map(ConsoleEventStore::subscribe);
+    let stream = stream! {
+        if let Some(event) = sse_event_from_envelope(&subscribed) {
+            yield Ok::<Event, Infallible>(event);
+        }
+        for envelope in replayed {
+            if let Some(event) = sse_event_from_envelope(&envelope) {
+                yield Ok::<Event, Infallible>(event);
+            }
+        }
+        if let Some(ref mut rx) = rx {
+            loop {
+                match rx.recv().await {
+                    Ok(envelope) => {
+                        if let Some(event) = sse_event_from_envelope(&envelope) {
+                            yield Ok::<Event, Infallible>(event);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+                .text(KEEP_ALIVE_TEXT),
+        )
+        .into_response()
+}
+
+fn console_request_authorized(state: &ConsoleJsonState, headers: &HeaderMap, uri: &Uri) -> bool {
+    if !state.decisions.console.require_app_auth {
+        return true;
+    }
+    console_request_token(headers, uri)
+        .is_some_and(|token| validate_console_token(&state.decisions, &token))
+}
+
+fn console_request_token(headers: &HeaderMap, uri: &Uri) -> Option<String> {
+    let bearer_token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(extract_bearer_token_from_header)
+        .map(String::from);
+    let query_token = uri.query().and_then(|q| {
+        q.split('&')
+            .find_map(|pair| pair.strip_prefix("auth_token=").map(String::from))
+    });
+    bearer_token.or(query_token)
+}
+
+fn replay_unavailable_response(
+    headers: &HeaderMap,
+    stream_name: &str,
+) -> Option<(StatusCode, Json<Value>)> {
+    let requested_last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some((
+        StatusCode::CONFLICT,
+        Json::<Value>(
+            serde_json::to_value(ReplayUnavailableError {
+                error: "replay_unavailable".to_string(),
+                stream: stream_name.to_string(),
+                requested_last_event_id: requested_last_event_id.to_string(),
+                latest_event_id: stream_head_event_id(stream_name),
+            })
+            .unwrap_or_else(|_| serde_json::json!({ "error": "replay_unavailable" })),
+        ),
+    ))
+}
+
+fn stream_head_event_id(stream_name: &str) -> String {
+    format!("console-stream-{stream_name}-{}", current_time_ms())
+}
+
+fn console_stream_control_envelope(
+    stream_name: &str,
+    identity: Option<String>,
+) -> ConsoleIdentityEventEnvelope {
+    ConsoleIdentityEventEnvelope {
+        event_id: stream_head_event_id(stream_name),
+        interaction_id: None,
+        identity: identity.unwrap_or_else(|| ALL_EVENTS_CONTROL_IDENTITY.to_string()),
+        event_type: "subscribed".to_string(),
+        timestamp_ms: current_time_ms(),
+        data: serde_json::json!({
+            "stream": stream_name,
+        }),
+    }
+}
+
+fn sse_event_from_envelope(envelope: &ConsoleIdentityEventEnvelope) -> Option<Event> {
+    match serde_json::to_string(envelope) {
+        Ok(data) => Some(
+            Event::default()
+                .id(envelope.event_id.clone())
+                .event(&envelope.event_type)
+                .data(data),
+        ),
+        Err(err) => {
+            warn!(
+                event_id = %envelope.event_id,
+                event_type = %envelope.event_type,
+                identity = %envelope.identity,
+                "skipping unserializable console SSE envelope: {err}"
+            );
+            None
+        }
+    }
+}
+
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>) -> Value {
@@ -930,11 +1238,15 @@ async fn build_live_snapshot(
 ) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
     let members = runtime.discover().await;
-    // Use config module IDs for loaded_modules when available (correct for
-    // topology/health which show modules, not individual mob agents).
-    // Fall back to member IDs for pure mob runtimes with no config modules.
+    // Use configured module IDs when available because topology and health
+    // surfaces describe loaded modules, not live mob members.
+    // Fall back to member IDs only for pure mob runtimes with no module config.
     let loaded_modules = if config_module_ids.is_empty() {
-        let mut mods: Vec<String> = members.iter().map(|m| m.meerkat_id.clone()).collect();
+        let mut mods: Vec<String> = members
+            .iter()
+            .filter(|member| member.state != MEMBER_STATE_RETIRING)
+            .map(|member| member.meerkat_id.clone())
+            .collect();
         mods.sort();
         mods
     } else {
@@ -952,6 +1264,10 @@ async fn build_live_snapshot(
             profile: Some(member.profile.clone()),
             state: Some(member.state.clone()),
             session_id: member.session_id.clone(),
+            watched: None,
+            alert_level: None,
+            degraded: None,
+            degraded_reason: None,
         })
         .collect::<Vec<_>>();
     agents.sort_by(|left, right| left.label.cmp(&right.label));
@@ -985,5 +1301,15 @@ pub async fn console_frontend_app_js_handler() -> impl IntoResponse {
             (header::CACHE_CONTROL, "no-store"),
         ],
         CONSOLE_FRONTEND_APP_JS,
+    )
+}
+
+pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        CONSOLE_FRONTEND_APP_CSS,
     )
 }

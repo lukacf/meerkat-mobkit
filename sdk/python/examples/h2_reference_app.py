@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 import os
 import sys
 from pathlib import Path
@@ -44,6 +45,28 @@ class EventsSubscribePayload(BaseModel):
 
 app = FastAPI(title="MobKit H2 Python RPC-Mode Reference App")
 
+H2_REFERENCE_MOB_TOML = """
+[mob]
+id = "h2-reference-app"
+
+[profiles.default]
+model = "gpt-5.4"
+external_addressable = true
+"""
+
+H2_REFERENCE_ROUTING_MODULE = {
+    "id": "routing",
+    "command": "sh",
+    "args": [
+        "-c",
+        "printf '%s\\n' '{\"event_id\":\"evt-routing\",\"source\":\"module\",\"timestamp_ms\":101,"
+        "\"event\":{\"kind\":\"module\",\"module\":\"routing\",\"event_type\":\"ready\",\"payload\":"
+        "{\"family\":\"routing\",\"health\":{\"state\":\"healthy\"},\"tools\":{\"list_method\":\"routing/tools.list\","
+        "\"representative_call\":{\"method\":\"routing/tool.call\",\"params_schema\":{\"tool\":\"string\",\"input\":\"json\"}}}}}}'",
+    ],
+    "restart_policy": "never",
+}
+
 
 def _required_gateway_bin() -> str:
     gateway_bin = os.environ.get("MOBKIT_RPC_GATEWAY_BIN")
@@ -73,11 +96,48 @@ async def _typed_call_result(awaitable: Any) -> tuple[Any | None, dict[str, Any]
         return None, {"kind": type(exc).__name__, "message": str(exc)}
 
 
+def _to_wire_value(value: Any) -> Any:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, list):
+        return [_to_wire_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _to_wire_value(inner) for key, inner in value.items()}
+    return value
+
+
+def _jsonrpc_envelope(
+    request_id: str,
+    typed_result: Any | None,
+    typed_error: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if typed_error is not None and {"code", "message"} <= typed_error.keys():
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": typed_error["code"],
+                "message": typed_error["message"],
+            },
+        }
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": _to_wire_value(typed_result),
+    }
+
+
 @app.on_event("startup")
 async def startup_event() -> None:
     gateway_bin = _required_gateway_bin()
     app.state.gateway_bin = gateway_bin
-    rt = await MobKit.builder().gateway(gateway_bin).build()
+    rt = await (
+        MobKit.builder()
+        .mob_inline(H2_REFERENCE_MOB_TOML)
+        .gateway(gateway_bin)
+        .modules([H2_REFERENCE_ROUTING_MODULE])
+        .build()
+    )
     await rt.connect()
     app.state.mobkit_runtime = rt
 
@@ -96,7 +156,10 @@ async def rpc_status(payload: RpcRequestIdPayload) -> dict[str, Any]:
     typed_result, typed_error = await _typed_call_result(handle.status())
     return {
         "route": "mobkit/status",
-        "typed_result": typed_result,
+        "jsonrpc_envelope": _jsonrpc_envelope(
+            payload.request_id, typed_result, typed_error
+        ),
+        "typed_result": _to_wire_value(typed_result),
         "typed_error": typed_error,
     }
 
@@ -107,7 +170,10 @@ async def rpc_capabilities(payload: RpcRequestIdPayload) -> dict[str, Any]:
     typed_result, typed_error = await _typed_call_result(handle.capabilities())
     return {
         "route": "mobkit/capabilities",
-        "typed_result": typed_result,
+        "jsonrpc_envelope": _jsonrpc_envelope(
+            payload.request_id, typed_result, typed_error
+        ),
+        "typed_result": _to_wire_value(typed_result),
         "typed_error": typed_error,
     }
 
@@ -120,7 +186,10 @@ async def rpc_reconcile(payload: ReconcilePayload) -> dict[str, Any]:
     )
     return {
         "route": "mobkit/reconcile",
-        "typed_result": typed_result,
+        "jsonrpc_envelope": _jsonrpc_envelope(
+            payload.request_id, typed_result, typed_error
+        ),
+        "typed_result": _to_wire_value(typed_result),
         "typed_error": typed_error,
     }
 
@@ -133,7 +202,10 @@ async def rpc_spawn_member(payload: SpawnMemberPayload) -> dict[str, Any]:
     )
     return {
         "route": "mobkit/spawn_member",
-        "typed_result": typed_result,
+        "jsonrpc_envelope": _jsonrpc_envelope(
+            payload.request_id, typed_result, typed_error
+        ),
+        "typed_result": _to_wire_value(typed_result),
         "typed_error": typed_error,
     }
 
@@ -150,7 +222,10 @@ async def rpc_events_subscribe(payload: EventsSubscribePayload) -> dict[str, Any
     )
     return {
         "route": "mobkit/events/subscribe",
-        "typed_result": typed_result,
+        "jsonrpc_envelope": _jsonrpc_envelope(
+            payload.request_id, typed_result, typed_error
+        ),
+        "typed_result": _to_wire_value(typed_result),
         "typed_error": typed_error,
     }
 
@@ -166,9 +241,16 @@ async def flow_reference() -> dict[str, Any]:
 
     return {
         "route": "h2-flow",
-        "status": status,
-        "capabilities": capabilities,
-        "reconcile": reconcile,
-        "spawn_member": spawn_member,
-        "events_subscribe": events_subscribe,
+        "status": _jsonrpc_envelope("h2-flow-status", status, None),
+        "capabilities": _jsonrpc_envelope("h2-flow-capabilities", capabilities, None),
+        "reconcile": _jsonrpc_envelope("h2-flow-reconcile", reconcile, None),
+        "spawn_member": _jsonrpc_envelope("h2-flow-spawn", spawn_member, None),
+        "events_subscribe": _jsonrpc_envelope("h2-flow-events", events_subscribe, None),
+        "typed": {
+            "status": _to_wire_value(status),
+            "capabilities": _to_wire_value(capabilities),
+            "reconcile": _to_wire_value(reconcile),
+            "spawn_member": _to_wire_value(spawn_member),
+            "events_subscribe": _to_wire_value(events_subscribe),
+        },
     }

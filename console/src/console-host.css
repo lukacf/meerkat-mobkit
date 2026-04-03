@@ -1,0 +1,248 @@
+/* MobKit Console — host styles */
+
+/* ── Reset ── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #131316;
+  color: rgba(232, 234, 237, 0.96);
+}
+
+button {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+button:disabled {
+  cursor: default;
+}
+
+svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.sprite-root {
+  position: absolute;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+/* ── Layout root ── */
+
+[data-testid="meerkat-console"] {
+  height: 100%;
+  width: 100%;
+}
+
+/* ── Spacing tokens ── */
+
+.cc-theme-scope {
+  --cc-workbench-sidebar-width: 260px;
+  --cc-workbench-activity-width: 280px;
+  --cc-sidebar-safe-top: 8px;
+  --cc-sidebar-pad-left: 14px;
+  --cc-sidebar-pad-right: 14px;
+}
+
+/* ── Workbench ── */
+
+.cc-workbench {
+  transition: none;
+}
+
+/* Sidebar: elevated surface matching dock panel tone */
+.cc-workbench__launcher {
+  background: rgba(21, 22, 27, 0.82);
+  border-right: 1px solid rgba(255, 255, 255, 0.058);
+}
+
+/* Main area: no outer padding — panel fills flush */
+.cc-workbench__main-body {
+  padding: 0;
+}
+
+/* Activity rail: left gap from panel, right edge padding, top aligns with panel content */
+.cc-workbench__activity {
+  padding: 0 14px 0 14px;
+}
+
+/* ── Dock ── */
+
+/* Single panel: same surface, rounded on the right side only */
+.cc-dock-panel.is-solitary {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008) 22%, rgba(255, 255, 255, 0.003) 100%),
+    rgba(21, 22, 27, 0.82);
+  border: none;
+  border-radius: 0 16px 16px 0;
+  box-shadow: none;
+}
+
+/* Always show the tab strip, even with a single tab */
+.cc-dock.is-single-tab .cc-dock__tab-strip,
+.cc-dock.is-single-tab .cc-dock__tabs {
+  display: flex;
+}
+
+/* Tab strip: top margin from page edge, left padding */
+.cc-dock__tab-strip {
+  padding: 8px 8px 0 8px;
+}
+
+/* Keep the + button tight to tabs, not floating far right */
+.cc-dock__tab-actions {
+  margin-right: auto;
+}
+
+/* Flat tab: no bottom rounding, no bezel/glow, clean surface */
+.cc-dock-tab,
+.cc-dock-tab.is-active {
+  border-radius: 8px 8px 0 0;
+  border: none;
+  box-shadow: none;
+}
+
+.cc-dock-tab {
+  background: transparent;
+}
+
+.cc-dock-tab.is-active {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* Remove dock gap in single-panel mode so tab strip + panel are flush */
+.cc-dock.is-single-panel {
+  gap: 0;
+}
+
+/* ── Activity rail ── */
+
+.cc-activity-rail__controls {
+  display: none;
+}
+
+/* Align rail content top with the panel content (below tab strip ~42px) */
+.cc-activity-rail {
+  padding-top: 42px;
+}
+
+/* ── Single panel: hide floating split actions until hover ── */
+
+.cc-dock.is-single-panel .cc-dock-panel__floating-actions {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.cc-dock.is-single-panel .cc-dock-panel:hover .cc-dock-panel__floating-actions {
+  opacity: 1;
+}
+
+/* ── Pane resizer ── */
+
+.pane-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--cc-workbench-sidebar-width, 260px);
+  width: 14px;
+  z-index: 50;
+  cursor: col-resize;
+  transform: translateX(-50%);
+  touch-action: none;
+  background: rgba(255, 255, 255, 0.001);
+}
+
+.pane-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  opacity: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0),
+    rgba(236, 239, 243, 0.14) 12%,
+    rgba(236, 239, 243, 0.21) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  transition: opacity 120ms ease;
+}
+
+.pane-resizer--activity {
+  left: auto;
+  right: var(--cc-workbench-activity-width, 280px);
+}
+
+.pane-resizer:hover::before,
+[data-cc-resizing="true"] .pane-resizer::before {
+  opacity: 1;
+}
+
+/* ── Empty state: hide the placeholder mark circle, center vertically ── */
+
+.cc-empty-state__mark {
+  display: none;
+}
+
+.cc-conversation-pane__scroll {
+  display: flex;
+  flex-direction: column;
+}
+
+.cc-conversation-pane__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.cc-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Conversation pane ── */
+
+.cc-conversation-pane {
+  grid-template-rows: 1fr auto;
+  height: 100%;
+}
+
+/* ── Composer ── */
+
+.cc-composer {
+  max-width: var(--_cc-content-width);
+  margin: 0 auto;
+}

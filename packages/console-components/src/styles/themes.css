@@ -1,0 +1,63 @@
+.cc-theme-scope {
+  color-scheme: dark;
+}
+
+[data-cc-theme="light"] .cc-theme-scope,
+.cc-theme-scope[data-cc-theme="light"] {
+  color-scheme: light;
+  --_cc-foreground-strong-default: rgba(14, 31, 44, 0.96);
+  --_cc-foreground-default: rgba(23, 32, 44, 0.9);
+  --_cc-foreground-muted-default: rgba(78, 93, 114, 0.68);
+  --_cc-foreground-subtle-default: rgba(54, 70, 92, 0.62);
+  --_cc-border-soft-default: rgba(91, 109, 136, 0.14);
+  --_cc-border-strong-default: rgba(16, 24, 40, 0.08);
+  --_cc-surface-soft-default: rgba(255, 255, 255, 0.82);
+  --_cc-surface-raised-default: rgba(255, 255, 255, 0.92);
+  --_cc-surface-hover-default: rgba(239, 244, 250, 0.92);
+  --_cc-surface-canvas-default: rgba(249, 251, 254, 0.98);
+  --_cc-surface-card-default: rgba(255, 255, 255, 0.92);
+  --_cc-link-default: #2d5fb1;
+  --_cc-positive-default: #17653d;
+  --_cc-negative-default: #8b2f2d;
+  --_cc-sheen-soft-default: rgba(255, 255, 255, 0.66);
+  --_cc-sheen-strong-default: rgba(255, 255, 255, 0.88);
+  --_cc-shadow-sm-default: 0 8px 20px rgba(15, 23, 42, 0.1);
+  --_cc-shadow-md-default: 0 12px 26px rgba(15, 23, 42, 0.12);
+  --_cc-shadow-lg-default: 0 18px 38px rgba(15, 23, 42, 0.14);
+  --_cc-shadow-xl-default: 0 20px 42px rgba(15, 23, 42, 0.16);
+  --_cc-surface-wash-top-default: rgba(255, 255, 255, 0.88);
+  --_cc-surface-wash-bottom-default: rgba(255, 255, 255, 0.72);
+  --_cc-member-accent-default: rgba(120, 148, 174, 0.9);
+  --_cc-member-accent-soft-default: rgba(120, 148, 174, 0.18);
+  --_cc-member-surface-default: rgba(120, 148, 174, 0.1);
+}
+
+[data-cc-theme="dark"] .cc-theme-scope,
+.cc-theme-scope[data-cc-theme="dark"] {
+  color-scheme: dark;
+  --_cc-foreground-strong-default: #fcfcfc;
+  --_cc-foreground-default: rgba(232, 234, 237, 0.96);
+  --_cc-foreground-muted-default: rgba(191, 198, 207, 0.74);
+  --_cc-foreground-subtle-default: rgba(188, 195, 204, 0.66);
+  --_cc-border-soft-default: rgba(255, 255, 255, 0.08);
+  --_cc-border-strong-default: rgba(255, 255, 255, 0.14);
+  --_cc-surface-soft-default: rgba(255, 255, 255, 0.03);
+  --_cc-surface-raised-default: rgba(255, 255, 255, 0.05);
+  --_cc-surface-hover-default: rgba(255, 255, 255, 0.04);
+  --_cc-surface-canvas-default: rgba(26, 27, 31, 0.84);
+  --_cc-surface-card-default: rgba(44, 45, 49, 0.92);
+  --_cc-link-default: #79a9ff;
+  --_cc-positive-default: #2dd27e;
+  --_cc-negative-default: #ff625d;
+  --_cc-sheen-soft-default: rgba(255, 255, 255, 0.08);
+  --_cc-sheen-strong-default: rgba(255, 255, 255, 0.12);
+  --_cc-shadow-sm-default: 0 8px 20px rgba(0, 0, 0, 0.22);
+  --_cc-shadow-md-default: 0 12px 26px rgba(0, 0, 0, 0.24);
+  --_cc-shadow-lg-default: 0 18px 38px rgba(0, 0, 0, 0.28);
+  --_cc-shadow-xl-default: 0 20px 42px rgba(0, 0, 0, 0.32);
+  --_cc-surface-wash-top-default: rgba(255, 255, 255, 0.12);
+  --_cc-surface-wash-bottom-default: rgba(255, 255, 255, 0.06);
+  --_cc-member-accent-default: rgba(153, 210, 234, 0.92);
+  --_cc-member-accent-soft-default: rgba(153, 210, 234, 0.18);
+  --_cc-member-surface-default: rgba(153, 210, 234, 0.08);
+}

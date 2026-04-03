@@ -1,10 +1,10 @@
 ---
 title: "Console"
-description: "React-based admin console with agent sidebar, activity feed, chat inspector, topology view, and health overview."
+description: "Three-column agent console with grouped sidebar, multi-panel chat dock, activity rail, and full dark theme."
 icon: "desktop"
 ---
 
-MobKit ships with a web-based admin console embedded directly in the Rust binary. The console provides real-time visibility into the running system: agents, events, modules, and interactions.
+MobKit ships a web-based admin console embedded directly in the Rust gateway binary. The console provides real-time visibility into agents, conversations, and events — all in a dark-themed, IDE-style layout powered by the shared `@console-core` and `@console-components` packages.
 
 ## Accessing the console
 
@@ -14,109 +14,187 @@ Once the runtime is serving HTTP, open the console at:
 http://localhost:8080/console
 ```
 
-The console is a single-page React application served from memory -- no external CDN, no build step at deployment time. The HTML and JavaScript are compiled into the binary via `include_str!`.
+The HTML, JavaScript, and CSS are compiled into the binary via `include_str!` — no external CDN or build step at deployment time.
 
-## Panels
+For development with instant hot-reload:
 
-The console is organized into five panels:
-
-### Agent sidebar
-
-Lists all agents and mob members in the runtime. Click a member to select it for the chat inspector. The sidebar pulls data from the `/console/experience` endpoint.
-
-### Activity feed
-
-Real-time event stream showing agent and module activity. Events are sourced from the MobKit event subscription model and displayed chronologically.
-
-### Chat inspector
-
-Send messages to a selected agent and view responses. The inspector sends a message via the `mobkit/send_message` RPC method with the selected `member_id` and message text:
-
-```json
-{
-  "member_id": "lead-1",
-  "message": "What is the current status?"
-}
+```bash
+cd console
+npm run dev    # starts Vite at http://localhost:5199 with proxy to gateway
 ```
 
-The request is accepted synchronously and returns the member session used for the interaction:
+## Layout
 
-```json
-{
-  "accepted": true,
-  "member_id": "lead-1",
-  "session_id": "0195c3f2-8f40-7f95-a5a7-cc4f7d90d3d1"
-}
+The console uses a three-column layout built on the shared `ConsoleWorkbench` component:
+
+```
+┌─────────────┬──────────────────────────┬────────────────┐
+│  Sidebar    │  Dock (chat panels)      │  Activity Rail │
+│  (agents)   │  ┌────┐ ┌────┐          │  (events)      │
+│             │  │tab1│ │tab2│  +        │                │
+│  + Spawn    │  ├────┴─┴────┴──────────┤│  Events        │
+│  ↻ Reconcile│  │                      ││  • text_delta  │
+│             │  │   Conversation        ││  • run_started │
+│  Agents + ≡ │  │                      ││  • ...         │
+│  ┌ Domain 3 │  │   [Message Billing]  ││                │
+│  │ Billing  │  │   ↑                  ││                │
+│  │ Delivery │  │                      ││                │
+│  │ Support  │  │  To: Billing  lead   ││                │
+│  ├ Internal │  └──────────────────────┘│                │
+│  │ Gate     │                          │                │
+│  └ Coord. 2 │                          │                │
+│    Router   │                          │                │
+│    Triage   │                          │                │
+└─────────────┴──────────────────────────┴────────────────┘
 ```
 
-The streamed interaction frames come back from `POST /interactions/stream`, each containing an event type and JSON data payload.
+### Sidebar — Agent roster
 
-### Topology panel
+The left column shows all agents organized by group. Groups are determined by the `group` label on each agent (falls back to profile name if not set).
 
-Visualizes the module topology: which modules are loaded, their connections, and node count. Data comes from the `topology` section of the experience metadata.
+**Action strip** at the top provides top-level operations:
+- **Spawn agent** — create a new agent in the mob
+- **Reconcile** — reconcile the mob roster
 
-### Health overview
+**Agents header** has inline icon actions:
+- **+** — spawn agent in group
+- **≡** — sort & filter
 
-Shows runtime health status: loaded modules, their health states, and whether the system is running. Powered by the `health_overview` section of the experience metadata.
+Each agent row shows:
+- Agent display name and member ID
+- Status badge (active, running, idle)
+- Pin action (on hover) — pinned agents sort to top
+
+Non-addressable agents (e.g., Gate, Health Monitor) appear dimmed and cannot be messaged.
+
+### Dock — Chat panels
+
+The center area is a multi-panel tabbed workspace. Each panel contains a `ConversationPane` with a `ConsoleComposer`.
+
+**Tab strip** at the top:
+- Click a tab to switch panels
+- `+` to create a new empty tab
+- `×` to close a tab
+
+**Split panels** — click the split controls (← → ↑ ↓, visible on hover) to divide a panel. This lets you chat with multiple agents side-by-side.
+
+**Composer** at the bottom of each panel:
+- Textarea with "Message {agent}..." placeholder
+- Send button (↑) — also supports Enter to send, Shift+Enter for newline
+- Footer shows: target agent, member ID, profile, and status
+
+### Activity rail — Event feed
+
+The right column shows a chronological event pulse feed. Events appear as agents process messages — each event shows the event type and a data preview.
+
+## Agent grouping
+
+Agents are grouped in the sidebar using the well-known `group` label. Set this at spawn time:
+
+```rust
+use std::collections::BTreeMap;
+
+fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("domain:billing"))
+    .with_labels(labels(&[
+        ("display_name", "Billing"),
+        ("group", "Domain"),
+    ]));
+```
+
+### Well-known labels
+
+| Label | Purpose |
+|-------|---------|
+| `display_name` | Human-readable name shown in the sidebar (overrides member_id) |
+| `group` | Sidebar group name (overrides profile-based grouping) |
+| `addressable` | Set `"false"` to hide send-message actions for internal agents |
+| `singleton` | Set `"true"` to prevent agent retirement |
+
+## CSS customization
+
+The console uses the shared `@console-components` stylesheet with `--cc-*` CSS custom properties. Override these on a wrapper element with `data-cc-theme="dark"` (or `"light"`).
+
+### Key tokens
+
+| Token | Default | Purpose |
+|-------|---------|---------|
+| `--cc-workbench-sidebar-width` | `260px` | Sidebar column width |
+| `--cc-workbench-activity-width` | `280px` | Activity rail column width |
+| `--cc-sidebar-safe-top` | `8px` | Top padding in the sidebar |
+| `--cc-sidebar-pad-left` | `14px` | Left padding in the sidebar |
+| `--cc-sidebar-pad-right` | `14px` | Right padding in the sidebar |
+| `--cc-content-width` | `768px` | Max width for conversation content |
+| `--cc-composer-width` | `784px` | Max width for the composer |
+| `--cc-window-scale` | `1` | DPI scaling factor |
+
+### Theming
+
+The console defaults to dark mode. Set `data-cc-theme="light"` on the root to switch to light mode. The shared components respond to both themes.
+
+The sidebar uses a panel surface background (`rgba(21, 22, 27, 0.82)`) to differentiate from the main area. The body background is `#131316`.
+
+## Resizable panels
+
+Both the sidebar and activity rail are resizable by dragging the edge dividers:
+
+- **Sidebar divider** — drag the right edge of the sidebar (min 180px, max 420px)
+- **Activity rail divider** — drag the left edge of the activity rail (min 200px, max 480px)
+
+The resizers use pointer capture for smooth dragging and show a subtle glow line on hover.
 
 ## Experience metadata
 
-The console fetches its initial state from `GET /console/experience`, which returns a `ConsoleExperience` object:
+The console fetches its initial state from `GET /console/experience`, which returns agent data, topology, and health information. The key field for the sidebar is `agent_sidebar.live_snapshot.agents`:
 
 ```typescript
-interface ConsoleExperience {
-  agent_sidebar?: {
-    title?: string;
-    live_snapshot?: {
-      agents?: Array<{
-        agent_id?: string;
-        member_id?: string;
-        label?: string;
-        kind?: string;
-      }>;
-    };
+interface ConsoleAgent {
+  agent_id: string;
+  member_id: string;
+  label: string;
+  kind: string;           // "mob_agent" or "module_agent"
+  profile?: string;
+  state?: string;
+  group?: string;         // sidebar grouping
+  addressable?: boolean;
+  affordances?: {
+    can_send_message?: boolean;
+    can_retire?: boolean;
+    can_respawn?: boolean;
+    runtime_mode?: string;
   };
-  activity_feed?: { title?: string };
-  chat_inspector?: { title?: string };
-  topology?: {
-    title?: string;
-    live_snapshot?: {
-      nodes?: unknown[];
-      node_count?: number;
-    };
-  };
-  health_overview?: {
-    title?: string;
-    live_snapshot?: {
-      loaded_modules?: unknown[];
-      loaded_module_count?: number;
-      running?: boolean;
-    };
-  };
+  labels?: Record<string, string>;
 }
 ```
 
-When the unified runtime is configured, the experience metadata includes live data from the Meerkat mob. Without a mob runtime, the console falls back to module-level information.
+Identity-first status and inspect payloads use lowercase wire enums for addressability:
+`"addressable"` and `"internal_only"`.
 
 ## Messaging protocol
 
-The chat inspector sends messages and observes responses through two separate channels:
-
 <Steps>
+  <Step title="Open the right stream first">
+    Identity-addressed panels post to `/console/identity/stream` with `{ "identity": "identity:luka" }` before sending. Legacy member-addressed panels still use `/interactions/stream` with `member_id`. Opening the stream first avoids dropping fast responses.
+  </Step>
   <Step title="Send message">
-    Call the `mobkit/send_message` RPC method with the target `member_id` and `message` text. The response returns `accepted`, `member_id`, and the accepting `session_id`.
-  </Step>
-  <Step title="Observe responses">
-    Post to `/interactions/stream` with `member_id` and `message` to receive an SSE response stream. Each frame contains:
+    Identity-addressed panels call `mobkit/interact`:
+    ```json
+    { "identity": "identity:luka", "content": "What is on my calendar tomorrow?", "origin": "console:panel-1" }
+    ```
+    Returns `{ "interaction_id": "...", "identity": "..." }`.
 
-    ```
-    id: evt-1
-    event: text_delta
-    data: {"type": "text_delta", "delta": "The current status is..."}
-    ```
+    Legacy member-addressed panels still use `mobkit/send_message` and receive `{ "accepted": true, "member_id": "...", "session_id": "..." }`.
   </Step>
-  <Step title="Keep-alive">
-    The server sends keep-alive frames every 15 seconds (configurable) to prevent connection timeout.
+  <Step title="Receive response frames">
+    The identity stream delivers canonical console envelopes filtered by `interaction_id`:
+    ```
+    event: interaction_complete
+    data: {"event_id":"evt-1","interaction_id":"turn-1","identity":"identity:luka","event_type":"interaction_complete","timestamp_ms":2,"data":{"text":"done"}}
+    ```
+    The all-events rail uses `GET /console/events/stream`. Legacy member/session streams continue to work during migration, but new hosts should prefer the identity-native feeds.
   </Step>
 </Steps>
 
@@ -126,9 +204,18 @@ The chat inspector sends messages and observes responses through two separate ch
 |-------|--------|----------|
 | `/console` | GET | HTML page |
 | `/console/assets/console-app.js` | GET | React bundle (JavaScript) |
+| `/console/assets/console-app.css` | GET | Stylesheet (CSS) |
 | `/console/experience` | GET | Experience metadata (JSON) |
 | `/console/modules` | GET | Loaded modules list (JSON) |
+| `/console/rpc` | POST | JSON-RPC 2.0 endpoint |
+| `/console/identity/stream` | POST | Identity-scoped SSE stream |
+| `/console/events/stream` | GET | All-events SSE stream |
 | `/interactions/stream` | POST | Interaction-scoped SSE stream |
+
+Primary RPC methods:
+
+- `mobkit/interact` — identity-addressed, non-blocking interaction accept
+- `mobkit/send_message` — legacy member-addressed send path
 
 ## Authentication
 
@@ -136,25 +223,77 @@ Console access is governed by `ConsolePolicy`:
 
 ```rust
 ConsolePolicy {
-    require_app_auth: true,
+    require_app_auth: false,  // set true for production
 }
 ```
 
-When `require_app_auth` is `true`, every request is checked against the `AuthPolicy` -- the provider must match, and the email must be in the allowlist. See [authentication](/guides/authentication) for details.
+When `require_app_auth` is `true`, every request is checked against the `AuthPolicy`. See [authentication](/guides/authentication) for details.
 
 ## Build system
 
-The console is built with esbuild in two modes:
+The console has two build modes:
 
-| Mode | Format | React | Use case |
-|------|--------|-------|----------|
-| Library | CJS | External (peer dep) | Embedding in other React apps |
-| Browser app | IIFE | Bundled | Standalone console served by the runtime |
+| Mode | Tool | Format | Use case |
+|------|------|--------|----------|
+| Production | esbuild | IIFE (browser) + CJS (library) | Embedded in Rust binary |
+| Development | Vite | ESM with HMR | Instant hot-reload at localhost:5199 |
 
-The browser app bundle is what gets embedded in the Rust binary.
+The production build resolves `@console-core` and `@console-components` as local workspace packages via esbuild aliases. The browser bundle and CSS are embedded in the gateway binary.
+
+### Development workflow
+
+```bash
+# Terminal 1: start the gateway
+MOBKIT_REF_ADDR=127.0.0.1:63210 MOBKIT_REF_HTTP_MODE=serve \
+  ./scripts/repo-cargo run -p meerkat-mobkit --example library_mode_reference
+
+# Terminal 2: start the Vite dev server (proxies API calls to gateway)
+cd console && npm run dev
+```
+
+Edit any file in `console/src/` or `packages/` — changes appear instantly in the browser.
+
+## Architecture
+
+```
+packages/
+├── console-core/         # Types, state management, reducers (framework-agnostic)
+│   └── src/
+│       ├── conversation.ts   # Message types, timeline grouping
+│       ├── dock.ts           # Multi-panel state, presets, actions
+│       ├── sidebar.ts        # Block → section → item hierarchy
+│       ├── activity.ts       # Roster, pulse, feed panel types
+│       ├── composer.ts       # Composer view state, toolbar items
+│       └── rich-content.ts   # Markdown → rich block parser
+│
+├── console-components/   # React components + CSS (portable, no app imports)
+│   └── src/
+│       ├── workbench/        # 3-column grid layout
+│       ├── sidebar/          # Hierarchical agent sidebar
+│       ├── dock/             # Tabbed multi-panel with splits
+│       ├── conversation/     # Message transcript + empty state
+│       ├── composer/         # Frosted glass input shell
+│       ├── activity/         # Activity rail with roster/pulse/feed
+│       └── styles/           # CSS tokens, themes, per-domain stylesheets
+│
+console/
+├── src/
+│   ├── ConsoleApp.tsx        # Main app: wires shared components + data
+│   ├── lib/adapters.ts       # MobKit data → console-core view states
+│   ├── lib/network.ts        # RPC, SSE, fetch helpers
+│   ├── lib/agents.ts         # Agent normalization
+│   ├── icon.tsx              # SVG sprite sheet + Icon renderer
+│   ├── console-host.css      # MobKit-specific overrides + global styles
+│   └── types.ts              # ConsoleAgent, ConsoleFrame, etc.
+├── build.cjs                 # esbuild production build
+├── vite.config.ts            # Vite dev server config
+└── smoke.cjs                 # JSDOM smoke test
+```
+
+The shared packages (`console-core` and `console-components`) are designed to be consumed by any application — MobKit, meerkat-app, or other hosts. They never import app stores, network code, or platform-specific APIs.
 
 ## See also
 
-- [Unified runtime](/guides/unified-runtime) -- how the console is composed with the runtime
-- [SSE API](/api/sse) -- protocol details
-- [Authentication](/guides/authentication) -- console access control
+- [Unified runtime](/guides/unified-runtime) — how the console is composed with the runtime
+- [SSE API](/api/sse) — protocol details
+- [Authentication](/guides/authentication) — console access control

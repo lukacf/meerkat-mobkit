@@ -763,9 +763,9 @@ async fn phase_f_bigquery_timeout_and_connection_failures_surface_http_errors() 
     );
 }
 
-#[tokio::test]
+#[test]
 #[ignore] // requires real BigQuery credentials and network
-async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
+fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
     let access_token = require_bigquery_access_token();
     let api_base_url = std::env::var("BIGQUERY_API_BASE_URL")
         .ok()
@@ -778,6 +778,10 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("build reqwest client");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime for BigQuery integration test");
 
     create_dataset(
         &client,
@@ -851,9 +855,8 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
         },
     ];
 
-    store
-        .stream_insert_rows(&writes)
-        .await
+    runtime
+        .block_on(store.stream_insert_rows(&writes))
         .expect("stream insert rows into real BigQuery table");
 
     let expected_latest = vec![
@@ -882,13 +885,11 @@ async fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics()
 
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let latest = store
-            .read_latest_rows()
-            .await
+        let latest = runtime
+            .block_on(store.read_latest_rows())
             .expect("query latest rows from real BigQuery");
-        let live = store
-            .read_live_rows()
-            .await
+        let live = runtime
+            .block_on(store.read_live_rows())
             .expect("query live rows from real BigQuery");
         if latest == expected_latest && live == expected_live {
             break;
@@ -1021,7 +1022,8 @@ fn create_table(
                 {"name":"session_id","type":"STRING","mode":"REQUIRED"},
                 {"name":"updated_at_ms","type":"INT64","mode":"REQUIRED"},
                 {"name":"deleted","type":"BOOL","mode":"REQUIRED"},
-                {"name":"payload","type":"STRING","mode":"NULLABLE"}
+                {"name":"payload","type":"STRING","mode":"NULLABLE"},
+                {"name":"labels_json","type":"STRING","mode":"NULLABLE"}
             ]
         }
     });

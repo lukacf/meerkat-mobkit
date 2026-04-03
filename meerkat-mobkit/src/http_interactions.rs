@@ -24,7 +24,7 @@ use meerkat_mob::MeerkatId;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
+use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT, console_agent_event_payload};
 use crate::mob_handle_runtime::MobRuntimeError;
 
 /// Observe-only request: only `member_id` is required.
@@ -111,7 +111,7 @@ async fn interaction_stream_handler(
             };
 
             let event_name = agent_event_type(&envelope.payload).to_string();
-            let payload = serde_json::to_string(&envelope.payload)
+            let payload = serde_json::to_string(&console_agent_event_payload(&envelope.payload))
                 .unwrap_or_else(|_| "{}".to_string());
             let terminal = matches!(
                 envelope.payload,

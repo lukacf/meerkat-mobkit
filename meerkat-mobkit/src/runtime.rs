@@ -873,6 +873,7 @@ pub struct GatingPendingEntry {
 pub enum GatingDecision {
     Approve,
     Reject,
+    Escalate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -894,6 +895,8 @@ pub struct GatingDecisionResult {
     pub decided_at_ms: u64,
     #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub next_pending_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

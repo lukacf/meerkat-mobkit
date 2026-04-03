@@ -471,7 +471,7 @@ pub(super) async fn handle_query_events(
             };
         }
     };
-    match runtime.query_events(query).await {
+    match runtime.query_events(query.clone()).await {
         Some(Ok(events)) => JsonRpcResponse {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: response_id,
@@ -492,7 +492,7 @@ pub(super) async fn handle_query_events(
             id: response_id,
             result: Some(serde_json::json!({
                 "status": "no_event_log_configured",
-                "events": []
+                "events": runtime.query_console_events(&query).await,
             })),
             error: None,
         },

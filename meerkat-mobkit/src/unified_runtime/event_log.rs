@@ -53,6 +53,9 @@ pub struct EventQuery {
     /// Filter to events from a specific member/agent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub member_id: Option<String>,
+    /// Filter to events from a specific identity when the store supports identity-native rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
     /// Filter to specific event types (e.g. "run_completed", "run_failed").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_types: Vec<String>,

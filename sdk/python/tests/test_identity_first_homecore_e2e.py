@@ -260,11 +260,11 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
             # status() shows correct state
             status = await rt.status("triage:main")
             assert status.state == "Active"
-            assert status.addressability == "InternalOnly"
+            assert status.addressability == "internal_only"
 
             luka_status = await rt.status("identity:luka")
             assert luka_status.state == "Active"
-            assert luka_status.addressability == "Addressable"
+            assert luka_status.addressability == "addressable"
             assert luka_status.agent_runtime_id is not None
             assert luka_status.session_id is not None
         finally:
@@ -405,7 +405,7 @@ class TestHC04HotUpdateAddressability:
         try:
             # luka starts Addressable
             status = await rt.status("identity:luka")
-            assert status.addressability == "Addressable"
+            assert status.addressability == "addressable"
 
             # send works
             await rt.send("identity:luka", "Hello")
@@ -423,7 +423,7 @@ class TestHC04HotUpdateAddressability:
             await rt.reconcile()
 
             status2 = await rt.status("identity:luka")
-            assert status2.addressability == "InternalOnly"
+            assert status2.addressability == "internal_only"
             assert status2.labels.get("timezone") == "Europe/Stockholm"
 
             # send now rejected

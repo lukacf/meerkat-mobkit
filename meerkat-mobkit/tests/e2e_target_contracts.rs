@@ -359,6 +359,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "interaction.start".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -368,6 +369,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-beta".to_string(),
                 event_type: "interaction.start".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -377,6 +379,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "tick".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -386,6 +389,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-beta".to_string(),
                 event_type: "tick".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -395,6 +399,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "tick".to_string(),
+                payload: None,
             },
         },
         EventEnvelope {
@@ -404,6 +409,7 @@ fn runtime_with_phase6_agent_events() -> meerkat_mobkit::MobkitRuntimeHandle {
             event: UnifiedEvent::Agent {
                 agent_id: "agent-alpha".to_string(),
                 event_type: "interaction.reply".to_string(),
+                payload: None,
             },
         },
     ]);
@@ -448,7 +454,7 @@ fn choke_101_rpc_ingress_target_defined_red() {
             "jsonrpc":"2.0",
             "id":"choke-101",
             "result":{
-                "contract_version":"0.2.0",
+                "contract_version":"0.3.0",
                 "running":true,
                 "loaded_modules":["router"]
             }
@@ -666,7 +672,7 @@ fn choke_105_auth_to_console_route_target_defined_red() {
         ),
         (
             200,
-            json!({"contract_version":"0.2.0","modules":["router","delivery"]}),
+            json!({"contract_version":"0.3.0","modules":["router","delivery"]}),
             401,
             json!({"error":"unauthorized","reason":"provider_mismatch"}),
             401,
@@ -1112,7 +1118,7 @@ fn e2e_401_rpc_surface_target_defined_red() {
                 "jsonrpc":"2.0",
                 "id":"e2e-401-status",
                 "result":{
-                    "contract_version":"0.2.0",
+                    "contract_version":"0.3.0",
                     "running":true,
                     "loaded_modules":["router"]
                 }
@@ -1659,12 +1665,12 @@ fn e2e_801_console_experience_target_defined_red() {
             open.body["base_panel"]["panel_id"].clone(),
             open.body["base_panel"]["route"].clone(),
             open.body["module_panels"].clone(),
-            open.body["activity_feed"]["source_method"].clone(),
-            open.body["activity_feed"]["supported_scopes"].clone(),
+            open.body["activity_feed"]["source_route"].clone(),
+            open.body["activity_feed"]["request_contract"]["last_event_id_header"].clone(),
             open.body["activity_feed"]["keep_alive"]["event"].clone()
         ),
         (
-            json!("0.2.0"),
+            json!("0.3.0"),
             json!("console.home"),
             json!("/console/experience"),
             json!([
@@ -1683,11 +1689,11 @@ fn e2e_801_console_experience_target_defined_red() {
                     "capabilities":{"can_render":true,"can_subscribe_activity":true}
                 }
             ]),
-            json!("mobkit/events/subscribe"),
-            json!(["mob", "agent", "interaction"]),
+            json!("/console/events/stream"),
+            json!("optional Last-Event-ID checkpoint from prior event_id"),
             json!("keep-alive")
         ),
-        "E2E-801: console route emits concrete capability-driven base/module panel schema and unified activity-feed contract"
+        "E2E-801: console route emits concrete capability-driven base/module panel schema and the unified all-events feed contract"
     );
 }
 
@@ -1892,7 +1898,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-status"),
                     result: json!({
-                        "contract_version":"0.2.0",
+                        "contract_version":"0.3.0",
                         "running":true,
                         "loaded_modules":["router"]
                     }),
@@ -1900,7 +1906,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-caps"),
                     result: json!({
-                        "contract_version":"0.2.0",
+                        "contract_version":"0.3.0",
                         "methods": expected_capability_methods.clone(),
                         "loaded_modules":["router"],
                         "runtime_capabilities": {
@@ -1927,7 +1933,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-status"),
                     result: json!({
-                        "contract_version":"0.2.0",
+                        "contract_version":"0.3.0",
                         "running":true,
                         "loaded_modules":["router"]
                     }),
@@ -1935,7 +1941,7 @@ fn e2e_1101_sdk_parity_flow_target_defined_red() {
                 SdkMappedOutcome::Success {
                     id: json!("e2e-1101-caps"),
                     result: json!({
-                        "contract_version":"0.2.0",
+                        "contract_version":"0.3.0",
                         "methods": expected_capability_methods,
                         "loaded_modules":["router"],
                         "runtime_capabilities": {
@@ -2313,7 +2319,7 @@ fn e2e_1401_program_smoke_target_defined_red() {
                 "jsonrpc":"2.0",
                 "id":"e2e-1401-status",
                 "result":{
-                    "contract_version":"0.2.0",
+                    "contract_version":"0.3.0",
                     "running":true,
                     "loaded_modules":["router"]
                 }

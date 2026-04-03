@@ -459,15 +459,15 @@ export class MobHandle {
   async queryEvents(query?: EventQuery): Promise<PersistedEvent[]> {
     const params = query ? eventQueryToDict(query) : {};
     const raw = await this._runtime._rpc("mobkit/query_events", params);
-    if (
-      typeof raw === "object" &&
-      raw !== null &&
-      (raw as Record<string, unknown>).status === "no_event_log_configured"
-    ) {
-      return [];
+    let events = raw;
+    if (typeof raw === "object" && raw !== null) {
+      const record = raw as Record<string, unknown>;
+      if (record.status === "no_event_log_configured") {
+        events = Array.isArray(record.events) ? record.events : [];
+      }
     }
-    if (Array.isArray(raw)) {
-      return raw.map(parsePersistedEvent);
+    if (Array.isArray(events)) {
+      return events.map(parsePersistedEvent);
     }
     return [];
   }

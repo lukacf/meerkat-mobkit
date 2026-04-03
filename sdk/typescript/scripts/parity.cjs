@@ -40,7 +40,7 @@ check("typed client status success", () => {
     jsonrpc: "2.0",
     id: "ts-status",
     result: {
-      contract_version: "0.1.0",
+      contract_version: "0.3.0",
       running: true,
       loaded_modules: ["routing"],
     },
