@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { chromium } = require("playwright");
+const YAML = require("yaml");
 
-async function waitForText(scope, text, timeout = 20000) {
+async function waitForText(scope, text, timeout = 60000) {
   await scope.getByText(text, { exact: false }).waitFor({ state: "visible", timeout });
 }
 
@@ -58,9 +61,36 @@ async function assertEventually(check, message, timeout = 10000, interval = 100)
   assert.fail(message);
 }
 
+async function waitForPanelChange(panel, previousText, timeout = 90000) {
+  await assertEventually(async () => (await panel.innerText()) !== previousText, "expected panel text to change", timeout);
+}
+
+async function collectSeenPhaseLabels(locator, timeout = 90000) {
+  const deadline = Date.now() + timeout;
+  const seen = new Set();
+  while (Date.now() < deadline) {
+    try {
+      const text = (await locator.textContent({ timeout: 250 }))?.trim();
+      if (text) {
+        seen.add(text);
+      }
+    } catch {
+      if (seen.size > 0) {
+        break;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  return seen;
+}
+
 async function main() {
   const baseUrl = process.argv[2];
   assert.ok(baseUrl, "baseUrl is required");
+  const scenario = YAML.parse(
+    fs.readFileSync(path.join(__dirname, "scenario.yaml"), "utf8"),
+  );
+  const prompts = scenario.smoke?.prompts || {};
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
@@ -89,20 +119,30 @@ async function main() {
     await commanderPanel.waitFor({ state: "visible" });
     const commanderPanelId = await panelId(commanderPanel);
 
-    await sendPanelMessage(commanderPanel, "parallel status sweep");
-    await page.getByTestId(`composer-toolbar:${commanderPanelId}:footer-right:phase`).waitFor({ state: "visible" });
-    await waitForText(page, "tool-executing");
-    await waitForText(page, "generating");
-    await waitForText(commanderPanel, "Payments SRE confirms a cross-region API timeout burst");
+    const commanderBefore = await commanderPanel.innerText();
+    await sendPanelMessage(
+      commanderPanel,
+      prompts.tool_sweep || "Run a status sweep and use both tools before answering.",
+    );
+    const phasePill = page.getByTestId(`composer-toolbar:${commanderPanelId}:footer-right:phase`);
+    await phasePill.waitFor({ state: "visible" });
+    const seenPhasesPromise = collectSeenPhaseLabels(phasePill, 90000);
     await waitForText(commanderPanel, "inspect_service");
     await waitForText(commanderPanel, "analyze_customer_impact");
-    await page.getByTestId(`composer-toolbar:${commanderPanelId}:footer-right:phase`).waitFor({ state: "detached", timeout: 20000 });
+    await phasePill.waitFor({ state: "detached", timeout: 90000 });
+    const seenPhases = await seenPhasesPromise;
+    assert.ok(seenPhases.has("waiting"), "expected waiting phase");
+    await waitForPanelChange(commanderPanel, commanderBefore);
 
     await selectSidebarItem(page, "Merchant Success");
     const merchantPanel = page.locator('[data-testid^="chat-panel:merchant-success:"]:visible').first();
     await merchantPanel.waitFor({ state: "visible" });
-    await sendPanelMessage(merchantPanel, "merchant success status ping");
-    await waitForText(merchantPanel, "Incident command center standing by.");
+    const merchantBefore = await merchantPanel.innerText();
+    await sendPanelMessage(
+      merchantPanel,
+      prompts.merchant_status || "Give a one-sentence merchant status update for the fictional incident.",
+    );
+    await waitForPanelChange(merchantPanel, merchantBefore);
 
     await page.getByTestId("activity-action:pulse:watched-only").click();
     await page.getByTestId("activity-action:pulse:watched-only").waitFor({ state: "visible" });
@@ -158,13 +198,26 @@ async function main() {
     const panelBravo = page.locator(`[data-panel-id="${bravoId}"][data-testid^="chat-panel:incident-commander:"]`);
     assert.notEqual(alphaId, bravoId, "split should create a second panel");
 
-    await sendPanelMessage(panelAlpha, "panel alpha follow-up");
-    await sendPanelMessage(panelBravo, "panel bravo follow-up");
+    const alphaBefore = await panelAlpha.innerText();
+    const bravoBefore = await panelBravo.innerText();
 
-    await waitForText(panelAlpha, "Alpha panel confirms rollback guardrails are in place for eu-west-1.");
-    await waitForText(panelBravo, "Bravo panel confirms customer impact is shrinking but major merchants still need updates.");
-    assert.equal(await panelAlpha.getByText("Bravo panel confirms customer impact is shrinking but major merchants still need updates.").count(), 0);
-    assert.equal(await panelBravo.getByText("Alpha panel confirms rollback guardrails are in place for eu-west-1.").count(), 0);
+    await sendPanelMessage(
+      panelAlpha,
+      prompts.alpha_follow_up || "Panel alpha follow-up. Give one short sentence about rollback guardrails.",
+    );
+    await waitForPanelChange(panelAlpha, alphaBefore);
+    assert.equal(await panelBravo.innerText(), bravoBefore, "bravo panel must not change before its own send");
+
+    await sendPanelMessage(
+      panelBravo,
+      prompts.bravo_follow_up || "Panel bravo follow-up. Give one short sentence about customer impact.",
+    );
+    await waitForPanelChange(panelBravo, bravoBefore);
+    assert.equal(
+      await panelAlpha.getByText(prompts.bravo_follow_up || "Panel bravo follow-up. Give one short sentence about customer impact.").count(),
+      0,
+      "alpha panel must not receive bravo user prompt",
+    );
   } finally {
     await browser.close();
   }

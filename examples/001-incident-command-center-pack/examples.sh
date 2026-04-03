@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PACK_DIR="$ROOT/examples/001-incident-command-center-pack"
 SCENARIO="$PACK_DIR/scenario.yaml"
+
+: "${OPENAI_API_KEY:?Set OPENAI_API_KEY to run the live incident command center pack}"
+export RKAT_INCIDENT_MODEL="${RKAT_INCIDENT_MODEL:-gpt-4.1-mini}"
 LISTEN_ADDR="$(python3 - <<'PY'
 import socket
 s = socket.socket()
@@ -76,6 +79,8 @@ echo "[incident-pack] building console assets"
 
 echo "[incident-pack] ensuring example JS deps"
 (cd "$ROOT/examples" && npm install --silent --no-fund --no-audit)
+
+echo "[incident-pack] using live model ${RKAT_INCIDENT_MODEL}"
 
 status=0
 

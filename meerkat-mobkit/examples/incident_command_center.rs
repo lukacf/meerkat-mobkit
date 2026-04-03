@@ -17,7 +17,7 @@
 )]
 
 use meerkat_mobkit::example_support::incident_command_center::{
-    build_runtime_bundle, scenario_path,
+    build_runtime_bundle, incident_model, scenario_path,
 };
 
 #[tokio::main]
@@ -31,6 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .compact()
         .try_init()
         .ok();
+
+    let _ = std::env::var("OPENAI_API_KEY")
+        .map_err(|_| "Set OPENAI_API_KEY to run the live incident command center example")?;
+    println!("incident command center model={}", incident_model());
 
     let bundle = build_runtime_bundle(&scenario_path()?).await?;
     let listen_addr = std::env::var("INCIDENT_COMMAND_CENTER_LISTEN_ADDR")

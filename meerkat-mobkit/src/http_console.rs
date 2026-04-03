@@ -14,6 +14,7 @@ use meerkat_mob::MobState;
 use meerkat_mob::{MeerkatId, PeerTarget, ProfileName, SpawnMemberSpec};
 use serde_json::{Value, json};
 use std::convert::Infallible;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
 use crate::console_contracts::{
@@ -47,6 +48,7 @@ pub struct ConsoleJsonState {
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
 const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../console-dist/console-app.js");
 const CONSOLE_FRONTEND_APP_CSS: &str = include_str!("../console-dist/console-app.css");
+static CONSOLE_INTERACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     console_json_router_with_state(ConsoleJsonState {
@@ -533,7 +535,9 @@ fn current_time_ms() -> u64 {
 }
 
 fn mint_console_interaction_id() -> String {
-    format!("turn-{}", current_time_ms())
+    let now = current_time_ms();
+    let seq = CONSOLE_INTERACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("turn-{now}-{seq}")
 }
 
 fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>) -> Value {
@@ -1761,4 +1765,18 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
         ],
         CONSOLE_FRONTEND_APP_CSS,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mint_console_interaction_id;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn mint_console_interaction_id_is_unique_across_same_tick_calls() {
+        let ids = (0..32)
+            .map(|_| mint_console_interaction_id())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), 32);
+    }
 }

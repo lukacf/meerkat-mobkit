@@ -128,24 +128,6 @@ gating:
     entity: incident
     topic: cardinalpay-payments
 
-scripted_turns:
-  - prompt_contains: parallel status sweep
-    tool_calls:
-      - id: tool-inspect-service
-        name: inspect_service
-        args:
-          service: payments-api
-      - id: tool-analyze-impact
-        name: analyze_customer_impact
-        args:
-          cohort: enterprise-merchants
-  - prompt_contains: panel alpha follow-up
-    final_text: Alpha panel confirms rollback guardrails are in place for eu-west-1.
-  - prompt_contains: panel bravo follow-up
-    final_text: Bravo panel confirms customer impact is shrinking but major merchants still need updates.
-  - prompt_contains: draft merchant update
-    final_text: Draft merchant update prepared. Request approval before sending externally.
-
 smoke:
   watched_identities:
     - incident-commander
@@ -157,3 +139,16 @@ smoke:
     - health-monitor
   critical_identities:
     - incident-commander
+  prompts:
+    tool_sweep: >
+      Run a status sweep for the fictional CardinalPay payments incident. Before answering,
+      call inspect_service with {"service":"payments-api"} and analyze_customer_impact with
+      {"cohort":"enterprise-merchants"}. Then give one concise operator-facing paragraph.
+    merchant_status: >
+      Give a one-sentence merchant-success update for the current fictional incident. Be concise.
+    alpha_follow_up: >
+      Panel alpha follow-up: in one short sentence, summarize rollback guardrails for the
+      fictional eu-west-1 mitigation path.
+    bravo_follow_up: >
+      Panel bravo follow-up: in one short sentence, summarize current customer impact for
+      major merchants in the fictional incident.

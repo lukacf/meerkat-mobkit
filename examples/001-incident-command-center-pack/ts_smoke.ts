@@ -16,10 +16,20 @@ type ConsoleFrame = {
 
 const scenario = YAML.parse(
   fs.readFileSync(path.join(repoRoot, "examples", "001-incident-command-center-pack", "scenario.yaml"), "utf8"),
-) as { smoke?: { watched_identities?: string[] } };
+) as {
+  smoke?: {
+    watched_identities?: string[];
+    prompts?: {
+      tool_sweep?: string;
+      alpha_follow_up?: string;
+      bravo_follow_up?: string;
+    };
+  };
+};
 
 const baseUrl = process.argv[2];
 assert.ok(baseUrl, "baseUrl is required");
+const prompts = scenario.smoke?.prompts || {};
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -52,7 +62,7 @@ async function readSseFrames(
   init: RequestInit & { minFrames?: number; timeoutMs?: number; until?: (frame: ConsoleFrame) => boolean } = {},
 ): Promise<ConsoleFrame[]> {
   const minFrames = init.minFrames ?? 1;
-  const timeoutMs = init.timeoutMs ?? 6000;
+  const timeoutMs = init.timeoutMs ?? 20000;
   const until = init.until;
   const response = await fetch(url, init);
   assert.equal(response.ok, true, `expected SSE response from ${url}`);
@@ -113,7 +123,7 @@ async function streamInteraction(identity: string, content: string, origin: stri
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ identity }),
     minFrames: 1,
-    timeoutMs: 15000,
+    timeoutMs: 90000,
     until: (frame) =>
       frame.interactionId === acceptedInteractionId &&
       (frame.event === "interaction_complete" || frame.event === "interaction_failed"),
@@ -141,10 +151,32 @@ assert.ok(Array.isArray(experience.identity_status?.rows));
 assert.ok(Array.isArray(experience.activity_feed?.filter_presets));
 assert.ok(experience.activity_feed!.filter_presets!.some((preset) => preset.id === "watched-only"));
 
-const { sendResult, frames } = await streamInteraction("incident-commander", "panel alpha follow-up", "ts-smoke:panel-1");
+const { sendResult, frames } = await streamInteraction(
+  "incident-commander",
+  prompts.tool_sweep || "Run a status sweep. Use both tools before answering.",
+  "ts-smoke:tool-sweep",
+);
 assert.ok(sendResult.interaction_id, "interaction_id expected");
 assert.ok(frames.some((frame) => frame.event === "interaction_complete"), "terminal frame expected");
 assert.ok(frames.some((frame) => frame.event === "text_delta"), "text delta frame expected");
+assert.ok(frames.some((frame) => frame.event === "tool_call_requested"), "tool call expected");
+assert.ok(frames.some((frame) => frame.event === "tool_result_received"), "tool result expected");
+assert.ok(
+  frames.some((frame) => frame.data && JSON.stringify(frame.data).includes("inspect_service")),
+  "inspect_service tool usage expected",
+);
+assert.ok(
+  frames.some((frame) => frame.data && JSON.stringify(frame.data).includes("analyze_customer_impact")),
+  "analyze_customer_impact tool usage expected",
+);
+const toolCallIndex = frames.findIndex((frame) => frame.event === "tool_call_requested");
+const toolResultIndex = frames.findIndex((frame) => frame.event === "tool_result_received");
+const textDeltaIndex = frames.findIndex((frame) => frame.event === "text_delta");
+const terminalIndex = frames.findIndex((frame) => frame.event === "interaction_complete");
+assert.ok(toolCallIndex >= 0, "tool call frame index expected");
+assert.ok(toolResultIndex > toolCallIndex, "tool result should follow tool call");
+assert.ok(textDeltaIndex > toolResultIndex, "text generation should start after tool results");
+assert.ok(terminalIndex > textDeltaIndex, "terminal event should follow text generation");
 
 const checkpointFrame = frames.find((frame) => frame.id && frame.event === "text_delta");
 assert.ok(checkpointFrame?.id, "checkpoint frame expected");
@@ -165,6 +197,35 @@ const allEventsFrames = await readSseFrames(`${baseUrl}/console/events/stream`, 
 });
 assert.ok(allEventsFrames.length > 0, "all-events replay frames expected");
 assert.ok(allEventsFrames.every((frame) => frame.id !== checkpointFrame.id), "all-events replay must resume after checkpoint");
+
+const [alphaTurn, bravoTurn] = await Promise.all([
+  streamInteraction(
+    "incident-commander",
+    prompts.alpha_follow_up || "Panel alpha follow-up. Give one short sentence about rollback guardrails.",
+    "ts-smoke:panel-alpha",
+  ),
+  streamInteraction(
+    "incident-commander",
+    prompts.bravo_follow_up || "Panel bravo follow-up. Give one short sentence about customer impact.",
+    "ts-smoke:panel-bravo",
+  ),
+]);
+
+assert.notEqual(alphaTurn.sendResult.interaction_id, bravoTurn.sendResult.interaction_id, "distinct interaction ids expected");
+assert.ok(
+  alphaTurn.frames
+    .filter((frame) => frame.event !== "subscribed")
+    .every((frame) => frame.interactionId === alphaTurn.sendResult.interaction_id),
+  "alpha stream must only surface alpha interaction frames",
+);
+assert.ok(
+  bravoTurn.frames
+    .filter((frame) => frame.event !== "subscribed")
+    .every((frame) => frame.interactionId === bravoTurn.sendResult.interaction_id),
+  "bravo stream must only surface bravo interaction frames",
+);
+assert.ok(alphaTurn.frames.some((frame) => frame.event === "interaction_complete"), "alpha terminal frame expected");
+assert.ok(bravoTurn.frames.some((frame) => frame.event === "interaction_complete"), "bravo terminal frame expected");
 
 const internalReject = await fetchJson<{ error?: { code?: number } }>(`${baseUrl}/console/rpc`, {
   method: "POST",

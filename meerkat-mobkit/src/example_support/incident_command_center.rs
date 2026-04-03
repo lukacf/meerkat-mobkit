@@ -7,16 +7,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use async_stream::stream;
 use async_trait::async_trait;
 use meerkat::AgentToolDispatcher;
-use meerkat_client::types::LlmStream;
-use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::error::ToolError;
 use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
-use meerkat_core::{
-    ContentBlock, Message, StopReason, ToolCallView, ToolDef, ToolDispatchOutcome, ToolResult,
-};
+use meerkat_core::{ToolCallView, ToolDef, ToolDispatchOutcome, ToolResult};
 use meerkat_mob::{MeerkatId, MobDefinition, ProfileName, SpawnMemberSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -54,8 +49,6 @@ pub struct IncidentScenario {
     pub deliveries: Vec<IncidentDeliverySeed>,
     #[serde(default)]
     pub gating: Vec<IncidentGatingSeed>,
-    #[serde(default)]
-    pub scripted_turns: Vec<IncidentScriptedTurn>,
     #[serde(default)]
     pub smoke: IncidentSmokeExpectations,
 }
@@ -121,22 +114,6 @@ pub struct IncidentGatingSeed {
     pub topic: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct IncidentScriptedTurn {
-    pub prompt_contains: String,
-    #[serde(default)]
-    pub tool_calls: Vec<IncidentScriptedToolCall>,
-    #[serde(default)]
-    pub final_text: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct IncidentScriptedToolCall {
-    pub id: String,
-    pub name: String,
-    pub args: Value,
-}
-
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct IncidentSmokeExpectations {
     #[serde(default)]
@@ -145,6 +122,20 @@ pub struct IncidentSmokeExpectations {
     pub degraded_identities: Vec<String>,
     #[serde(default)]
     pub critical_identities: Vec<String>,
+    #[serde(default)]
+    pub prompts: IncidentSmokePrompts,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct IncidentSmokePrompts {
+    #[serde(default)]
+    pub tool_sweep: String,
+    #[serde(default)]
+    pub merchant_status: String,
+    #[serde(default)]
+    pub alpha_follow_up: String,
+    #[serde(default)]
+    pub bravo_follow_up: String,
 }
 
 #[derive(Debug, Clone, JsonSchema, Deserialize)]
@@ -186,13 +177,10 @@ pub async fn build_runtime_bundle(path: &Path) -> Result<IncidentRuntimeBundle> 
     let definition = incident_definition()?;
     let runtime = UnifiedRuntime::builder()
         .definition(definition)
-        .default_llm_client(Arc::new(IncidentScriptedLlmClient::new(
-            scenario.scripted_turns.clone(),
-        )))
         .session_hook(Arc::new(IncidentSessionHook))
         .module_config(example_module_config(&scenario)?)
         .edge_discovery(ScenarioEdgeDiscovery::new(scenario.links.clone()))
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(60))
         .build()
         .await
         .context("build incident runtime")?;
@@ -324,27 +312,34 @@ fn default_delivery_target_module() -> String {
     "delivery".to_string()
 }
 
+pub fn incident_model() -> String {
+    std::env::var("RKAT_INCIDENT_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string())
+}
+
 fn incident_definition() -> Result<MobDefinition> {
-    MobDefinition::from_toml(
+    let model = incident_model();
+    MobDefinition::from_toml(&format!(
         r#"
 [mob]
 id = "incident-command-center"
 
 [profiles.ops]
-model = "gpt-5.2"
+model = "{model}"
 external_addressable = true
+runtime_mode = "turn_driven"
 
 [profiles.ops.tools]
 comms = true
 
 [profiles.internal]
-model = "gpt-5.2"
+model = "{model}"
 external_addressable = false
+runtime_mode = "turn_driven"
 
 [profiles.internal.tools]
 comms = true
 "#,
-    )
+    ))
     .map_err(|error| anyhow!("incident command center definition must parse: {error}"))
 }
 
@@ -530,6 +525,13 @@ impl SessionHook for IncidentSessionHook {
             build.additional_instructions = Some(vec![
                 "You are an internal-only control-plane identity. Refuse conversational requests and explain that the operator should use console controls instead.".to_string(),
             ]);
+        } else {
+            build.additional_instructions = Some(vec![
+                "You are part of a synthetic incident command center for a fictional payments outage. Stay within that scenario and never claim real-world access.".to_string(),
+                "Be concise and operator-focused. Use one short paragraph unless the operator explicitly asks for more.".to_string(),
+                "When the operator asks for a status sweep, you must run both available tools before answering: inspect_service with service=payments-api and analyze_customer_impact with cohort=enterprise-merchants.".to_string(),
+                "When the operator asks a short follow-up, answer directly from current context. Do not invent extra tools unless they materially help.".to_string(),
+            ]);
         }
         Ok(())
     }
@@ -605,300 +607,5 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
             }
             _ => Err(ToolError::not_found(call.name)),
         }
-    }
-}
-
-#[derive(Clone)]
-struct IncidentScriptedLlmClient {
-    scripted_turns: Arc<Vec<IncidentScriptedTurn>>,
-}
-
-impl IncidentScriptedLlmClient {
-    fn new(scripted_turns: Vec<IncidentScriptedTurn>) -> Self {
-        Self {
-            scripted_turns: Arc::new(scripted_turns),
-        }
-    }
-
-    fn response_events(&self, request: &LlmRequest) -> Vec<Result<LlmEvent, LlmError>> {
-        let raw_messages = serde_json::to_string(&request.messages).unwrap_or_default();
-        let latest_prompt = latest_user_text(request);
-        if has_tool_results(request, &raw_messages) {
-            let final_text = if let Some(scripted_final_text) = self
-                .scripted_turns
-                .iter()
-                .find(|turn| {
-                    !turn.final_text.is_empty()
-                        && latest_prompt
-                            .as_deref()
-                            .is_some_and(|prompt| prompt.contains(&turn.prompt_contains))
-                })
-                .map(|turn| turn.final_text.clone())
-            {
-                scripted_final_text
-            } else if latest_prompt
-                .as_deref()
-                .is_some_and(|prompt| prompt.contains("parallel status sweep"))
-            {
-                "Payments SRE confirms a cross-region API timeout burst, and merchant impact is concentrated in high-volume accounts. Publish the short status banner now and keep incident-commander focused on mitigation.".to_string()
-            } else if latest_prompt
-                .as_deref()
-                .is_some_and(|prompt| prompt.contains("panel alpha follow-up"))
-            {
-                "Alpha panel confirms rollback guardrails are in place for eu-west-1.".to_string()
-            } else if latest_prompt
-                .as_deref()
-                .is_some_and(|prompt| prompt.contains("panel bravo follow-up"))
-            {
-                "Bravo panel confirms customer impact is shrinking but major merchants still need updates.".to_string()
-            } else if latest_prompt
-                .as_deref()
-                .is_some_and(|prompt| prompt.contains("draft merchant update"))
-            {
-                "Draft merchant update prepared. Request approval before sending externally."
-                    .to_string()
-            } else {
-                "Incident note captured and ready for operator review.".to_string()
-            };
-            return vec![
-                Ok(LlmEvent::TextDelta {
-                    delta: final_text,
-                    meta: None,
-                }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::EndTurn,
-                    },
-                }),
-            ];
-        }
-
-        if let Some(scripted) = self
-            .scripted_turns
-            .iter()
-            .find(|turn| raw_messages.contains(&turn.prompt_contains))
-        {
-            if !scripted.tool_calls.is_empty() {
-                let mut events = scripted
-                    .tool_calls
-                    .iter()
-                    .map(|tool| {
-                        Ok(LlmEvent::ToolCallComplete {
-                            id: tool.id.clone(),
-                            name: tool.name.clone(),
-                            args: tool.args.clone(),
-                            meta: None,
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                events.push(Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::ToolUse,
-                    },
-                }));
-                return events;
-            }
-
-            let final_text = if scripted.final_text.is_empty() {
-                "Incident update acknowledged.".to_string()
-            } else {
-                scripted.final_text.clone()
-            };
-            return vec![
-                Ok(LlmEvent::TextDelta {
-                    delta: final_text,
-                    meta: None,
-                }),
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::EndTurn,
-                    },
-                }),
-            ];
-        }
-
-        vec![
-            Ok(LlmEvent::TextDelta {
-                delta: "Incident command center standing by.".to_string(),
-                meta: None,
-            }),
-            Ok(LlmEvent::Done {
-                outcome: LlmDoneOutcome::Success {
-                    stop_reason: StopReason::EndTurn,
-                },
-            }),
-        ]
-    }
-}
-
-fn has_tool_results(request: &LlmRequest, raw_messages: &str) -> bool {
-    request
-        .messages
-        .iter()
-        .any(|message| matches!(message, Message::ToolResults { .. }))
-        || raw_messages.contains("error_budget_remaining_percent")
-        || raw_messages.contains("recommended_banner")
-        || raw_messages.contains("\"tool_results\"")
-}
-
-fn latest_user_text(request: &LlmRequest) -> Option<String> {
-    request
-        .messages
-        .iter()
-        .rev()
-        .find_map(|message| match message {
-            Message::User(user) => {
-                let text = user
-                    .content
-                    .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                (!text.trim().is_empty()).then_some(text)
-            }
-            _ => None,
-        })
-}
-
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-impl LlmClient for IncidentScriptedLlmClient {
-    fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
-        let events = self.response_events(request);
-        Box::pin(stream! {
-            let mut emitted_text_delta = false;
-            for event in events {
-                if emitted_text_delta {
-                    sleep(Duration::from_millis(120)).await;
-                    emitted_text_delta = false;
-                }
-                if matches!(event, Ok(LlmEvent::TextDelta { .. })) {
-                    emitted_text_delta = true;
-                }
-                yield event;
-            }
-        })
-    }
-
-    fn provider(&self) -> &'static str {
-        "incident-scripted"
-    }
-
-    async fn health_check(&self) -> Result<(), LlmError> {
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use meerkat_core::{ContentBlock, UserMessage};
-
-    #[test]
-    fn scripted_llm_ends_turn_after_tool_results() {
-        let client = IncidentScriptedLlmClient::new(vec![IncidentScriptedTurn {
-            prompt_contains: "parallel status sweep".to_string(),
-            tool_calls: vec![IncidentScriptedToolCall {
-                id: "tool-inspect-service".to_string(),
-                name: "inspect_service".to_string(),
-                args: json!({ "service": "payments-api" }),
-            }],
-            final_text: String::new(),
-        }]);
-        let request = LlmRequest {
-            model: "gpt-5.2".to_string(),
-            messages: vec![
-                Message::User(UserMessage {
-                    content: vec![ContentBlock::Text {
-                        text: "parallel status sweep".to_string(),
-                    }],
-                }),
-                Message::ToolResults {
-                    results: vec![ToolResult::new(
-                        "tool-inspect-service".to_string(),
-                        "{\"service\":\"payments-api\",\"state\":\"degraded\"}".to_string(),
-                        false,
-                    )],
-                },
-            ],
-            tools: Vec::new(),
-            max_tokens: 512,
-            temperature: None,
-            stop_sequences: None,
-            provider_params: None,
-        };
-
-        let events = client.response_events(&request);
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                Ok(LlmEvent::Done {
-                    outcome: LlmDoneOutcome::Success {
-                        stop_reason: StopReason::EndTurn,
-                    },
-                })
-            )
-        }));
-        assert!(
-            !events
-                .iter()
-                .any(|event| matches!(event, Ok(LlmEvent::ToolCallComplete { .. })))
-        );
-    }
-
-    #[test]
-    fn scripted_llm_prefers_latest_follow_up_prompt_over_earlier_tool_turn_history() {
-        let client = IncidentScriptedLlmClient::new(vec![IncidentScriptedTurn {
-            prompt_contains: "panel alpha follow-up".to_string(),
-            tool_calls: vec![],
-            final_text: "Alpha panel confirms rollback guardrails are in place for eu-west-1."
-                .to_string(),
-        }]);
-        let request = LlmRequest {
-            model: "gpt-5.2".to_string(),
-            messages: vec![
-                Message::User(UserMessage {
-                    content: vec![ContentBlock::Text {
-                        text: "parallel status sweep".to_string(),
-                    }],
-                }),
-                Message::ToolResults {
-                    results: vec![ToolResult::new(
-                        "tool-inspect-service".to_string(),
-                        "{\"service\":\"payments-api\",\"state\":\"degraded\"}".to_string(),
-                        false,
-                    )],
-                },
-                Message::User(UserMessage {
-                    content: vec![ContentBlock::Text {
-                        text: "panel alpha follow-up".to_string(),
-                    }],
-                }),
-            ],
-            tools: Vec::new(),
-            max_tokens: 512,
-            temperature: None,
-            stop_sequences: None,
-            provider_params: None,
-        };
-
-        let events = client.response_events(&request);
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                Ok(LlmEvent::TextDelta { delta, .. })
-                    if delta.contains("Alpha panel confirms rollback guardrails are in place for eu-west-1.")
-            )
-        }));
-        assert!(!events.iter().any(|event| {
-            matches!(
-                event,
-                Ok(LlmEvent::TextDelta { delta, .. })
-                    if delta.contains("Payments SRE confirms a cross-region API timeout burst")
-            )
-        }));
     }
 }

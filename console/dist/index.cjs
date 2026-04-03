@@ -3728,35 +3728,6 @@ function createUserEntry(message) {
     text: message
   };
 }
-function inferResponsePhaseFromFrames(frames, fallback = null) {
-  let phase = fallback;
-  for (const frame of frames) {
-    switch (frame.event) {
-      case "interaction_started":
-        phase = "waiting";
-        break;
-      case "tool_call_requested":
-      case "tool_call":
-      case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
-        phase = "tool-executing";
-        break;
-      case "text_delta":
-        phase = "generating";
-        break;
-      case "interaction_complete":
-      case "interaction_failed":
-      case "run_completed":
-      case "run_failed":
-        phase = null;
-        break;
-      default:
-        break;
-    }
-  }
-  return phase;
-}
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
   return {
@@ -4322,6 +4293,9 @@ function ConsoleApp({ baseUrl }) {
   const [loading, setLoading] = import_react6.default.useState(true);
   const [error, setError] = import_react6.default.useState("");
   const initialTargetOpened = import_react6.default.useRef(false);
+  const phaseValueByKey = import_react6.default.useRef({});
+  const phaseSinceByKey = import_react6.default.useRef({});
+  const phaseTimerByKey = import_react6.default.useRef({});
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: `panel-${crypto.randomUUID()}`,
@@ -4375,14 +4349,12 @@ function ConsoleApp({ baseUrl }) {
     });
   }, [baseUrl]);
   import_react6.default.useEffect(() => {
-    setPanelPhaseByKey((current) => {
-      const next = {};
-      for (const [panelKey, frames] of Object.entries(panelFramesByKey)) {
-        next[panelKey] = inferResponsePhaseFromFrames(frames, current[panelKey] ?? null);
+    return () => {
+      for (const timer of Object.values(phaseTimerByKey.current)) {
+        window.clearTimeout(timer);
       }
-      return next;
-    });
-  }, [panelFramesByKey]);
+    };
+  }, []);
   import_react6.default.useEffect(() => {
     const openPanels = dock.viewState.panels.map((panel) => panel.target).filter(Boolean);
     const inspectTargets = openPanels.filter((target) => target.kind === "identity-inspect");
@@ -4449,6 +4421,64 @@ function ConsoleApp({ baseUrl }) {
       const nextFrames = [...current[panelKey] || [], frame];
       return { ...current, [panelKey]: nextFrames };
     });
+    updatePanelPhaseFromFrame(panelKey, frame);
+  }
+  function clearPhaseTimer(panelKey) {
+    const timer = phaseTimerByKey.current[panelKey];
+    if (timer !== void 0) {
+      window.clearTimeout(timer);
+      delete phaseTimerByKey.current[panelKey];
+    }
+  }
+  function commitPanelPhase(panelKey, phase) {
+    clearPhaseTimer(panelKey);
+    phaseValueByKey.current[panelKey] = phase;
+    phaseSinceByKey.current[panelKey] = Date.now();
+    setPanelPhaseByKey((current) => ({ ...current, [panelKey]: phase }));
+  }
+  function schedulePanelPhase(panelKey, phase, delayMs) {
+    clearPhaseTimer(panelKey);
+    phaseTimerByKey.current[panelKey] = window.setTimeout(() => {
+      delete phaseTimerByKey.current[panelKey];
+      phaseValueByKey.current[panelKey] = phase;
+      phaseSinceByKey.current[panelKey] = Date.now();
+      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: phase }));
+    }, delayMs);
+  }
+  function updatePanelPhaseFromFrame(panelKey, frame) {
+    switch (frame.event) {
+      case "interaction_started":
+        commitPanelPhase(panelKey, "waiting");
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        commitPanelPhase(panelKey, "tool-executing");
+        break;
+      case "text_delta": {
+        const currentPhase = phaseValueByKey.current[panelKey] ?? null;
+        if (currentPhase === "tool-executing") {
+          const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
+          const remainingMs = Math.max(0, 300 - elapsedMs);
+          if (remainingMs > 0) {
+            schedulePanelPhase(panelKey, "generating", remainingMs);
+            break;
+          }
+        }
+        commitPanelPhase(panelKey, "generating");
+        break;
+      }
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        commitPanelPhase(panelKey, null);
+        break;
+      default:
+        break;
+    }
   }
   async function onSendMessage(panelId, target) {
     if (!target || target.kind !== "agent-chat") return;
@@ -4458,7 +4488,7 @@ function ConsoleApp({ baseUrl }) {
     const userEntry = createUserEntry(text);
     setDraftByKey((current) => ({ ...current, [panelKey]: "" }));
     setSendingPanels((current) => new Set(current).add(panelKey));
-    setPanelPhaseByKey((current) => ({ ...current, [panelKey]: "waiting" }));
+    commitPanelPhase(panelKey, "waiting");
     setLocalEntriesByKey((current) => ({
       ...current,
       [panelKey]: [...current[panelKey] || [], userEntry]
@@ -4475,14 +4505,14 @@ function ConsoleApp({ baseUrl }) {
         `console:${panelId}`,
         (frame) => appendPanelFrame(panelKey, frame)
       );
-      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: null }));
+      commitPanelPhase(panelKey, null);
     } catch (submitError) {
       setError(errorMessage(submitError));
       setLocalEntriesByKey((current) => ({
         ...current,
         [panelKey]: (current[panelKey] || []).filter((entry) => entry.id !== userEntry.id)
       }));
-      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: null }));
+      commitPanelPhase(panelKey, null);
     } finally {
       setSendingPanels((current) => {
         const next = new Set(current);

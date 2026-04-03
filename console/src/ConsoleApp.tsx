@@ -24,7 +24,6 @@ import {
   buildRoutingSectionView,
   buildSidebarViewState,
   createUserEntry,
-  inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   type MobKitDockTarget,
 } from "./lib/adapters";
@@ -75,6 +74,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const initialTargetOpened = React.useRef(false);
+  const phaseValueByKey = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
+  const phaseSinceByKey = React.useRef<Record<string, number>>({});
+  const phaseTimerByKey = React.useRef<Record<string, number>>({});
 
   const dock = useConsoleDockController<MobKitDockTarget>({
     createPanelState: ({ target }) => ({
@@ -142,14 +144,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }, [baseUrl]);
 
   React.useEffect(() => {
-    setPanelPhaseByKey((current) => {
-      const next: Record<string, "waiting" | "tool-executing" | "generating" | null> = {};
-      for (const [panelKey, frames] of Object.entries(panelFramesByKey)) {
-        next[panelKey] = inferResponsePhaseFromFrames(frames, current[panelKey] ?? null);
+    return () => {
+      for (const timer of Object.values(phaseTimerByKey.current)) {
+        window.clearTimeout(timer);
       }
-      return next;
-    });
-  }, [panelFramesByKey]);
+    };
+  }, []);
 
   React.useEffect(() => {
     const openPanels = dock.viewState.panels.map((panel) => panel.target).filter(Boolean) as MobKitDockTarget[];
@@ -227,6 +227,75 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const nextFrames = [...(current[panelKey] || []), frame];
       return { ...current, [panelKey]: nextFrames };
     });
+    updatePanelPhaseFromFrame(panelKey, frame);
+  }
+
+  function clearPhaseTimer(panelKey: string) {
+    const timer = phaseTimerByKey.current[panelKey];
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete phaseTimerByKey.current[panelKey];
+    }
+  }
+
+  function commitPanelPhase(
+    panelKey: string,
+    phase: "waiting" | "tool-executing" | "generating" | null,
+  ) {
+    clearPhaseTimer(panelKey);
+    phaseValueByKey.current[panelKey] = phase;
+    phaseSinceByKey.current[panelKey] = Date.now();
+    setPanelPhaseByKey((current) => ({ ...current, [panelKey]: phase }));
+  }
+
+  function schedulePanelPhase(
+    panelKey: string,
+    phase: "waiting" | "tool-executing" | "generating" | null,
+    delayMs: number,
+  ) {
+    clearPhaseTimer(panelKey);
+    phaseTimerByKey.current[panelKey] = window.setTimeout(() => {
+      delete phaseTimerByKey.current[panelKey];
+      phaseValueByKey.current[panelKey] = phase;
+      phaseSinceByKey.current[panelKey] = Date.now();
+      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: phase }));
+    }, delayMs);
+  }
+
+  function updatePanelPhaseFromFrame(panelKey: string, frame: ConsoleFrame) {
+    switch (frame.event) {
+      case "interaction_started":
+        commitPanelPhase(panelKey, "waiting");
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        commitPanelPhase(panelKey, "tool-executing");
+        break;
+      case "text_delta": {
+        const currentPhase = phaseValueByKey.current[panelKey] ?? null;
+        if (currentPhase === "tool-executing") {
+          const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
+          const remainingMs = Math.max(0, 300 - elapsedMs);
+          if (remainingMs > 0) {
+            schedulePanelPhase(panelKey, "generating", remainingMs);
+            break;
+          }
+        }
+        commitPanelPhase(panelKey, "generating");
+        break;
+      }
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        commitPanelPhase(panelKey, null);
+        break;
+      default:
+        break;
+    }
   }
 
   async function onSendMessage(panelId: string, target: MobKitDockTarget | null) {
@@ -238,7 +307,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const userEntry = createUserEntry(text);
     setDraftByKey((current) => ({ ...current, [panelKey]: "" }));
     setSendingPanels((current) => new Set(current).add(panelKey));
-    setPanelPhaseByKey((current) => ({ ...current, [panelKey]: "waiting" }));
+    commitPanelPhase(panelKey, "waiting");
     setLocalEntriesByKey((current) => ({
       ...current,
       [panelKey]: [...(current[panelKey] || []), userEntry],
@@ -256,14 +325,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         `console:${panelId}`,
         (frame) => appendPanelFrame(panelKey, frame),
       );
-      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: null }));
+      commitPanelPhase(panelKey, null);
     } catch (submitError) {
       setError(errorMessage(submitError));
       setLocalEntriesByKey((current) => ({
         ...current,
         [panelKey]: (current[panelKey] || []).filter((entry) => entry.id !== userEntry.id),
       }));
-      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: null }));
+      commitPanelPhase(panelKey, null);
     } finally {
       setSendingPanels((current) => {
         const next = new Set(current);

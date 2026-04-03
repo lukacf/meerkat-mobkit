@@ -7,7 +7,7 @@ This pack uses:
 - the stock Rust runtime and stock `/console/*` surfaces
 - stock `mobkit/interact`
 - stock routing, delivery, inspect, lifecycle, topology, and gating methods
-- a deterministic scripted LLM/tool path so the scenario stays offline and repeatable
+- a live provider-backed MobKit runtime with synthetic incident data and deterministic tool fixtures
 
 ## What it proves
 
@@ -22,5 +22,6 @@ This pack uses:
 ## Run
 
 ```bash
+export OPENAI_API_KEY=...
 ./examples.sh
 ```
