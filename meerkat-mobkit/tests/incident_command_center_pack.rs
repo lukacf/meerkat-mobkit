@@ -1,0 +1,158 @@
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::uninlined_format_args,
+    clippy::collapsible_if,
+    clippy::redundant_clone,
+    clippy::needless_raw_string_hashes,
+    clippy::single_match,
+    clippy::redundant_closure_for_method_calls,
+    clippy::redundant_pattern_matching,
+    clippy::ignored_unit_patterns,
+    clippy::clone_on_copy,
+    clippy::manual_assert,
+    clippy::unwrap_in_result,
+    clippy::useless_vec
+)]
+
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode};
+use meerkat_mobkit::example_support::incident_command_center::{
+    build_runtime_bundle, scenario_path,
+};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+async fn json_response(app: axum::Router, request: Request<Body>) -> Value {
+    let response = app.oneshot(request).await.expect("router response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body bytes");
+    serde_json::from_slice(&body).expect("json body")
+}
+
+#[tokio::test]
+async fn incident_pack_exposes_seeded_stock_console_state() {
+    let bundle = build_runtime_bundle(&scenario_path().expect("incident scenario path"))
+        .await
+        .expect("incident runtime bundle");
+    let app = bundle
+        .runtime
+        .build_reference_app_router(bundle.decisions.clone());
+
+    let experience = json_response(
+        app.clone(),
+        Request::builder()
+            .uri("/console/experience")
+            .body(Body::empty())
+            .expect("experience request"),
+    )
+    .await;
+
+    assert_eq!(experience["contract_version"], json!("0.3.0"));
+    let agents = experience["agent_sidebar"]["live_snapshot"]["agents"]
+        .as_array()
+        .expect("agent rows");
+    let commander = agents
+        .iter()
+        .find(|entry| entry["identity"] == json!("incident-commander"))
+        .expect("incident commander row");
+    assert_eq!(commander["watched"], json!(true));
+    assert_eq!(commander["alertLevel"], json!("critical"));
+
+    let health_monitor = agents
+        .iter()
+        .find(|entry| entry["identity"] == json!("health-monitor"))
+        .expect("health monitor row");
+    assert_eq!(health_monitor["degraded"], json!(true));
+    assert_eq!(health_monitor["degradedReason"], json!("peer_unreachable"));
+
+    let topology_nodes = experience["topology"]["live_snapshot"]["nodes"]
+        .as_array()
+        .expect("topology nodes");
+    let commander_node = topology_nodes
+        .iter()
+        .find(|entry| entry["identity"] == json!("incident-commander"))
+        .expect("incident commander topology node");
+    let wired_to = commander_node["wired_to"]
+        .as_array()
+        .expect("wired_to array");
+    assert!(
+        wired_to.contains(&json!("payments-sre")) || wired_to.contains(&json!("merchant-comms")),
+        "incident commander should have seeded runtime wiring"
+    );
+
+    let filter_presets = experience["activity_feed"]["filter_presets"]
+        .as_array()
+        .expect("activity filter presets");
+    assert!(
+        filter_presets
+            .iter()
+            .any(|preset| preset["id"] == json!("watched-only")),
+        "watched-only filter preset should be projected"
+    );
+
+    let routes = json_response(
+        app.clone(),
+        Request::builder()
+            .method("POST")
+            .uri("/console/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "incident-pack-routes",
+                    "method": "mobkit/routing/routes/list",
+                    "params": {},
+                })
+                .to_string(),
+            ))
+            .expect("routes request"),
+    )
+    .await;
+    assert!(
+        routes.get("error").is_none() || routes["error"].is_null(),
+        "routing rpc should succeed: {routes:?}"
+    );
+    let route_rows = routes["result"]["routes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("routes array missing in response: {routes:?}"));
+    assert!(
+        route_rows
+            .iter()
+            .any(|route| route["route_key"] == json!("incident-statuspage")),
+        "seeded statuspage route should exist"
+    );
+
+    let pending = json_response(
+        app,
+        Request::builder()
+            .method("POST")
+            .uri("/console/rpc")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": "incident-pack-gating",
+                    "method": "mobkit/gating/pending",
+                    "params": {},
+                })
+                .to_string(),
+            ))
+            .expect("gating request"),
+    )
+    .await;
+    assert!(
+        pending.get("error").is_none() || pending["error"].is_null(),
+        "gating rpc should succeed: {pending:?}"
+    );
+    let pending_rows = pending["result"]["pending"]
+        .as_array()
+        .unwrap_or_else(|| panic!("pending array missing in response: {pending:?}"));
+    assert!(
+        !pending_rows.is_empty(),
+        "seeded gating pending entry should exist"
+    );
+}

@@ -31,6 +31,7 @@ struct ConsoleEventReplayState {
     identity_stream_checkpoints: BTreeMap<String, String>,
     pending_by_identity: BTreeMap<String, VecDeque<PendingInteraction>>,
     runtime_to_identity: BTreeMap<String, String>,
+    response_phase_by_identity: BTreeMap<String, Option<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +68,7 @@ impl ConsoleEventStore {
                 identity_stream_checkpoints: BTreeMap::new(),
                 pending_by_identity: BTreeMap::new(),
                 runtime_to_identity: BTreeMap::new(),
+                response_phase_by_identity: BTreeMap::new(),
             })),
             event_tx,
         }
@@ -242,6 +244,9 @@ impl ConsoleEventStore {
                     .runtime_to_identity
                     .insert(runtime_member_id.to_string(), identity.to_string());
             }
+            state
+                .response_phase_by_identity
+                .insert(identity.to_string(), Some("waiting".to_string()));
         }
         Ok(())
     }
@@ -259,6 +264,12 @@ impl ConsoleEventStore {
         let Some(pending) = pending else {
             return;
         };
+        {
+            let mut state = self.state.write().await;
+            state
+                .response_phase_by_identity
+                .insert(identity.to_string(), Some("waiting".to_string()));
+        }
         self.append(
             identity,
             Some(interaction_id.to_string()),
@@ -289,6 +300,9 @@ impl ConsoleEventStore {
                 .pending_by_identity
                 .remove(identity)
                 .unwrap_or_default();
+            state
+                .response_phase_by_identity
+                .insert(identity.to_string(), None);
             pending.into_iter().collect::<Vec<_>>()
         };
         for pending in failed {
@@ -323,6 +337,9 @@ impl ConsoleEventStore {
                     state.pending_by_identity.remove(identity);
                 }
             }
+            state
+                .response_phase_by_identity
+                .insert(identity.to_string(), None);
         }
         self.append(
             identity,
@@ -394,6 +411,28 @@ impl ConsoleEventStore {
         })
         .await;
 
+        {
+            let mut state = self.state.write().await;
+            match event_type.as_str() {
+                "tool_call_requested" | "tool_call" | "tool_result_received" => {
+                    state
+                        .response_phase_by_identity
+                        .insert(identity.clone(), Some("tool-executing".to_string()));
+                }
+                "text_delta" => {
+                    state
+                        .response_phase_by_identity
+                        .insert(identity.clone(), Some("generating".to_string()));
+                }
+                "run_completed" | "run_failed" => {
+                    state
+                        .response_phase_by_identity
+                        .insert(identity.clone(), None);
+                }
+                _ => {}
+            }
+        }
+
         if matches!(event_type.as_str(), "run_completed" | "run_failed") {
             let mut state = self.state.write().await;
             if let Some(queue) = state.pending_by_identity.get_mut(&identity)
@@ -407,6 +446,16 @@ impl ConsoleEventStore {
                 }
             }
         }
+    }
+
+    pub(crate) async fn response_phase_for_identity(&self, identity: &str) -> Option<String> {
+        self.state
+            .read()
+            .await
+            .response_phase_by_identity
+            .get(identity)
+            .cloned()
+            .flatten()
     }
 }
 

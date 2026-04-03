@@ -246,3 +246,68 @@ svg {
   max-width: var(--_cc-content-width);
   margin: 0 auto;
 }
+
+.console-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  padding: 20px 24px;
+  overflow: auto;
+}
+
+.console-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.console-panel__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.console-panel__actions button {
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.console-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.console-panel__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.console-panel__list li {
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.console-panel__grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 10px 14px;
+  margin: 0;
+}
+
+.console-panel__grid dt {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.console-panel__grid dd {
+  margin: 0;
+}

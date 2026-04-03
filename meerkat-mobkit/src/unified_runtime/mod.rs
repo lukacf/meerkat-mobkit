@@ -108,7 +108,7 @@ pub struct UnifiedRuntime {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
 
     // Fine-grained interior mutability
-    module_runtime: tokio::sync::Mutex<MobkitRuntimeHandle>,
+    module_runtime: Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>,
     managed_dynamic_edges: tokio::sync::RwLock<BTreeSet<(String, String)>>,
     shutting_down: AtomicBool,
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
@@ -150,7 +150,7 @@ impl UnifiedRuntime {
             drain_timeout: DEFAULT_DRAIN_TIMEOUT,
             discovery: None,
             edge_discovery: None,
-            module_runtime: tokio::sync::Mutex::new(module_runtime),
+            module_runtime: Arc::new(tokio::sync::Mutex::new(module_runtime)),
             managed_dynamic_edges: tokio::sync::RwLock::new(BTreeSet::new()),
             shutting_down: AtomicBool::new(false),
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
@@ -230,6 +230,10 @@ impl UnifiedRuntime {
 
     pub(crate) fn console_events(&self) -> ConsoleEventStore {
         self.console_events.clone()
+    }
+
+    pub(crate) fn module_runtime_handle(&self) -> Arc<tokio::sync::Mutex<MobkitRuntimeHandle>> {
+        Arc::clone(&self.module_runtime)
     }
 
     /// Return the session bridge for identity-first operations, if configured.

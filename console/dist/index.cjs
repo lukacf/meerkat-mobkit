@@ -144,6 +144,17 @@ function RosterPanel({
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: panel.title }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-actions", children: [
         panel.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__section-meta", children: panel.meta }) : null,
+        panel.actions?.map((action) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "button",
+          {
+            type: "button",
+            className: clsx_default("cc-activity-rail__section-action", action.active && "is-active"),
+            "data-testid": `activity-action:${panel.id}:${action.id}`,
+            onClick: () => onPanelAction?.(panel.id, action.id),
+            children: action.label
+          },
+          action.id
+        )),
         onRemovePanel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
           "button",
           {
@@ -194,6 +205,7 @@ function PulsePanel({
   Icon: Icon2,
   panel,
   onRemovePanel,
+  onPanelAction: onPanelAction2,
   onSelectItem,
   onTogglePin
 }) {
@@ -202,6 +214,17 @@ function PulsePanel({
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: panel.title }),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-actions", children: [
         panel.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__section-meta", children: panel.meta }) : null,
+        panel.actions?.map((action) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+          "button",
+          {
+            type: "button",
+            className: clsx_default("cc-activity-rail__section-action", action.active && "is-active"),
+            "data-testid": `activity-action:${panel.id}:${action.id}`,
+            onClick: () => onPanelAction2?.(panel.id, action.id),
+            children: action.label
+          },
+          action.id
+        )),
         onRemovePanel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
           "button",
           {
@@ -224,6 +247,7 @@ function PulsePanel({
             {
               type: "button",
               className: "cc-activity-rail__pulse-main",
+              "data-testid": `activity-item:${panel.id}:${item.id}`,
               title: item.tooltip || `${item.title} \xB7 ${item.line}`,
               onClick: () => item.focusId && onSelectItem?.(item.focusId),
               children: [
@@ -251,7 +275,7 @@ function FeedPanel({
   onRemovePanel,
   onSelectItem,
   onTogglePin,
-  onPanelAction,
+  onPanelAction: onPanelAction2,
   renderSlotPreview
 }) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cc-activity-rail__section cc-activity-rail__section--feed", children: [
@@ -263,7 +287,7 @@ function FeedPanel({
           {
             type: "button",
             className: clsx_default("cc-activity-rail__section-action", action.active && "is-active"),
-            onClick: () => onPanelAction?.(panel.id, action.id),
+            onClick: () => onPanelAction2?.(panel.id, action.id),
             children: action.label
           },
           action.id
@@ -327,7 +351,7 @@ function renderPanel({
   onRemovePanel,
   onSelectItem,
   onTogglePin,
-  onPanelAction,
+  onPanelAction: onPanelAction2,
   renderSlotPreview
 }) {
   if (panel.kind === "roster") {
@@ -349,6 +373,7 @@ function renderPanel({
       {
         Icon: Icon2,
         onRemovePanel,
+        onPanelAction: onPanelAction2,
         onSelectItem,
         onTogglePin,
         panel
@@ -360,7 +385,7 @@ function renderPanel({
     FeedPanel,
     {
       Icon: Icon2,
-      onPanelAction,
+      onPanelAction: onPanelAction2,
       onRemovePanel,
       onSelectItem,
       onTogglePin,
@@ -382,7 +407,7 @@ function ConsoleActivityRail({
   onRemovePanel,
   onSelectItem,
   onTogglePin,
-  onPanelAction,
+  onPanelAction: onPanelAction2,
   renderSlotPreview
 }) {
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-theme-scope cc-activity-rail", children: [
@@ -438,7 +463,7 @@ function ConsoleActivityRail({
           onRemovePanel,
           onSelectItem,
           onTogglePin,
-          onPanelAction,
+          onPanelAction: onPanelAction2,
           renderSlotPreview
         })) }) : viewState.emptyState ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__empty-shell", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__empty-title", children: viewState.emptyState.title }),
@@ -524,6 +549,9 @@ function normalizeResponsePhase(value) {
       return null;
   }
 }
+function normalizeFiniteNumber(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : void 0;
+}
 function normalizeSidebarWatchFields(value) {
   const record = value && typeof value === "object" ? value : {};
   const normalized = {};
@@ -579,6 +607,83 @@ function normalizeIdentityStatusRow(value) {
     ...typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version) ? { checkpoint_version: record.checkpoint_version } : {},
     ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {}
   };
+}
+function normalizeRoutingSectionView(value) {
+  const record = value && typeof value === "object" ? value : null;
+  if (!record) {
+    return null;
+  }
+  const routes = Array.isArray(record.routes) ? record.routes.map((entry) => {
+    const route = entry && typeof entry === "object" ? entry : null;
+    if (!route) {
+      return null;
+    }
+    const routeKey = trimString(route.route_key);
+    const recipient = trimString(route.recipient);
+    const sink = trimString(route.sink);
+    const targetModule = trimString(route.target_module);
+    if (!routeKey || !recipient || !sink || !targetModule) {
+      return null;
+    }
+    return {
+      route_key: routeKey,
+      recipient,
+      sink,
+      target_module: targetModule,
+      ...trimString(route.channel) ? { channel: trimString(route.channel) } : {},
+      ...normalizeFiniteNumber(route.retry_max) !== void 0 ? { retry_max: normalizeFiniteNumber(route.retry_max) } : {},
+      ...normalizeFiniteNumber(route.backoff_ms) !== void 0 ? { backoff_ms: normalizeFiniteNumber(route.backoff_ms) } : {},
+      ...normalizeFiniteNumber(route.rate_limit_per_minute) !== void 0 ? { rate_limit_per_minute: normalizeFiniteNumber(route.rate_limit_per_minute) } : {}
+    };
+  }).filter((entry) => Boolean(entry)) : [];
+  const deliveries = Array.isArray(record.deliveries) ? record.deliveries.map((entry) => {
+    const delivery = entry && typeof entry === "object" ? entry : null;
+    if (!delivery) {
+      return null;
+    }
+    const deliveryId = trimString(delivery.delivery_id);
+    const routeId = trimString(delivery.route_id);
+    const recipient = trimString(delivery.recipient);
+    const sink = trimString(delivery.sink);
+    const targetModule = trimString(delivery.target_module);
+    const status = trimString(delivery.status);
+    const firstAttempt = normalizeFiniteNumber(delivery.first_attempt_ms);
+    const finalAttempt = normalizeFiniteNumber(delivery.final_attempt_ms);
+    if (!deliveryId || !routeId || !recipient || !sink || !targetModule || !status || firstAttempt === void 0 || finalAttempt === void 0) {
+      return null;
+    }
+    const attempts = Array.isArray(delivery.attempts) ? delivery.attempts.map((attemptRaw) => {
+      const attempt = attemptRaw && typeof attemptRaw === "object" ? attemptRaw : null;
+      if (!attempt) {
+        return null;
+      }
+      const attemptNumber = normalizeFiniteNumber(attempt.attempt);
+      const attemptStatus = trimString(attempt.status);
+      const backoff = normalizeFiniteNumber(attempt.backoff_ms);
+      if (attemptNumber === void 0 || !attemptStatus || backoff === void 0) {
+        return null;
+      }
+      return {
+        attempt: attemptNumber,
+        status: attemptStatus,
+        backoff_ms: backoff
+      };
+    }).filter((attempt) => Boolean(attempt)) : [];
+    return {
+      delivery_id: deliveryId,
+      route_id: routeId,
+      recipient,
+      sink,
+      target_module: targetModule,
+      status,
+      first_attempt_ms: firstAttempt,
+      final_attempt_ms: finalAttempt,
+      attempts,
+      ...trimString(delivery.idempotency_key) ? { idempotency_key: trimString(delivery.idempotency_key) } : {},
+      ...trimString(delivery.sink_adapter) ? { sink_adapter: trimString(delivery.sink_adapter) } : {}
+    };
+  }).filter((entry) => Boolean(entry)) : [];
+  return { routes, deliveries };
 }
 function normalizeReplayUnavailableError(value) {
   const record = value && typeof value === "object" ? value : null;
@@ -1482,7 +1587,7 @@ function splitConsoleDockPanel(state, panelId, direction, options) {
     preferred: panel.target,
     excludedIds,
     suggestTargets: options.suggestTargets
-  })[0] || null;
+  })[0] || panel.target || null;
   const nextPanel = options.createPanelState({
     target: suggestedTarget,
     sourcePanel: panel
@@ -2290,6 +2395,7 @@ function splitGlyph(direction) {
 }
 function PanelActionButton({
   direction,
+  panelId,
   onClick
 }) {
   return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
@@ -2297,6 +2403,7 @@ function PanelActionButton({
     {
       "aria-label": `Split ${direction}`,
       className: "cc-dock-panel__icon-action",
+      "data-testid": `dock-split:${panelId}:${direction}`,
       type: "button",
       onClick,
       children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { "aria-hidden": "true", children: splitGlyph(direction) })
@@ -2326,6 +2433,7 @@ function PanelNodeView({
         PanelActionButton,
         {
           direction,
+          panelId: panel.id,
           onClick: () => onSplitPanel?.(panel, direction)
         },
         direction
@@ -2335,6 +2443,7 @@ function PanelNodeView({
         {
           "aria-label": "Close panel",
           className: "cc-dock-panel__icon-action is-close",
+          "data-testid": `dock-close:${panel.id}`,
           type: "button",
           onClick: () => onClosePanel?.(panel),
           children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { "aria-hidden": "true", children: "\xD7" })
@@ -2350,6 +2459,7 @@ function PanelNodeView({
           focusedPanelId === panel.id && "is-focused",
           panel.mode === "terminal" && "is-terminal"
         ),
+        "data-testid": `dock-panel:${panel.id}`,
         "data-panel-id": panel.id,
         onMouseDown: () => onFocusPanel?.(panel),
         children: [
@@ -2476,6 +2586,7 @@ function PanelNodeView({
       {
         "aria-label": `Resize ${splitNode.direction} split`,
         className: "cc-dock-split__divider",
+        "data-testid": `dock-divider:${splitNode.id}`,
         type: "button",
         onPointerDown: handleResizeStart,
         children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-split__divider-line", "aria-hidden": "true" })
@@ -3243,8 +3354,14 @@ function normalizeAgents(experience, modules) {
 
 // src/lib/adapters.ts
 function buildPanelConversationKey(panelId, target) {
-  const targetKey = target?.addressingMode === "identity" ? target.identity || target.memberId || target.id : target?.memberId || target?.id || "none";
-  return `panel:${panelId}:${targetKey}`;
+  if (!target) {
+    return `panel:${panelId}:none`;
+  }
+  if (target.kind !== "agent-chat") {
+    return `panel:${panelId}:${target.kind}:${target.id}`;
+  }
+  const targetKey = target.addressingMode === "identity" ? target.identity || target.memberId || target.id : target.memberId || target.id;
+  return `panel:${panelId}:${target.kind}:${targetKey}`;
 }
 function buildDockTarget(agent) {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
@@ -3257,8 +3374,34 @@ function buildDockTarget(agent) {
     memberId: agent.member_id,
     ...identity ? { identity } : {},
     title: agent.label,
-    subtitle
+    subtitle,
+    iconName: "i-team"
   };
+}
+function buildInspectTarget(agent) {
+  return {
+    id: `inspect:${agent.identity || agent.member_id}`,
+    kind: "identity-inspect",
+    identity: agent.identity || agent.member_id,
+    memberId: agent.member_id,
+    title: `${agent.label} Inspect`,
+    subtitle: agent.identity || agent.member_id,
+    iconName: "i-terminal"
+  };
+}
+function buildControlTarget(kind) {
+  switch (kind) {
+    case "routing":
+      return { id: "routing", kind, title: "Routing", subtitle: "Routes and delivery history", iconName: "i-swap" };
+    case "gating":
+      return { id: "gating", kind, title: "Gating", subtitle: "Pending approvals and audit", iconName: "i-bolt" };
+    case "topology":
+      return { id: "topology", kind, title: "Topology", subtitle: "Identity connectivity", iconName: "i-team" };
+    case "health":
+      return { id: "health", kind, title: "Health", subtitle: "Runtime and identity health", iconName: "i-gear" };
+    default:
+      return { id: kind, kind: "health", title: "Health" };
+  }
 }
 function agentGroupKey(agent) {
   return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
@@ -3311,9 +3454,6 @@ function buildSidebarViewState(args) {
     title: group,
     iconName: sectionIconForGroup(group),
     meta: [{ id: "count", label: `${members.length}` }],
-    actions: [
-      { id: "spawn_in_group", label: `Spawn agent in ${group}`, iconName: "i-plus" }
-    ],
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
       const isPinned = pinnedAgentIds.has(agent.member_id);
@@ -3321,15 +3461,21 @@ function buildSidebarViewState(args) {
       return {
         id: agent.member_id,
         title: agent.label,
-        subtitle: agent.member_id,
+        subtitle: agent.identity || agent.member_id,
         selected: agent.member_id === selectedMemberId,
         pinned: isPinned,
         disabled: !isAddressable,
         ...watchFields,
         meta: [
-          ...agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : []
+          ...agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : [],
+          ...agent.response_phase ? [{ id: "phase", label: agent.response_phase, tone: "accent" }] : []
         ],
         actions: [
+          {
+            id: "inspect_identity",
+            label: "Inspect identity",
+            iconName: "i-terminal"
+          },
           {
             id: "toggle_pin",
             label: isPinned ? "Unpin agent" : "Pin agent",
@@ -3342,16 +3488,16 @@ function buildSidebarViewState(args) {
   }));
   return {
     blocks: [
-      // Action strip: top-level controls
       {
         id: "controls",
         kind: "action_strip",
         actions: [
-          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
-          { id: "reconcile", label: "Reconcile", iconName: "i-refresh" }
+          { id: "open_routing", label: "Routing", iconName: "i-swap" },
+          { id: "open_gating", label: "Gating", iconName: "i-bolt" },
+          { id: "open_topology", label: "Topology", iconName: "i-team" },
+          { id: "open_health", label: "Health", iconName: "i-gear" }
         ]
       },
-      // Agent list — "Agents" header with inline sort/add actions (like meerkat-app "Threads")
       {
         id: "agents",
         kind: "list",
@@ -3364,6 +3510,15 @@ function buildSidebarViewState(args) {
       }
     ]
   };
+}
+function buildRoutingSectionView(args) {
+  const routesRecord = typeof args.routesResponse === "object" && args.routesResponse !== null ? args.routesResponse : {};
+  const historyRecord = typeof args.historyResponse === "object" && args.historyResponse !== null ? args.historyResponse : {};
+  const normalized = normalizeRoutingSectionView({
+    routes: Array.isArray(routesRecord.routes) ? routesRecord.routes : [],
+    deliveries: Array.isArray(historyRecord.deliveries) ? historyRecord.deliveries : []
+  });
+  return normalized ?? { routes: [], deliveries: [] };
 }
 var USER_IDENTITY = {
   id: "user",
@@ -3393,6 +3548,7 @@ function summarizeFrameData(data) {
     if (typeof record.result === "string" && record.result.trim()) return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
+    if (typeof record.reason === "string" && record.reason.trim()) return record.reason;
     if (typeof record.kind === "string" && typeof record.event_type === "string") return "";
     return JSON.stringify(record);
   }
@@ -3409,6 +3565,69 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "run_failed",
   "keep-alive"
 ]);
+function parseToolCallId(frame) {
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const id = record?.tool_call_id ?? record?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+function parseToolName(frame) {
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
+}
+function parseToolArguments(frame) {
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  if (typeof record?.arguments === "string" && record.arguments.trim()) {
+    return record.arguments;
+  }
+  if ("args" in (record || {}) && record?.args !== void 0) {
+    return JSON.stringify(record.args);
+  }
+  return JSON.stringify(record || {});
+}
+function parseToolResult(frame) {
+  const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+  const result = summarizeFrameData(frame.data).trim();
+  const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
+  return {
+    ...result ? { result } : {},
+    status: isError ? "error" : "success"
+  };
+}
+function buildToolBlocks(frames) {
+  const toolCalls = /* @__PURE__ */ new Map();
+  const pendingResults = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      const toolCallId = parseToolCallId(frame);
+      if (!toolCallId) continue;
+      const parsed = parseToolResult(frame);
+      if (toolCalls.has(toolCallId)) {
+        const current = toolCalls.get(toolCallId);
+        toolCalls.set(toolCallId, {
+          ...current,
+          ...parsed.result ? { result: parsed.result } : {},
+          status: parsed.status
+        });
+      } else {
+        pendingResults.set(toolCallId, parsed);
+      }
+    }
+    if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") {
+      const toolCallId = parseToolCallId(frame);
+      if (!toolCallId || toolCalls.has(toolCallId)) continue;
+      const pending = pendingResults.get(toolCallId);
+      toolCalls.set(toolCallId, {
+        type: "tool-call",
+        toolCallId,
+        name: parseToolName(frame),
+        arguments: parseToolArguments(frame),
+        ...pending?.result ? { result: pending.result } : {},
+        status: pending?.status || "pending"
+      });
+    }
+  }
+  return toolCalls;
+}
 function renderTerminalEntry(agent, frame, entryId) {
   if (frame.event === "interaction_complete") {
     const text = summarizeFrameData(frame.data).trim();
@@ -3437,6 +3656,8 @@ function renderTerminalEntry(agent, frame, entryId) {
 }
 function mapFramesToTimelineEntries(agent, frames) {
   const entries = [];
+  const toolBlocks = buildToolBlocks(frames);
+  const emittedToolCalls = /* @__PURE__ */ new Set();
   let pendingText = "";
   let pendingId = "";
   function flushPendingText() {
@@ -3457,32 +3678,32 @@ function mapFramesToTimelineEntries(agent, frames) {
     const entryId = `${frame.id || frame.event || "frame"}:${i}`;
     if (frame.event === "text_delta") {
       if (!pendingId) pendingId = entryId;
-      const delta = typeof frame.data?.delta === "string" ? frame.data.delta : summarizeFrameData(frame.data);
-      pendingText += delta;
+      pendingText += summarizeFrameData(frame.data);
+      continue;
+    }
+    const toolCallId = parseToolCallId(frame);
+    if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") && !emittedToolCalls.has(toolCallId)) {
+      flushPendingText();
+      const block = toolBlocks.get(toolCallId);
+      if (block) {
+        entries.push({
+          kind: "message",
+          id: entryId,
+          identity: agentIdentity(agent),
+          variant: "rich",
+          blocks: [block]
+        });
+        emittedToolCalls.add(toolCallId);
+      }
+      continue;
+    }
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       continue;
     }
     flushPendingText();
     const terminalEntry = renderTerminalEntry(agent, frame, entryId);
     if (terminalEntry) {
       entries.push(terminalEntry);
-      continue;
-    }
-    if (frame.event === "tool_call") {
-      const record = frame.data;
-      const toolName = typeof record?.name === "string" ? record.name : "tool";
-      const args = typeof record?.arguments === "string" ? record.arguments : JSON.stringify(record || {});
-      entries.push({
-        kind: "message",
-        id: entryId,
-        identity: agentIdentity(agent),
-        variant: "rich",
-        blocks: [{
-          type: "command",
-          caption: "Tool call",
-          title: toolName,
-          body: args
-        }]
-      });
       continue;
     }
     if (HIDDEN_EVENTS.has(frame.event)) continue;
@@ -3507,6 +3728,35 @@ function createUserEntry(message) {
     text: message
   };
 }
+function inferResponsePhaseFromFrames(frames, fallback = null) {
+  let phase = fallback;
+  for (const frame of frames) {
+    switch (frame.event) {
+      case "interaction_started":
+        phase = "waiting";
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        phase = "tool-executing";
+        break;
+      case "text_delta":
+        phase = "generating";
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        phase = null;
+        break;
+      default:
+        break;
+    }
+  }
+  return phase;
+}
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
   return {
@@ -3522,18 +3772,60 @@ function buildConversationViewState(args) {
   };
 }
 function buildActivityRailViewState(args) {
-  const pulseItems = args.eventFrames.slice(0, 50).map((frame, index) => ({
-    id: `event:${frame.id || index}`,
-    title: frame.event || "event",
-    line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
-    meta: frame.id || ""
-  }));
+  const presets = args.filterPresets || [];
+  const activePreset = presets.find((preset) => preset.id === args.activePresetId) || null;
+  const agentByIdentity = /* @__PURE__ */ new Map();
+  const watchedIdentities = /* @__PURE__ */ new Set();
+  const criticalIdentities = /* @__PURE__ */ new Set();
+  for (const agent of args.agents) {
+    if (agent.identity) agentByIdentity.set(agent.identity, agent);
+    agentByIdentity.set(agent.member_id, agent);
+    if (agent.watched && (agent.identity || agent.member_id)) {
+      watchedIdentities.add(agent.identity || agent.member_id);
+    }
+    if (agent.alertLevel === "critical" && (agent.identity || agent.member_id)) {
+      criticalIdentities.add(agent.identity || agent.member_id);
+    }
+  }
+  const filteredFrames = args.eventFrames.filter((frame) => {
+    const frameIdentity = frame.identity?.trim();
+    if (!activePreset) return true;
+    if (activePreset.watchedOnly && frameIdentity && !watchedIdentities.has(frameIdentity)) {
+      return false;
+    }
+    if (activePreset.alertLevels?.length && frameIdentity) {
+      const agent = agentByIdentity.get(frameIdentity);
+      if (!agent?.alertLevel || !activePreset.alertLevels.includes(agent.alertLevel)) {
+        return false;
+      }
+    }
+    if (activePreset.eventTypeFilter?.length && !activePreset.eventTypeFilter.includes(frame.event)) {
+      return false;
+    }
+    return true;
+  });
+  const pulseItems = filteredFrames.slice(0, 50).map((frame, index) => {
+    const frameIdentity = frame.identity?.trim();
+    const agent = frameIdentity ? agentByIdentity.get(frameIdentity) : null;
+    return {
+      id: `event:${frame.id || index}`,
+      title: agent?.label || frameIdentity || frame.event || "event",
+      line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
+      meta: frame.event || frame.id || "",
+      ...agent ? { focusId: agent.member_id } : {}
+    };
+  });
   return {
     panels: [
       {
         id: "pulse",
         kind: "pulse",
-        title: "Events",
+        title: "Activity",
+        actions: presets.map((preset) => ({
+          id: preset.id,
+          label: preset.label,
+          active: preset.id === (activePreset?.id || "all")
+        })),
         items: pulseItems,
         emptyText: "No events yet"
       }
@@ -3560,6 +3852,8 @@ function unwrapConsoleEnvelope(eventName, data) {
     return {
       id: envelope.event_id,
       event: envelope.event_type || eventName,
+      identity: envelope.identity,
+      interactionId: envelope.interaction_id,
       data: envelope.data
     };
   }
@@ -3602,6 +3896,8 @@ function parseSseFrames(rawText) {
     frames.push({
       id: normalized.id || id,
       event: normalized.event || event,
+      identity: normalized.identity,
+      interactionId: normalized.interactionId,
       data: normalized.data
     });
   }
@@ -3654,22 +3950,24 @@ var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_failed",
   "run_failed"
 ]);
-function matchesCorrelation(data, correlation, allowUnscoped = true) {
+function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   if (!correlation?.sessionId && !correlation?.interactionId) {
     return true;
   }
-  if (data === null || typeof data !== "object") {
+  if (candidate === null || typeof candidate !== "object") {
     return allowUnscoped;
   }
-  const record = data;
-  const hasScopedField = "session_id" in record || "interaction_id" in record;
+  const record = candidate;
+  const sessionId = record.session_id ?? record.sessionId;
+  const interactionId = record.interaction_id ?? record.interactionId;
+  const hasScopedField = sessionId !== void 0 || interactionId !== void 0;
   if (!hasScopedField) {
     return allowUnscoped;
   }
-  if (correlation.sessionId && record.session_id === correlation.sessionId) {
+  if (correlation.sessionId && sessionId === correlation.sessionId) {
     return true;
   }
-  if (correlation.interactionId && record.interaction_id === correlation.interactionId) {
+  if (correlation.interactionId && interactionId === correlation.interactionId) {
     return true;
   }
   return false;
@@ -3695,7 +3993,7 @@ function hasMatchingTerminalEvent(rawText, correlation) {
   }
   return false;
 }
-async function drainInteractionResponse(response, correlation) {
+async function streamFramesFromResponse(response, options = {}) {
   if (!response.ok) {
     const text = await response.text();
     let parsed = null;
@@ -3715,62 +4013,70 @@ async function drainInteractionResponse(response, correlation) {
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
   if (!response.body || typeof response.body.getReader !== "function") {
-    return parseSseFrames(await response.text());
+    const frames2 = parseSseFrames(await response.text());
+    for (const frame of frames2) {
+      if (matchesCorrelation(frame, options.correlation, true)) {
+        options.onFrame?.(frame);
+      }
+    }
+    return !options.correlation ? frames2 : frames2.filter((frame) => matchesCorrelation(frame, options.correlation, true));
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let rawText = "";
+  let frameBuffer = "";
+  const frames = [];
   try {
-    while (!hasMatchingTerminalEvent(rawText, correlation)) {
+    while (!hasMatchingTerminalEvent(rawText, options.correlation)) {
       const { value, done } = await reader.read();
       if (done) {
         break;
       }
-      rawText += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      rawText += chunk;
+      frameBuffer += chunk;
+      frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+        if (matchesCorrelation(frame, options.correlation, true)) {
+          frames.push(frame);
+          options.onFrame?.(frame);
+        }
+      });
       if (rawText.length > 131072) {
         break;
       }
     }
-    rawText += decoder.decode();
+    const finalChunk = decoder.decode();
+    rawText += finalChunk;
+    frameBuffer += finalChunk;
+    flushSseBlocks(frameBuffer, (frame) => {
+      if (matchesCorrelation(frame, options.correlation, true)) {
+        frames.push(frame);
+        options.onFrame?.(frame);
+      }
+    });
   } finally {
     try {
       await reader.cancel();
     } catch {
     }
   }
-  const frames = parseSseFrames(rawText);
-  if (!correlation?.sessionId && !correlation?.interactionId) return frames;
-  return frames.filter((frame) => {
-    return matchesCorrelation(frame.data, correlation, true);
-  });
+  return frames;
 }
-async function sendInteraction(baseUrl, memberId, message) {
-  const streamAbort = new AbortController();
-  const streamResponsePromise = fetch(`${baseUrl}/interactions/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ member_id: memberId }),
-    signal: streamAbort.signal
-  });
-  void streamResponsePromise.catch(() => {
-  });
-  let sendResult;
-  try {
-    sendResult = await sendMessage(baseUrl, memberId, message);
-  } catch (err) {
-    streamAbort.abort();
-    throw err;
+function flushSseBlocks(buffer, onFrame) {
+  let searchIndex = 0;
+  while (true) {
+    const boundaryIndex = buffer.indexOf("\n\n", searchIndex);
+    if (boundaryIndex === -1) {
+      break;
+    }
+    const block = buffer.slice(0, boundaryIndex + 2);
+    buffer = buffer.slice(boundaryIndex + 2);
+    searchIndex = 0;
+    for (const frame of parseSseFrames(block)) {
+      onFrame(frame);
+    }
   }
-  let frames;
-  try {
-    frames = await drainInteractionResponse(
-      await streamResponsePromise,
-      { sessionId: sendResult.session_id }
-    );
-  } catch {
-    frames = [];
-  }
-  return { sendResult, frames };
+  return buffer;
 }
 async function sendInteract(baseUrl, identity, content, origin) {
   const accepted = await rpc(baseUrl, "mobkit/interact", {
@@ -3784,44 +4090,86 @@ async function sendInteract(baseUrl, identity, content, origin) {
   }
   return normalized;
 }
-async function sendAddressedInteraction(baseUrl, target, message, origin = "console") {
+async function sendAddressedInteractionStreaming(baseUrl, target, message, origin = "console", onFrame) {
   if (target.addressingMode === "identity") {
     const identity = target.identity?.trim();
     if (!identity) {
       throw new Error("identity-addressed send requires target.identity");
     }
-    const streamAbort = new AbortController();
-    const streamResponsePromise = fetch(`${baseUrl}/console/identity/stream`, {
+    const streamAbort2 = new AbortController();
+    const streamResponsePromise2 = fetch(`${baseUrl}/console/identity/stream`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ identity }),
-      signal: streamAbort.signal
+      signal: streamAbort2.signal
     });
-    void streamResponsePromise.catch(() => {
+    void streamResponsePromise2.catch(() => {
     });
-    let sendResult;
+    let sendResult2;
     try {
-      sendResult = await sendInteract(baseUrl, identity, message, origin);
-    } catch (err) {
-      streamAbort.abort();
-      throw err;
+      sendResult2 = await sendInteract(baseUrl, identity, message, origin);
+    } catch (error) {
+      streamAbort2.abort();
+      throw error;
     }
-    let frames;
+    let frames2;
     try {
-      frames = await drainInteractionResponse(
-        await streamResponsePromise,
-        { interactionId: sendResult.interaction_id }
-      );
+      frames2 = await streamFramesFromResponse(await streamResponsePromise2, {
+        correlation: { interactionId: sendResult2.interaction_id },
+        onFrame
+      });
     } catch {
-      frames = [];
+      frames2 = [];
     }
-    return { sendResult, frames };
+    return { sendResult: sendResult2, frames: frames2 };
   }
   const memberId = target.memberId?.trim();
   if (!memberId) {
     throw new Error("member-addressed send requires target.memberId");
   }
-  return sendInteraction(baseUrl, memberId, message);
+  const streamAbort = new AbortController();
+  const streamResponsePromise = fetch(`${baseUrl}/interactions/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ member_id: memberId }),
+    signal: streamAbort.signal
+  });
+  void streamResponsePromise.catch(() => {
+  });
+  let sendResult;
+  try {
+    sendResult = await sendMessage(baseUrl, memberId, message);
+  } catch (error) {
+    streamAbort.abort();
+    throw error;
+  }
+  let frames;
+  try {
+    frames = await streamFramesFromResponse(await streamResponsePromise, {
+      correlation: { sessionId: sendResult.session_id },
+      onFrame
+    });
+  } catch {
+    frames = [];
+  }
+  return { sendResult, frames };
+}
+async function callConsoleRpc(baseUrl, method, params = {}) {
+  return rpc(baseUrl, method, params);
+}
+function subscribeConsoleEvents(baseUrl, path, onFrame, options) {
+  const controller = new AbortController();
+  void (async () => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: options?.method || "GET",
+      headers: { "content-type": "application/json" },
+      ...options?.body ? { body: JSON.stringify(options.body) } : {},
+      signal: controller.signal
+    });
+    await streamFramesFromResponse(response, { onFrame });
+  })().catch(() => {
+  });
+  return () => controller.abort();
 }
 
 // src/icon.tsx
@@ -3956,15 +4304,24 @@ function Icon({ name, className }) {
 
 // src/ConsoleApp.tsx
 var import_jsx_runtime17 = require("react/jsx-runtime");
+var DEFAULT_APPROVER_ID = "console-ops-lead";
 function ConsoleApp({ baseUrl }) {
+  const [experience, setExperience] = import_react6.default.useState(null);
   const [agents, setAgents] = import_react6.default.useState([]);
-  const [entriesByPanelId, setEntriesByPanelId] = import_react6.default.useState({});
+  const [panelFramesByKey, setPanelFramesByKey] = import_react6.default.useState({});
+  const [localEntriesByKey, setLocalEntriesByKey] = import_react6.default.useState({});
   const [activityFrames, setActivityFrames] = import_react6.default.useState([]);
-  const [draftByPanelId, setDraftByPanelId] = import_react6.default.useState({});
+  const [draftByKey, setDraftByKey] = import_react6.default.useState({});
   const [sendingPanels, setSendingPanels] = import_react6.default.useState(/* @__PURE__ */ new Set());
   const [pinnedAgentIds, setPinnedAgentIds] = import_react6.default.useState(/* @__PURE__ */ new Set());
+  const [panelPhaseByKey, setPanelPhaseByKey] = import_react6.default.useState({});
+  const [inspectByIdentity, setInspectByIdentity] = import_react6.default.useState({});
+  const [routingData, setRoutingData] = import_react6.default.useState({ routes: [], deliveries: [] });
+  const [gatingData, setGatingData] = import_react6.default.useState({ pending: [], audit: [] });
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react6.default.useState("all");
   const [loading, setLoading] = import_react6.default.useState(true);
   const [error, setError] = import_react6.default.useState("");
+  const initialTargetOpened = import_react6.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: `panel-${crypto.randomUUID()}`,
@@ -3972,86 +4329,187 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
+  const loadExperience = import_react6.default.useCallback(async () => {
+    const [experienceJson, modulesJson] = await Promise.all([
+      fetchJson(baseUrl, "/console/experience"),
+      fetchJson(baseUrl, "/console/modules")
+    ]);
+    const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map((moduleId) => String(moduleId)) : [];
+    const nextAgents = normalizeAgents(experienceJson, loadedModules);
+    setExperience(experienceJson);
+    setAgents(nextAgents);
+    setActiveActivityPresetId((current) => current || experienceJson.activity_feed?.active_preset_id || "all");
+  }, [baseUrl]);
   import_react6.default.useEffect(() => {
     let mounted = true;
-    async function load() {
-      setLoading(true);
-      setError("");
-      try {
-        const [experienceJson, modulesJson] = await Promise.all([
-          fetchJson(baseUrl, "/console/experience"),
-          fetchJson(baseUrl, "/console/modules")
-        ]);
-        if (!mounted) return;
-        const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map((moduleId) => String(moduleId)) : [];
-        const nextAgents = normalizeAgents(experienceJson, loadedModules);
-        setAgents(nextAgents);
-        const firstAddressable = nextAgents.find(
-          (a) => a.addressable || a.affordances?.can_send_message
-        ) || nextAgents[0];
-        if (firstAddressable) {
-          dock.openTarget(buildDockTarget(firstAddressable), "replace_focused");
-        }
-      } catch (loadError) {
-        if (mounted) setError(errorMessage(loadError));
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    }
-    void load();
+    setLoading(true);
+    setError("");
+    void loadExperience().catch((loadError) => {
+      if (mounted) setError(errorMessage(loadError));
+    }).finally(() => {
+      if (mounted) setLoading(false);
+    });
+    const interval = window.setInterval(() => {
+      void loadExperience().catch(() => {
+      });
+    }, 5e3);
     return () => {
       mounted = false;
+      window.clearInterval(interval);
     };
+  }, [loadExperience]);
+  import_react6.default.useEffect(() => {
+    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) {
+      return;
+    }
+    const firstAddressable = agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
+    if (!firstAddressable) {
+      return;
+    }
+    initialTargetOpened.current = true;
+    dock.openTarget(buildDockTarget(firstAddressable), "replace_focused");
+  }, [agents, dock]);
+  import_react6.default.useEffect(() => {
+    return subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+      setActivityFrames((current) => [frame, ...current].slice(0, 200));
+    });
   }, [baseUrl]);
+  import_react6.default.useEffect(() => {
+    setPanelPhaseByKey((current) => {
+      const next = {};
+      for (const [panelKey, frames] of Object.entries(panelFramesByKey)) {
+        next[panelKey] = inferResponsePhaseFromFrames(frames, current[panelKey] ?? null);
+      }
+      return next;
+    });
+  }, [panelFramesByKey]);
+  import_react6.default.useEffect(() => {
+    const openPanels = dock.viewState.panels.map((panel) => panel.target).filter(Boolean);
+    const inspectTargets = openPanels.filter((target) => target.kind === "identity-inspect");
+    const hasRouting = openPanels.some((target) => target.kind === "routing");
+    const hasGating = openPanels.some((target) => target.kind === "gating");
+    let cancelled = false;
+    async function refreshPanelData() {
+      try {
+        if (inspectTargets.length) {
+          const inspectEntries = await Promise.all(
+            inspectTargets.map(async (target) => {
+              const result = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", {
+                identity: target.identity
+              });
+              return [target.identity, result];
+            })
+          );
+          if (!cancelled) {
+            setInspectByIdentity((current) => ({ ...current, ...Object.fromEntries(inspectEntries) }));
+          }
+        }
+        if (hasRouting) {
+          const [routesResponse, historyResponse] = await Promise.all([
+            callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
+            callConsoleRpc(baseUrl, "mobkit/delivery/history", {})
+          ]);
+          if (!cancelled) {
+            setRoutingData(buildRoutingSectionView({ routesResponse, historyResponse }));
+          }
+        }
+        if (hasGating) {
+          const [pendingResponse, auditResponse] = await Promise.all([
+            callConsoleRpc(baseUrl, "mobkit/gating/pending", {}),
+            callConsoleRpc(baseUrl, "mobkit/gating/audit", { limit: 50 })
+          ]);
+          if (!cancelled) {
+            setGatingData({
+              pending: Array.isArray(pendingResponse.pending) ? pendingResponse.pending : [],
+              audit: Array.isArray(auditResponse.entries) ? auditResponse.entries : []
+            });
+          }
+        }
+      } catch (panelError) {
+        if (!cancelled) {
+          setError(errorMessage(panelError));
+        }
+      }
+    }
+    void refreshPanelData();
+    const interval = window.setInterval(() => void refreshPanelData(), 5e3);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [baseUrl, dock.viewState.panels]);
   function onSelectAgent(_block, _section, item) {
-    const agent = agents.find((a) => a.member_id === item.id);
+    const agent = agents.find((candidate) => candidate.member_id === item.id);
     if (agent) {
       dock.openTarget(buildDockTarget(agent), "replace_focused");
     }
   }
+  function appendPanelFrame(panelKey, frame) {
+    setPanelFramesByKey((current) => {
+      const nextFrames = [...current[panelKey] || [], frame];
+      return { ...current, [panelKey]: nextFrames };
+    });
+  }
   async function onSendMessage(panelId, target) {
+    if (!target || target.kind !== "agent-chat") return;
     const panelKey = buildPanelConversationKey(panelId, target);
-    const memberId = target?.memberId || target?.id || "";
-    const text = (draftByPanelId[panelKey] || "").trim();
-    if (!text || !memberId) return;
-    const agent = agents.find((a) => a.member_id === memberId) || null;
-    setDraftByPanelId((d) => ({ ...d, [panelKey]: "" }));
-    setSendingPanels((s) => new Set(s).add(panelKey));
+    const text = (draftByKey[panelKey] || "").trim();
+    if (!text) return;
     const userEntry = createUserEntry(text);
-    setEntriesByPanelId((current) => ({
+    setDraftByKey((current) => ({ ...current, [panelKey]: "" }));
+    setSendingPanels((current) => new Set(current).add(panelKey));
+    setPanelPhaseByKey((current) => ({ ...current, [panelKey]: "waiting" }));
+    setLocalEntriesByKey((current) => ({
       ...current,
       [panelKey]: [...current[panelKey] || [], userEntry]
     }));
     try {
-      const result = await sendAddressedInteraction(
+      await sendAddressedInteractionStreaming(
         baseUrl,
         {
-          addressingMode: target?.addressingMode || "member",
-          memberId,
-          ...target?.identity ? { identity: target.identity } : {}
+          addressingMode: target.addressingMode,
+          memberId: target.memberId,
+          ...target.identity ? { identity: target.identity } : {}
         },
         text,
-        `console:${panelId}`
+        `console:${panelId}`,
+        (frame) => appendPanelFrame(panelKey, frame)
       );
-      const agentEntries = mapFramesToTimelineEntries(agent, result.frames);
-      setEntriesByPanelId((current) => ({
-        ...current,
-        [panelKey]: [...current[panelKey] || [], ...agentEntries]
-      }));
-      setActivityFrames((current) => [...result.frames, ...current].slice(0, 64));
+      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: null }));
     } catch (submitError) {
       setError(errorMessage(submitError));
-      setEntriesByPanelId((current) => ({
+      setLocalEntriesByKey((current) => ({
         ...current,
-        [panelKey]: (current[panelKey] || []).filter((e) => e.id !== userEntry.id)
+        [panelKey]: (current[panelKey] || []).filter((entry) => entry.id !== userEntry.id)
       }));
+      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: null }));
     } finally {
-      setSendingPanels((s) => {
-        const next = new Set(s);
+      setSendingPanels((current) => {
+        const next = new Set(current);
         next.delete(panelKey);
         return next;
       });
     }
+  }
+  async function onLifecycleAction(identity, method) {
+    await callConsoleRpc(baseUrl, method, { identity });
+    await loadExperience();
+  }
+  async function onGatingDecision(pendingId, decision) {
+    await callConsoleRpc(baseUrl, "mobkit/gating/decide", {
+      pending_id: pendingId,
+      approver_id: DEFAULT_APPROVER_ID,
+      decision,
+      reason: `console_${decision}`
+    });
+    const [pendingResponse, auditResponse] = await Promise.all([
+      callConsoleRpc(baseUrl, "mobkit/gating/pending", {}),
+      callConsoleRpc(baseUrl, "mobkit/gating/audit", { limit: 50 })
+    ]);
+    setGatingData({
+      pending: Array.isArray(pendingResponse.pending) ? pendingResponse.pending : [],
+      audit: Array.isArray(auditResponse.entries) ? auditResponse.entries : []
+    });
   }
   const SIDEBAR_MIN = 180;
   const SIDEBAR_MAX = 420;
@@ -4062,9 +4520,7 @@ function ConsoleApp({ baseUrl }) {
     if (!root) return;
     const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-sidebar-width") || "260", 10) || 260;
     const handle = event.currentTarget;
-    if ("setPointerCapture" in handle) {
-      handle.setPointerCapture(event.pointerId);
-    }
+    if ("setPointerCapture" in handle) handle.setPointerCapture(event.pointerId);
     document.documentElement.setAttribute("data-cc-resizing", "true");
     function onPointerMove(e) {
       const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)));
@@ -4092,9 +4548,7 @@ function ConsoleApp({ baseUrl }) {
     if (!root) return;
     const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-activity-width") || "280", 10) || 280;
     const handle = event.currentTarget;
-    if ("setPointerCapture" in handle) {
-      handle.setPointerCapture(event.pointerId);
-    }
+    if ("setPointerCapture" in handle) handle.setPointerCapture(event.pointerId);
     document.documentElement.setAttribute("data-cc-resizing", "true");
     function onPointerMove(e) {
       const next = Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)));
@@ -4119,44 +4573,265 @@ function ConsoleApp({ baseUrl }) {
   if (error) {
     return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-error", children: error });
   }
-  const focusedMemberId = dock.focusedTarget?.id || "";
+  const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : "";
   const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
-  const activityVS = buildActivityRailViewState({ eventFrames: activityFrames });
+  const activityVS = buildActivityRailViewState({
+    agents,
+    eventFrames: activityFrames,
+    filterPresets: experience?.activity_feed?.filter_presets,
+    activePresetId: activeActivityPresetId
+  });
+  function renderChatPanel(panel) {
+    const target = panel.target;
+    if (!target || target.kind !== "agent-chat") {
+      return null;
+    }
+    const panelKey = buildPanelConversationKey(panel.id, target);
+    const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
+    const entries = [
+      ...localEntriesByKey[panelKey] || [],
+      ...mapFramesToTimelineEntries(agent, panelFramesByKey[panelKey] || [])
+    ];
+    const conversation = buildConversationViewState({
+      memberId: target.memberId,
+      agentLabel: target.title,
+      entries
+    });
+    const draft = draftByKey[panelKey] || "";
+    const isSending = sendingPanels.has(panelKey);
+    const phase = panelPhaseByKey[panelKey] ?? agent?.response_phase ?? null;
+    const footerLeftItems = [
+      { id: "target", kind: "sub-pill", label: `To: ${target.title}`, iconName: "i-team" },
+      { id: "identity", kind: "sub-pill", label: target.identity || target.memberId, iconName: "i-terminal" }
+    ];
+    const footerRightItems = [
+      ...agent?.profile ? [{ id: "profile", kind: "sub-pill", label: agent.profile }] : [],
+      ...phase ? [{ id: "phase", kind: "sub-pill", label: phase, iconName: "i-bolt" }] : [],
+      { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
+    ];
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+      "div",
+      {
+        className: "console-panel console-panel--chat",
+        "data-panel-id": panel.id,
+        "data-panel-key": panelKey,
+        "data-testid": `chat-panel:${target.identity || target.memberId}:${panel.id}`,
+        children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          ConversationPane,
+          {
+            viewState: conversation,
+            Icon,
+            footer: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+              ConsoleComposer,
+              {
+                Icon,
+                inputId: `composer-input:${panel.id}`,
+                shellId: `composer-shell:${panel.id}`,
+                submitButtonId: `composer-submit:${panel.id}`,
+                viewState: {
+                  value: draft,
+                  disabled: isSending,
+                  placeholder: `Message ${target.title}...`,
+                  submitDisabled: !draft.trim() || isSending,
+                  submitLabel: `Send to ${target.title}`,
+                  mainRowItems: [],
+                  footerLeftItems,
+                  footerRightItems
+                },
+                getToolbarButtonProps: ({ zone, item }) => ({
+                  "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}`
+                }),
+                onChange: (value) => setDraftByKey((current) => ({ ...current, [panelKey]: value })),
+                onSubmit: () => void onSendMessage(panel.id, target),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void onSendMessage(panel.id, target);
+                  }
+                }
+              }
+            )
+          }
+        )
+      }
+    );
+  }
+  function renderInspectPanel(target) {
+    const inspect = inspectByIdentity[target.identity];
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": `inspect-panel:${target.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: target.identity }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: "Respawn" }),
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: "Reset" }),
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: "Retire" })
+        ] })
+      ] }),
+      !inspect ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("dl", { className: "console-panel__grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "State" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.state }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Profile" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.profile || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Addressability" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.addressability }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Generation" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Checkpoint" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Session" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Runtime" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Lease Healthy" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Peers" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Output Preview" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.output_preview || "n/a" })
+      ] })
+    ] });
+  }
+  function renderRoutingPanel() {
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": "routing-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Routes" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.routes.map((route) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-route:${route.route_key}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: route.route_key }),
+          " \u2192 ",
+          route.recipient,
+          " via ",
+          route.sink
+        ] }, route.route_key)) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Deliveries" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.deliveries.map((delivery) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-delivery:${delivery.delivery_id}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: delivery.delivery_id }),
+          " \xB7 ",
+          delivery.status,
+          " \xB7 ",
+          delivery.recipient
+        ] }, delivery.delivery_id)) })
+      ] })
+    ] });
+  }
+  function renderGatingPanel() {
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": "gating-panel", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Pending" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: gatingData.pending.map((entry, index) => {
+          const record = entry;
+          const pendingId = String(record.pending_id || `pending-${index}`);
+          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-pending:${pendingId}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(record.action_id || pendingId) }),
+              " \xB7 ",
+              String(record.risk_tier || "unknown")
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__actions", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pendingId}:escalate`, type: "button", onClick: () => void onGatingDecision(pendingId, "escalate"), children: "Escalate" }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pendingId}:approve`, type: "button", onClick: () => void onGatingDecision(pendingId, "approve"), children: "Approve" }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pendingId}:reject`, type: "button", onClick: () => void onGatingDecision(pendingId, "reject"), children: "Reject" })
+            ] })
+          ] }, pendingId);
+        }) })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Audit" }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: gatingData.audit.map((entry, index) => {
+          const record = entry;
+          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-audit:${String(record.audit_id || index)}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(record.event_type || "event") }),
+            " \xB7 ",
+            String(record.action_id || "unknown")
+          ] }, String(record.audit_id || index));
+        }) })
+      ] })
+    ] });
+  }
+  function renderTopologyPanel(nodes) {
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "topology-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: nodes.map((node) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `topology-node:${node.identity || node.label}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: node.label || node.identity }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
+        node.profile || "unknown",
+        " \xB7 ",
+        node.state || "unknown"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
+        "Peers: ",
+        node.wired_to?.join(", ") || "none"
+      ] })
+    ] }, node.identity || node.label)) }) });
+  }
+  function renderHealthPanel(identities) {
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: identities.map((row) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `health-identity:${row.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: row.display_name || row.identity }),
+      " \xB7 ",
+      row.state,
+      " \xB7 ",
+      row.addressability
+    ] }, row.identity)) }) });
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-theme-scope", "data-cc-theme": "dark", "data-testid": "meerkat-console", children: [
     /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(SpriteSheet, {}),
     /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
       ConsoleWorkbench,
       {
-        launcherResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          "div",
-          {
-            className: "pane-resizer",
-            "aria-hidden": "true",
-            onPointerDown: handleSidebarResize
-          }
-        ),
+        launcherResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "pane-resizer", "aria-hidden": "true", "data-testid": "resize:sidebar", onPointerDown: handleSidebarResize }),
         launcher: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
           ConsoleSidebar,
           {
             viewState: sidebarVS,
             Icon,
+            getActionButtonProps: (scope) => {
+              if (scope.kind === "block") {
+                return { "data-testid": `sidebar-action:${scope.action.id}` };
+              }
+              if (scope.kind === "item") {
+                return { "data-testid": `sidebar-item-action:${scope.item.id}:${scope.action.id}` };
+              }
+              return {};
+            },
+            onBlockAction: (_block, action) => {
+              switch (action.id) {
+                case "open_routing":
+                  dock.openTarget(buildControlTarget("routing"), "new_tab");
+                  break;
+                case "open_gating":
+                  dock.openTarget(buildControlTarget("gating"), "new_tab");
+                  break;
+                case "open_topology":
+                  dock.openTarget(buildControlTarget("topology"), "new_tab");
+                  break;
+                case "open_health":
+                  dock.openTarget(buildControlTarget("health"), "new_tab");
+                  break;
+                default:
+                  break;
+              }
+            },
             onSelectItem: onSelectAgent,
-            onItemAction: (_block, _section, item) => {
-              setPinnedAgentIds((current) => {
-                const next = new Set(current);
-                if (next.has(item.id)) {
-                  next.delete(item.id);
-                } else {
-                  next.add(item.id);
-                }
-                return next;
-              });
+            onItemAction: (_block, _section, item, action) => {
+              const agent = agents.find((candidate) => candidate.member_id === item.id);
+              if (!agent) return;
+              if (action.id === "inspect_identity") {
+                dock.openTarget(buildInspectTarget(agent), "new_tab");
+                return;
+              }
+              if (action.id === "toggle_pin") {
+                setPinnedAgentIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(item.id)) next.delete(item.id);
+                  else next.add(item.id);
+                  return next;
+                });
+              }
             },
             onItemContextMenu: (_block, _section, item, event) => {
               event.preventDefault();
-              const agent = agents.find((a) => a.member_id === item.id);
+              const agent = agents.find((candidate) => candidate.member_id === item.id);
               if (agent) {
-                dock.openTarget(buildDockTarget(agent), "replace_focused");
+                dock.openTarget(buildInspectTarget(agent), "new_tab");
               }
             }
           }
@@ -4169,81 +4844,24 @@ function ConsoleApp({ baseUrl }) {
             onSelectTab: (tab) => dock.selectTab(tab.id),
             onCloseTab: (tab) => dock.closeTab(tab.id),
             onFocusPanel: (panel) => dock.focusPanel(panel.id),
-            onSplitPanel: (panel, dir) => dock.splitPanel(panel.id, dir),
+            onSplitPanel: (panel, direction) => dock.splitPanel(panel.id, direction),
             onClosePanel: (panel) => dock.closePanel(panel.id),
             onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
             onCreateTab: () => dock.createTab(),
             renderPanelBody: (panel) => {
-              const memberId = panel.target?.id || "";
-              const panelKey = buildPanelConversationKey(panel.id, panel.target);
-              const entries = entriesByPanelId[panelKey] || [];
-              const vs = buildConversationViewState({
-                memberId,
-                agentLabel: panel.target?.title || "Agent",
-                entries
-              });
-              const draft = draftByPanelId[panelKey] || "";
-              const isSending = sendingPanels.has(panelKey);
-              const agent = agents.find((a) => a.member_id === memberId);
-              const agentLabel = panel.target?.title || "Agent";
-              const hasTarget = Boolean(memberId);
-              const mainRowItems = [];
-              const footerLeftItems = [
-                { id: "target", kind: "sub-pill", label: `To: ${agentLabel}`, iconName: "i-team" },
-                { id: "identity", kind: "sub-pill", label: agent?.member_id || memberId, iconName: "i-terminal" }
-              ];
-              const footerRightItems = [];
-              if (agent?.profile) {
-                footerRightItems.push({ id: "profile", kind: "sub-pill", label: agent.profile });
-              }
-              footerRightItems.push({
-                id: "state",
-                kind: "sub-pill",
-                label: agent?.state || "unknown",
-                iconName: "i-dot"
-              });
-              return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-                ConversationPane,
-                {
-                  viewState: vs,
-                  Icon,
-                  footer: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-                    ConsoleComposer,
-                    {
-                      Icon,
-                      viewState: {
-                        value: draft,
-                        disabled: !hasTarget || isSending,
-                        placeholder: hasTarget ? `Message ${agentLabel}...` : "Select an agent from the sidebar",
-                        submitDisabled: !hasTarget || !draft.trim() || isSending,
-                        submitLabel: hasTarget ? `Send to ${agentLabel}` : "Select an agent first",
-                        mainRowItems,
-                        footerLeftItems,
-                        footerRightItems
-                      },
-                      onChange: (value) => setDraftByPanelId((d) => ({ ...d, [panelKey]: value })),
-                      onSubmit: () => void onSendMessage(panel.id, panel.target),
-                      onKeyDown: (e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          void onSendMessage(panel.id, panel.target);
-                        }
-                      }
-                    }
-                  )
-                }
-              );
+              const target = panel.target;
+              if (!target) return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", children: "No panel target" });
+              if (target.kind === "agent-chat") return renderChatPanel(panel);
+              if (target.kind === "identity-inspect") return renderInspectPanel(target);
+              if (target.kind === "routing") return renderRoutingPanel();
+              if (target.kind === "gating") return renderGatingPanel();
+              if (target.kind === "topology") return renderTopologyPanel(experience?.topology?.live_snapshot?.nodes || []);
+              if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
+              return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
             }
           }
         ),
-        activityRailResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          "div",
-          {
-            className: "pane-resizer pane-resizer--activity",
-            "aria-hidden": "true",
-            onPointerDown: handleActivityResize
-          }
-        ),
+        activityRailResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "pane-resizer pane-resizer--activity", "aria-hidden": "true", "data-testid": "resize:activity", onPointerDown: handleActivityResize }),
         activityRail: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
           ConsoleActivityRail,
           {
@@ -4253,9 +4871,10 @@ function ConsoleApp({ baseUrl }) {
             },
             onCollapse: () => {
             },
+            onPanelAction: (_panelId, actionId) => setActiveActivityPresetId(actionId),
             renderSlotPreview: () => null,
             onSelectItem: (focusId) => {
-              const agent = agents.find((a) => a.member_id === focusId);
+              const agent = agents.find((candidate) => candidate.member_id === focusId);
               if (agent) {
                 dock.openTarget(buildDockTarget(agent), "replace_focused");
               }

@@ -1,0 +1,10 @@
+{
+  "name": "@meerkat/examples",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.55.0",
+    "tsx": "4.20.5",
+    "yaml": "2.8.1"
+  }
+}

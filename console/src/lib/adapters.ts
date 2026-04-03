@@ -1,13 +1,16 @@
 import type {
+  ActivityFilterPreset,
+  ConsoleActivityPulseItem,
+  ConsoleActivityRailViewState,
+  ConsoleDockTarget,
   ConsoleDockTargetAddressingMode,
   ConsoleSidebarMetaTone,
   ConsoleSidebarViewState,
-  ConversationViewState,
-  ConversationTimelineEntry,
   ConversationIdentity,
-  ConsoleActivityRailViewState,
-  ConsoleActivityPulseItem,
-  ConsoleDockTarget,
+  ConversationRichToolCallBlock,
+  ConversationTimelineEntry,
+  ConversationViewState,
+  ResponsePhase,
   RoutingSectionView,
 } from "@console-core";
 import {
@@ -18,28 +21,60 @@ import {
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
-// ---------------------------------------------------------------------------
-// Dock target
-// ---------------------------------------------------------------------------
+export type MobKitDockTarget =
+  | AgentChatTarget
+  | IdentityInspectTarget
+  | RoutingPanelTarget
+  | GatingPanelTarget
+  | TopologyPanelTarget
+  | HealthPanelTarget;
 
-export interface MobKitDockTarget extends ConsoleDockTarget {
+export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
   addressingMode: ConsoleDockTargetAddressingMode;
   memberId: string;
   identity?: string;
 }
 
-export function buildPanelConversationKey(
-  panelId: string,
-  target: Pick<MobKitDockTarget, "identity" | "memberId" | "id" | "addressingMode"> | null,
-): string {
-  const targetKey = target?.addressingMode === "identity"
-    ? target.identity || target.memberId || target.id
-    : target?.memberId || target?.id || "none";
-  return `panel:${panelId}:${targetKey}`;
+export interface IdentityInspectTarget extends ConsoleDockTarget {
+  kind: "identity-inspect";
+  identity: string;
+  memberId: string;
 }
 
-export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
+export interface RoutingPanelTarget extends ConsoleDockTarget {
+  kind: "routing";
+}
+
+export interface GatingPanelTarget extends ConsoleDockTarget {
+  kind: "gating";
+}
+
+export interface TopologyPanelTarget extends ConsoleDockTarget {
+  kind: "topology";
+}
+
+export interface HealthPanelTarget extends ConsoleDockTarget {
+  kind: "health";
+}
+
+export function buildPanelConversationKey(
+  panelId: string,
+  target: Pick<MobKitDockTarget, "kind" | "identity" | "memberId" | "id" | "addressingMode"> | null,
+): string {
+  if (!target) {
+    return `panel:${panelId}:none`;
+  }
+  if (target.kind !== "agent-chat") {
+    return `panel:${panelId}:${target.kind}:${target.id}`;
+  }
+  const targetKey = target.addressingMode === "identity"
+    ? target.identity || target.memberId || target.id
+    : target.memberId || target.id;
+  return `panel:${panelId}:${target.kind}:${targetKey}`;
+}
+
+export function buildDockTarget(agent: ConsoleAgent): AgentChatTarget {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
   const identity = typeof agent.identity === "string" && agent.identity.trim()
     ? agent.identity.trim()
@@ -53,12 +88,36 @@ export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
     ...(identity ? { identity } : {}),
     title: agent.label,
     subtitle,
+    iconName: "i-team",
   };
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
+export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
+  return {
+    id: `inspect:${agent.identity || agent.member_id}`,
+    kind: "identity-inspect",
+    identity: agent.identity || agent.member_id,
+    memberId: agent.member_id,
+    title: `${agent.label} Inspect`,
+    subtitle: agent.identity || agent.member_id,
+    iconName: "i-terminal",
+  };
+}
+
+export function buildControlTarget(kind: "routing" | "gating" | "topology" | "health"): MobKitDockTarget {
+  switch (kind) {
+    case "routing":
+      return { id: "routing", kind, title: "Routing", subtitle: "Routes and delivery history", iconName: "i-swap" };
+    case "gating":
+      return { id: "gating", kind, title: "Gating", subtitle: "Pending approvals and audit", iconName: "i-bolt" };
+    case "topology":
+      return { id: "topology", kind, title: "Topology", subtitle: "Identity connectivity", iconName: "i-team" };
+    case "health":
+      return { id: "health", kind, title: "Health", subtitle: "Runtime and identity health", iconName: "i-gear" };
+    default:
+      return { id: kind, kind: "health", title: "Health" };
+  }
+}
 
 function agentGroupKey(agent: ConsoleAgent): string {
   return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
@@ -91,9 +150,7 @@ export function buildSidebarViewState(args: {
 }): ConsoleSidebarViewState {
   const { agents, selectedMemberId, pinnedAgentIds = new Set(), sortMode = "group" } = args;
 
-  // Sort agents within groups
   const sorted = [...agents].sort((a, b) => {
-    // Pinned first
     const aPinned = pinnedAgentIds.has(a.member_id) ? 0 : 1;
     const bPinned = pinnedAgentIds.has(b.member_id) ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
@@ -107,7 +164,6 @@ export function buildSidebarViewState(args: {
     return a.label.localeCompare(b.label);
   });
 
-  // Group agents
   const grouped = new Map<string, ConsoleAgent[]>();
   for (const agent of sorted) {
     const key = agentGroupKey(agent);
@@ -116,15 +172,11 @@ export function buildSidebarViewState(args: {
     grouped.set(key, bucket);
   }
 
-  // Build sections
   const sections = Array.from(grouped.entries()).map(([group, members]) => ({
     id: group,
     title: group,
     iconName: sectionIconForGroup(group),
-    meta: [{ id: "count", label: `${members.length}` }] as { id: string; label: string; tone?: "default" | "muted" | "accent" | "positive" | "negative" }[],
-    actions: [
-      { id: "spawn_in_group", label: `Spawn agent in ${group}`, iconName: "i-plus" },
-    ],
+    meta: [{ id: "count", label: `${members.length}` }] as Array<{ id: string; label: string; tone?: ConsoleSidebarMetaTone }>,
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
       const isPinned = pinnedAgentIds.has(agent.member_id);
@@ -132,17 +184,21 @@ export function buildSidebarViewState(args: {
       return {
         id: agent.member_id,
         title: agent.label,
-        subtitle: agent.member_id,
+        subtitle: agent.identity || agent.member_id,
         selected: agent.member_id === selectedMemberId,
         pinned: isPinned,
         disabled: !isAddressable,
         ...watchFields,
         meta: [
-          ...(agent.state
-            ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }]
-            : []),
+          ...(agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : []),
+          ...(agent.response_phase ? [{ id: "phase", label: agent.response_phase, tone: "accent" as const }] : []),
         ],
         actions: [
+          {
+            id: "inspect_identity",
+            label: "Inspect identity",
+            iconName: "i-terminal",
+          },
           {
             id: "toggle_pin",
             label: isPinned ? "Unpin agent" : "Pin agent",
@@ -156,16 +212,16 @@ export function buildSidebarViewState(args: {
 
   return {
     blocks: [
-      // Action strip: top-level controls
       {
         id: "controls",
         kind: "action_strip" as const,
         actions: [
-          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
-          { id: "reconcile", label: "Reconcile", iconName: "i-refresh" },
+          { id: "open_routing", label: "Routing", iconName: "i-swap" },
+          { id: "open_gating", label: "Gating", iconName: "i-bolt" },
+          { id: "open_topology", label: "Topology", iconName: "i-team" },
+          { id: "open_health", label: "Health", iconName: "i-gear" },
         ],
       },
-      // Agent list — "Agents" header with inline sort/add actions (like meerkat-app "Threads")
       {
         id: "agents",
         kind: "list" as const,
@@ -179,10 +235,6 @@ export function buildSidebarViewState(args: {
     ],
   };
 }
-
-// ---------------------------------------------------------------------------
-// Routing
-// ---------------------------------------------------------------------------
 
 export function buildRoutingSectionView(args: {
   routesResponse: unknown;
@@ -201,10 +253,6 @@ export function buildRoutingSectionView(args: {
 
   return normalized ?? { routes: [], deliveries: [] };
 }
-
-// ---------------------------------------------------------------------------
-// Conversation identities
-// ---------------------------------------------------------------------------
 
 const USER_IDENTITY: ConversationIdentity = {
   id: "user",
@@ -228,10 +276,6 @@ const SYSTEM_IDENTITY: ConversationIdentity = {
   showLabel: true,
 };
 
-// ---------------------------------------------------------------------------
-// Frame → timeline entry
-// ---------------------------------------------------------------------------
-
 function summarizeFrameData(data: unknown): string {
   if (typeof data === "string") return data;
   if (typeof data === "object" && data !== null) {
@@ -241,13 +285,13 @@ function summarizeFrameData(data: unknown): string {
     if (typeof record.result === "string" && record.result.trim()) return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
+    if (typeof record.reason === "string" && record.reason.trim()) return record.reason;
     if (typeof record.kind === "string" && typeof record.event_type === "string") return "";
     return JSON.stringify(record);
   }
   return String(data ?? "");
 }
 
-// Infrastructure events that should not appear in the conversation transcript.
 const HIDDEN_EVENTS = new Set([
   "subscribed",
   "run_started",
@@ -259,6 +303,77 @@ const HIDDEN_EVENTS = new Set([
   "run_failed",
   "keep-alive",
 ]);
+
+function parseToolCallId(frame: ConsoleFrame): string | null {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const id = record?.tool_call_id ?? record?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+function parseToolName(frame: ConsoleFrame): string {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
+}
+
+function parseToolArguments(frame: ConsoleFrame): string {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  if (typeof record?.arguments === "string" && record.arguments.trim()) {
+    return record.arguments;
+  }
+  if ("args" in (record || {}) && record?.args !== undefined) {
+    return JSON.stringify(record.args);
+  }
+  return JSON.stringify(record || {});
+}
+
+function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const result = summarizeFrameData(frame.data).trim();
+  const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
+  return {
+    ...(result ? { result } : {}),
+    status: isError ? "error" : "success",
+  };
+}
+
+function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichToolCallBlock> {
+  const toolCalls = new Map<string, ConversationRichToolCallBlock>();
+  const pendingResults = new Map<string, { result?: string; status: "success" | "error" }>();
+
+  for (const frame of frames) {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      const toolCallId = parseToolCallId(frame);
+      if (!toolCallId) continue;
+      const parsed = parseToolResult(frame);
+      if (toolCalls.has(toolCallId)) {
+        const current = toolCalls.get(toolCallId)!;
+        toolCalls.set(toolCallId, {
+          ...current,
+          ...(parsed.result ? { result: parsed.result } : {}),
+          status: parsed.status,
+        });
+      } else {
+        pendingResults.set(toolCallId, parsed);
+      }
+    }
+
+    if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") {
+      const toolCallId = parseToolCallId(frame);
+      if (!toolCallId || toolCalls.has(toolCallId)) continue;
+      const pending = pendingResults.get(toolCallId);
+      toolCalls.set(toolCallId, {
+        type: "tool-call",
+        toolCallId,
+        name: parseToolName(frame),
+        arguments: parseToolArguments(frame),
+        ...(pending?.result ? { result: pending.result } : {}),
+        status: pending?.status || "pending",
+      });
+    }
+  }
+
+  return toolCalls;
+}
 
 function renderTerminalEntry(
   agent: ConsoleAgent | null,
@@ -298,8 +413,9 @@ export function mapFramesToTimelineEntries(
   frames: ConsoleFrame[],
 ): ConversationTimelineEntry[] {
   const entries: ConversationTimelineEntry[] = [];
+  const toolBlocks = buildToolBlocks(frames);
+  const emittedToolCalls = new Set<string>();
 
-  // Accumulate consecutive text_delta frames into a single message
   let pendingText = "";
   let pendingId = "";
 
@@ -323,14 +439,35 @@ export function mapFramesToTimelineEntries(
 
     if (frame.event === "text_delta") {
       if (!pendingId) pendingId = entryId;
-      const delta = typeof (frame.data as Record<string, unknown>)?.delta === "string"
-        ? (frame.data as Record<string, unknown>).delta as string
-        : summarizeFrameData(frame.data);
-      pendingText += delta;
+      pendingText += summarizeFrameData(frame.data);
       continue;
     }
 
-    // Flush any accumulated text before processing a non-text event
+    const toolCallId = parseToolCallId(frame);
+    if (
+      toolCallId
+      && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started")
+      && !emittedToolCalls.has(toolCallId)
+    ) {
+      flushPendingText();
+      const block = toolBlocks.get(toolCallId);
+      if (block) {
+        entries.push({
+          kind: "message",
+          id: entryId,
+          identity: agentIdentity(agent),
+          variant: "rich",
+          blocks: [block],
+        });
+        emittedToolCalls.add(toolCallId);
+      }
+      continue;
+    }
+
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      continue;
+    }
+
     flushPendingText();
 
     const terminalEntry = renderTerminalEntry(agent, frame, entryId);
@@ -339,30 +476,8 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    // Tool calls → command block
-    if (frame.event === "tool_call") {
-      const record = frame.data as Record<string, unknown> | null;
-      const toolName = typeof record?.name === "string" ? record.name : "tool";
-      const args = typeof record?.arguments === "string" ? record.arguments : JSON.stringify(record || {});
-      entries.push({
-        kind: "message",
-        id: entryId,
-        identity: agentIdentity(agent),
-        variant: "rich",
-        blocks: [{
-          type: "command",
-          caption: "Tool call",
-          title: toolName,
-          body: args,
-        }],
-      });
-      continue;
-    }
-
-    // Skip infrastructure noise
     if (HIDDEN_EVENTS.has(frame.event)) continue;
 
-    // Remaining events → system meta (errors, unexpected events)
     const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
     entries.push({
       kind: "message",
@@ -387,9 +502,38 @@ export function createUserEntry(message: string): ConversationTimelineEntry {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Conversation view state
-// ---------------------------------------------------------------------------
+export function inferResponsePhaseFromFrames(
+  frames: ConsoleFrame[],
+  fallback: ResponsePhase = null,
+): ResponsePhase {
+  let phase: ResponsePhase = fallback;
+  for (const frame of frames) {
+    switch (frame.event) {
+      case "interaction_started":
+        phase = "waiting";
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        phase = "tool-executing";
+        break;
+      case "text_delta":
+        phase = "generating";
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        phase = null;
+        break;
+      default:
+        break;
+    }
+  }
+  return phase;
+}
 
 export function buildConversationViewState(args: {
   memberId: string;
@@ -410,29 +554,72 @@ export function buildConversationViewState(args: {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Activity rail
-// ---------------------------------------------------------------------------
-
 export function buildActivityRailViewState(args: {
+  agents: ConsoleAgent[];
   eventFrames: ConsoleFrame[];
+  filterPresets?: ActivityFilterPreset[];
+  activePresetId?: string;
 }): ConsoleActivityRailViewState {
-  // Chronological event feed only
-  const pulseItems: ConsoleActivityPulseItem[] = args.eventFrames
+  const presets = args.filterPresets || [];
+  const activePreset = presets.find((preset) => preset.id === args.activePresetId) || null;
+  const agentByIdentity = new Map<string, ConsoleAgent>();
+  const watchedIdentities = new Set<string>();
+  const criticalIdentities = new Set<string>();
+
+  for (const agent of args.agents) {
+    if (agent.identity) agentByIdentity.set(agent.identity, agent);
+    agentByIdentity.set(agent.member_id, agent);
+    if (agent.watched && (agent.identity || agent.member_id)) {
+      watchedIdentities.add(agent.identity || agent.member_id);
+    }
+    if (agent.alertLevel === "critical" && (agent.identity || agent.member_id)) {
+      criticalIdentities.add(agent.identity || agent.member_id);
+    }
+  }
+
+  const filteredFrames = args.eventFrames.filter((frame) => {
+    const frameIdentity = frame.identity?.trim();
+    if (!activePreset) return true;
+    if (activePreset.watchedOnly && frameIdentity && !watchedIdentities.has(frameIdentity)) {
+      return false;
+    }
+    if (activePreset.alertLevels?.length && frameIdentity) {
+      const agent = agentByIdentity.get(frameIdentity);
+      if (!agent?.alertLevel || !activePreset.alertLevels.includes(agent.alertLevel)) {
+        return false;
+      }
+    }
+    if (activePreset.eventTypeFilter?.length && !activePreset.eventTypeFilter.includes(frame.event)) {
+      return false;
+    }
+    return true;
+  });
+
+  const pulseItems: ConsoleActivityPulseItem[] = filteredFrames
     .slice(0, 50)
-    .map((frame, index) => ({
-      id: `event:${frame.id || index}`,
-      title: frame.event || "event",
-      line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
-      meta: frame.id || "",
-    }));
+    .map((frame, index) => {
+      const frameIdentity = frame.identity?.trim();
+      const agent = frameIdentity ? agentByIdentity.get(frameIdentity) : null;
+      return {
+        id: `event:${frame.id || index}`,
+        title: agent?.label || frameIdentity || frame.event || "event",
+        line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
+        meta: frame.event || frame.id || "",
+        ...(agent ? { focusId: agent.member_id } : {}),
+      };
+    });
 
   return {
     panels: [
       {
         id: "pulse",
         kind: "pulse" as const,
-        title: "Events",
+        title: "Activity",
+        actions: presets.map((preset) => ({
+          id: preset.id,
+          label: preset.label,
+          active: preset.id === (activePreset?.id || "all"),
+        })),
         items: pulseItems,
         emptyText: "No events yet",
       },

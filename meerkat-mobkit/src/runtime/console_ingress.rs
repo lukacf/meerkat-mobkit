@@ -24,11 +24,15 @@ pub struct ConsoleAgentLiveSnapshot {
     pub label: String,
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub watched: Option<bool>,
     #[serde(
@@ -187,9 +191,11 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             member_id: module_id.clone(),
             label: module_id.clone(),
             kind: "module_agent".to_string(),
+            identity: None,
             profile: None,
             state: Some("idle".to_string()),
             session_id: None,
+            response_phase: None,
             watched: None,
             alert_level: None,
             degraded: None,
@@ -213,6 +219,7 @@ fn build_console_experience_contract(
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
         agent.profile.is_some()
             || agent.session_id.is_some()
+            || agent.response_phase.is_some()
             || agent.watched.is_some()
             || agent.alert_level.is_some()
             || agent.degraded.is_some()
@@ -260,6 +267,20 @@ fn build_console_experience_contract(
                     .get("addressable")
                     .map(|v| v != "false")
                     .unwrap_or(true);
+                let watched = member
+                    .labels
+                    .get("console_watched")
+                    .map(|value| value == "true");
+                let alert_level = member
+                    .labels
+                    .get("console_alert_level")
+                    .filter(|value| matches!(value.as_str(), "elevated" | "critical"))
+                    .cloned();
+                let degraded = member
+                    .labels
+                    .get("console_degraded")
+                    .map(|value| value == "true");
+                let degraded_reason = member.labels.get("console_degraded_reason").cloned();
                 let singleton = member
                     .labels
                     .get("singleton")
@@ -273,6 +294,7 @@ fn build_console_experience_contract(
                 serde_json::json!({
                     "agent_id": member.meerkat_id,
                     "member_id": member.meerkat_id,
+                    "identity": member.meerkat_id,
                     "label": label,
                     "kind": "mob_agent",
                     "profile": member.profile,
@@ -281,6 +303,10 @@ fn build_console_experience_contract(
                     "labels": member.labels,
                     "group": group,
                     "addressable": addressable,
+                    "watched": watched,
+                    "alertLevel": alert_level,
+                    "degraded": degraded,
+                    "degradedReason": degraded_reason,
                     "affordances": {
                         "addressable": addressable,
                         "can_send_message": addressable,
@@ -331,8 +357,17 @@ fn build_console_experience_contract(
                     if let Some(state) = &agent.state {
                         record.insert("state".to_string(), Value::String(state.clone()));
                     }
+                    if let Some(identity) = &agent.identity {
+                        record.insert("identity".to_string(), Value::String(identity.clone()));
+                    }
                     if let Some(session_id) = &agent.session_id {
                         record.insert("session_id".to_string(), Value::String(session_id.clone()));
+                    }
+                    if let Some(response_phase) = &agent.response_phase {
+                        record.insert(
+                            "response_phase".to_string(),
+                            Value::String(response_phase.clone()),
+                        );
                     }
                     if let Some(watched) = agent.watched {
                         record.insert("watched".to_string(), Value::Bool(watched));
@@ -437,7 +472,7 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "label", "kind", "profile", "state", "wired_to", "labels", "group", "addressable", "affordances"],
+                "fields": ["agent_id", "member_id", "identity", "label", "kind", "profile", "state", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
                 "group_by_field": "group",
@@ -487,7 +522,13 @@ fn build_console_experience_contract(
                 "interval_ms": SSE_KEEP_ALIVE_INTERVAL_MS,
                 "event": SSE_KEEP_ALIVE_EVENT_NAME,
                 "comment_frame": SSE_KEEP_ALIVE_COMMENT_FRAME,
-            }
+            },
+            "filter_presets": [
+                { "id": "all", "label": "All" },
+                { "id": "watched-only", "label": "Watched only", "watchedOnly": true },
+                { "id": "critical", "label": "Critical", "alertLevels": ["critical"] }
+            ],
+            "active_preset_id": "all"
         },
         "chat_inspector": {
             "panel_id": "console.chat_inspector",
@@ -531,12 +572,26 @@ fn build_console_experience_contract(
                 "poll_interval_ms": 5000,
             },
             "graph_contract": {
-                "node_id_field": "module_id",
-                "edge_fields": ["from", "to", "route"],
+                "node_id_field": "identity",
+                "edge_fields": ["wired_to"],
             },
             "live_snapshot": {
-                "nodes": &live_snapshot.loaded_modules,
-                "node_count": &live_snapshot.loaded_modules.len(),
+                "nodes": live_snapshot.members.iter().map(|member| {
+                    let addressable = member
+                        .labels
+                        .get("addressable")
+                        .map(|value| value != "false")
+                        .unwrap_or(true);
+                    serde_json::json!({
+                        "identity": member.meerkat_id,
+                        "label": member.labels.get("display_name").cloned().unwrap_or_else(|| member.meerkat_id.clone()),
+                        "profile": member.profile,
+                        "state": member.state,
+                        "wired_to": member.wired_to,
+                        "addressable": addressable,
+                    })
+                }).collect::<Vec<_>>(),
+                "node_count": live_snapshot.members.len(),
             }
         },
         "health_overview": {
@@ -561,6 +616,7 @@ fn build_console_experience_contract(
                 "running": live_snapshot.running,
                 "loaded_modules": &live_snapshot.loaded_modules,
                 "loaded_module_count": &live_snapshot.loaded_modules.len(),
+                "identities": identity_status_rows,
             }
         },
         "flows": {
@@ -687,6 +743,9 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             }
             if let Some(lease_healthy) = agent.get("lease_healthy").and_then(Value::as_bool) {
                 row["lease_healthy"] = Value::from(lease_healthy);
+            }
+            if let Some(response_phase) = agent.get("response_phase").and_then(Value::as_str) {
+                row["response_phase"] = Value::String(response_phase.to_string());
             }
             row
         })

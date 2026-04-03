@@ -7,6 +7,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures::future::join_all;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerSpec;
 use meerkat_mob::MobState;
@@ -23,10 +24,11 @@ use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
 use crate::mob_handle_runtime::{MEMBER_STATE_RETIRING, MobRuntime};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
+use crate::runtime::MobkitRuntimeHandle;
 use crate::runtime::{
-    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, RuntimeDecisionState,
-    extract_bearer_token_from_header, handle_console_rest_json_route_with_snapshot,
-    validate_console_token,
+    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, DeliveryHistoryRequest,
+    GatingDecideRequest, GatingDecision, RuntimeDecisionState, extract_bearer_token_from_header,
+    handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
@@ -35,6 +37,7 @@ use crate::unified_runtime::{EventLogStore, EventQuery};
 pub struct ConsoleJsonState {
     pub decisions: RuntimeDecisionState,
     pub runtime: Option<MobRuntime>,
+    pub module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     pub contact_directory: Option<ContactDirectory>,
     pub event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     pub(crate) console_events: Option<ConsoleEventStore>,
@@ -49,6 +52,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: None,
+        module_runtime: None,
         contact_directory: None,
         event_log: None,
         console_events: None,
@@ -65,6 +69,7 @@ pub fn console_json_router_with_runtime(
     console_json_router_with_runtime_and_events(
         decisions,
         runtime,
+        None,
         contact_directory,
         event_log,
         None,
@@ -75,6 +80,7 @@ pub fn console_json_router_with_runtime(
 pub(crate) fn console_json_router_with_runtime_and_events(
     decisions: RuntimeDecisionState,
     runtime: MobRuntime,
+    module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     contact_directory: Option<ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     console_events: Option<ConsoleEventStore>,
@@ -83,6 +89,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: Some(runtime),
+        module_runtime,
         contact_directory,
         event_log,
         console_events,
@@ -158,7 +165,9 @@ pub async fn console_json_handler(
         .map(|m| m.id.clone())
         .collect();
     let live_snapshot = match &state.runtime {
-        Some(runtime) => Some(build_live_snapshot(runtime, &config_module_ids).await),
+        Some(runtime) => Some(
+            build_live_snapshot(runtime, &config_module_ids, state.console_events.as_ref()).await,
+        ),
         None => None,
     };
 
@@ -238,8 +247,10 @@ pub async fn console_rpc_handler(
     let is_authenticated = true;
     let response_value = handle_console_runtime_rpc(
         runtime,
+        state.module_runtime.clone(),
         state.contact_directory.as_ref(),
         state.event_log.clone(),
+        state.console_events.clone(),
         parsed_request,
         is_authenticated,
     )
@@ -521,6 +532,10 @@ fn current_time_ms() -> u64 {
         .unwrap_or_default()
 }
 
+fn mint_console_interaction_id() -> String {
+    format!("turn-{}", current_time_ms())
+}
+
 fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>) -> Value {
     serde_json::to_value(JsonRpcResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -568,10 +583,74 @@ fn parse_console_helper_options(
     crate::rpc::mob_methods::parse_helper_options(options_val)
 }
 
+fn member_is_addressable(member: &crate::mob_handle_runtime::MobMemberSnapshot) -> bool {
+    member
+        .labels
+        .get("addressable")
+        .map(|value| !value.eq_ignore_ascii_case("false"))
+        .unwrap_or(true)
+}
+
+fn member_addressability(member: &crate::mob_handle_runtime::MobMemberSnapshot) -> &'static str {
+    if member_is_addressable(member) {
+        "addressable"
+    } else {
+        "internal_only"
+    }
+}
+
+fn console_identity_status_json(
+    member: &crate::mob_handle_runtime::MobMemberSnapshot,
+    response_phase: Option<String>,
+) -> Value {
+    json!({
+        "identity": member.meerkat_id,
+        "state": member.state,
+        "profile": member.profile,
+        "addressability": member_addressability(member),
+        "display_name": member.labels.get("display_name"),
+        "labels": member.labels,
+        "agent_runtime_id": member.meerkat_id,
+        "session_id": member.session_id,
+        "generation": Value::Null,
+        "checkpoint_version": Value::Null,
+        "lease_healthy": Value::Null,
+        "lease": Value::Null,
+        "response_phase": response_phase,
+    })
+}
+
+fn console_identity_inspect_json(
+    member: &crate::mob_handle_runtime::MobMemberSnapshot,
+    response_phase: Option<String>,
+) -> Value {
+    json!({
+        "identity": member.meerkat_id,
+        "state": member.state,
+        "profile": member.profile,
+        "addressability": member_addressability(member),
+        "display_name": member.labels.get("display_name"),
+        "labels": member.labels,
+        "lease_healthy": Value::Null,
+        "lease": Value::Null,
+        "continuity": {
+            "generation": Value::Null,
+            "checkpoint_version": Value::Null,
+            "session_id": member.session_id,
+            "agent_runtime_id": member.meerkat_id,
+        },
+        "topology_peers": member.wired_to,
+        "output_preview": Value::Null,
+        "response_phase": response_phase,
+    })
+}
+
 async fn handle_console_runtime_rpc(
     runtime: &MobRuntime,
+    module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     contact_directory: Option<&ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    console_events: Option<ConsoleEventStore>,
     request: JsonRpcRequest,
     is_authenticated: bool,
 ) -> Value {
@@ -594,6 +673,21 @@ async fn handle_console_runtime_rpc(
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/directory",
             ];
+            if module_runtime.is_some() {
+                methods.extend_from_slice(&[
+                    "mobkit/interact",
+                    "mobkit/status_identity",
+                    "mobkit/inspect_identity",
+                    "mobkit/retire",
+                    "mobkit/respawn",
+                    "mobkit/reset",
+                    "mobkit/routing/routes/list",
+                    "mobkit/delivery/history",
+                    "mobkit/gating/pending",
+                    "mobkit/gating/audit",
+                    "mobkit/gating/decide",
+                ]);
+            }
             if is_authenticated {
                 methods.extend_from_slice(&[
                     "mobkit/send_message",
@@ -704,6 +798,332 @@ async fn handle_console_runtime_rpc(
                     None,
                 ),
                 Err(err) => internal_error(response_id, format!("send_message failed: {err}")),
+            }
+        }
+        "mobkit/interact" => {
+            let request_params: crate::console_contracts::ConsoleInteractionRequest =
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(params) => params,
+                    Err(_) => {
+                        return invalid_params(
+                            response_id,
+                            "invalid params: expected { identity, content, origin }",
+                        );
+                    }
+                };
+            if let Err(message) = request_params.validate() {
+                return invalid_params(response_id, format!("invalid params: {message}"));
+            }
+            let identity = request_params.identity.trim();
+            let Some(member) = runtime.get_member(identity).await else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("unknown identity: {identity}"),
+                    }),
+                );
+            };
+            if !member_is_addressable(&member) {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32002,
+                        message: format!("not addressable: {identity}"),
+                    }),
+                );
+            }
+            if member.state == MEMBER_STATE_RETIRING {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32004,
+                        message: format!("identity retiring: {identity}"),
+                    }),
+                );
+            }
+
+            let interaction_id = mint_console_interaction_id();
+            if let Some(store) = &console_events
+                && let Err(message) = store
+                    .reserve_interaction(
+                        identity,
+                        Some(member.meerkat_id.as_str()),
+                        &interaction_id,
+                        &request_params.origin,
+                        &request_params.content,
+                    )
+                    .await
+            {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32003,
+                        message: message.to_string(),
+                    }),
+                );
+            }
+
+            match runtime
+                .send_message(identity, ContentInput::Text(request_params.content.clone()))
+                .await
+            {
+                Ok(_session_id) => {
+                    if let Some(store) = &console_events {
+                        store.accept_interaction(identity, &interaction_id).await;
+                    }
+                    response_value(
+                        response_id,
+                        Some(json!({
+                            "interaction_id": interaction_id,
+                            "identity": identity,
+                        })),
+                        None,
+                    )
+                }
+                Err(err) => {
+                    if let Some(store) = &console_events {
+                        store.discard_interaction(identity, &interaction_id).await;
+                    }
+                    internal_error(response_id, format!("interact failed: {err}"))
+                }
+            }
+        }
+        "mobkit/status_identity" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            let Some(member) = runtime.get_member(identity).await else {
+                return invalid_params(response_id, format!("identity not found: {identity}"));
+            };
+            let phase = if let Some(store) = &console_events {
+                store.response_phase_for_identity(identity).await
+            } else {
+                None
+            };
+            response_value(
+                response_id,
+                Some(console_identity_status_json(&member, phase)),
+                None,
+            )
+        }
+        "mobkit/inspect_identity" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            let Some(member) = runtime.get_member(identity).await else {
+                return invalid_params(response_id, format!("identity not found: {identity}"));
+            };
+            let phase = if let Some(store) = &console_events {
+                store.response_phase_for_identity(identity).await
+            } else {
+                None
+            };
+            response_value(
+                response_id,
+                Some(console_identity_inspect_json(&member, phase)),
+                None,
+            )
+        }
+        "mobkit/retire" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            match runtime.retire_member(identity).await {
+                Ok(()) => {
+                    if let Some(store) = &console_events {
+                        store
+                            .record_lifecycle(identity, "identity_retired", json!({}))
+                            .await;
+                    }
+                    response_value(response_id, Some(json!({ "identity": identity })), None)
+                }
+                Err(err) => internal_error(response_id, format!("retire failed: {err}")),
+            }
+        }
+        "mobkit/respawn" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            match runtime.respawn_member(identity).await {
+                Ok(()) => {
+                    if let Some(store) = &console_events {
+                        store
+                            .record_lifecycle(identity, "identity_respawned", json!({}))
+                            .await;
+                    }
+                    let member = runtime.get_member(identity).await;
+                    response_value(
+                        response_id,
+                        Some(
+                            member
+                                .map(|snapshot| console_identity_status_json(&snapshot, None))
+                                .unwrap_or_else(|| json!({ "identity": identity })),
+                        ),
+                        None,
+                    )
+                }
+                Err(err) => internal_error(response_id, format!("respawn failed: {err}")),
+            }
+        }
+        "mobkit/reset" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            match runtime.respawn_member(identity).await {
+                Ok(()) => {
+                    if let Some(store) = &console_events {
+                        store
+                            .record_lifecycle(identity, "identity_reset", json!({}))
+                            .await;
+                    }
+                    let member = runtime.get_member(identity).await;
+                    response_value(
+                        response_id,
+                        Some(
+                            member
+                                .map(|snapshot| console_identity_status_json(&snapshot, None))
+                                .unwrap_or_else(|| json!({ "identity": identity })),
+                        ),
+                        None,
+                    )
+                }
+                Err(err) => internal_error(response_id, format!("reset failed: {err}")),
+            }
+        }
+        "mobkit/routing/routes/list" => {
+            let Some(module_runtime) = &module_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                    }),
+                );
+            };
+            let routes = module_runtime.lock().await.list_runtime_routes();
+            response_value(response_id, Some(json!({ "routes": routes })), None)
+        }
+        "mobkit/delivery/history" => {
+            let Some(module_runtime) = &module_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                    }),
+                );
+            };
+            let limit = request
+                .params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(50) as usize;
+            let history = module_runtime
+                .lock()
+                .await
+                .delivery_history(DeliveryHistoryRequest {
+                    recipient: None,
+                    sink: None,
+                    limit,
+                });
+            response_value(
+                response_id,
+                Some(serde_json::to_value(history).unwrap_or(Value::Null)),
+                None,
+            )
+        }
+        "mobkit/gating/pending" => {
+            let Some(module_runtime) = &module_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                    }),
+                );
+            };
+            let pending = module_runtime.lock().await.list_gating_pending();
+            response_value(response_id, Some(json!({ "pending": pending })), None)
+        }
+        "mobkit/gating/audit" => {
+            let Some(module_runtime) = &module_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                    }),
+                );
+            };
+            let limit = request
+                .params
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(50) as usize;
+            let entries = module_runtime.lock().await.gating_audit_entries(limit);
+            response_value(response_id, Some(json!({ "entries": entries })), None)
+        }
+        "mobkit/gating/decide" => {
+            let Some(module_runtime) = &module_runtime else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32601,
+                        message: "Method not found".to_string(),
+                    }),
+                );
+            };
+            let Some(pending_id) = request.params.get("pending_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "pending_id required");
+            };
+            let Some(approver_id) = request.params.get("approver_id").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "approver_id required");
+            };
+            let Some(raw_decision) = request.params.get("decision").and_then(Value::as_str) else {
+                return invalid_params(response_id, "decision required");
+            };
+            let decision = match raw_decision {
+                "approve" => GatingDecision::Approve,
+                "reject" | "deny" => GatingDecision::Reject,
+                "escalate" => GatingDecision::Escalate,
+                _ => {
+                    return invalid_params(
+                        response_id,
+                        format!("unsupported decision: {raw_decision}"),
+                    );
+                }
+            };
+            let reason = request
+                .params
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            match module_runtime
+                .lock()
+                .await
+                .decide_gating_action(GatingDecideRequest {
+                    pending_id: pending_id.to_string(),
+                    approver_id: approver_id.to_string(),
+                    decision,
+                    reason,
+                }) {
+                Ok(result) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(result).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => invalid_params(response_id, format!("gating decision failed: {err}")),
             }
         }
         "mobkit/ensure_member" => {
@@ -1235,6 +1655,7 @@ async fn handle_console_runtime_rpc(
 async fn build_live_snapshot(
     runtime: &MobRuntime,
     config_module_ids: &[String],
+    console_events: Option<&ConsoleEventStore>,
 ) -> ConsoleLiveSnapshot {
     let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
     let members = runtime.discover().await;
@@ -1254,22 +1675,50 @@ async fn build_live_snapshot(
         mods.sort();
         mods
     };
-    let mut agents = members
+    let agents = members
         .iter()
-        .map(|member| ConsoleAgentLiveSnapshot {
-            agent_id: member.meerkat_id.clone(),
-            member_id: member.meerkat_id.clone(),
-            label: member.meerkat_id.clone(),
-            kind: "meerkat".to_string(),
-            profile: Some(member.profile.clone()),
-            state: Some(member.state.clone()),
-            session_id: member.session_id.clone(),
-            watched: None,
-            alert_level: None,
-            degraded: None,
-            degraded_reason: None,
+        .map(|member| async move {
+            let label = member
+                .labels
+                .get("display_name")
+                .cloned()
+                .unwrap_or_else(|| member.meerkat_id.clone());
+            let watched = member
+                .labels
+                .get("console_watched")
+                .map(|value| value == "true");
+            let alert_level = member
+                .labels
+                .get("console_alert_level")
+                .filter(|value| matches!(value.as_str(), "elevated" | "critical"))
+                .cloned();
+            let degraded = member
+                .labels
+                .get("console_degraded")
+                .map(|value| value == "true");
+            let degraded_reason = member.labels.get("console_degraded_reason").cloned();
+            let response_phase = match console_events {
+                Some(store) => store.response_phase_for_identity(&member.meerkat_id).await,
+                None => None,
+            };
+            ConsoleAgentLiveSnapshot {
+                agent_id: member.meerkat_id.clone(),
+                member_id: member.meerkat_id.clone(),
+                label,
+                kind: "meerkat".to_string(),
+                identity: Some(member.meerkat_id.clone()),
+                profile: Some(member.profile.clone()),
+                state: Some(member.state.clone()),
+                session_id: member.session_id.clone(),
+                response_phase,
+                watched,
+                alert_level,
+                degraded,
+                degraded_reason,
+            }
         })
         .collect::<Vec<_>>();
+    let mut agents = join_all(agents).await;
     agents.sort_by(|left, right| left.label.cmp(&right.label));
     ConsoleLiveSnapshot::new(
         Some(runtime.handle().mob_id().to_string()),

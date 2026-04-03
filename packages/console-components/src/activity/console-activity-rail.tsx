@@ -77,6 +77,17 @@ function RosterPanel({
         <h2>{panel.title}</h2>
         <div className="cc-activity-rail__section-actions">
           {panel.meta ? <div className="cc-activity-rail__section-meta">{panel.meta}</div> : null}
+          {panel.actions?.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className={clsx("cc-activity-rail__section-action", action.active && "is-active")}
+              data-testid={`activity-action:${panel.id}:${action.id}`}
+              onClick={() => onPanelAction?.(panel.id, action.id)}
+            >
+              {action.label}
+            </button>
+          ))}
           {onRemovePanel ? (
             <button
               type="button"
@@ -131,12 +142,14 @@ function PulsePanel({
   Icon,
   panel,
   onRemovePanel,
+  onPanelAction,
   onSelectItem,
   onTogglePin,
 }: {
   Icon: IconRenderer;
   panel: ConsoleActivityPulsePanel;
   onRemovePanel?: (panelId: string) => void;
+  onPanelAction?: (panelId: string, actionId: string) => void;
   onSelectItem?: (focusId: string) => void;
   onTogglePin?: (pinId: string, pinned: boolean) => void;
 }) {
@@ -146,6 +159,17 @@ function PulsePanel({
         <h2>{panel.title}</h2>
         <div className="cc-activity-rail__section-actions">
           {panel.meta ? <div className="cc-activity-rail__section-meta">{panel.meta}</div> : null}
+          {panel.actions?.map((action) => (
+            <button
+              key={action.id}
+              type="button"
+              className={clsx("cc-activity-rail__section-action", action.active && "is-active")}
+              data-testid={`activity-action:${panel.id}:${action.id}`}
+              onClick={() => onPanelAction?.(panel.id, action.id)}
+            >
+              {action.label}
+            </button>
+          ))}
           {onRemovePanel ? (
             <button
               type="button"
@@ -167,6 +191,7 @@ function PulsePanel({
             <button
               type="button"
               className="cc-activity-rail__pulse-main"
+              data-testid={`activity-item:${panel.id}:${item.id}`}
               title={item.tooltip || `${item.title} · ${item.line}`}
               onClick={() => item.focusId && onSelectItem?.(item.focusId)}
             >
@@ -313,6 +338,7 @@ function renderPanel({
         Icon={Icon}
         key={panel.id}
         onRemovePanel={onRemovePanel}
+        onPanelAction={onPanelAction}
         onSelectItem={onSelectItem}
         onTogglePin={onTogglePin}
         panel={panel}

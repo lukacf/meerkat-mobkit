@@ -16,7 +16,7 @@ import type {
 function unwrapConsoleEnvelope(
   eventName: string,
   data: unknown,
-): { id?: string; event?: string; data: unknown } {
+): { id?: string; event?: string; identity?: string; interactionId?: string; data: unknown } {
   if (!data || typeof data !== "object") {
     return { data };
   }
@@ -31,6 +31,8 @@ function unwrapConsoleEnvelope(
     return {
       id: envelope.event_id,
       event: envelope.event_type || eventName,
+      identity: envelope.identity,
+      interactionId: envelope.interaction_id,
       data: envelope.data,
     };
   }
@@ -82,6 +84,8 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
     frames.push({
       id: normalized.id || id,
       event: normalized.event || event,
+      identity: normalized.identity,
+      interactionId: normalized.interactionId,
       data: normalized.data,
     });
   }
@@ -156,26 +160,33 @@ interface TerminalCorrelation {
   interactionId?: string;
 }
 
+interface StreamFramesOptions {
+  correlation?: TerminalCorrelation;
+  onFrame?: (frame: ConsoleFrame) => void;
+}
+
 function matchesCorrelation(
-  data: unknown,
+  candidate: unknown,
   correlation?: TerminalCorrelation,
   allowUnscoped = true,
 ): boolean {
   if (!correlation?.sessionId && !correlation?.interactionId) {
     return true;
   }
-  if (data === null || typeof data !== "object") {
+  if (candidate === null || typeof candidate !== "object") {
     return allowUnscoped;
   }
-  const record = data as Record<string, unknown>;
-  const hasScopedField = "session_id" in record || "interaction_id" in record;
+  const record = candidate as Record<string, unknown>;
+  const sessionId = record.session_id ?? record.sessionId;
+  const interactionId = record.interaction_id ?? record.interactionId;
+  const hasScopedField = sessionId !== undefined || interactionId !== undefined;
   if (!hasScopedField) {
     return allowUnscoped;
   }
-  if (correlation.sessionId && record.session_id === correlation.sessionId) {
+  if (correlation.sessionId && sessionId === correlation.sessionId) {
     return true;
   }
-  if (correlation.interactionId && record.interaction_id === correlation.interactionId) {
+  if (correlation.interactionId && interactionId === correlation.interactionId) {
     return true;
   }
   return false;
@@ -216,6 +227,13 @@ async function drainInteractionResponse(
   response: Response,
   correlation?: TerminalCorrelation,
 ): Promise<ConsoleFrame[]> {
+  return streamFramesFromResponse(response, { correlation });
+}
+
+async function streamFramesFromResponse(
+  response: Response,
+  options: StreamFramesOptions = {},
+): Promise<ConsoleFrame[]> {
   if (!response.ok) {
     const text = await response.text();
     let parsed: unknown = null;
@@ -236,25 +254,51 @@ async function drainInteractionResponse(
   }
 
   if (!response.body || typeof response.body.getReader !== "function") {
-    return parseSseFrames(await response.text());
+    const frames = parseSseFrames(await response.text());
+    for (const frame of frames) {
+      if (matchesCorrelation(frame, options.correlation, true)) {
+        options.onFrame?.(frame);
+      }
+    }
+    return !options.correlation
+      ? frames
+      : frames.filter((frame) => matchesCorrelation(frame, options.correlation, true));
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let rawText = "";
+  let frameBuffer = "";
+  const frames: ConsoleFrame[] = [];
 
   try {
-    while (!hasMatchingTerminalEvent(rawText, correlation)) {
+    while (!hasMatchingTerminalEvent(rawText, options.correlation)) {
       const { value, done } = await reader.read();
       if (done) {
         break;
       }
-      rawText += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      rawText += chunk;
+      frameBuffer += chunk;
+      frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+        if (matchesCorrelation(frame, options.correlation, true)) {
+          frames.push(frame);
+          options.onFrame?.(frame);
+        }
+      });
       if (rawText.length > 131_072) {
         break;
       }
     }
-    rawText += decoder.decode();
+    const finalChunk = decoder.decode();
+    rawText += finalChunk;
+    frameBuffer += finalChunk;
+    flushSseBlocks(frameBuffer, (frame) => {
+      if (matchesCorrelation(frame, options.correlation, true)) {
+        frames.push(frame);
+        options.onFrame?.(frame);
+      }
+    });
   } finally {
     try {
       await reader.cancel();
@@ -263,14 +307,24 @@ async function drainInteractionResponse(
     }
   }
 
-  const frames = parseSseFrames(rawText);
-  if (!correlation?.sessionId && !correlation?.interactionId) return frames;
+  return frames;
+}
 
-  // Filter to frames that either belong to the active turn or carry no
-  // correlation field (infrastructure frames like "subscribed").
-  return frames.filter((frame) => {
-    return matchesCorrelation(frame.data, correlation, true);
-  });
+function flushSseBlocks(buffer: string, onFrame: (frame: ConsoleFrame) => void): string {
+  let searchIndex = 0;
+  while (true) {
+    const boundaryIndex = buffer.indexOf("\n\n", searchIndex);
+    if (boundaryIndex === -1) {
+      break;
+    }
+    const block = buffer.slice(0, boundaryIndex + 2);
+    buffer = buffer.slice(boundaryIndex + 2);
+    searchIndex = 0;
+    for (const frame of parseSseFrames(block)) {
+      onFrame(frame);
+    }
+  }
+  return buffer;
 }
 
 export async function observeInteraction(
@@ -480,4 +534,111 @@ export async function sendAddressedInteraction(
     throw new Error("member-addressed send requires target.memberId");
   }
   return sendInteraction(baseUrl, memberId, message);
+}
+
+export async function sendAddressedInteractionStreaming(
+  baseUrl: string,
+  target: ConsoleDockAddressedTarget,
+  message: string,
+  origin = "console",
+  onFrame?: (frame: ConsoleFrame) => void,
+): Promise<{ sendResult: ConsoleSendMessageResult | ConsoleInteractAccepted; frames: ConsoleFrame[] }> {
+  if (target.addressingMode === "identity") {
+    const identity = target.identity?.trim();
+    if (!identity) {
+      throw new Error("identity-addressed send requires target.identity");
+    }
+
+    const streamAbort = new AbortController();
+    const streamResponsePromise = fetch(`${baseUrl}/console/identity/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identity }),
+      signal: streamAbort.signal,
+    });
+    void streamResponsePromise.catch(() => {});
+
+    let sendResult: ConsoleInteractAccepted;
+    try {
+      sendResult = await sendInteract(baseUrl, identity, message, origin);
+    } catch (error) {
+      streamAbort.abort();
+      throw error;
+    }
+
+    let frames: ConsoleFrame[];
+    try {
+      frames = await streamFramesFromResponse(await streamResponsePromise, {
+        correlation: { interactionId: sendResult.interaction_id },
+        onFrame,
+      });
+    } catch {
+      frames = [];
+    }
+    return { sendResult, frames };
+  }
+
+  const memberId = target.memberId?.trim();
+  if (!memberId) {
+    throw new Error("member-addressed send requires target.memberId");
+  }
+
+  const streamAbort = new AbortController();
+  const streamResponsePromise = fetch(`${baseUrl}/interactions/stream`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ member_id: memberId }),
+    signal: streamAbort.signal,
+  });
+  void streamResponsePromise.catch(() => {});
+
+  let sendResult: ConsoleSendMessageResult;
+  try {
+    sendResult = await sendMessage(baseUrl, memberId, message);
+  } catch (error) {
+    streamAbort.abort();
+    throw error;
+  }
+
+  let frames: ConsoleFrame[];
+  try {
+    frames = await streamFramesFromResponse(await streamResponsePromise, {
+      correlation: { sessionId: sendResult.session_id },
+      onFrame,
+    });
+  } catch {
+    frames = [];
+  }
+  return { sendResult, frames };
+}
+
+export async function callConsoleRpc<T>(
+  baseUrl: string,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<T> {
+  return rpc<T>(baseUrl, method, params);
+}
+
+export function subscribeConsoleEvents(
+  baseUrl: string,
+  path: string,
+  onFrame: (frame: ConsoleFrame) => void,
+  options?: { method?: "GET" | "POST"; body?: Record<string, unknown> },
+): () => void {
+  const controller = new AbortController();
+  void (async () => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: options?.method || "GET",
+      headers: { "content-type": "application/json" },
+      ...(options?.body ? { body: JSON.stringify(options.body) } : {}),
+      signal: controller.signal,
+    });
+    await streamFramesFromResponse(response, { onFrame });
+  })().catch(() => {
+    // The host polls /console/experience separately and can tolerate
+    // best-effort stream failures during local development/example use.
+  });
+
+  return () => controller.abort();
 }

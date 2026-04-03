@@ -1,0 +1,159 @@
+scenario_id: incident-command-center
+namespace: incident-command-center
+listen_addr: 127.0.0.1:63210
+approver_id: console-ops-lead
+
+identities:
+  - identity: incident-commander
+    profile: ops
+    display_name: Incident Commander
+    group: Coordinators
+    addressable: true
+    labels:
+      console_watched: "true"
+      console_alert_level: critical
+  - identity: payments-sre
+    profile: ops
+    display_name: Payments SRE
+    group: Responders
+    addressable: true
+    labels:
+      console_watched: "true"
+      console_degraded: "true"
+      console_degraded_reason: elevated_error_rate
+  - identity: api-investigator
+    profile: ops
+    display_name: API Investigator
+    group: Responders
+    addressable: true
+    labels:
+      console_watched: "true"
+  - identity: merchant-comms
+    profile: ops
+    display_name: Merchant Comms
+    group: Communications
+    addressable: true
+    labels:
+      console_watched: "true"
+  - identity: merchant-success
+    profile: ops
+    display_name: Merchant Success
+    group: Communications
+    addressable: true
+  - identity: scribe
+    profile: ops
+    display_name: Scribe
+    group: Coordinators
+    addressable: true
+  - identity: approval-gate
+    profile: internal
+    display_name: Approval Gate
+    group: Internal
+    addressable: false
+  - identity: health-monitor
+    profile: internal
+    display_name: Health Monitor
+    group: Internal
+    addressable: false
+    labels:
+      console_degraded: "true"
+      console_degraded_reason: peer_unreachable
+
+links:
+  - from: incident-commander
+    to: payments-sre
+  - from: incident-commander
+    to: merchant-comms
+  - from: api-investigator
+    to: payments-sre
+  - from: scribe
+    to: incident-commander
+  - from: scribe
+    to: payments-sre
+  - from: scribe
+    to: api-investigator
+  - from: scribe
+    to: merchant-comms
+  - from: scribe
+    to: merchant-success
+  - from: merchant-comms
+    to: approval-gate
+
+routes:
+  - route_key: incident-statuspage
+    recipient: statuspage@example.test
+    channel: status
+    sink: email
+    retry_max: 1
+    backoff_ms: 25
+    rate_limit_per_minute: 30
+  - route_key: incident-major-accounts
+    recipient: major-accounts@example.test
+    channel: merchant
+    sink: email
+    retry_max: 0
+    backoff_ms: 10
+    rate_limit_per_minute: 20
+  - route_key: incident-approvals
+    recipient: approvals@example.test
+    channel: approval
+    sink: email
+    retry_max: 0
+    backoff_ms: 10
+    rate_limit_per_minute: 10
+
+deliveries:
+  - recipient: statuspage@example.test
+    channel: status
+    idempotency_key: incident-seed-statuspage
+    payload:
+      subject: Seeded status page note
+      message: Investigating elevated payment failures in eu-west-1.
+  - recipient: major-accounts@example.test
+    channel: merchant
+    idempotency_key: incident-seed-major-accounts
+    payload:
+      subject: Seeded merchant heads-up
+      message: Major accounts notification staged for review.
+
+gating:
+  - action: publish_status_update
+    actor_id: merchant-comms
+    risk_tier: r3
+    requested_approver: console-ops-lead
+    approval_recipient: approvals@example.test
+    approval_channel: approval
+    approval_timeout_ms: 600000
+    rationale: Needs review before external publication
+    entity: incident
+    topic: cardinalpay-payments
+
+scripted_turns:
+  - prompt_contains: parallel status sweep
+    tool_calls:
+      - id: tool-inspect-service
+        name: inspect_service
+        args:
+          service: payments-api
+      - id: tool-analyze-impact
+        name: analyze_customer_impact
+        args:
+          cohort: enterprise-merchants
+  - prompt_contains: panel alpha follow-up
+    final_text: Alpha panel confirms rollback guardrails are in place for eu-west-1.
+  - prompt_contains: panel bravo follow-up
+    final_text: Bravo panel confirms customer impact is shrinking but major merchants still need updates.
+  - prompt_contains: draft merchant update
+    final_text: Draft merchant update prepared. Request approval before sending externally.
+
+smoke:
+  watched_identities:
+    - incident-commander
+    - payments-sre
+    - api-investigator
+    - merchant-comms
+  degraded_identities:
+    - payments-sre
+    - health-monitor
+  critical_identities:
+    - incident-commander

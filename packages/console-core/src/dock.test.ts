@@ -271,6 +271,47 @@ describe("dock helpers", () => {
     expect(collectConsoleDockPanelIds(state.tabs.find((tab) => tab.id === state.activeTabId)?.layout || null)).toHaveLength(4);
   });
 
+  test("splitting a focused panel clones its target when no alternate suggestion is available", () => {
+    type TestTarget = ConsoleDockTarget & {
+      kind: "thread";
+      threadId: string;
+    };
+
+    const alpha: TestTarget = {
+      id: "thread:alpha",
+      kind: "thread",
+      title: "Alpha",
+      threadId: "alpha",
+    };
+
+    let panelIdCounter = 0;
+    let splitIdCounter = 0;
+    let tabIdCounter = 0;
+
+    const createPanelState = ({ target }: { target: TestTarget | null }): ConsoleDockPanelState<TestTarget> => ({
+      id: `panel-${++panelIdCounter}`,
+      target,
+      mode: "console",
+    });
+
+    let state = createConsoleDockState<TestTarget>({
+      initialTarget: alpha,
+      createPanelState,
+      createSplitId: () => `split-${++splitIdCounter}`,
+      createTabId: () => `tab-${++tabIdCounter}`,
+      suggestTargets: ({ count }) => Array.from({ length: count }, () => null),
+    });
+
+    state = splitConsoleDockPanel(state, state.focusedPanelId!, "right", {
+      createPanelState,
+      createSplitId: () => `split-${++splitIdCounter}`,
+      suggestTargets: ({ count }) => Array.from({ length: count }, () => null),
+    });
+
+    expect(state.panels).toHaveLength(2);
+    expect(state.panels.map((panel) => panel.target?.id)).toEqual(["thread:alpha", "thread:alpha"]);
+  });
+
   test("builds dock view state from host resolvers instead of baked-in chrome", () => {
     type TestTarget = ConsoleDockTarget & {
       kind: "agent";
