@@ -35,6 +35,7 @@ export function normalizeAgents(
         ...(statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {}),
         agent_id: String(entry.agent_id || statusRow?.identity || entry.identity || entry.member_id || ""),
         member_id: String(entry.member_id || statusRow?.identity || entry.identity || entry.agent_id || ""),
+        ...(typeof entry.session_id === "string" && entry.session_id.trim() ? { session_id: entry.session_id.trim() } : {}),
         label: String(entry.label || statusRow?.display_name || entry.display_name || statusRow?.identity || entry.identity || entry.member_id || entry.agent_id || "unknown"),
         kind: String(entry.kind || statusRow?.profile || entry.profile || "module_agent"),
         ...(statusRow?.profile !== undefined
@@ -79,6 +80,7 @@ export function normalizeAgents(
         identity,
         agent_id: String(identity),
         member_id: identity ? `identity-only:${identity}` : "",
+        ...(typeof statusRow?.session_id === "string" && statusRow.session_id.trim() ? { session_id: statusRow.session_id.trim() } : {}),
         label: String(statusRow?.display_name || identity || "unknown"),
         kind: String(statusRow?.profile || "identity"),
         ...(statusRow?.profile !== undefined ? { profile: statusRow.profile } : {}),

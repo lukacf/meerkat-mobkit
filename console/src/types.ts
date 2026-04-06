@@ -21,6 +21,9 @@ import type {
 export interface ConsoleFrame {
   id: string;
   event: string;
+  identity?: string;
+  interactionId?: string;
+  timestampMs?: number;
   data: unknown;
 }
 
@@ -49,6 +52,7 @@ export interface ConsoleAgent extends SidebarWatchFields {
   identity?: string;
   agent_id: string;
   member_id: string;
+  session_id?: string;
   label: string;
   kind: string;
   profile?: string;
@@ -66,17 +70,37 @@ export interface ConsoleAgent extends SidebarWatchFields {
 }
 
 export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatusRow>, SidebarWatchFields {
+  identity?: string;
   agent_id?: string;
   member_id?: string;
+  session_id?: string;
   label?: string;
   kind?: string;
+  profile?: string;
   state?: string;
+  session_id?: string;
   response_phase?: ResponsePhase;
   wired_to?: string[];
   labels?: Record<string, string>;
   group?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
+}
+
+export interface ConsoleTopologyNode {
+  identity?: string;
+  label?: string;
+  profile?: string;
+  state?: string;
+  wired_to?: string[];
+  addressable?: boolean;
+}
+
+export interface ConsoleHealthSnapshot {
+  loaded_modules?: unknown[];
+  loaded_module_count?: number;
+  running?: boolean;
+  identities?: IdentityStatusRow[];
 }
 
 type ConsoleExperienceSection<T> = T & Partial<ExperienceSectionMeta>;
@@ -140,17 +164,13 @@ export interface ConsoleExperience {
   topology?: ConsoleExperienceSection<{
     title?: string;
     live_snapshot?: {
-      nodes?: unknown[];
+      nodes?: ConsoleTopologyNode[];
       node_count?: number;
     };
   }>;
   health_overview?: ConsoleExperienceSection<{
     title?: string;
-    live_snapshot?: {
-      loaded_modules?: unknown[];
-      loaded_module_count?: number;
-      running?: boolean;
-    };
+    live_snapshot?: ConsoleHealthSnapshot;
   }>;
 }
 
@@ -163,6 +183,15 @@ export interface ConsoleGatingActionPayload extends GatingActionRequest {}
 export interface ConsoleGatingActionResponse extends GatingActionResult {}
 
 export interface ConsoleReplayUnavailablePayload extends ReplayUnavailableError {}
+
+export interface ConsoleSessionHistoryPage {
+  session_id?: string;
+  message_count?: number;
+  offset?: number;
+  limit?: number | null;
+  has_more?: boolean;
+  messages?: unknown[];
+}
 
 export interface ConsoleDockAddressedTarget {
   addressingMode: ConsoleDockTargetAddressingMode;

@@ -313,7 +313,7 @@ test("Panel-state target: same-target split panels and retargeted panels keep di
 
   assert.notEqual(splitPanelA, splitPanelB);
   assert.notEqual(splitPanelA, retargetedPanel);
-  assert.equal(splitPanelA, "panel:panel-a:identity:luka");
-  assert.equal(splitPanelB, "panel:panel-b:identity:luka");
-  assert.equal(retargetedPanel, "panel:panel-a:legacy-router");
+  assert.equal(splitPanelA, "panel:panel-a:agent-chat:identity:luka");
+  assert.equal(splitPanelB, "panel:panel-b:agent-chat:identity:luka");
+  assert.equal(retargetedPanel, "panel:panel-a:agent-chat:legacy-router");
 });

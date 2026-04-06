@@ -1,13 +1,17 @@
 import type {
+  ActivityFilterPreset,
+  ConsoleActivityPulseItem,
+  ConsoleActivityRailViewState,
+  ConsoleDockTarget,
   ConsoleDockTargetAddressingMode,
   ConsoleSidebarMetaTone,
   ConsoleSidebarViewState,
-  ConversationViewState,
-  ConversationTimelineEntry,
+  ConversationEmptySuggestion,
   ConversationIdentity,
-  ConsoleActivityRailViewState,
-  ConsoleActivityPulseItem,
-  ConsoleDockTarget,
+  ConversationRichToolCallBlock,
+  ConversationTimelineEntry,
+  ConversationViewState,
+  ResponsePhase,
   RoutingSectionView,
 } from "@console-core";
 import {
@@ -18,28 +22,60 @@ import {
 } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
-// ---------------------------------------------------------------------------
-// Dock target
-// ---------------------------------------------------------------------------
+export type MobKitDockTarget =
+  | AgentChatTarget
+  | IdentityInspectTarget
+  | RoutingPanelTarget
+  | GatingPanelTarget
+  | TopologyPanelTarget
+  | HealthPanelTarget;
 
-export interface MobKitDockTarget extends ConsoleDockTarget {
+export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
   addressingMode: ConsoleDockTargetAddressingMode;
   memberId: string;
   identity?: string;
 }
 
-export function buildPanelConversationKey(
-  panelId: string,
-  target: Pick<MobKitDockTarget, "identity" | "memberId" | "id" | "addressingMode"> | null,
-): string {
-  const targetKey = target?.addressingMode === "identity"
-    ? target.identity || target.memberId || target.id
-    : target?.memberId || target?.id || "none";
-  return `panel:${panelId}:${targetKey}`;
+export interface IdentityInspectTarget extends ConsoleDockTarget {
+  kind: "identity-inspect";
+  identity: string;
+  memberId: string;
 }
 
-export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
+export interface RoutingPanelTarget extends ConsoleDockTarget {
+  kind: "routing";
+}
+
+export interface GatingPanelTarget extends ConsoleDockTarget {
+  kind: "gating";
+}
+
+export interface TopologyPanelTarget extends ConsoleDockTarget {
+  kind: "topology";
+}
+
+export interface HealthPanelTarget extends ConsoleDockTarget {
+  kind: "health";
+}
+
+export function buildPanelConversationKey(
+  panelId: string,
+  target: Pick<MobKitDockTarget, "kind" | "identity" | "memberId" | "id" | "addressingMode"> | null,
+): string {
+  if (!target) {
+    return `panel:${panelId}:none`;
+  }
+  if (target.kind !== "agent-chat") {
+    return `panel:${panelId}:${target.kind}:${target.id}`;
+  }
+  const targetKey = target.addressingMode === "identity"
+    ? target.identity || target.memberId || target.id
+    : target.memberId || target.id;
+  return `panel:${panelId}:${target.kind}:${targetKey}`;
+}
+
+export function buildDockTarget(agent: ConsoleAgent): AgentChatTarget {
   const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
   const identity = typeof agent.identity === "string" && agent.identity.trim()
     ? agent.identity.trim()
@@ -53,12 +89,36 @@ export function buildDockTarget(agent: ConsoleAgent): MobKitDockTarget {
     ...(identity ? { identity } : {}),
     title: agent.label,
     subtitle,
+    iconName: "i-team",
   };
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar
-// ---------------------------------------------------------------------------
+export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
+  return {
+    id: `inspect:${agent.identity || agent.member_id}`,
+    kind: "identity-inspect",
+    identity: agent.identity || agent.member_id,
+    memberId: agent.member_id,
+    title: `${agent.label} Inspect`,
+    subtitle: agent.identity || agent.member_id,
+    iconName: "i-terminal",
+  };
+}
+
+export function buildControlTarget(kind: "routing" | "gating" | "topology" | "health"): MobKitDockTarget {
+  switch (kind) {
+    case "routing":
+      return { id: "routing", kind, title: "Routing", subtitle: "Routes and delivery history", iconName: "i-swap" };
+    case "gating":
+      return { id: "gating", kind, title: "Gating", subtitle: "Pending approvals and audit", iconName: "i-bolt" };
+    case "topology":
+      return { id: "topology", kind, title: "Topology", subtitle: "Identity connectivity", iconName: "i-team" };
+    case "health":
+      return { id: "health", kind, title: "Health", subtitle: "Runtime and identity health", iconName: "i-gear" };
+    default:
+      return { id: kind, kind: "health", title: "Health" };
+  }
+}
 
 function agentGroupKey(agent: ConsoleAgent): string {
   return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
@@ -91,9 +151,7 @@ export function buildSidebarViewState(args: {
 }): ConsoleSidebarViewState {
   const { agents, selectedMemberId, pinnedAgentIds = new Set(), sortMode = "group" } = args;
 
-  // Sort agents within groups
   const sorted = [...agents].sort((a, b) => {
-    // Pinned first
     const aPinned = pinnedAgentIds.has(a.member_id) ? 0 : 1;
     const bPinned = pinnedAgentIds.has(b.member_id) ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
@@ -107,7 +165,6 @@ export function buildSidebarViewState(args: {
     return a.label.localeCompare(b.label);
   });
 
-  // Group agents
   const grouped = new Map<string, ConsoleAgent[]>();
   for (const agent of sorted) {
     const key = agentGroupKey(agent);
@@ -116,15 +173,11 @@ export function buildSidebarViewState(args: {
     grouped.set(key, bucket);
   }
 
-  // Build sections
   const sections = Array.from(grouped.entries()).map(([group, members]) => ({
     id: group,
     title: group,
     iconName: sectionIconForGroup(group),
-    meta: [{ id: "count", label: `${members.length}` }] as { id: string; label: string; tone?: "default" | "muted" | "accent" | "positive" | "negative" }[],
-    actions: [
-      { id: "spawn_in_group", label: `Spawn agent in ${group}`, iconName: "i-plus" },
-    ],
+    meta: [{ id: "count", label: `${members.length}` }] as Array<{ id: string; label: string; tone?: ConsoleSidebarMetaTone }>,
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
       const isPinned = pinnedAgentIds.has(agent.member_id);
@@ -132,17 +185,21 @@ export function buildSidebarViewState(args: {
       return {
         id: agent.member_id,
         title: agent.label,
-        subtitle: agent.member_id,
+        subtitle: agent.identity || agent.member_id,
         selected: agent.member_id === selectedMemberId,
         pinned: isPinned,
         disabled: !isAddressable,
         ...watchFields,
         meta: [
-          ...(agent.state
-            ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }]
-            : []),
+          ...(agent.state ? [{ id: "state", label: agent.state, tone: agentStateTone(agent.state) }] : []),
+          ...(agent.response_phase ? [{ id: "phase", label: agent.response_phase, tone: "accent" as const }] : []),
         ],
         actions: [
+          {
+            id: "inspect_identity",
+            label: "Inspect identity",
+            iconName: "i-terminal",
+          },
           {
             id: "toggle_pin",
             label: isPinned ? "Unpin agent" : "Pin agent",
@@ -156,16 +213,16 @@ export function buildSidebarViewState(args: {
 
   return {
     blocks: [
-      // Action strip: top-level controls
       {
         id: "controls",
         kind: "action_strip" as const,
         actions: [
-          { id: "spawn_agent", label: "Spawn agent", iconName: "i-plus" },
-          { id: "reconcile", label: "Reconcile", iconName: "i-refresh" },
+          { id: "open_routing", label: "Routing", iconName: "i-swap" },
+          { id: "open_gating", label: "Gating", iconName: "i-bolt" },
+          { id: "open_topology", label: "Topology", iconName: "i-team" },
+          { id: "open_health", label: "Health", iconName: "i-gear" },
         ],
       },
-      // Agent list — "Agents" header with inline sort/add actions (like meerkat-app "Threads")
       {
         id: "agents",
         kind: "list" as const,
@@ -179,10 +236,6 @@ export function buildSidebarViewState(args: {
     ],
   };
 }
-
-// ---------------------------------------------------------------------------
-// Routing
-// ---------------------------------------------------------------------------
 
 export function buildRoutingSectionView(args: {
   routesResponse: unknown;
@@ -201,10 +254,6 @@ export function buildRoutingSectionView(args: {
 
   return normalized ?? { routes: [], deliveries: [] };
 }
-
-// ---------------------------------------------------------------------------
-// Conversation identities
-// ---------------------------------------------------------------------------
 
 const USER_IDENTITY: ConversationIdentity = {
   id: "user",
@@ -228,26 +277,100 @@ const SYSTEM_IDENTITY: ConversationIdentity = {
   showLabel: true,
 };
 
-// ---------------------------------------------------------------------------
-// Frame → timeline entry
-// ---------------------------------------------------------------------------
-
 function summarizeFrameData(data: unknown): string {
-  if (typeof data === "string") return data;
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return summarizeFrameData(JSON.parse(trimmed));
+      } catch {
+        return data;
+      }
+    }
+    return data;
+  }
   if (typeof data === "object" && data !== null) {
     const record = data as Record<string, unknown>;
-    if (typeof record.delta === "string" && record.delta.trim()) return record.delta;
+    if (typeof record.delta === "string") return record.delta;
     if (typeof record.text === "string" && record.text.trim()) return record.text;
     if (typeof record.result === "string" && record.result.trim()) return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
+    if (typeof record.reason === "string" && record.reason.trim()) return record.reason;
     if (typeof record.kind === "string" && typeof record.event_type === "string") return "";
     return JSON.stringify(record);
   }
   return String(data ?? "");
 }
 
-// Infrastructure events that should not appear in the conversation transcript.
+function eventSortRank(event: string | undefined): number {
+  switch (event) {
+    case "interaction_started":
+      return 0;
+    case "tool_call_requested":
+    case "tool_call":
+    case "tool_execution_started":
+      return 20;
+    case "tool_result_received":
+    case "tool_execution_completed":
+      return 30;
+    case "text_delta":
+      return 40;
+    case "text_complete":
+      return 45;
+    case "interaction_complete":
+    case "interaction_failed":
+    case "run_completed":
+    case "run_failed":
+      return 90;
+    default:
+      return 50;
+  }
+}
+
+function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
+  const interactionStartMs = new Map<string, number>();
+  for (const frame of frames) {
+    const interactionId = frame.interactionId?.trim();
+    const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) continue;
+    const current = interactionStartMs.get(interactionId);
+    if (current === undefined || timestampMs < current) {
+      interactionStartMs.set(interactionId, timestampMs);
+    }
+  }
+
+  return frames
+    .map((frame, index) => ({ frame, index }))
+    .sort((left, right) => {
+      const leftInteraction = left.frame.interactionId?.trim() || "";
+      const rightInteraction = right.frame.interactionId?.trim() || "";
+      const leftGroupTs =
+        (leftInteraction && interactionStartMs.get(leftInteraction))
+        ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+      const rightGroupTs =
+        (rightInteraction && interactionStartMs.get(rightInteraction))
+        ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+      if (leftGroupTs !== rightGroupTs) {
+        return leftGroupTs - rightGroupTs;
+      }
+      if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
+        const leftRank = eventSortRank(left.frame.event);
+        const rightRank = eventSortRank(right.frame.event);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+      }
+      const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+      const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+      if (leftTs !== rightTs) {
+        return leftTs - rightTs;
+      }
+      return left.index - right.index;
+    })
+    .map(({ frame }) => frame);
+}
+
 const HIDDEN_EVENTS = new Set([
   "subscribed",
   "run_started",
@@ -258,22 +381,135 @@ const HIDDEN_EVENTS = new Set([
   "interaction_started",
   "run_failed",
   "keep-alive",
+  "tool_config_changed",
+  "tool_scope_changed",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
 ]);
+
+const ACTIVITY_HIDDEN_EVENTS = new Set([
+  ...HIDDEN_EVENTS,
+  "text_delta",
+  "tool_result_received",
+  "tool_execution_completed",
+]);
+
+export function mergeConversationFrames(...frameSets: Array<ConsoleFrame[] | undefined>): ConsoleFrame[] {
+  const byId = new Map<string, ConsoleFrame>();
+  const ordered: ConsoleFrame[] = [];
+
+  for (const frameSet of frameSets) {
+    for (const frame of frameSet || []) {
+      const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+      if (byId.has(key)) {
+        continue;
+      }
+      byId.set(key, frame);
+      ordered.push(frame);
+    }
+  }
+
+  return ordered;
+}
+
+function isoFromTimestampMs(timestampMs: number | undefined): string | undefined {
+  if (typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) {
+    return undefined;
+  }
+  return new Date(timestampMs).toISOString();
+}
+
+function parseToolCallId(frame: ConsoleFrame): string | null {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const id = record?.tool_call_id ?? record?.id;
+  return typeof id === "string" && id.trim() ? id.trim() : null;
+}
+
+function parseToolName(frame: ConsoleFrame): string {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  return typeof record?.name === "string" && record.name.trim() ? record.name : "tool";
+}
+
+function parseToolArguments(frame: ConsoleFrame): string {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  if (typeof record?.arguments === "string" && record.arguments.trim()) {
+    return record.arguments;
+  }
+  if ("args" in (record || {}) && record?.args !== undefined) {
+    return JSON.stringify(record.args);
+  }
+  return JSON.stringify(record || {});
+}
+
+function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
+  const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+  const result = summarizeFrameData(frame.data).trim();
+  const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
+  return {
+    ...(result ? { result } : {}),
+    status: isError ? "error" : "success",
+  };
+}
+
+function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichToolCallBlock> {
+  const toolCalls = new Map<string, ConversationRichToolCallBlock>();
+  const pendingResults = new Map<string, { result?: string; status: "success" | "error" }>();
+
+  for (const frame of frames) {
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      const toolCallId = parseToolCallId(frame);
+      if (!toolCallId) continue;
+      const parsed = parseToolResult(frame);
+      if (toolCalls.has(toolCallId)) {
+        const current = toolCalls.get(toolCallId)!;
+        toolCalls.set(toolCallId, {
+          ...current,
+          ...(parsed.result ? { result: parsed.result } : {}),
+          status: parsed.status,
+        });
+      } else {
+        pendingResults.set(toolCallId, parsed);
+      }
+    }
+
+    if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") {
+      const toolCallId = parseToolCallId(frame);
+      if (!toolCallId || toolCalls.has(toolCallId)) continue;
+      const pending = pendingResults.get(toolCallId);
+      toolCalls.set(toolCallId, {
+        type: "tool-call",
+        toolCallId,
+        name: parseToolName(frame),
+        arguments: parseToolArguments(frame),
+        ...(pending?.result ? { result: pending.result } : {}),
+        status: pending?.status || "pending",
+      });
+    }
+  }
+
+  return toolCalls;
+}
 
 function renderTerminalEntry(
   agent: ConsoleAgent | null,
   frame: ConsoleFrame,
   entryId: string,
+  streamedText = "",
 ): ConversationTimelineEntry | null {
   if (frame.event === "interaction_complete") {
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
+    if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
+      return null;
+    }
     const blocks = parseConversationRichBlocks(text);
     return {
       kind: "message",
       id: entryId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
       ...(blocks.length > 0 ? { blocks } : { text }),
     };
   }
@@ -286,6 +522,7 @@ function renderTerminalEntry(
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
       text,
     };
   }
@@ -293,15 +530,178 @@ function renderTerminalEntry(
   return null;
 }
 
+function normalizeComparableText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+export function buildQuickPromptSuggestions(agent: ConsoleAgent | null): ConversationEmptySuggestion[] {
+  const labels = agent?.labels ?? {};
+  const suggestions: ConversationEmptySuggestion[] = [];
+  for (let index = 1; index <= 4; index++) {
+    const label = labels[`console_prompt_${index}_label`]?.trim();
+    const value = labels[`console_prompt_${index}_value`]?.trim();
+    if (!label || !value) continue;
+    suggestions.push({
+      id: `prompt-${index}`,
+      label,
+      value,
+      iconName: "i-bolt",
+    });
+  }
+  return suggestions;
+}
+
+function renderHistoryUserEntry(frame: ConsoleFrame, entryId: string): ConversationTimelineEntry | null {
+  if (frame.event !== "interaction_started" || typeof frame.data !== "object" || frame.data === null) {
+    return null;
+  }
+  const record = frame.data as Record<string, unknown>;
+  const content = typeof record.content === "string" ? record.content.trim() : "";
+  if (!content) return null;
+  return {
+    kind: "message",
+    id: entryId,
+    identity: USER_IDENTITY,
+    variant: "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    text: content,
+  };
+}
+
+function extractTextFromContentBlocks(blocks: unknown): string {
+  if (typeof blocks === "string") {
+    return blocks;
+  }
+  if (!Array.isArray(blocks)) {
+    return "";
+  }
+  return blocks
+    .map((block) => {
+      if (typeof block === "string") return block;
+      if (!block || typeof block !== "object") return "";
+      const record = block as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.content === "string") return record.content;
+      return "";
+    })
+    .filter((value) => value.trim().length > 0)
+    .join("");
+}
+
+function historyMessageText(message: unknown): { role: "user" | "assistant" | "system" | null; text: string; blocks?: ConversationRichToolCallBlock[] } {
+  if (!message || typeof message !== "object") {
+    return { role: null, text: "" };
+  }
+  const record = message as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role : null;
+  switch (role) {
+    case "user":
+      return { role: "user", text: extractTextFromContentBlocks(record.content) };
+    case "assistant":
+      return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
+    case "block_assistant": {
+      const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+      const text = blocks
+        .map((block) => {
+          if (!block || typeof block !== "object") return "";
+          const item = block as Record<string, unknown>;
+          const blockType = typeof item.block_type === "string"
+            ? item.block_type
+            : typeof item.type === "string"
+              ? item.type
+              : "";
+          const data = item.data && typeof item.data === "object"
+            ? item.data as Record<string, unknown>
+            : {};
+          if (blockType === "text") {
+            if (typeof data.text === "string") return data.text;
+            if (typeof item.text === "string") return item.text;
+          }
+          return "";
+        })
+        .filter((value) => value.trim().length > 0)
+        .join("");
+      return { role: "assistant", text };
+    }
+    case "system":
+      return { role: "system", text: typeof record.content === "string" ? record.content : "" };
+    default:
+      return { role: null, text: "" };
+  }
+}
+
+export function mapSessionHistoryToTimelineEntries(
+  historyPage: unknown,
+  agent: ConsoleAgent | null,
+): ConversationTimelineEntry[] {
+  if (!historyPage || typeof historyPage !== "object") {
+    return [];
+  }
+  const record = historyPage as Record<string, unknown>;
+  const messages = Array.isArray(record.messages) ? record.messages : [];
+  const entries: ConversationTimelineEntry[] = [];
+  for (const [index, message] of messages.entries()) {
+    const parsed = historyMessageText(message);
+    const text = parsed.text.trim();
+    const messageRecord = message && typeof message === "object"
+      ? message as Record<string, unknown>
+      : null;
+    const createdAt = typeof messageRecord?.created_at === "string"
+      ? messageRecord.created_at
+      : typeof messageRecord?.createdAt === "string"
+        ? messageRecord.createdAt
+        : undefined;
+    if (!text) {
+      continue;
+    }
+    if (parsed.role === "system") {
+      if (!text.startsWith("[COMMS") && !text.startsWith("[SYSTEM NOTICE")) {
+        continue;
+      }
+      if (text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")) {
+        continue;
+      }
+      entries.push({
+        kind: "message",
+        id: `history:${index}`,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        ...(createdAt ? { createdAt } : {}),
+        text,
+      });
+      continue;
+    }
+    if (parsed.role === "user" && text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")) {
+      continue;
+    }
+    const blocks = parseConversationRichBlocks(text);
+    entries.push({
+      kind: "message",
+      id: `history:${index}`,
+      identity: parsed.role === "user" ? USER_IDENTITY : agentIdentity(agent),
+      variant: blocks.length > 0 ? "rich" : "plain",
+      ...(createdAt ? { createdAt } : {}),
+      ...(blocks.length > 0 ? { blocks } : { text }),
+    });
+  }
+  return entries;
+}
+
 export function mapFramesToTimelineEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
+  options: {
+    renderInteractionStartsAsUser?: boolean;
+  } = {},
 ): ConversationTimelineEntry[] {
+  const orderedFrames = sortFramesForTranscript(frames);
   const entries: ConversationTimelineEntry[] = [];
+  const toolBlocks = buildToolBlocks(orderedFrames);
+  const emittedToolCalls = new Set<string>();
 
-  // Accumulate consecutive text_delta frames into a single message
   let pendingText = "";
   let pendingId = "";
+  let pendingCreatedAt: string | undefined;
 
   function flushPendingText() {
     if (!pendingText) return;
@@ -311,64 +711,89 @@ export function mapFramesToTimelineEntries(
       id: pendingId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
+      ...(pendingCreatedAt ? { createdAt: pendingCreatedAt } : {}),
       ...(blocks.length > 0 ? { blocks } : { text: pendingText }),
     });
     pendingText = "";
     pendingId = "";
+    pendingCreatedAt = undefined;
   }
 
-  for (let i = 0; i < frames.length; i++) {
-    const frame = frames[i];
+  for (let i = 0; i < orderedFrames.length; i++) {
+    const frame = orderedFrames[i];
     const entryId = `${frame.id || frame.event || "frame"}:${i}`;
 
     if (frame.event === "text_delta") {
-      if (!pendingId) pendingId = entryId;
-      const delta = typeof (frame.data as Record<string, unknown>)?.delta === "string"
-        ? (frame.data as Record<string, unknown>).delta as string
-        : summarizeFrameData(frame.data);
-      pendingText += delta;
+      if (!pendingId) {
+        pendingId = entryId;
+        pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
+      }
+      pendingText += summarizeFrameData(frame.data);
       continue;
     }
 
-    // Flush any accumulated text before processing a non-text event
+    const toolCallId = parseToolCallId(frame);
+    if (
+      toolCallId
+      && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started")
+      && !emittedToolCalls.has(toolCallId)
+    ) {
+      flushPendingText();
+      const block = toolBlocks.get(toolCallId);
+      if (block) {
+        entries.push({
+          kind: "message",
+          id: entryId,
+          identity: agentIdentity(agent),
+          variant: "rich",
+          createdAt: isoFromTimestampMs(frame.timestampMs),
+          blocks: [block],
+        });
+        emittedToolCalls.add(toolCallId);
+      }
+      continue;
+    }
+
+    if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      continue;
+    }
+
+    if (options.renderInteractionStartsAsUser && frame.event === "interaction_started") {
+      flushPendingText();
+      const userEntry = renderHistoryUserEntry(frame, entryId);
+      if (userEntry) {
+        entries.push(userEntry);
+      }
+      continue;
+    }
+
+    if (frame.event === "text_complete") {
+      continue;
+    }
+
+    if (HIDDEN_EVENTS.has(frame.event)) {
+      continue;
+    }
+
+    const streamedText = pendingText;
     flushPendingText();
 
-    const terminalEntry = renderTerminalEntry(agent, frame, entryId);
+    const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
     if (terminalEntry) {
       entries.push(terminalEntry);
       continue;
     }
-
-    // Tool calls → command block
-    if (frame.event === "tool_call") {
-      const record = frame.data as Record<string, unknown> | null;
-      const toolName = typeof record?.name === "string" ? record.name : "tool";
-      const args = typeof record?.arguments === "string" ? record.arguments : JSON.stringify(record || {});
-      entries.push({
-        kind: "message",
-        id: entryId,
-        identity: agentIdentity(agent),
-        variant: "rich",
-        blocks: [{
-          type: "command",
-          caption: "Tool call",
-          title: toolName,
-          body: args,
-        }],
-      });
+    if (frame.event === "interaction_complete") {
       continue;
     }
 
-    // Skip infrastructure noise
-    if (HIDDEN_EVENTS.has(frame.event)) continue;
-
-    // Remaining events → system meta (errors, unexpected events)
     const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
     entries.push({
       kind: "message",
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
       text,
     });
   }
@@ -383,20 +808,76 @@ export function createUserEntry(message: string): ConversationTimelineEntry {
     id: `user:${Date.now()}`,
     identity: USER_IDENTITY,
     variant: "plain",
+    createdAt: new Date().toISOString(),
     text: message,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Conversation view state
-// ---------------------------------------------------------------------------
+export function sortConversationTimelineEntries(
+  entries: ConversationTimelineEntry[],
+): ConversationTimelineEntry[] {
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((left, right) => {
+      const leftTs = Date.parse(String(left.entry.createdAt || ""));
+      const rightTs = Date.parse(String(right.entry.createdAt || ""));
+      const safeLeft = Number.isFinite(leftTs) ? leftTs : Number.NaN;
+      const safeRight = Number.isFinite(rightTs) ? rightTs : Number.NaN;
+      if (Number.isFinite(safeLeft) && Number.isFinite(safeRight) && safeLeft !== safeRight) {
+        return safeLeft - safeRight;
+      }
+      if (Number.isFinite(safeLeft) && !Number.isFinite(safeRight)) {
+        return 1;
+      }
+      if (!Number.isFinite(safeLeft) && Number.isFinite(safeRight)) {
+        return -1;
+      }
+      return left.index - right.index;
+    })
+    .map(({ entry }) => entry);
+}
+
+export function inferResponsePhaseFromFrames(
+  frames: ConsoleFrame[],
+  fallback: ResponsePhase = null,
+): ResponsePhase {
+  let phase: ResponsePhase = fallback;
+  for (const frame of frames) {
+    switch (frame.event) {
+      case "interaction_started":
+        phase = "waiting";
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        phase = "tool-executing";
+        break;
+      case "text_delta":
+        phase = "generating";
+        break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        phase = null;
+        break;
+      default:
+        break;
+    }
+  }
+  return phase;
+}
 
 export function buildConversationViewState(args: {
   memberId: string;
   agentLabel: string;
+  agent?: ConsoleAgent | null;
   entries: ConversationTimelineEntry[];
 }): ConversationViewState {
   const groups = groupConversationTimelineEntries(args.entries);
+  const suggestions = buildQuickPromptSuggestions(args.agent ?? null);
   return {
     conversationId: args.memberId || "console",
     title: args.agentLabel,
@@ -406,33 +887,80 @@ export function buildConversationViewState(args: {
     emptyState: args.entries.length === 0 ? {
       title: args.agentLabel,
       subtitle: "Send a message to start the conversation.",
+      ...(suggestions.length ? { suggestions } : {}),
     } : null,
   };
 }
 
-// ---------------------------------------------------------------------------
-// Activity rail
-// ---------------------------------------------------------------------------
-
 export function buildActivityRailViewState(args: {
+  agents: ConsoleAgent[];
   eventFrames: ConsoleFrame[];
+  filterPresets?: ActivityFilterPreset[];
+  activePresetId?: string;
 }): ConsoleActivityRailViewState {
-  // Chronological event feed only
-  const pulseItems: ConsoleActivityPulseItem[] = args.eventFrames
+  const presets = args.filterPresets || [];
+  const activePreset = presets.find((preset) => preset.id === args.activePresetId) || null;
+  const agentByIdentity = new Map<string, ConsoleAgent>();
+  const watchedIdentities = new Set<string>();
+  const criticalIdentities = new Set<string>();
+
+  for (const agent of args.agents) {
+    if (agent.identity) agentByIdentity.set(agent.identity, agent);
+    agentByIdentity.set(agent.member_id, agent);
+    if (agent.watched && (agent.identity || agent.member_id)) {
+      watchedIdentities.add(agent.identity || agent.member_id);
+    }
+    if (agent.alertLevel === "critical" && (agent.identity || agent.member_id)) {
+      criticalIdentities.add(agent.identity || agent.member_id);
+    }
+  }
+
+  const filteredFrames = args.eventFrames.filter((frame) => {
+    if (ACTIVITY_HIDDEN_EVENTS.has(frame.event)) {
+      return false;
+    }
+    const frameIdentity = frame.identity?.trim();
+    if (!activePreset) return true;
+    if (activePreset.watchedOnly && frameIdentity && !watchedIdentities.has(frameIdentity)) {
+      return false;
+    }
+    if (activePreset.alertLevels?.length && frameIdentity) {
+      const agent = agentByIdentity.get(frameIdentity);
+      if (!agent?.alertLevel || !activePreset.alertLevels.includes(agent.alertLevel)) {
+        return false;
+      }
+    }
+    if (activePreset.eventTypeFilter?.length && !activePreset.eventTypeFilter.includes(frame.event)) {
+      return false;
+    }
+    return true;
+  });
+
+  const pulseItems: ConsoleActivityPulseItem[] = filteredFrames
     .slice(0, 50)
-    .map((frame, index) => ({
-      id: `event:${frame.id || index}`,
-      title: frame.event || "event",
-      line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
-      meta: frame.id || "",
-    }));
+    .map((frame, index) => {
+      const frameIdentity = frame.identity?.trim();
+      const agent = frameIdentity ? agentByIdentity.get(frameIdentity) : null;
+      return {
+        id: `event:${frame.id || index}`,
+        title: agent?.label || frameIdentity || frame.event || "event",
+        line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
+        meta: frame.event || frame.id || "",
+        ...(agent ? { focusId: agent.member_id } : {}),
+      };
+    });
 
   return {
     panels: [
       {
         id: "pulse",
         kind: "pulse" as const,
-        title: "Events",
+        title: "Activity",
+        actions: presets.map((preset) => ({
+          id: preset.id,
+          label: preset.label,
+          active: preset.id === (activePreset?.id || "all"),
+        })),
         items: pulseItems,
         emptyText: "No events yet",
       },

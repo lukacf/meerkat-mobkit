@@ -1,6 +1,7 @@
 //! Runtime lifecycle management — startup, shutdown, rediscovery, and periodic maintenance.
 
 use std::future::Future;
+use std::future::IntoFuture;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -94,9 +95,18 @@ impl UnifiedRuntime {
         F: Future<Output = ()> + Send + 'static,
     {
         let app = self.build_reference_app_router(decisions);
-        let serve_result = axum::serve(listener, app)
+        let serve = axum::serve(listener, app)
             .with_graceful_shutdown(shutdown_signal)
-            .await;
+            .into_future();
+        tokio::pin!(serve);
+        let serve_result = loop {
+            tokio::select! {
+                result = &mut serve => break result,
+                () = tokio::time::sleep(Duration::from_millis(25)) => {
+                    let _ = self.drain_mob_agent_events().await;
+                }
+            }
+        };
         let shutdown = self.shutdown().await;
         UnifiedRuntimeRunReport {
             serve_result,
@@ -110,7 +120,16 @@ impl UnifiedRuntime {
         decisions: RuntimeDecisionState,
     ) -> std::io::Result<()> {
         let app = self.build_reference_app_router(decisions);
-        axum::serve(listener, app).await
+        let serve = axum::serve(listener, app).into_future();
+        tokio::pin!(serve);
+        loop {
+            tokio::select! {
+                result = &mut serve => break result,
+                () = tokio::time::sleep(Duration::from_millis(25)) => {
+                    let _ = self.drain_mob_agent_events().await;
+                }
+            }
+        }
     }
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {

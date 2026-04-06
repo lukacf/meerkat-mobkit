@@ -18,6 +18,7 @@ impl UnifiedRuntime {
         console_json_router_with_runtime_and_events(
             decisions,
             self.mob_runtime.clone(),
+            Some(self.module_runtime_handle()),
             self.contact_directory.clone(),
             self.event_log_store(),
             Some(self.console_events()),
