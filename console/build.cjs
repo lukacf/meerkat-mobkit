@@ -5,6 +5,7 @@ const path = require("node:path");
 const { build } = require("esbuild");
 
 const outDir = path.join(__dirname, "dist");
+const embeddedOutDir = path.join(__dirname, "../meerkat-mobkit/console-dist");
 const indexSourcePath = path.join(__dirname, "src/index.tsx");
 const browserSourcePath = path.join(__dirname, "src/browser.tsx");
 const libraryBundlePath = path.join(outDir, "index.cjs");
@@ -39,6 +40,7 @@ const html = `<!doctype html>
 
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
+  await fs.mkdir(embeddedOutDir, { recursive: true });
 
   // Shared components use JSX automatic runtime (react/jsx-runtime)
   const jsxOptions = { jsx: "automatic" };
@@ -78,6 +80,12 @@ async function main() {
   });
 
   await fs.writeFile(htmlPath, html, "utf8");
+
+  await Promise.all([
+    fs.copyFile(appBundlePath, path.join(embeddedOutDir, "console-app.js")),
+    fs.copyFile(path.join(outDir, "console-app.css"), path.join(embeddedOutDir, "console-app.css")),
+    fs.copyFile(htmlPath, path.join(embeddedOutDir, "index.html")),
+  ]);
 }
 
 main().catch((error) => {

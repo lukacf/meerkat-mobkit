@@ -1,0 +1,4 @@
+[      23ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:17986
+[     616ms] [ERROR] Internal React error: Expected static flag was missing. Please notify the React team. @ http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:4241
+[    5832ms] [ERROR] Internal React error: Expected static flag was missing. Please notify the React team. @ http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:4241
+[   18604ms] [ERROR] Internal React error: Expected static flag was missing. Please notify the React team. @ http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:4241

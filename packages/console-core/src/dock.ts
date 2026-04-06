@@ -906,7 +906,7 @@ export function splitConsoleDockPanel<TTarget extends ConsoleDockTarget>(
     preferred: panel.target,
     excludedIds,
     suggestTargets: options.suggestTargets,
-  })[0] || null;
+  })[0] || panel.target || null;
   const nextPanel = options.createPanelState({
     target: suggestedTarget,
     sourcePanel: panel,

@@ -996,6 +996,7 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/flow_status",
                 "mobkit/collect_completed",
                 "mobkit/member_current_session_id",
+                "mobkit/read_session_history",
                 "mobkit/member_session_ref",
             ];
             if identity_ctx.is_some() {
@@ -1755,6 +1756,9 @@ pub async fn handle_unified_rpc_json(
         "mobkit/member_current_session_id" => {
             mob_methods::handle_member_current_session_id(runtime, response_id, &request.params)
                 .await
+        }
+        "mobkit/read_session_history" => {
+            mob_methods::handle_read_session_history(runtime, response_id, &request.params).await
         }
         "mobkit/member_session_ref" => {
             mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await

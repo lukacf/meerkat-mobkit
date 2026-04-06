@@ -1113,6 +1113,65 @@ pub(super) async fn handle_member_current_session_id(
     }
 }
 
+pub(super) async fn handle_read_session_history(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let session_id = params.get("session_id").and_then(Value::as_str);
+    let offset = params
+        .get("offset")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(0);
+    let limit = match params.get("limit") {
+        Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
+        Some(Value::Null) | None => None,
+        Some(_) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: "Invalid params: limit must be a positive integer".to_string(),
+                }),
+            };
+        }
+    };
+
+    match session_id {
+        Some(sid) if !sid.is_empty() => {
+            match runtime.read_session_history(sid, offset, limit).await {
+                Ok(page) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::to_value(page).unwrap_or(Value::Null)),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("read_session_history failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: session_id required".to_string(),
+            }),
+        },
+    }
+}
+
 pub(super) async fn handle_member_session_ref(
     runtime: &UnifiedRuntime,
     response_id: Value,

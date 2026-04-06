@@ -54,6 +54,7 @@ export interface ConsoleActivityPulsePanel {
   kind: "pulse";
   title: string;
   meta?: string | null;
+  actions?: ConsoleActivityAction[];
   items: ConsoleActivityPulseItem[];
   emptyText: string;
 }

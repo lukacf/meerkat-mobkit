@@ -1,0 +1,157 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e8]:
+      - heading "Agents" [level=2] [ref=e11]
+      - generic [ref=e13]:
+        - button "lead" [ref=e15]:
+          - generic [ref=e18]: lead
+        - generic [ref=e19]:
+          - button "delivery lead · mob_agent active addressable" [ref=e20] [cursor=pointer]:
+            - generic [ref=e22]:
+              - generic [ref=e24]: delivery
+              - generic [ref=e25]: lead · mob_agent
+            - generic [ref=e26]:
+              - generic [ref=e28]: active
+              - generic [ref=e30]: addressable
+          - button "router lead · mob_agent active addressable" [ref=e31] [cursor=pointer]:
+            - generic [ref=e33]:
+              - generic [ref=e35]: router
+              - generic [ref=e36]: lead · mob_agent
+            - generic [ref=e37]:
+              - generic [ref=e39]: active
+              - generic [ref=e41]: addressable
+  - generic [ref=e44]:
+    - button "New tab" [ref=e47]:
+      - generic [ref=e48]: +
+    - generic [ref=e178]:
+      - generic [ref=e180]:
+        - generic [ref=e181]:
+          - generic [ref=e182]:
+            - generic [ref=e183]:
+              - img [ref=e185]: C
+              - generic [ref=e186]: delivery
+            - generic [ref=e187]:
+              - generic [ref=e188]: lead · mob_agent
+              - generic [ref=e189]: Active target
+          - generic:
+            - button "Split left":
+              - generic: ←
+            - button "Split right":
+              - generic: →
+            - button "Split up":
+              - generic: ↑
+            - button "Split down":
+              - generic: ↓
+            - button "Close panel":
+              - generic: ×
+        - generic [ref=e191]:
+          - generic [ref=e194]:
+            - article [ref=e195]:
+              - button "Copy message" [ref=e196]:
+                - img "i-copy" [ref=e197]: C
+              - paragraph [ref=e198]: Hello delivery, what do you do?
+            - generic [ref=e199]:
+              - button "Copy response" [ref=e200]:
+                - img "i-copy" [ref=e201]: C
+              - article [ref=e203]:
+                - paragraph [ref=e204]: ok
+          - generic [ref=e206]:
+            - textbox "Message delivery..." [ref=e207]
+            - button "Send" [disabled] [ref=e209]
+      - button "Resize horizontal split" [ref=e210]
+      - generic [ref=e213]:
+        - generic [ref=e214]:
+          - generic [ref=e215]:
+            - generic [ref=e216]:
+              - img [ref=e218]: C
+              - generic [ref=e219]: Open something
+            - generic [ref=e220]:
+              - generic [ref=e221]: Use the launcher or activity rail to open a target.
+              - generic [ref=e222]: Ready
+          - generic [ref=e223]:
+            - button "Split left" [ref=e224]:
+              - generic [ref=e225]: ←
+            - button "Split right" [ref=e226]:
+              - generic [ref=e227]: →
+            - button "Split up" [ref=e228]:
+              - generic [ref=e229]: ↑
+            - button "Split down" [ref=e230]:
+              - generic [ref=e231]: ↓
+            - button "Close panel" [ref=e232]:
+              - generic [ref=e233]: ×
+        - generic [ref=e235]:
+          - generic [ref=e238]:
+            - heading "Talk to Agent" [level=2] [ref=e240]
+            - paragraph [ref=e241]: Send a message to start the conversation.
+          - generic [ref=e243]:
+            - textbox "Message Agent..." [ref=e244]
+            - button "Send" [disabled] [ref=e246]
+  - complementary [ref=e73]:
+    - generic [ref=e75]:
+      - generic [ref=e76]:
+        - button "Add panel" [ref=e77]:
+          - img "i-plus" [ref=e78]: P
+        - button "Collapse live panels" [ref=e79]:
+          - img "i-sidebar-toggle" [ref=e80]: S
+      - complementary [ref=e81]:
+        - generic [ref=e83]:
+          - generic [ref=e84]:
+            - generic [ref=e85]:
+              - heading "Agents" [level=2] [ref=e86]
+              - generic [ref=e88]: "2"
+            - generic [ref=e90]:
+              - generic [ref=e91]:
+                - generic [ref=e92]: Active
+                - generic [ref=e93]: "2"
+              - generic [ref=e94]:
+                - button "delivery lead" [ref=e96]:
+                  - generic [ref=e98]:
+                    - generic [ref=e99]: delivery
+                    - generic [ref=e100]: lead
+                - button "router lead" [ref=e102]:
+                  - generic [ref=e104]:
+                    - generic [ref=e105]: router
+                    - generic [ref=e106]: lead
+          - generic [ref=e107]:
+            - heading "Events" [level=2] [ref=e109]
+            - generic [ref=e110]:
+              - 'button "subscribed {\"member_id\":\"delivery\",\"type\":\"subscribed\"}" [ref=e124]':
+                - generic [ref=e126]:
+                  - generic [ref=e128]: subscribed
+                  - generic [ref=e129]: "{\"member_id\":\"delivery\",\"type\":\"subscribed\"}"
+              - 'button "run_started delivery:0 {\"type\":\"run_started\",\"session_id\":\"019d4ad7-f9e8-72d3-b29d-bfc5b55d8c20\",\"prompt\":\"[EVENT via rpc] Hello delivery, what" [ref=e131]':
+                - generic [ref=e133]:
+                  - generic [ref=e134]:
+                    - generic [ref=e135]: run_started
+                    - generic [ref=e136]: delivery:0
+                  - generic [ref=e137]: "{\"type\":\"run_started\",\"session_id\":\"019d4ad7-f9e8-72d3-b29d-bfc5b55d8c20\",\"prompt\":\"[EVENT via rpc] Hello delivery, what"
+              - 'button "turn_started delivery:1 {\"type\":\"turn_started\",\"turn_number\":0}" [ref=e139]':
+                - generic [ref=e141]:
+                  - generic [ref=e142]:
+                    - generic [ref=e143]: turn_started
+                    - generic [ref=e144]: delivery:1
+                  - generic [ref=e145]: "{\"type\":\"turn_started\",\"turn_number\":0}"
+              - button "text_delta delivery:2 ok" [ref=e147]:
+                - generic [ref=e149]:
+                  - generic [ref=e150]:
+                    - generic [ref=e151]: text_delta
+                    - generic [ref=e152]: delivery:2
+                  - generic [ref=e153]: ok
+              - 'button "text_complete delivery:3 {\"type\":\"text_complete\",\"content\":\"ok\"}" [ref=e155]':
+                - generic [ref=e157]:
+                  - generic [ref=e158]:
+                    - generic [ref=e159]: text_complete
+                    - generic [ref=e160]: delivery:3
+                  - generic [ref=e161]: "{\"type\":\"text_complete\",\"content\":\"ok\"}"
+              - 'button "turn_completed delivery:4 {\"type\":\"turn_completed\",\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_creation_tokens\":nu" [ref=e163]':
+                - generic [ref=e165]:
+                  - generic [ref=e166]:
+                    - generic [ref=e167]: turn_completed
+                    - generic [ref=e168]: delivery:4
+                  - generic [ref=e169]: "{\"type\":\"turn_completed\",\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cache_creation_tokens\":nu"
+              - button "run_completed delivery:5 ok" [ref=e171]:
+                - generic [ref=e173]:
+                  - generic [ref=e174]:
+                    - generic [ref=e175]: run_completed
+                    - generic [ref=e176]: delivery:5
+                  - generic [ref=e177]: ok

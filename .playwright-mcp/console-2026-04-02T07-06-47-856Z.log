@@ -1,0 +1,12 @@
+[      27ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:17986
+[   20407ms] NotFoundError: Failed to execute 'setPointerCapture' on 'Element': No active pointer with the given id is found.
+    at handleActivityResize (http://localhost:5199/src/ConsoleApp.tsx?t=1775113600038:171:14)
+    at executeDispatch (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:11736:11)
+    at runWithFiberInDEV (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:1485:72)
+    at processDispatchQueue (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:11772:37)
+    at http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:12182:11
+    at batchedUpdates$1 (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:2628:42)
+    at dispatchEventForPluginEventSystem (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:11877:9)
+    at dispatchEvent (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:14792:13)
+    at dispatchDiscreteEvent (http://localhost:5199/node_modules/.vite/deps/react-dom_client.js?v=08e042a2:14773:62)
+    at eval (eval at evaluate (:302:30), <anonymous>:7:11)

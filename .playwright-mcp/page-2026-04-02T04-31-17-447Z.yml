@@ -1,0 +1,217 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e7]:
+      - generic [ref=e9]:
+        - button "Spawn agent" [ref=e10] [cursor=pointer]:
+          - img [ref=e12]
+          - generic [ref=e14]: Spawn agent
+        - button "Reconcile" [ref=e15] [cursor=pointer]:
+          - img [ref=e17]
+          - generic [ref=e19]: Reconcile
+        - button "Sort & filter" [ref=e20] [cursor=pointer]:
+          - img [ref=e22]
+          - generic [ref=e24]: Sort & filter
+      - generic [ref=e25]:
+        - generic [ref=e27]:
+          - heading "Agents" [level=2] [ref=e28]
+          - generic [ref=e31]: "7"
+        - generic [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]:
+              - button "Domain 3" [ref=e35] [cursor=pointer]:
+                - img [ref=e37]
+                - generic [ref=e40]:
+                  - generic [ref=e41]: Domain
+                  - generic [ref=e44]: "3"
+              - generic [ref=e45]:
+                - button "Spawn agent in Domain":
+                  - img "i-plus"
+            - generic [ref=e46]:
+              - button "Pin agent Billing domain:billing active" [ref=e47] [cursor=pointer]:
+                - generic [ref=e48]:
+                  - button "Pin agent" [ref=e50]:
+                    - img "i-pin" [ref=e51]
+                  - generic [ref=e53]:
+                    - generic [ref=e55]: Billing
+                    - generic [ref=e56]: domain:billing
+                - generic [ref=e59]: active
+              - button "Pin agent Delivery domain:delivery active" [active] [ref=e60] [cursor=pointer]:
+                - generic [ref=e61]:
+                  - generic [ref=e62]:
+                    - button "Pin agent":
+                      - img "i-pin"
+                  - generic [ref=e63]:
+                    - generic [ref=e65]: Delivery
+                    - generic [ref=e66]: domain:delivery
+                - generic [ref=e69]: active
+              - button "Pin agent Support domain:support active" [ref=e70] [cursor=pointer]:
+                - generic [ref=e71]:
+                  - generic [ref=e72]:
+                    - button "Pin agent":
+                      - img "i-pin"
+                  - generic [ref=e73]:
+                    - generic [ref=e75]: Support
+                    - generic [ref=e76]: domain:support
+                - generic [ref=e79]: active
+          - generic [ref=e80]:
+            - generic [ref=e81]:
+              - button "Internal 2" [ref=e82] [cursor=pointer]:
+                - img [ref=e84]
+                - generic [ref=e87]:
+                  - generic [ref=e88]: Internal
+                  - generic [ref=e91]: "2"
+              - generic [ref=e92]:
+                - button "Spawn agent in Internal":
+                  - img "i-plus"
+            - generic [ref=e93]:
+              - button "Pin agent Gate gate:main active" [ref=e94]:
+                - generic [ref=e95]:
+                  - generic [ref=e96]:
+                    - button "Pin agent":
+                      - img "i-pin"
+                  - generic [ref=e97]:
+                    - generic [ref=e99]: Gate
+                    - generic [ref=e100]: gate:main
+                - generic [ref=e103]: active
+              - button "Pin agent Health Monitor monitor:health active" [ref=e104]:
+                - generic [ref=e105]:
+                  - generic [ref=e106]:
+                    - button "Pin agent":
+                      - img "i-pin"
+                  - generic [ref=e107]:
+                    - generic [ref=e109]: Health Monitor
+                    - generic [ref=e110]: monitor:health
+                - generic [ref=e113]: active
+          - generic [ref=e114]:
+            - generic [ref=e115]:
+              - button "Coordinators 2" [ref=e116] [cursor=pointer]:
+                - img [ref=e118]
+                - generic [ref=e121]:
+                  - generic [ref=e122]: Coordinators
+                  - generic [ref=e125]: "2"
+              - generic [ref=e126]:
+                - button "Spawn agent in Coordinators":
+                  - img "i-plus"
+            - generic [ref=e127]:
+              - button "Pin agent Router router:main active" [ref=e128] [cursor=pointer]:
+                - generic [ref=e129]:
+                  - generic [ref=e130]:
+                    - button "Pin agent":
+                      - img "i-pin"
+                  - generic [ref=e131]:
+                    - generic [ref=e133]: Router
+                    - generic [ref=e134]: router:main
+                - generic [ref=e137]: active
+              - button "Pin agent Triage triage:main active" [ref=e138] [cursor=pointer]:
+                - generic [ref=e139]:
+                  - generic [ref=e140]:
+                    - button "Pin agent":
+                      - img "i-pin"
+                  - generic [ref=e141]:
+                    - generic [ref=e143]: Triage
+                    - generic [ref=e144]: triage:main
+                - generic [ref=e147]: active
+  - generic [ref=e151]:
+    - button "New tab" [ref=e154] [cursor=pointer]:
+      - generic [ref=e155]: +
+    - generic [ref=e157]:
+      - generic [ref=e158]:
+        - button "Split left" [ref=e159] [cursor=pointer]:
+          - generic [ref=e160]: ←
+        - button "Split right" [ref=e161] [cursor=pointer]:
+          - generic [ref=e162]: →
+        - button "Split up" [ref=e163] [cursor=pointer]:
+          - generic [ref=e164]: ↑
+        - button "Split down" [ref=e165] [cursor=pointer]:
+          - generic [ref=e166]: ↓
+      - generic [ref=e168]:
+        - generic [ref=e171]:
+          - heading "Talk to Billing" [level=2] [ref=e173]
+          - paragraph [ref=e174]: Send a message to start the conversation.
+        - generic [ref=e176]:
+          - generic [ref=e177]:
+            - textbox "Ask Billing anything, @ to add files, / for commands" [ref=e178]
+            - generic [ref=e179]:
+              - button "i-plus" [disabled] [ref=e180]:
+                - img "i-plus" [ref=e181]
+              - button "MobKit i-chevron" [ref=e183] [cursor=pointer]:
+                - text: MobKit
+                - img "i-chevron" [ref=e184]
+              - button "lead i-chevron" [ref=e186] [cursor=pointer]:
+                - text: lead
+                - img "i-chevron" [ref=e187]
+              - button "Normal i-chevron" [ref=e189] [cursor=pointer]:
+                - text: Normal
+                - img "i-chevron" [ref=e190]
+              - button "i-mic" [disabled] [ref=e192]:
+                - img "i-mic" [ref=e193]
+              - button "↑" [disabled] [ref=e195]
+          - generic [ref=e196]:
+            - generic [ref=e197]:
+              - 'button "i-team To: Billing" [ref=e198] [cursor=pointer]':
+                - img "i-team" [ref=e199]
+                - text: "To: Billing"
+              - button "i-terminal Local project i-chevron" [ref=e201] [cursor=pointer]:
+                - img "i-terminal" [ref=e202]
+                - text: Local project
+                - img "i-chevron" [ref=e204]
+              - button "i-gear Full access i-chevron" [ref=e206] [cursor=pointer]:
+                - img "i-gear" [ref=e207]
+                - text: Full access
+                - img "i-chevron" [ref=e209]
+            - generic [ref=e211]:
+              - button "i-branch mob_agent i-chevron" [ref=e212] [cursor=pointer]:
+                - img "i-branch" [ref=e213]
+                - text: mob_agent
+                - img "i-chevron" [ref=e215]
+              - button "i-refresh" [ref=e217] [cursor=pointer]:
+                - img "i-refresh" [ref=e218]
+  - complementary [ref=e220]:
+    - generic [ref=e222]:
+      - generic [ref=e223]:
+        - button "Add panel" [ref=e224] [cursor=pointer]:
+          - img "i-plus" [ref=e225]
+        - button "Collapse live panels" [ref=e227] [cursor=pointer]:
+          - img "i-sidebar-toggle" [ref=e228]
+      - complementary [ref=e230]:
+        - generic [ref=e232]:
+          - generic [ref=e233]:
+            - generic [ref=e234]:
+              - heading "Agents" [level=2] [ref=e235]
+              - generic [ref=e237]: "7"
+            - generic [ref=e239]:
+              - generic [ref=e240]:
+                - generic [ref=e241]: Active
+                - generic [ref=e242]: "7"
+              - generic [ref=e243]:
+                - button "Billing lead" [ref=e245] [cursor=pointer]:
+                  - generic [ref=e247]:
+                    - generic [ref=e248]: Billing
+                    - generic [ref=e249]: lead
+                - button "Delivery lead" [ref=e251] [cursor=pointer]:
+                  - generic [ref=e253]:
+                    - generic [ref=e254]: Delivery
+                    - generic [ref=e255]: lead
+                - button "Support lead" [ref=e257] [cursor=pointer]:
+                  - generic [ref=e259]:
+                    - generic [ref=e260]: Support
+                    - generic [ref=e261]: lead
+                - button "Gate lead" [ref=e263] [cursor=pointer]:
+                  - generic [ref=e265]:
+                    - generic [ref=e266]: Gate
+                    - generic [ref=e267]: lead
+                - button "Health Monitor lead" [ref=e269] [cursor=pointer]:
+                  - generic [ref=e271]:
+                    - generic [ref=e272]: Health Monitor
+                    - generic [ref=e273]: lead
+                - button "Router lead" [ref=e275] [cursor=pointer]:
+                  - generic [ref=e277]:
+                    - generic [ref=e278]: Router
+                    - generic [ref=e279]: lead
+                - button "Triage lead" [ref=e281] [cursor=pointer]:
+                  - generic [ref=e283]:
+                    - generic [ref=e284]: Triage
+                    - generic [ref=e285]: lead
+          - generic [ref=e286]:
+            - heading "Events" [level=2] [ref=e288]
+            - generic [ref=e290]: No events yet

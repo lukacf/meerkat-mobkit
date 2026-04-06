@@ -1,0 +1,89 @@
+- generic [ref=e4]:
+  - complementary [ref=e5]:
+    - generic [ref=e8]:
+      - heading "Agents" [level=2] [ref=e11]
+      - generic [ref=e13]:
+        - button "lead" [ref=e15]:
+          - generic [ref=e18]: lead
+        - generic [ref=e19]:
+          - button "delivery lead · mob_agent active addressable" [ref=e20] [cursor=pointer]:
+            - generic [ref=e22]:
+              - generic [ref=e24]: delivery
+              - generic [ref=e25]: lead · mob_agent
+            - generic [ref=e26]:
+              - generic [ref=e28]: active
+              - generic [ref=e30]: addressable
+          - button "router lead · mob_agent active addressable" [ref=e31] [cursor=pointer]:
+            - generic [ref=e33]:
+              - generic [ref=e35]: router
+              - generic [ref=e36]: lead · mob_agent
+            - generic [ref=e37]:
+              - generic [ref=e39]: active
+              - generic [ref=e41]: addressable
+  - generic [ref=e44]:
+    - button "New tab" [ref=e47]:
+      - generic [ref=e48]: +
+    - generic [ref=e50]:
+      - generic [ref=e51]:
+        - button "Split left" [ref=e52]:
+          - generic [ref=e53]: ←
+        - button "Split right" [ref=e54]:
+          - generic [ref=e55]: →
+        - button "Split up" [ref=e56]:
+          - generic [ref=e57]: ↑
+        - button "Split down" [ref=e58]:
+          - generic [ref=e59]: ↓
+      - generic [ref=e61]:
+        - generic [ref=e64]:
+          - heading "Talk to delivery" [level=2] [ref=e66]
+          - paragraph [ref=e67]: Send a message to start the conversation.
+        - generic [ref=e69]:
+          - generic [ref=e70]:
+            - textbox "Message delivery..." [ref=e71]
+            - generic [ref=e72]:
+              - button "i-bot delivery i-chevron" [ref=e73]:
+                - img "i-bot" [ref=e74]: B
+                - text: delivery
+                - img "i-chevron" [ref=e75]: C
+              - button "i-plus" [ref=e76]:
+                - img "i-plus" [ref=e77]: P
+              - button "↑" [disabled] [ref=e78]
+          - generic [ref=e79]:
+            - generic [ref=e80]:
+              - button "i-user user i-chevron" [ref=e81]:
+                - img "i-user" [ref=e82]: U
+                - text: user
+                - img "i-chevron" [ref=e83]: C
+              - button "lead i-chevron" [ref=e84]:
+                - text: lead
+                - img "i-chevron" [ref=e85]: C
+            - button "mob_agent" [ref=e87]
+  - complementary [ref=e88]:
+    - generic [ref=e90]:
+      - generic [ref=e91]:
+        - button "Add panel" [ref=e92]:
+          - img "i-plus" [ref=e93]: P
+        - button "Collapse live panels" [ref=e94]:
+          - img "i-sidebar-toggle" [ref=e95]: S
+      - complementary [ref=e96]:
+        - generic [ref=e98]:
+          - generic [ref=e99]:
+            - generic [ref=e100]:
+              - heading "Agents" [level=2] [ref=e101]
+              - generic [ref=e103]: "2"
+            - generic [ref=e105]:
+              - generic [ref=e106]:
+                - generic [ref=e107]: Active
+                - generic [ref=e108]: "2"
+              - generic [ref=e109]:
+                - button "delivery lead" [ref=e111]:
+                  - generic [ref=e113]:
+                    - generic [ref=e114]: delivery
+                    - generic [ref=e115]: lead
+                - button "router lead" [ref=e117]:
+                  - generic [ref=e119]:
+                    - generic [ref=e120]: router
+                    - generic [ref=e121]: lead
+          - generic [ref=e122]:
+            - heading "Events" [level=2] [ref=e124]
+            - generic [ref=e126]: No events yet

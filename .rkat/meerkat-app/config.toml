@@ -1,0 +1,54 @@
+version = 1
+focused_member_key = ""
+targeted_member_key = ""
+
+[ingress]
+mob_id = "workspace-ingress"
+name = "Meerkat"
+runtime_id = "workspace-ingress"
+asset_kind = "source"
+asset_path = ".rkat/meerkat-app/mobs/workspace-ingress"
+managed_state = "managed"
+template_id = "ingress"
+active = true
+member_id = "meerkat"
+created_at = "2026-03-19T00:03:38.953Z"
+updated_at = "2026-03-19T00:03:38.953Z"
+
+[[mobs]]
+mob_id = "general"
+name = "General"
+description = "Lead, builder, and reviewer for day-one coding tasks."
+runtime_id = "general"
+asset_kind = "source"
+asset_path = ".rkat/meerkat-app/mobs/general"
+managed_state = "managed"
+template_id = "general"
+template_fingerprint = "c1d00c5ac3af83878974d64e241688ff8c41d1aa"
+active = true
+created_at = "2026-03-19T00:03:38.953Z"
+updated_at = "2026-03-19T00:03:38.953Z"
+
+[[mobs.members]]
+member_id = "lead"
+profile = "lead"
+display_name = "Lead"
+role = "Lead"
+group = "Lead"
+summary = "Owns the main line of work and coordinates the team."
+
+[[mobs.members]]
+member_id = "builder"
+profile = "builder"
+display_name = "Builder"
+role = "Builders"
+group = "Builders"
+summary = "Turns asks into implementation and code changes."
+
+[[mobs.members]]
+member_id = "reviewer"
+profile = "reviewer"
+display_name = "Reviewer"
+role = "Reviewers"
+group = "Reviewers"
+summary = "Checks correctness, regressions, and polish."

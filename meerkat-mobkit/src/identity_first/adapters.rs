@@ -226,8 +226,12 @@ impl ContinuitySessionStoreAdapter {
 
 #[async_trait]
 impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
-    async fn save(&self, session: &meerkat_core::Session) -> Result<(), meerkat_store::StoreError> {
-        let data = serde_json::to_vec(session).map_err(meerkat_store::StoreError::Serialization)?;
+    async fn save(
+        &self,
+        session: &meerkat_core::Session,
+    ) -> Result<(), meerkat_store::SessionStoreError> {
+        let data = serde_json::to_vec(session)
+            .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
         let snapshot = super::types::SessionSnapshot { data };
         let sid_str = session.id().to_string();
         let version = self.next_version(&sid_str);
@@ -247,7 +251,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     Err(_) => match AgentIdentity::parse("_adapter:fallback") {
                         Ok(id) => id,
                         Err(e) => {
-                            return Err(meerkat_store::StoreError::Internal(format!(
+                            return Err(meerkat_store::SessionStoreError::Internal(format!(
                                 "failed to construct adapter identity: {e}"
                             )));
                         }
@@ -271,22 +275,23 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                 &snapshot,
             )
             .await
-            .map_err(|e| meerkat_store::StoreError::Internal(format!("continuity save: {e}")))?;
+            .map_err(|e| {
+                meerkat_store::SessionStoreError::Internal(format!("continuity save: {e}"))
+            })?;
         Ok(())
     }
 
     async fn load(
         &self,
         id: &meerkat_core::types::SessionId,
-    ) -> Result<Option<meerkat_core::Session>, meerkat_store::StoreError> {
-        let snapshot =
-            self.store.load_session_snapshot(id).await.map_err(|e| {
-                meerkat_store::StoreError::Internal(format!("continuity load: {e}"))
-            })?;
+    ) -> Result<Option<meerkat_core::Session>, meerkat_store::SessionStoreError> {
+        let snapshot = self.store.load_session_snapshot(id).await.map_err(|e| {
+            meerkat_store::SessionStoreError::Internal(format!("continuity load: {e}"))
+        })?;
         match snapshot {
             Some(snap) => {
                 let session: meerkat_core::Session = serde_json::from_slice(&snap.data)
-                    .map_err(meerkat_store::StoreError::Serialization)?;
+                    .map_err(|e| meerkat_store::SessionStoreError::Serialization(e.to_string()))?;
                 Ok(Some(session))
             }
             None => Ok(None),
@@ -296,7 +301,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
     async fn list(
         &self,
         _filter: meerkat_store::SessionFilter,
-    ) -> Result<Vec<meerkat_core::SessionMeta>, meerkat_store::StoreError> {
+    ) -> Result<Vec<meerkat_core::SessionMeta>, meerkat_store::SessionStoreError> {
         // Listing is not supported through the continuity store adapter.
         // The continuity model is identity-keyed, not session-list-keyed.
         Ok(Vec::new())
@@ -305,7 +310,7 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
     async fn delete(
         &self,
         _id: &meerkat_core::types::SessionId,
-    ) -> Result<(), meerkat_store::StoreError> {
+    ) -> Result<(), meerkat_store::SessionStoreError> {
         // Deletion of sessions is managed through identity lifecycle (reset/delete_identity),
         // not through the SessionStore interface.
         Ok(())
@@ -355,6 +360,7 @@ impl AgentCustomizer for SessionHookCustomizerAdapter {
             } else {
                 Some(draft.labels.clone())
             },
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
         };
 
         // Snapshot "before" state for unsupported-mutation detection (REQ-30).

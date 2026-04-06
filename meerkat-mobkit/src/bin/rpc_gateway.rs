@@ -367,6 +367,7 @@ impl SessionAgentBuilder for StdioCallbackAgentBuilder {
                     initial_turn: req.initial_turn.clone(),
                     build: req.build.clone(),
                     labels: req.labels.clone(),
+                    deferred_prompt_policy: req.deferred_prompt_policy,
                 };
                 // Apply additional_instructions as system prompt extension
                 if let Some(instructions) = result.get("additional_instructions") {
@@ -770,7 +771,7 @@ external_addressable = true
                     format!("failed to open SQLite session store: {e}"),
                 ),
             };
-        let mob_storage = match MobStorage::redb(state_path.join("mob.redb")) {
+        let mob_storage = match MobStorage::persistent(state_path.join("mob.redb")) {
             Ok(s) => s,
             Err(e) => fail_init(
                 &request_id,

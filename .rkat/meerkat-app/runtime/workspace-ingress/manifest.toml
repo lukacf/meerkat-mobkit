@@ -1,0 +1,4 @@
+[mobpack]
+name = "Meerkat"
+version = "1.0.0"
+description = "Workspace ingress meerkat"

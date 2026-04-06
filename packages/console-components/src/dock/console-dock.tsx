@@ -54,15 +54,18 @@ function splitGlyph(direction: ConsoleDockPanelSplitDirection): string {
 
 function PanelActionButton({
   direction,
+  panelId,
   onClick,
 }: {
   direction: ConsoleDockPanelSplitDirection;
+  panelId: string;
   onClick?: () => void;
 }) {
   return (
     <button
       aria-label={`Split ${direction}`}
       className="cc-dock-panel__icon-action"
+      data-testid={`dock-split:${panelId}:${direction}`}
       type="button"
       onClick={onClick}
     >
@@ -109,6 +112,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
           <PanelActionButton
             direction={direction}
             key={direction}
+            panelId={panel.id}
             onClick={() => onSplitPanel?.(panel, direction)}
           />
         ))}
@@ -116,6 +120,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
           <button
             aria-label="Close panel"
             className="cc-dock-panel__icon-action is-close"
+            data-testid={`dock-close:${panel.id}`}
             type="button"
             onClick={() => onClosePanel?.(panel)}
           >
@@ -133,6 +138,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
           focusedPanelId === panel.id && "is-focused",
           panel.mode === "terminal" && "is-terminal",
         )}
+        data-testid={`dock-panel:${panel.id}`}
         data-panel-id={panel.id}
         onMouseDown={() => onFocusPanel?.(panel)}
       >
@@ -294,6 +300,7 @@ function PanelNodeView<TTarget extends ConsoleDockTarget>({
       <button
         aria-label={`Resize ${splitNode.direction} split`}
         className="cc-dock-split__divider"
+        data-testid={`dock-divider:${splitNode.id}`}
         type="button"
         onPointerDown={handleResizeStart}
       >
