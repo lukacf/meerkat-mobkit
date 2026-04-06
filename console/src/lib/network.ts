@@ -9,6 +9,7 @@ import type {
   ConsoleIdentityStreamEvent,
   ConsoleInteractAccepted,
   ConsoleReplayUnavailablePayload,
+  ConsoleSessionHistoryPage,
   ConsoleSendMessageResult,
   ConsoleGatewayInteractionRejectedError,
 } from "../types";
@@ -16,7 +17,7 @@ import type {
 function unwrapConsoleEnvelope(
   eventName: string,
   data: unknown,
-): { id?: string; event?: string; identity?: string; interactionId?: string; data: unknown } {
+): { id?: string; event?: string; identity?: string; interactionId?: string; timestampMs?: number; data: unknown } {
   if (!data || typeof data !== "object") {
     return { data };
   }
@@ -33,6 +34,7 @@ function unwrapConsoleEnvelope(
       event: envelope.event_type || eventName,
       identity: envelope.identity,
       interactionId: envelope.interaction_id,
+      timestampMs: envelope.timestamp_ms,
       data: envelope.data,
     };
   }
@@ -86,6 +88,7 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
       event: normalized.event || event,
       identity: normalized.identity,
       interactionId: normalized.interactionId,
+      timestampMs: normalized.timestampMs,
       data: normalized.data,
     });
   }
@@ -163,6 +166,7 @@ interface TerminalCorrelation {
 interface StreamFramesOptions {
   correlation?: TerminalCorrelation;
   onFrame?: (frame: ConsoleFrame) => void;
+  stopOnTerminal?: boolean;
 }
 
 function matchesCorrelation(
@@ -234,6 +238,7 @@ async function streamFramesFromResponse(
   response: Response,
   options: StreamFramesOptions = {},
 ): Promise<ConsoleFrame[]> {
+  const stopOnTerminal = options.stopOnTerminal ?? Boolean(options.correlation);
   if (!response.ok) {
     const text = await response.text();
     let parsed: unknown = null;
@@ -267,33 +272,40 @@ async function streamFramesFromResponse(
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let rawText = "";
   let frameBuffer = "";
   const frames: ConsoleFrame[] = [];
 
   try {
-    while (!hasMatchingTerminalEvent(rawText, options.correlation)) {
+    while (true) {
       const { value, done } = await reader.read();
       if (done) {
         break;
       }
       const chunk = decoder.decode(value, { stream: true });
-      rawText += chunk;
       frameBuffer += chunk;
+      let sawTerminal = false;
       frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
+          if (stopOnTerminal && TERMINAL_SSE_EVENTS.has(frame.event || "")) {
+            sawTerminal = true;
+          }
         }
       });
-      if (rawText.length > 131_072) {
+      if (sawTerminal) {
         break;
       }
     }
     const finalChunk = decoder.decode();
-    rawText += finalChunk;
     frameBuffer += finalChunk;
-    flushSseBlocks(frameBuffer, (frame) => {
+    frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+      if (matchesCorrelation(frame, options.correlation, true)) {
+        frames.push(frame);
+        options.onFrame?.(frame);
+      }
+    });
+    flushTrailingSseBlock(frameBuffer, (frame) => {
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
@@ -327,6 +339,15 @@ function flushSseBlocks(buffer: string, onFrame: (frame: ConsoleFrame) => void):
   return buffer;
 }
 
+function flushTrailingSseBlock(buffer: string, onFrame: (frame: ConsoleFrame) => void) {
+  if (!buffer.trim()) {
+    return;
+  }
+  for (const frame of parseSseFrames(`${buffer}\n\n`)) {
+    onFrame(frame);
+  }
+}
+
 export async function observeInteraction(
   baseUrl: string,
   memberId: string
@@ -355,6 +376,21 @@ function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
   const record = typeof raw === "object" && raw !== null
     ? raw as Record<string, unknown>
     : {};
+  if (
+    typeof record.event_id === "string"
+    && typeof record.event_type === "string"
+    && typeof record.identity === "string"
+    && "data" in record
+  ) {
+    return {
+      id: String(record.event_id),
+      event: String(record.event_type),
+      identity: String(record.identity),
+      ...(typeof record.interaction_id === "string" ? { interactionId: String(record.interaction_id) } : {}),
+      ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
+      data: record.data,
+    };
+  }
   const event = typeof record.event === "object" && record.event !== null
     ? record.event as Record<string, unknown>
     : {};
@@ -369,6 +405,7 @@ function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
     return {
       id: String(record.id ?? `event:${index}`),
       event: String(event.event_type ?? "agent_event"),
+      ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
       data: payload ?? event,
     };
   }
@@ -377,6 +414,7 @@ function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
     return {
       id: String(record.id ?? `event:${index}`),
       event: String(event.event_type ?? "module_event"),
+      ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
       data: (event.payload as unknown) ?? event,
     };
   }
@@ -384,20 +422,22 @@ function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
   return {
     id: String(record.id ?? `event:${index}`),
     event: String(record.type ?? "event"),
+    ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
     data: raw,
   };
 }
 
 export async function queryEvents(
   baseUrl: string,
-  memberId: string,
+  target: { memberId?: string; identity?: string },
   limit = 40
 ): Promise<ConsoleFrame[]> {
-  // Do not filter by member_id: module events (the only ones with displayable
-  // payloads) are persisted with member_id: null, so a member_id filter would
-  // exclude them on the server side.
+  const identity = target.identity?.trim();
+  const memberId = target.memberId?.trim();
   const result = await rpc<unknown>(baseUrl, "mobkit/query_events", {
     limit,
+    ...(identity ? { identity } : {}),
+    ...(identity ? {} : memberId ? { member_id: memberId } : {}),
   });
 
   let events = result;
@@ -422,6 +462,26 @@ export async function queryEvents(
       return typeof eventRecord.payload === "object" && eventRecord.payload !== null;
     })
     .map((event, index) => persistedEventToFrame(event, index));
+}
+
+export async function readSessionHistory(
+  baseUrl: string,
+  sessionId: string,
+  limit = 200,
+): Promise<ConsoleSessionHistoryPage | null> {
+  const trimmed = sessionId.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const result = await rpc<unknown>(baseUrl, "mobkit/read_session_history", {
+    session_id: trimmed,
+    offset: 0,
+    limit,
+  });
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  return result as ConsoleSessionHistoryPage;
 }
 
 export async function sendInteraction(
@@ -634,11 +694,22 @@ export function subscribeConsoleEvents(
       ...(options?.body ? { body: JSON.stringify(options.body) } : {}),
       signal: controller.signal,
     });
-    await streamFramesFromResponse(response, { onFrame });
+    await streamFramesFromResponse(response, { onFrame, stopOnTerminal: false });
   })().catch(() => {
     // The host polls /console/experience separately and can tolerate
     // best-effort stream failures during local development/example use.
   });
 
   return () => controller.abort();
+}
+
+export function subscribeIdentityEvents(
+  baseUrl: string,
+  identity: string,
+  onFrame: (frame: ConsoleFrame) => void,
+): () => void {
+  return subscribeConsoleEvents(baseUrl, "/console/identity/stream", onFrame, {
+    method: "POST",
+    body: { identity },
+  });
 }

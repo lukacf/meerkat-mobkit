@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseSseFrames, queryEvents, sendAddressedInteraction } from "./network";
+import { parseSseFrames, queryEvents, sendAddressedInteraction, subscribeIdentityEvents } from "./network";
 
 test("queryEvents uses fallback events from no_event_log_configured envelopes", async () => {
   const originalFetch = globalThis.fetch;
@@ -13,13 +13,13 @@ test("queryEvents uses fallback events from no_event_log_configured envelopes", 
       status: "no_event_log_configured",
       events: [
         {
-          id: "evt-1",
-          event: {
-            kind: "agent",
-            event_type: "text_delta",
-            payload: {
-              delta: "hello",
-            },
+          event_id: "evt-1",
+          identity: "identity:luka",
+          interaction_id: "turn-1",
+          event_type: "interaction_started",
+          timestamp_ms: 1,
+          data: {
+            content: "hello",
           },
         },
       ],
@@ -30,11 +30,13 @@ test("queryEvents uses fallback events from no_event_log_configured envelopes", 
   })) as typeof fetch;
 
   try {
-    const frames = await queryEvents("http://127.0.0.1:7000", "member-1", 10);
+    const frames = await queryEvents("http://127.0.0.1:7000", { identity: "identity:luka" }, 10);
     assert.equal(frames.length, 1);
     assert.equal(frames[0]?.id, "evt-1");
-    assert.equal(frames[0]?.event, "text_delta");
-    assert.deepEqual(frames[0]?.data, { delta: "hello" });
+    assert.equal(frames[0]?.event, "interaction_started");
+    assert.equal(frames[0]?.identity, "identity:luka");
+    assert.equal(frames[0]?.interactionId, "turn-1");
+    assert.deepEqual(frames[0]?.data, { content: "hello" });
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -227,6 +229,42 @@ test("sendAddressedInteraction filters identity-stream frames by envelope intera
       ["evt-2", "evt-3"],
     );
     assert.deepEqual(result.frames[0]?.data, { delta: "right panel" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("subscribeIdentityEvents keeps consuming frames after terminal events", async () => {
+  const originalFetch = globalThis.fetch;
+  const seen: string[] = [];
+
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (!url.endsWith("/console/identity/stream")) {
+      throw new Error(`unexpected fetch: ${url}`);
+    }
+    return new Response([
+      "id: evt-1",
+      "event: interaction_complete",
+      'data: {"event_id":"evt-1","identity":"identity:luka","event_type":"interaction_complete","timestamp_ms":1,"data":{"text":"first"}}',
+      "",
+      "id: evt-2",
+      "event: text_delta",
+      'data: {"event_id":"evt-2","identity":"identity:luka","event_type":"text_delta","timestamp_ms":2,"data":{"delta":"second"}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const unsubscribe = subscribeIdentityEvents("http://127.0.0.1:7000", "identity:luka", (frame) => {
+      seen.push(frame.id || "");
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    unsubscribe();
+    assert.deepEqual(seen, ["evt-1", "evt-2"]);
   } finally {
     globalThis.fetch = originalFetch;
   }

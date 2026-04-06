@@ -299,6 +299,7 @@ fn build_console_experience_contract(
                     "kind": "mob_agent",
                     "profile": member.profile,
                     "state": member.state,
+                    "session_id": member.session_id,
                     "wired_to": member.wired_to,
                     "labels": member.labels,
                     "group": group,
@@ -658,20 +659,16 @@ fn build_console_experience_contract(
                     "mode": "poll",
                     "interval_ms": 5000,
                 },
-                "source_method": "mobkit/query_events",
+                "source_method": "mobkit/read_session_history",
                 "transport": "rpc",
                 "available": true,
                 "request_contract": {
-                    "member_id": "optional filter by member (matches EventQuery.member_id)",
-                    "event_types": "optional array of event type strings to filter",
-                    "since_ms": "optional start timestamp in epoch ms (inclusive)",
-                    "until_ms": "optional end timestamp in epoch ms (exclusive)",
-                    "limit": "optional max rows to return",
-                    "after_seq": "optional sequence number for cursor pagination",
+                    "session_id": "required current session id for the identity/member",
+                    "offset": "optional message offset from the start of the transcript",
+                    "limit": "optional max messages to return",
                 },
                 "response_contract": {
-                    "success": "result is a raw array of PersistedEvent {id, seq, timestamp_ms, member_id?, event}",
-                    "no_event_log": "when no event log is configured, result is {status: 'no_event_log_configured', events: []}",
+                    "success": "result is SessionHistoryPage {session_id, message_count, offset, limit, has_more, messages}",
                 }
             })
         } else {
@@ -746,6 +743,9 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             }
             if let Some(response_phase) = agent.get("response_phase").and_then(Value::as_str) {
                 row["response_phase"] = Value::String(response_phase.to_string());
+            }
+            if let Some(session_id) = agent.get("session_id").and_then(Value::as_str) {
+                row["session_id"] = Value::String(session_id.to_string());
             }
             row
         })

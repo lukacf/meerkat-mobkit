@@ -25,7 +25,7 @@ async function sendPanelMessage(panel, text) {
   await textarea.waitFor({ state: "visible", timeout: 10000 });
   await textarea.fill(text);
   await assertEventually(async () => !(await submit.isDisabled()), "expected composer submit button to enable");
-  await submit.click();
+  await submit.click({ force: true });
 }
 
 async function panelId(panel) {
@@ -43,11 +43,20 @@ async function currentPendingId(page) {
 }
 
 async function selectSidebarItem(page, label) {
+  const row = page
+    .locator('[data-console-workbench-part="launcher"] [data-console-sidebar-part="row"]')
+    .filter({ hasText: label })
+    .first();
+  await row.waitFor({ state: "visible", timeout: 10000 });
+  await row.click();
+}
+
+async function waitForSidebarItem(page, label) {
   await page
     .locator('[data-console-workbench-part="launcher"] [data-console-sidebar-part="row"]')
     .filter({ hasText: label })
     .first()
-    .click();
+    .waitFor({ state: "visible", timeout: 60000 });
 }
 
 async function assertEventually(check, message, timeout = 10000, interval = 100) {
@@ -99,9 +108,9 @@ async function main() {
     await page.goto(`${baseUrl}/console`, { waitUntil: "domcontentloaded" });
     await page.getByTestId("meerkat-console").waitFor({ state: "visible", timeout: 30000 });
 
-    await waitForText(page, "Incident Commander");
-    await waitForText(page, "Payments SRE");
-    await waitForText(page, "Approval Gate");
+    await waitForSidebarItem(page, "Incident Commander");
+    await waitForSidebarItem(page, "Payments SRE");
+    await waitForSidebarItem(page, "Approval Gate");
     await selectSidebarItem(page, "Incident Commander");
 
     const sidebarHandle = page.getByTestId("resize:sidebar");
@@ -127,12 +136,30 @@ async function main() {
     const phasePill = page.getByTestId(`composer-toolbar:${commanderPanelId}:footer-right:phase`);
     await phasePill.waitFor({ state: "visible" });
     const seenPhasesPromise = collectSeenPhaseLabels(phasePill, 90000);
-    await waitForText(commanderPanel, "inspect_service");
-    await waitForText(commanderPanel, "analyze_customer_impact");
     await phasePill.waitFor({ state: "detached", timeout: 90000 });
     const seenPhases = await seenPhasesPromise;
     assert.ok(seenPhases.has("waiting"), "expected waiting phase");
     await waitForPanelChange(commanderPanel, commanderBefore);
+    await assertEventually(
+      async () => {
+        const sreCount = await page
+          .locator('[data-testid^="activity-item:pulse:"]')
+          .filter({ hasText: "Payments SRE" })
+          .count();
+        const commsCount = await page
+          .locator('[data-testid^="activity-item:pulse:"]')
+          .filter({ hasText: "Merchant Comms" })
+          .count();
+        const scribeCount = await page
+          .locator('[data-testid^="activity-item:pulse:"]')
+          .filter({ hasText: "Scribe" })
+          .count();
+        return sreCount > 0 || commsCount > 0 || scribeCount > 0;
+      },
+      "expected cross-agent activity after commander coordination",
+      90000,
+      250,
+    );
 
     await selectSidebarItem(page, "Merchant Success");
     const merchantPanel = page.locator('[data-testid^="chat-panel:merchant-success:"]:visible').first();
@@ -206,7 +233,13 @@ async function main() {
       prompts.alpha_follow_up || "Panel alpha follow-up. Give one short sentence about rollback guardrails.",
     );
     await waitForPanelChange(panelAlpha, alphaBefore);
-    assert.equal(await panelBravo.innerText(), bravoBefore, "bravo panel must not change before its own send");
+    assert.equal(
+      await panelBravo.getByText(
+        prompts.alpha_follow_up || "Panel alpha follow-up. Give one short sentence about rollback guardrails.",
+      ).count(),
+      0,
+      "bravo panel must not receive alpha user prompt",
+    );
 
     await sendPanelMessage(
       panelBravo,

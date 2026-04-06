@@ -5,15 +5,31 @@ approver_id: console-ops-lead
 
 identities:
   - identity: incident-commander
-    profile: ops
+    profile: commander
     display_name: Incident Commander
     group: Coordinators
     addressable: true
     labels:
       console_watched: "true"
       console_alert_level: critical
+      console_prompt_1_label: Status sweep
+      console_prompt_1_value: >
+        Run a status sweep for the fictional CardinalPay payments incident. Use the peers tool
+        first, then use the send tool with kind "peer_request" to ask payments-sre,
+        merchant-comms, and scribe for updates. Send plain-text body messages only. Then call
+        inspect_service with {"service":"payments-api"} and analyze_customer_impact with
+        {"cohort":"enterprise-merchants"}. Wait for at least one peer reply before answering,
+        and mention which teammates you consulted in one concise operator-facing paragraph.
+      console_prompt_2_label: Rollback guardrails
+      console_prompt_2_value: >
+        In one short sentence, summarize rollback guardrails for the fictional eu-west-1
+        mitigation path.
+      console_prompt_3_label: Merchant impact
+      console_prompt_3_value: >
+        In one short sentence, summarize current customer impact for major merchants in the
+        fictional incident.
   - identity: payments-sre
-    profile: ops
+    profile: payments_sre
     display_name: Payments SRE
     group: Responders
     addressable: true
@@ -22,36 +38,44 @@ identities:
       console_degraded: "true"
       console_degraded_reason: elevated_error_rate
   - identity: api-investigator
-    profile: ops
+    profile: api_investigator
     display_name: API Investigator
     group: Responders
     addressable: true
     labels:
       console_watched: "true"
   - identity: merchant-comms
-    profile: ops
+    profile: merchant_comms
     display_name: Merchant Comms
     group: Communications
     addressable: true
     labels:
       console_watched: "true"
   - identity: merchant-success
-    profile: ops
+    profile: merchant_success
     display_name: Merchant Success
     group: Communications
     addressable: true
+    labels:
+      console_prompt_1_label: Merchant status
+      console_prompt_1_value: >
+        Give a one-sentence merchant-success update for the current fictional incident. Be concise.
+      console_prompt_2_label: VIP update
+      console_prompt_2_value: >
+        Draft a one-sentence reassurance update for enterprise merchants affected by the fictional
+        CardinalPay incident.
   - identity: scribe
-    profile: ops
+    profile: scribe
     display_name: Scribe
     group: Coordinators
     addressable: true
   - identity: approval-gate
-    profile: internal
+    profile: approval_gate
     display_name: Approval Gate
     group: Internal
     addressable: false
   - identity: health-monitor
-    profile: internal
+    profile: health_monitor
     display_name: Health Monitor
     group: Internal
     addressable: false
@@ -141,9 +165,12 @@ smoke:
     - incident-commander
   prompts:
     tool_sweep: >
-      Run a status sweep for the fictional CardinalPay payments incident. Before answering,
-      call inspect_service with {"service":"payments-api"} and analyze_customer_impact with
-      {"cohort":"enterprise-merchants"}. Then give one concise operator-facing paragraph.
+      Run a status sweep for the fictional CardinalPay payments incident. Use the peers tool
+      first, then use the send tool with kind "peer_message" to contact payments-sre,
+      merchant-comms, and scribe. Send plain-text body messages only. Then call
+      inspect_service with {"service":"payments-api"} and analyze_customer_impact with
+      {"cohort":"enterprise-merchants"}. Wait for at least one peer reply before answering,
+      and mention which teammates you consulted in one concise operator-facing paragraph.
     merchant_status: >
       Give a one-sentence merchant-success update for the current fictional incident. Be concise.
     alpha_follow_up: >

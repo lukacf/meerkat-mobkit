@@ -8,7 +8,11 @@ use async_trait::async_trait;
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, SessionStore};
 use meerkat_client::LlmClient;
 use meerkat_core::AgentSessionStore;
-use meerkat_core::service::{CreateSessionRequest, SessionError};
+use meerkat_core::agent::CommsRuntime;
+use meerkat_core::service::{
+    CreateSessionRequest, SessionError, SessionHistoryPage, SessionHistoryQuery,
+    SessionServiceHistoryExt,
+};
 use meerkat_mob::MobRun;
 use meerkat_mob::launch::{ForkContext, MemberLaunchMode};
 use meerkat_mob::{
@@ -18,6 +22,9 @@ use meerkat_mob::{
 };
 use meerkat_store::StoreAdapter;
 use serde::{Deserialize, Serialize};
+
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 /// Member state constant for active members.
 pub const MEMBER_STATE_ACTIVE: &str = "active";
@@ -88,6 +95,82 @@ struct PreBuildMobSessionService {
     inner: Arc<dyn MobSessionService>,
     hook: PreBuildHook,
     after_create_hook: Option<AfterCreateHook>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct RuntimeTurnTrace {
+    pub(crate) session_id: String,
+    pub(crate) boundary: String,
+    pub(crate) contributing_input_count: usize,
+    pub(crate) outcome: String,
+}
+
+#[cfg(test)]
+static RUNTIME_TURN_TRACES: OnceLock<Mutex<Vec<RuntimeTurnTrace>>> = OnceLock::new();
+
+#[cfg(test)]
+fn runtime_turn_traces() -> &'static Mutex<Vec<RuntimeTurnTrace>> {
+    RUNTIME_TURN_TRACES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+fn record_runtime_turn_trace(trace: RuntimeTurnTrace) {
+    runtime_turn_traces()
+        .lock()
+        .expect("runtime turn traces mutex")
+        .push(trace);
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+pub(crate) fn take_runtime_turn_traces() -> Vec<RuntimeTurnTrace> {
+    std::mem::take(
+        &mut *runtime_turn_traces()
+            .lock()
+            .expect("runtime turn traces mutex"),
+    )
+}
+
+#[cfg(not(test))]
+#[allow(dead_code)]
+fn record_runtime_turn_trace(_trace: ()) {}
+
+fn runtime_turn_diagnostics_enabled() -> bool {
+    std::env::var_os("MOBKIT_TRACE_RUNTIME_TURNS").is_some()
+}
+
+fn summarize_runtime_prompt(prompt: &meerkat_core::ContentInput) -> String {
+    match prompt {
+        meerkat_core::ContentInput::Text(text) => {
+            text.lines().take(6).collect::<Vec<_>>().join(" ")
+        }
+        meerkat_core::ContentInput::Blocks(blocks) => blocks
+            .iter()
+            .map(|block| block.text_projection().to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .lines()
+            .take(6)
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn normalize_runtime_turn_request(
+    req: meerkat_core::service::StartTurnRequest,
+) -> meerkat_core::service::StartTurnRequest {
+    meerkat_core::service::StartTurnRequest {
+        // Queue/Steer and render metadata are runtime-owned semantics. By the
+        // time apply_runtime_turn() invokes the session service, the runtime
+        // has already chosen the boundary and recorded the metadata it needs.
+        // The direct agent/session path is queue-only, so forward a normalized
+        // turn request to avoid re-injecting runtime-only semantics.
+        handling_mode: meerkat_core::types::HandlingMode::Queue,
+        render_metadata: None,
+        ..req
+    }
 }
 
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
@@ -262,9 +345,62 @@ macro_rules! delegate_mob_session_service {
                 boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
                 contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
             ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
-                self.inner
-                    .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
-                    .await
+                #[cfg(test)]
+                let boundary_name = format!("{boundary:?}");
+                #[cfg(test)]
+                let contributing_count = contributing_input_ids.len();
+                let run_id_for_log = run_id.to_string();
+                let prompt_summary = if runtime_turn_diagnostics_enabled() {
+                    Some(summarize_runtime_prompt(&req.prompt))
+                } else {
+                    None
+                };
+                if let Some(summary) = prompt_summary.as_ref() {
+                    tracing::warn!(
+                        session_id = %session_id,
+                        run_id = %run_id_for_log,
+                        boundary = ?boundary,
+                        contributing_inputs = contributing_input_ids.len(),
+                        prompt = %summary,
+                        "mobkit runtime turn start"
+                    );
+                }
+                let result = self
+                    .inner
+                    .apply_runtime_turn(
+                        session_id,
+                        run_id,
+                        normalize_runtime_turn_request(req),
+                        boundary,
+                        contributing_input_ids,
+                    )
+                    .await;
+                #[cfg(test)]
+                record_runtime_turn_trace(RuntimeTurnTrace {
+                    session_id: session_id.to_string(),
+                    boundary: boundary_name,
+                    contributing_input_count: contributing_count,
+                    outcome: match &result {
+                        Ok(_) => "ok".to_string(),
+                        Err(error) => format!("err:{error}"),
+                    },
+                });
+                if runtime_turn_diagnostics_enabled() {
+                    match &result {
+                        Ok(_) => tracing::warn!(
+                            session_id = %session_id,
+                            run_id = %run_id_for_log,
+                            "mobkit runtime turn ok"
+                        ),
+                        Err(error) => tracing::error!(
+                            session_id = %session_id,
+                            run_id = %run_id_for_log,
+                            error = %error,
+                            "mobkit runtime turn error"
+                        ),
+                    }
+                }
+                result
             }
             async fn discard_live_session(
                 &self,
@@ -602,14 +738,14 @@ impl MobBootstrapSpec {
         let session_service: Arc<dyn MobSessionService> = Arc::new(
             meerkat_session::EphemeralSessionService::new(builder, max_sessions),
         );
-        let session_service = match hook {
-            Some(h) => Arc::new(PreBuildMobSessionService {
-                inner: session_service,
-                hook: h,
-                after_create_hook,
-            }) as Arc<dyn MobSessionService>,
-            None => session_service,
-        };
+        let hook = hook.unwrap_or_else(|| {
+            Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
+        });
+        let session_service = Arc::new(PreBuildMobSessionService {
+            inner: session_service,
+            hook,
+            after_create_hook,
+        }) as Arc<dyn MobSessionService>;
         Self::new(definition, storage, session_service)
     }
 
@@ -689,36 +825,68 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
                 max_sessions,
                 session_store,
-                None,
+                Some(runtime_store),
                 blob_store.clone(),
             ));
-        let session_service = match hook {
-            Some(h) => Arc::new(PreBuildMobSessionService {
-                inner: session_service,
-                hook: h,
-                after_create_hook,
-            }) as Arc<dyn MobSessionService>,
-            None => session_service,
-        };
-        // Use a persistent adapter with InMemoryRuntimeStore so same-process
-        // stop/resume can recover queued runtime inputs. The session service
-        // still has runtime_store=None (checkpointer enabled), but the adapter
-        // on the spec gives the mob actor a PersistentRuntimeDriver for state
-        // recovery within the process lifetime.
+        let hook = hook.unwrap_or_else(|| {
+            Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
+        });
+        let session_service = Arc::new(PreBuildMobSessionService {
+            inner: session_service,
+            hook,
+            after_create_hook,
+        }) as Arc<dyn MobSessionService>;
+        Self::new(definition, storage, session_service)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn ephemeral_runtime_backed_inner(
+        definition: MobDefinition,
+        storage: MobStorage,
+        store_path: PathBuf,
+        max_sessions: usize,
+        hook: Option<PreBuildHook>,
+        caps: CapabilityFlags,
+        after_create_hook: Option<AfterCreateHook>,
+    ) -> Self {
+        let factory = AgentFactory::new(&store_path)
+            .builtins(caps.builtins)
+            .shell(caps.shell)
+            .mob(caps.mob)
+            .comms(caps.comms)
+            .memory(caps.memory);
+        let config = Config::default();
+        let session_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
-            runtime_store,
-            blob_store,
-        ));
-        let mut spec = Self::new(definition, storage, session_service);
-        spec.runtime_adapter = Some(adapter);
-        spec
+        let session_service: Arc<dyn MobSessionService> =
+            Arc::new(meerkat_session::PersistentSessionService::new(
+                builder,
+                max_sessions,
+                session_store,
+                Some(runtime_store),
+                blob_store,
+            ));
+        let hook = hook.unwrap_or_else(|| {
+            Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
+        });
+        let session_service = Arc::new(PreBuildMobSessionService {
+            inner: session_service,
+            hook,
+            after_create_hook,
+        }) as Arc<dyn MobSessionService>;
+        Self::new(definition, storage, session_service)
     }
 }
 
@@ -783,7 +951,7 @@ impl Default for MobReconcileOptions {
     }
 }
 
-fn snapshot_from_entry(entry: RosterEntry) -> MobMemberSnapshot {
+fn snapshot_from_entry(entry: RosterEntry, session_id: Option<String>) -> MobMemberSnapshot {
     let mut wired_to: Vec<String> = entry.wired_to.into_iter().map(|p| p.to_string()).collect();
     wired_to.sort();
     MobMemberSnapshot {
@@ -794,7 +962,7 @@ fn snapshot_from_entry(entry: RosterEntry) -> MobMemberSnapshot {
             MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
         },
         runtime_mode: Some(entry.runtime_mode.to_string()),
-        session_id: entry.member_ref.session_id().map(ToString::to_string),
+        session_id,
         wired_to,
         labels: entry.labels,
     }
@@ -863,20 +1031,45 @@ pub type RealMobRuntime = MobRuntime;
 #[derive(Clone)]
 pub struct MobRuntime {
     handle: MobHandle,
+    session_service: Option<Arc<dyn MobSessionService>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
 }
 
 impl MobRuntime {
+    async fn snapshot_with_current_session(&self, entry: RosterEntry) -> MobMemberSnapshot {
+        let current_session_id = match self.handle.member(&entry.meerkat_id).await {
+            Ok(member) => member
+                .current_session_id()
+                .await
+                .ok()
+                .flatten()
+                .map(|session_id| session_id.to_string()),
+            Err(_) => None,
+        }
+        .or_else(|| entry.member_ref.session_id().map(ToString::to_string));
+
+        snapshot_from_entry(entry, current_session_id)
+    }
+
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
         let ephemeral_dir = spec._ephemeral_dir.clone();
+        let session_service = spec.session_service.clone();
+        let effective_runtime_adapter = spec
+            .runtime_adapter
+            .clone()
+            .or_else(|| session_service.runtime_adapter());
 
         let mut builder = MobBuilder::new(spec.definition, spec.storage);
 
-        // Set the runtime adapter BEFORE with_session_service — MobBuilder only
-        // pulls the adapter from the session service when runtime_adapter is None.
-        if let Some(adapter) = spec.runtime_adapter {
+        // MobActor's autonomous readiness/comms-drain path consults the
+        // builder-published runtime adapter directly. For session services
+        // that already embed a runtime adapter (definition-based ephemeral
+        // and persistent-with-runtime-backed-service), forward that adapter
+        // explicitly so autonomous members do not come up session-backed but
+        // runtime-unattached.
+        if let Some(adapter) = effective_runtime_adapter {
             builder = builder.with_runtime_adapter(adapter);
         }
 
@@ -892,6 +1085,7 @@ impl MobRuntime {
         let handle = builder.create().await?;
         Ok(Self {
             handle,
+            session_service: Some(session_service),
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -899,6 +1093,7 @@ impl MobRuntime {
     pub fn from_handle(handle: MobHandle) -> Self {
         Self {
             handle,
+            session_service: None,
             _ephemeral_dir: None,
         }
     }
@@ -907,24 +1102,160 @@ impl MobRuntime {
         self.handle.clone()
     }
 
+    pub async fn read_session_history(
+        &self,
+        session_id_str: &str,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Result<SessionHistoryPage, MobRuntimeError> {
+        if session_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "session_id must not be empty",
+            ));
+        }
+        let Some(session_service) = self.session_service.as_ref() else {
+            return Err(MobRuntimeError::InvalidInput(
+                "session history unavailable for this runtime",
+            ));
+        };
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        SessionServiceHistoryExt::read_history(
+            session_service.as_ref(),
+            &session_id,
+            SessionHistoryQuery { offset, limit },
+        )
+        .await
+        .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn runtime_state_for_session(
+        &self,
+        session_id_str: &str,
+    ) -> Result<Option<meerkat_runtime::RuntimeState>, MobRuntimeError> {
+        if session_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "session_id must not be empty",
+            ));
+        }
+        let Some(session_service) = self.session_service.as_ref() else {
+            return Ok(None);
+        };
+        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+            return Ok(None);
+        };
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        let state = meerkat_runtime::service_ext::SessionServiceRuntimeExt::runtime_state(
+            runtime_adapter.as_ref(),
+            &session_id,
+        )
+        .await
+        .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))?;
+        Ok(Some(state))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn comms_runtime_for_session(
+        &self,
+        session_id_str: &str,
+    ) -> Result<Option<Arc<dyn CommsRuntime>>, MobRuntimeError> {
+        if session_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "session_id must not be empty",
+            ));
+        }
+        let Some(session_service) = self.session_service.as_ref() else {
+            return Ok(None);
+        };
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        Ok(
+            meerkat_core::service::SessionServiceCommsExt::comms_runtime(
+                session_service.as_ref(),
+                &session_id,
+            )
+            .await,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn active_input_ids_for_session(
+        &self,
+        session_id_str: &str,
+    ) -> Result<Option<Vec<String>>, MobRuntimeError> {
+        if session_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "session_id must not be empty",
+            ));
+        }
+        let Some(session_service) = self.session_service.as_ref() else {
+            return Ok(None);
+        };
+        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+            return Ok(None);
+        };
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        let input_ids = meerkat_runtime::service_ext::SessionServiceRuntimeExt::list_active_inputs(
+            runtime_adapter.as_ref(),
+            &session_id,
+        )
+        .await
+        .map_err(|err| MobRuntimeError::Mob(MobError::Internal(err.to_string())))?;
+        Ok(Some(
+            input_ids.into_iter().map(|id| id.to_string()).collect(),
+        ))
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn ensure_comms_drain_for_session(
+        &self,
+        session_id_str: &str,
+    ) -> Result<Option<bool>, MobRuntimeError> {
+        if session_id_str.trim().is_empty() {
+            return Err(MobRuntimeError::InvalidInput(
+                "session_id must not be empty",
+            ));
+        }
+        let Some(session_service) = self.session_service.as_ref() else {
+            return Ok(None);
+        };
+        let Some(runtime_adapter) = session_service.runtime_adapter() else {
+            return Ok(None);
+        };
+        let session_id = meerkat_core::types::SessionId::parse(session_id_str)
+            .map_err(|_| MobRuntimeError::InvalidInput("invalid session_id format"))?;
+        let comms_runtime = meerkat_core::service::SessionServiceCommsExt::comms_runtime(
+            session_service.as_ref(),
+            &session_id,
+        )
+        .await;
+        let spawned = runtime_adapter
+            .maybe_spawn_comms_drain(&session_id, true, comms_runtime)
+            .await;
+        Ok(Some(spawned))
+    }
+
     pub fn status(&self) -> MobState {
         self.handle.status()
     }
 
     pub async fn discover(&self) -> Vec<MobMemberSnapshot> {
-        self.handle
-            .list_all_members()
-            .await
-            .into_iter()
-            .map(snapshot_from_entry)
-            .collect()
+        let entries = self.handle.list_all_members().await;
+        let mut snapshots = Vec::with_capacity(entries.len());
+        for entry in entries {
+            snapshots.push(self.snapshot_with_current_session(entry).await);
+        }
+        snapshots
     }
 
     pub async fn get_member(&self, member_id: &str) -> Option<MobMemberSnapshot> {
-        self.handle
-            .get_member(&MeerkatId::from(member_id))
-            .await
-            .map(snapshot_from_entry)
+        match self.handle.get_member(&MeerkatId::from(member_id)).await {
+            Some(entry) => Some(self.snapshot_with_current_session(entry).await),
+            None => None,
+        }
     }
 
     pub async fn retire_member(&self, member_id: &str) -> Result<(), MobRuntimeError> {
@@ -1080,7 +1411,7 @@ impl MobRuntime {
         let meerkat_id = spec.meerkat_id.clone();
         // Check roster first
         if let Some(entry) = self.handle.get_member(&meerkat_id).await {
-            return Ok(snapshot_from_entry(entry));
+            return Ok(self.snapshot_with_current_session(entry).await);
         }
         // Spawn
         match self.handle.spawn_spec(spec).await {
@@ -1096,7 +1427,7 @@ impl MobRuntime {
             .get_member(&meerkat_id)
             .await
             .ok_or(MobRuntimeError::Mob(MobError::MeerkatNotFound(meerkat_id)))?;
-        Ok(snapshot_from_entry(entry))
+        Ok(self.snapshot_with_current_session(entry).await)
     }
 
     // -----------------------------------------------------------------------
@@ -1311,10 +1642,12 @@ mod tests {
             },
         );
 
-        // The spec must carry a runtime adapter.
+        // The spec carries a session service that provides a runtime adapter.
+        // The adapter is resolved lazily via session_service.runtime_adapter()
+        // rather than being set directly on spec.runtime_adapter.
         assert!(
-            spec.runtime_adapter.is_some(),
-            "persistent_with_hook must set runtime_adapter"
+            spec.session_service.runtime_adapter().is_some() || spec.runtime_adapter.is_some(),
+            "persistent_with_hook must provide a runtime adapter (directly or via session service)"
         );
 
         // The hook isn't called until create_session — verify the wrapper exists
@@ -1427,10 +1760,9 @@ mod tests {
         );
     }
 
-    /// Regression: MobBootstrapSpec::persistent must supply a runtime adapter
-    /// so the mob actor spawns the comms drain. The adapter is provided directly
-    /// on the spec (not via session service's runtime_store) to keep the session
-    /// checkpointer enabled.
+    /// Regression: persistent bootstrap must use a runtime-backed session
+    /// service so comms/runtime work resolves through the canonical runtime
+    /// path instead of a split external adapter.
     #[test]
     fn persistent_bootstrap_provides_runtime_adapter() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
@@ -1450,15 +1782,81 @@ mod tests {
             4,
             session_store,
         );
-        // The spec must carry a runtime adapter for comms drain.
         assert!(
-            spec.runtime_adapter.is_some(),
-            "persistent bootstrap must set runtime_adapter on the spec"
+            spec.runtime_adapter.is_none(),
+            "persistent bootstrap should not bolt on a separate runtime adapter"
         );
-        // The session service must NOT have a runtime_store (keeps checkpointer enabled).
         assert!(
-            spec.session_service.runtime_adapter().is_none(),
-            "session service should not have runtime_store (checkpointer must stay enabled)"
+            spec.session_service.runtime_adapter().is_some(),
+            "persistent bootstrap must be backed by a runtime-capable session service"
+        );
+    }
+
+    /// Regression: definition-based ephemeral builds must also carry a runtime
+    /// adapter so autonomous-host members can process peer-delivered work.
+    #[test]
+    fn ephemeral_bootstrap_provides_runtime_adapter() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-4.1-mini\"\nruntime_mode = \"autonomous_host\"\n[profiles.worker.tools]\ncomms = true\n",
+        ) else {
+            panic!("failed to parse definition");
+        };
+        let spec = MobBootstrapSpec::ephemeral_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        assert!(
+            spec.runtime_adapter.is_none(),
+            "raw ephemeral_inner stays bare; builder must layer the adapter on top"
+        );
+    }
+
+    /// Runtime-owned handling/routing semantics must be stripped before a
+    /// runtime-applied turn reaches the direct session-service path.
+    #[test]
+    fn normalize_runtime_turn_request_strips_runtime_owned_semantics() {
+        let req = meerkat_core::service::StartTurnRequest {
+            prompt: meerkat_core::ContentInput::Text("checkpoint".to_string()),
+            system_prompt: Some("system".to_string()),
+            render_metadata: Some(meerkat_core::types::RenderMetadata {
+                class: meerkat_core::types::RenderClass::OpsProgress,
+                salience: meerkat_core::types::RenderSalience::Urgent,
+            }),
+            handling_mode: meerkat_core::types::HandlingMode::Steer,
+            event_tx: None,
+            skill_references: None,
+            flow_tool_overlay: None,
+            additional_instructions: Some(vec!["notice".to_string()]),
+        };
+
+        let expected_prompt = req.prompt.clone();
+        let expected_system_prompt = req.system_prompt.clone();
+        let expected_additional_instructions = req.additional_instructions.clone();
+
+        let normalized = normalize_runtime_turn_request(req);
+
+        assert_eq!(
+            normalized.handling_mode,
+            meerkat_core::types::HandlingMode::Queue,
+            "runtime-applied turns must downgrade Steer before reaching direct session services"
+        );
+        assert!(
+            normalized.render_metadata.is_none(),
+            "runtime-owned render metadata must not be forwarded through the direct agent path"
+        );
+        assert_eq!(normalized.prompt, expected_prompt);
+        assert_eq!(normalized.system_prompt, expected_system_prompt);
+        assert_eq!(
+            normalized.additional_instructions,
+            expected_additional_instructions
         );
     }
 

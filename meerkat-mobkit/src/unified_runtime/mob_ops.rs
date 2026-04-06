@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use meerkat_core::service::SessionHistoryPage;
 use meerkat_mob::launch::ForkContext;
 use meerkat_mob::{
     HelperOptions, HelperResult, MemberRef, MemberSessionRef, MobHandle,
@@ -193,6 +194,17 @@ impl UnifiedRuntime {
         member_id: &str,
     ) -> Result<Option<String>, MobRuntimeError> {
         self.mob_runtime.member_current_session_id(member_id).await
+    }
+
+    pub async fn read_session_history(
+        &self,
+        session_id: &str,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> Result<SessionHistoryPage, MobRuntimeError> {
+        self.mob_runtime
+            .read_session_history(session_id, offset, limit)
+            .await
     }
 
     /// Get a reference to a member's current session bridge.

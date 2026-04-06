@@ -11,7 +11,7 @@ import {
   ConversationPane,
   useConsoleDockController,
 } from "@console-components";
-import type { ConsoleComposerToolbarItem, IdentityInspectViewState } from "@console-core";
+import type { ConsoleComposerToolbarItem, ConversationTimelineEntry, IdentityInspectViewState } from "@console-core";
 
 import { normalizeAgents } from "./lib/agents";
 import {
@@ -19,20 +19,27 @@ import {
   buildControlTarget,
   buildConversationViewState,
   buildDockTarget,
+  buildQuickPromptSuggestions,
   buildInspectTarget,
+  mergeConversationFrames,
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
   createUserEntry,
+  mapSessionHistoryToTimelineEntries,
   mapFramesToTimelineEntries,
+  sortConversationTimelineEntries,
   type MobKitDockTarget,
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
 import {
   callConsoleRpc,
   fetchJson,
+  queryEvents,
+  readSessionHistory,
   sendAddressedInteractionStreaming,
   subscribeConsoleEvents,
+  subscribeIdentityEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
 import type {
@@ -60,6 +67,8 @@ const DEFAULT_APPROVER_ID = "console-ops-lead";
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(null);
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
+  const [historyFramesByKey, setHistoryFramesByKey] = React.useState<Record<string, ConsoleFrame[]>>({});
+  const [historyEntriesByKey, setHistoryEntriesByKey] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
   const [panelFramesByKey, setPanelFramesByKey] = React.useState<Record<string, ConsoleFrame[]>>({});
   const [localEntriesByKey, setLocalEntriesByKey] = React.useState<Record<string, ReturnType<typeof createUserEntry>[]>>({});
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
@@ -77,6 +86,52 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const phaseValueByKey = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
   const phaseSinceByKey = React.useRef<Record<string, number>>({});
   const phaseTimerByKey = React.useRef<Record<string, number>>({});
+  const historyLoadedByKey = React.useRef<Record<string, boolean>>({});
+  const historySourceByKey = React.useRef<Record<string, string>>({});
+
+  const refreshChatPanelHistory = React.useCallback(async (
+    panelId: string,
+    target: Extract<MobKitDockTarget, { kind: "agent-chat" }>,
+    force = false,
+  ) => {
+    const panelKey = buildPanelConversationKey(panelId, target);
+    const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
+    const sourceKey = agent?.session_id?.trim()
+      ? `session:${agent.session_id.trim()}`
+      : `events:${target.identity || target.memberId}`;
+    if (
+      !force
+      && historyLoadedByKey.current[panelKey]
+      && historySourceByKey.current[panelKey] === sourceKey
+    ) {
+      return;
+    }
+    historyLoadedByKey.current[panelKey] = true;
+    historySourceByKey.current[panelKey] = sourceKey;
+    try {
+      const historyPage = agent?.session_id
+        ? await readSessionHistory(baseUrl, agent.session_id, 200)
+        : null;
+      const frames = historyPage
+        ? []
+        : await queryEvents(baseUrl, {
+          memberId: target.memberId,
+          ...(target.identity ? { identity: target.identity } : {}),
+        }, 120);
+      setHistoryFramesByKey((current) => ({ ...current, [panelKey]: dedupeFrames(frames) }));
+      setHistoryEntriesByKey((current) => ({
+        ...current,
+        [panelKey]: historyPage ? mapSessionHistoryToTimelineEntries(historyPage, agent) : [],
+      }));
+      if (historyPage) {
+        setPanelFramesByKey((current) => ({ ...current, [panelKey]: [] }));
+        setLocalEntriesByKey((current) => ({ ...current, [panelKey]: [] }));
+      }
+    } catch {
+      historyLoadedByKey.current[panelKey] = false;
+      delete historySourceByKey.current[panelKey];
+    }
+  }, [agents, baseUrl]);
 
   const dock = useConsoleDockController<MobKitDockTarget>({
     createPanelState: ({ target }) => ({
@@ -138,9 +193,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }, [agents, dock]);
 
   React.useEffect(() => {
-    return subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+    let cancelled = false;
+    void queryEvents(baseUrl, {}, 80)
+      .then((frames) => {
+        if (!cancelled) {
+          setActivityFrames(dedupeFrames(frames).slice(-80).reverse());
+        }
+      })
+      .catch(() => {});
+    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
       setActivityFrames((current) => [frame, ...current].slice(0, 200));
     });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [baseUrl]);
 
   React.useEffect(() => {
@@ -211,6 +278,52 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     };
   }, [baseUrl, dock.viewState.panels]);
 
+  React.useEffect(() => {
+    const chatPanels = dock.viewState.panels
+      .map((panel) => ({ id: panel.id, target: panel.target }))
+      .filter((panel): panel is { id: string; target: Extract<MobKitDockTarget, { kind: "agent-chat" }> } =>
+        panel.target?.kind === "agent-chat");
+    let cancelled = false;
+
+    async function loadPanelHistory() {
+      for (const panel of chatPanels) {
+        if (cancelled) return;
+        try {
+          await refreshChatPanelHistory(panel.id, panel.target);
+        } catch {
+          if (!cancelled) {
+            const panelKey = buildPanelConversationKey(panel.id, panel.target);
+            historyLoadedByKey.current[panelKey] = false;
+          }
+        }
+      }
+    }
+
+    void loadPanelHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [dock.viewState.panels, refreshChatPanelHistory]);
+
+  React.useEffect(() => {
+    const chatPanels = dock.viewState.panels
+      .map((panel) => ({ id: panel.id, target: panel.target }))
+      .filter((panel): panel is { id: string; target: Extract<MobKitDockTarget, { kind: "agent-chat" }> } =>
+        panel.target?.kind === "agent-chat");
+    const unsubscribers = chatPanels
+      .filter((panel) => Boolean(panel.target.identity))
+      .map((panel) => {
+        return subscribeIdentityEvents(baseUrl, panel.target.identity!, (frame) => {
+          appendPanelFrame(panel.id, panel.target, frame);
+        });
+      });
+    return () => {
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe();
+      }
+    };
+  }, [baseUrl, dock.viewState.panels]);
+
   function onSelectAgent(
     _block: unknown,
     _section: unknown,
@@ -222,12 +335,58 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
-  function appendPanelFrame(panelKey: string, frame: ConsoleFrame) {
+  function appendPanelFrame(
+    panelId: string,
+    target: Extract<MobKitDockTarget, { kind: "agent-chat" }>,
+    frame: ConsoleFrame,
+  ) {
+    const panelKey = buildPanelConversationKey(panelId, target);
+    if (frame.event === "interaction_started") {
+      const content = frame.data && typeof frame.data === "object"
+        ? (frame.data as Record<string, unknown>).content
+        : undefined;
+      const normalizedContent = typeof content === "string" ? content.trim() : "";
+      setLocalEntriesByKey((current) => {
+        const existing = current[panelKey] || [];
+        if (existing.length === 0) {
+          return current;
+        }
+        const matchIndex = existing.findIndex((entry) => {
+          const entryText = typeof entry.text === "string" ? entry.text.trim() : "";
+          return normalizedContent ? entryText === normalizedContent : true;
+        });
+        if (matchIndex === -1) {
+          return current;
+        }
+        const nextEntries = existing.filter((_, index) => index !== matchIndex);
+        return { ...current, [panelKey]: nextEntries };
+      });
+    }
     setPanelFramesByKey((current) => {
-      const nextFrames = [...(current[panelKey] || []), frame];
+      const nextFrames = dedupeFrames([...(current[panelKey] || []), frame]);
       return { ...current, [panelKey]: nextFrames };
     });
     updatePanelPhaseFromFrame(panelKey, frame);
+    if (
+      frame.event === "interaction_complete"
+      || frame.event === "interaction_failed"
+      || frame.event === "run_completed"
+      || frame.event === "run_failed"
+    ) {
+      void refreshChatPanelHistory(panelId, target, true);
+    }
+  }
+
+  function dedupeFrames(frames: ConsoleFrame[]): ConsoleFrame[] {
+    const byId = new Map<string, ConsoleFrame>();
+    const ordered: ConsoleFrame[] = [];
+    for (const frame of frames) {
+      const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+      if (byId.has(key)) continue;
+      byId.set(key, frame);
+      ordered.push(frame);
+    }
+    return ordered;
   }
 
   function clearPhaseTimer(panelKey: string) {
@@ -323,7 +482,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         },
         text,
         `console:${panelId}`,
-        (frame) => appendPanelFrame(panelKey, frame),
+        (frame) => appendPanelFrame(panelId, target, frame),
       );
       commitPanelPhase(panelKey, null);
     } catch (submitError) {
@@ -445,19 +604,31 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
     const panelKey = buildPanelConversationKey(panel.id, target);
     const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
-    const entries = [
+    const combinedFrames = mergeConversationFrames(
+      historyFramesByKey[panelKey],
+      panelFramesByKey[panelKey],
+    );
+    const entries = sortConversationTimelineEntries([
+      ...(historyEntriesByKey[panelKey] || []),
+      ...mapFramesToTimelineEntries(agent, combinedFrames, { renderInteractionStartsAsUser: true }),
       ...(localEntriesByKey[panelKey] || []),
-      ...mapFramesToTimelineEntries(agent, panelFramesByKey[panelKey] || []),
-    ];
+    ]);
     const conversation = buildConversationViewState({
       memberId: target.memberId,
       agentLabel: target.title,
+      agent,
       entries,
     });
     const draft = draftByKey[panelKey] || "";
     const isSending = sendingPanels.has(panelKey);
     const phase = panelPhaseByKey[panelKey] ?? agent?.response_phase ?? null;
 
+    const quickPrompts = buildQuickPromptSuggestions(agent).map((suggestion) => ({
+      id: suggestion.id,
+      kind: "pill" as const,
+      label: suggestion.label,
+      iconName: suggestion.iconName || "i-bolt",
+    }));
     const footerLeftItems: ConsoleComposerToolbarItem[] = [
       { id: "target", kind: "sub-pill", label: `To: ${target.title}`, iconName: "i-team" },
       { id: "identity", kind: "sub-pill", label: target.identity || target.memberId, iconName: "i-terminal" },
@@ -478,6 +649,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         <ConversationPane
           viewState={conversation}
           Icon={Icon}
+          onApplySuggestion={(value) => setDraftByKey((current) => ({ ...current, [panelKey]: value }))}
           footer={
             <ConsoleComposer
               Icon={Icon}
@@ -490,13 +662,22 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
                 placeholder: `Message ${target.title}...`,
                 submitDisabled: !draft.trim() || isSending,
                 submitLabel: `Send to ${target.title}`,
-                mainRowItems: [],
+                mainRowItems: quickPrompts,
                 footerLeftItems,
                 footerRightItems,
               }}
-              getToolbarButtonProps={({ zone, item }) => ({
-                "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}`,
-              })}
+              getToolbarButtonProps={({ zone, item }) => {
+                const buttonProps: Record<string, unknown> = {
+                  "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}`,
+                };
+                if (zone === "main") {
+                  const suggestion = buildQuickPromptSuggestions(agent).find((candidate) => candidate.id === item.id);
+                  if (suggestion) {
+                    buttonProps.onClick = () => setDraftByKey((current) => ({ ...current, [panelKey]: suggestion.value }));
+                  }
+                }
+                return buttonProps;
+              }}
               onChange={(value) => setDraftByKey((current) => ({ ...current, [panelKey]: value }))}
               onSubmit={() => void onSendMessage(panel.id, target)}
               onKeyDown={(event) => {

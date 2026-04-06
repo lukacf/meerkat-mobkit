@@ -64,7 +64,8 @@ async function readSseFrames(
   const minFrames = init.minFrames ?? 1;
   const timeoutMs = init.timeoutMs ?? 20000;
   const until = init.until;
-  const response = await fetch(url, init);
+  const controller = new AbortController();
+  const response = await fetch(url, { ...init, signal: controller.signal });
   assert.equal(response.ok, true, `expected SSE response from ${url}`);
   assert.ok(response.body, `expected readable SSE body from ${url}`);
 
@@ -102,6 +103,7 @@ async function readSseFrames(
       }
     }
   } finally {
+    controller.abort();
     try {
       await reader.cancel();
     } catch {
@@ -140,115 +142,120 @@ async function streamInteraction(identity: string, content: string, origin: stri
   return { sendResult, frames: filtered };
 }
 
-const experience = await fetchJson<{
-  contract_version: string;
-  identity_status?: { rows?: unknown[] };
-  activity_feed?: { filter_presets?: Array<{ id?: string }> };
-}>(`${baseUrl}/console/experience`);
+async function main() {
+  const experience = await fetchJson<{
+    contract_version: string;
+    identity_status?: { rows?: unknown[] };
+    activity_feed?: { filter_presets?: Array<{ id?: string }> };
+  }>(`${baseUrl}/console/experience`);
 
-assert.equal(experience.contract_version, "0.3.0");
-assert.ok(Array.isArray(experience.identity_status?.rows));
-assert.ok(Array.isArray(experience.activity_feed?.filter_presets));
-assert.ok(experience.activity_feed!.filter_presets!.some((preset) => preset.id === "watched-only"));
+  assert.equal(experience.contract_version, "0.3.0");
+  assert.ok(Array.isArray(experience.identity_status?.rows));
+  assert.ok(Array.isArray(experience.activity_feed?.filter_presets));
+  assert.ok(experience.activity_feed!.filter_presets!.some((preset) => preset.id === "watched-only"));
 
-const { sendResult, frames } = await streamInteraction(
-  "incident-commander",
-  prompts.tool_sweep || "Run a status sweep. Use both tools before answering.",
-  "ts-smoke:tool-sweep",
-);
-assert.ok(sendResult.interaction_id, "interaction_id expected");
-assert.ok(frames.some((frame) => frame.event === "interaction_complete"), "terminal frame expected");
-assert.ok(frames.some((frame) => frame.event === "text_delta"), "text delta frame expected");
-assert.ok(frames.some((frame) => frame.event === "tool_call_requested"), "tool call expected");
-assert.ok(frames.some((frame) => frame.event === "tool_result_received"), "tool result expected");
-assert.ok(
-  frames.some((frame) => frame.data && JSON.stringify(frame.data).includes("inspect_service")),
-  "inspect_service tool usage expected",
-);
-assert.ok(
-  frames.some((frame) => frame.data && JSON.stringify(frame.data).includes("analyze_customer_impact")),
-  "analyze_customer_impact tool usage expected",
-);
-const toolCallIndex = frames.findIndex((frame) => frame.event === "tool_call_requested");
-const toolResultIndex = frames.findIndex((frame) => frame.event === "tool_result_received");
-const textDeltaIndex = frames.findIndex((frame) => frame.event === "text_delta");
-const terminalIndex = frames.findIndex((frame) => frame.event === "interaction_complete");
-assert.ok(toolCallIndex >= 0, "tool call frame index expected");
-assert.ok(toolResultIndex > toolCallIndex, "tool result should follow tool call");
-assert.ok(textDeltaIndex > toolResultIndex, "text generation should start after tool results");
-assert.ok(terminalIndex > textDeltaIndex, "terminal event should follow text generation");
-
-const checkpointFrame = frames.find((frame) => frame.id && frame.event === "text_delta");
-assert.ok(checkpointFrame?.id, "checkpoint frame expected");
-const identityReplay = await readSseFrames(`${baseUrl}/console/identity/stream`, {
-  method: "POST",
-  headers: {
-    "content-type": "application/json",
-    "Last-Event-ID": checkpointFrame.id!,
-  },
-  body: JSON.stringify({ identity: "incident-commander" }),
-  minFrames: 2,
-});
-assert.ok(identityReplay.every((frame) => frame.id !== checkpointFrame.id), "identity replay must resume after checkpoint");
-
-const allEventsFrames = await readSseFrames(`${baseUrl}/console/events/stream`, {
-  headers: { "Last-Event-ID": checkpointFrame.id! },
-  minFrames: 2,
-});
-assert.ok(allEventsFrames.length > 0, "all-events replay frames expected");
-assert.ok(allEventsFrames.every((frame) => frame.id !== checkpointFrame.id), "all-events replay must resume after checkpoint");
-
-const [alphaTurn, bravoTurn] = await Promise.all([
-  streamInteraction(
+  const { sendResult, frames } = await streamInteraction(
     "incident-commander",
-    prompts.alpha_follow_up || "Panel alpha follow-up. Give one short sentence about rollback guardrails.",
-    "ts-smoke:panel-alpha",
-  ),
-  streamInteraction(
-    "incident-commander",
-    prompts.bravo_follow_up || "Panel bravo follow-up. Give one short sentence about customer impact.",
-    "ts-smoke:panel-bravo",
-  ),
-]);
+    prompts.tool_sweep || "Run a status sweep. Use both tools before answering.",
+    "ts-smoke:tool-sweep",
+  );
+  assert.ok(sendResult.interaction_id, "interaction_id expected");
+  assert.ok(frames.some((frame) => frame.event === "interaction_complete"), "terminal frame expected");
+  assert.ok(frames.some((frame) => frame.event === "text_delta"), "text delta frame expected");
+  assert.ok(frames.some((frame) => frame.event === "tool_call_requested"), "tool call expected");
+  assert.ok(frames.some((frame) => frame.event === "tool_result_received"), "tool result expected");
+  assert.ok(
+    frames.some((frame) => frame.data && JSON.stringify(frame.data).includes("inspect_service")),
+    "inspect_service tool usage expected",
+  );
+  assert.ok(
+    frames.some((frame) => frame.data && JSON.stringify(frame.data).includes("analyze_customer_impact")),
+    "analyze_customer_impact tool usage expected",
+  );
+  const toolCallIndex = frames.findIndex((frame) => frame.event === "tool_call_requested");
+  const toolResultIndex = frames.findIndex((frame) => frame.event === "tool_result_received");
+  const textDeltaIndex = frames.findIndex((frame) => frame.event === "text_delta");
+  const terminalIndex = frames.findIndex((frame) => frame.event === "interaction_complete");
+  assert.ok(toolCallIndex >= 0, "tool call frame index expected");
+  assert.ok(toolResultIndex > toolCallIndex, "tool result should follow tool call");
+  assert.ok(textDeltaIndex > toolResultIndex, "text generation should start after tool results");
+  assert.ok(terminalIndex > textDeltaIndex, "terminal event should follow text generation");
 
-assert.notEqual(alphaTurn.sendResult.interaction_id, bravoTurn.sendResult.interaction_id, "distinct interaction ids expected");
-assert.ok(
-  alphaTurn.frames
-    .filter((frame) => frame.event !== "subscribed")
-    .every((frame) => frame.interactionId === alphaTurn.sendResult.interaction_id),
-  "alpha stream must only surface alpha interaction frames",
-);
-assert.ok(
-  bravoTurn.frames
-    .filter((frame) => frame.event !== "subscribed")
-    .every((frame) => frame.interactionId === bravoTurn.sendResult.interaction_id),
-  "bravo stream must only surface bravo interaction frames",
-);
-assert.ok(alphaTurn.frames.some((frame) => frame.event === "interaction_complete"), "alpha terminal frame expected");
-assert.ok(bravoTurn.frames.some((frame) => frame.event === "interaction_complete"), "bravo terminal frame expected");
-
-const internalReject = await fetchJson<{ error?: { code?: number } }>(`${baseUrl}/console/rpc`, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({
-    jsonrpc: "2.0",
-    id: "ts-smoke-reject",
-    method: "mobkit/interact",
-    params: {
-      identity: "approval-gate",
-      content: "should reject",
-      origin: "ts-smoke",
+  const checkpointFrame = frames.find((frame) => frame.id && frame.event === "text_delta");
+  assert.ok(checkpointFrame?.id, "checkpoint frame expected");
+  const identityReplay = await readSseFrames(`${baseUrl}/console/identity/stream`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "Last-Event-ID": checkpointFrame.id!,
     },
-  }),
-});
-assert.equal(internalReject.error?.code, -32002);
+    body: JSON.stringify({ identity: "incident-commander" }),
+    minFrames: 2,
+  });
+  assert.ok(identityReplay.every((frame) => frame.id !== checkpointFrame.id), "identity replay must resume after checkpoint");
 
-const statusIdentity = await callConsoleRpc<{ identity: string; addressability: string }>(
-  "mobkit/status_identity",
-  { identity: "incident-commander" },
-);
-assert.equal(statusIdentity.identity, "incident-commander");
-assert.equal(statusIdentity.addressability, "addressable");
-assert.ok((scenario.smoke?.watched_identities || []).includes("incident-commander"));
+  const allEventsFrames = await readSseFrames(`${baseUrl}/console/events/stream`, {
+    headers: { "Last-Event-ID": checkpointFrame.id! },
+    minFrames: 2,
+  });
+  assert.ok(allEventsFrames.length > 0, "all-events replay frames expected");
+  assert.ok(allEventsFrames.every((frame) => frame.id !== checkpointFrame.id), "all-events replay must resume after checkpoint");
 
-console.log("incident TS smoke passed");
+  const [alphaTurn, bravoTurn] = await Promise.all([
+    streamInteraction(
+      "incident-commander",
+      prompts.alpha_follow_up || "Panel alpha follow-up. Give one short sentence about rollback guardrails.",
+      "ts-smoke:panel-alpha",
+    ),
+    streamInteraction(
+      "incident-commander",
+      prompts.bravo_follow_up || "Panel bravo follow-up. Give one short sentence about customer impact.",
+      "ts-smoke:panel-bravo",
+    ),
+  ]);
+
+  assert.notEqual(alphaTurn.sendResult.interaction_id, bravoTurn.sendResult.interaction_id, "distinct interaction ids expected");
+  assert.ok(
+    alphaTurn.frames
+      .filter((frame) => frame.event !== "subscribed")
+      .every((frame) => frame.interactionId === alphaTurn.sendResult.interaction_id),
+    "alpha stream must only surface alpha interaction frames",
+  );
+  assert.ok(
+    bravoTurn.frames
+      .filter((frame) => frame.event !== "subscribed")
+      .every((frame) => frame.interactionId === bravoTurn.sendResult.interaction_id),
+    "bravo stream must only surface bravo interaction frames",
+  );
+  assert.ok(alphaTurn.frames.some((frame) => frame.event === "interaction_complete"), "alpha terminal frame expected");
+  assert.ok(bravoTurn.frames.some((frame) => frame.event === "interaction_complete"), "bravo terminal frame expected");
+
+  const internalReject = await fetchJson<{ error?: { code?: number } }>(`${baseUrl}/console/rpc`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "ts-smoke-reject",
+      method: "mobkit/interact",
+      params: {
+        identity: "approval-gate",
+        content: "should reject",
+        origin: "ts-smoke",
+      },
+    }),
+  });
+  assert.equal(internalReject.error?.code, -32002);
+
+  const statusIdentity = await callConsoleRpc<{ identity: string; addressability: string }>(
+    "mobkit/status_identity",
+    { identity: "incident-commander" },
+  );
+  assert.equal(statusIdentity.identity, "incident-commander");
+  assert.equal(statusIdentity.addressability, "addressable");
+  assert.ok((scenario.smoke?.watched_identities || []).includes("incident-commander"));
+
+  console.log("incident TS smoke passed");
+}
+
+await main();
+process.exit(0);

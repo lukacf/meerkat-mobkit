@@ -6,6 +6,7 @@ import type {
   ConsoleDockTargetAddressingMode,
   ConsoleSidebarMetaTone,
   ConsoleSidebarViewState,
+  ConversationEmptySuggestion,
   ConversationIdentity,
   ConversationRichToolCallBlock,
   ConversationTimelineEntry,
@@ -277,10 +278,20 @@ const SYSTEM_IDENTITY: ConversationIdentity = {
 };
 
 function summarizeFrameData(data: unknown): string {
-  if (typeof data === "string") return data;
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        return summarizeFrameData(JSON.parse(trimmed));
+      } catch {
+        return data;
+      }
+    }
+    return data;
+  }
   if (typeof data === "object" && data !== null) {
     const record = data as Record<string, unknown>;
-    if (typeof record.delta === "string" && record.delta.trim()) return record.delta;
+    if (typeof record.delta === "string") return record.delta;
     if (typeof record.text === "string" && record.text.trim()) return record.text;
     if (typeof record.result === "string" && record.result.trim()) return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
@@ -290,6 +301,74 @@ function summarizeFrameData(data: unknown): string {
     return JSON.stringify(record);
   }
   return String(data ?? "");
+}
+
+function eventSortRank(event: string | undefined): number {
+  switch (event) {
+    case "interaction_started":
+      return 0;
+    case "tool_call_requested":
+    case "tool_call":
+    case "tool_execution_started":
+      return 20;
+    case "tool_result_received":
+    case "tool_execution_completed":
+      return 30;
+    case "text_delta":
+      return 40;
+    case "text_complete":
+      return 45;
+    case "interaction_complete":
+    case "interaction_failed":
+    case "run_completed":
+    case "run_failed":
+      return 90;
+    default:
+      return 50;
+  }
+}
+
+function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
+  const interactionStartMs = new Map<string, number>();
+  for (const frame of frames) {
+    const interactionId = frame.interactionId?.trim();
+    const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) continue;
+    const current = interactionStartMs.get(interactionId);
+    if (current === undefined || timestampMs < current) {
+      interactionStartMs.set(interactionId, timestampMs);
+    }
+  }
+
+  return frames
+    .map((frame, index) => ({ frame, index }))
+    .sort((left, right) => {
+      const leftInteraction = left.frame.interactionId?.trim() || "";
+      const rightInteraction = right.frame.interactionId?.trim() || "";
+      const leftGroupTs =
+        (leftInteraction && interactionStartMs.get(leftInteraction))
+        ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+      const rightGroupTs =
+        (rightInteraction && interactionStartMs.get(rightInteraction))
+        ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+      if (leftGroupTs !== rightGroupTs) {
+        return leftGroupTs - rightGroupTs;
+      }
+      if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
+        const leftRank = eventSortRank(left.frame.event);
+        const rightRank = eventSortRank(right.frame.event);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
+      }
+      const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+      const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+      if (leftTs !== rightTs) {
+        return leftTs - rightTs;
+      }
+      return left.index - right.index;
+    })
+    .map(({ frame }) => frame);
 }
 
 const HIDDEN_EVENTS = new Set([
@@ -302,7 +381,44 @@ const HIDDEN_EVENTS = new Set([
   "interaction_started",
   "run_failed",
   "keep-alive",
+  "tool_config_changed",
+  "tool_scope_changed",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
 ]);
+
+const ACTIVITY_HIDDEN_EVENTS = new Set([
+  ...HIDDEN_EVENTS,
+  "text_delta",
+  "tool_result_received",
+  "tool_execution_completed",
+]);
+
+export function mergeConversationFrames(...frameSets: Array<ConsoleFrame[] | undefined>): ConsoleFrame[] {
+  const byId = new Map<string, ConsoleFrame>();
+  const ordered: ConsoleFrame[] = [];
+
+  for (const frameSet of frameSets) {
+    for (const frame of frameSet || []) {
+      const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+      if (byId.has(key)) {
+        continue;
+      }
+      byId.set(key, frame);
+      ordered.push(frame);
+    }
+  }
+
+  return ordered;
+}
+
+function isoFromTimestampMs(timestampMs: number | undefined): string | undefined {
+  if (typeof timestampMs !== "number" || !Number.isFinite(timestampMs)) {
+    return undefined;
+  }
+  return new Date(timestampMs).toISOString();
+}
 
 function parseToolCallId(frame: ConsoleFrame): string | null {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
@@ -379,16 +495,21 @@ function renderTerminalEntry(
   agent: ConsoleAgent | null,
   frame: ConsoleFrame,
   entryId: string,
+  streamedText = "",
 ): ConversationTimelineEntry | null {
   if (frame.event === "interaction_complete") {
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
+    if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
+      return null;
+    }
     const blocks = parseConversationRichBlocks(text);
     return {
       kind: "message",
       id: entryId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
       ...(blocks.length > 0 ? { blocks } : { text }),
     };
   }
@@ -401,6 +522,7 @@ function renderTerminalEntry(
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
       text,
     };
   }
@@ -408,16 +530,178 @@ function renderTerminalEntry(
   return null;
 }
 
+function normalizeComparableText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+export function buildQuickPromptSuggestions(agent: ConsoleAgent | null): ConversationEmptySuggestion[] {
+  const labels = agent?.labels ?? {};
+  const suggestions: ConversationEmptySuggestion[] = [];
+  for (let index = 1; index <= 4; index++) {
+    const label = labels[`console_prompt_${index}_label`]?.trim();
+    const value = labels[`console_prompt_${index}_value`]?.trim();
+    if (!label || !value) continue;
+    suggestions.push({
+      id: `prompt-${index}`,
+      label,
+      value,
+      iconName: "i-bolt",
+    });
+  }
+  return suggestions;
+}
+
+function renderHistoryUserEntry(frame: ConsoleFrame, entryId: string): ConversationTimelineEntry | null {
+  if (frame.event !== "interaction_started" || typeof frame.data !== "object" || frame.data === null) {
+    return null;
+  }
+  const record = frame.data as Record<string, unknown>;
+  const content = typeof record.content === "string" ? record.content.trim() : "";
+  if (!content) return null;
+  return {
+    kind: "message",
+    id: entryId,
+    identity: USER_IDENTITY,
+    variant: "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    text: content,
+  };
+}
+
+function extractTextFromContentBlocks(blocks: unknown): string {
+  if (typeof blocks === "string") {
+    return blocks;
+  }
+  if (!Array.isArray(blocks)) {
+    return "";
+  }
+  return blocks
+    .map((block) => {
+      if (typeof block === "string") return block;
+      if (!block || typeof block !== "object") return "";
+      const record = block as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.content === "string") return record.content;
+      return "";
+    })
+    .filter((value) => value.trim().length > 0)
+    .join("");
+}
+
+function historyMessageText(message: unknown): { role: "user" | "assistant" | "system" | null; text: string; blocks?: ConversationRichToolCallBlock[] } {
+  if (!message || typeof message !== "object") {
+    return { role: null, text: "" };
+  }
+  const record = message as Record<string, unknown>;
+  const role = typeof record.role === "string" ? record.role : null;
+  switch (role) {
+    case "user":
+      return { role: "user", text: extractTextFromContentBlocks(record.content) };
+    case "assistant":
+      return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
+    case "block_assistant": {
+      const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+      const text = blocks
+        .map((block) => {
+          if (!block || typeof block !== "object") return "";
+          const item = block as Record<string, unknown>;
+          const blockType = typeof item.block_type === "string"
+            ? item.block_type
+            : typeof item.type === "string"
+              ? item.type
+              : "";
+          const data = item.data && typeof item.data === "object"
+            ? item.data as Record<string, unknown>
+            : {};
+          if (blockType === "text") {
+            if (typeof data.text === "string") return data.text;
+            if (typeof item.text === "string") return item.text;
+          }
+          return "";
+        })
+        .filter((value) => value.trim().length > 0)
+        .join("");
+      return { role: "assistant", text };
+    }
+    case "system":
+      return { role: "system", text: typeof record.content === "string" ? record.content : "" };
+    default:
+      return { role: null, text: "" };
+  }
+}
+
+export function mapSessionHistoryToTimelineEntries(
+  historyPage: unknown,
+  agent: ConsoleAgent | null,
+): ConversationTimelineEntry[] {
+  if (!historyPage || typeof historyPage !== "object") {
+    return [];
+  }
+  const record = historyPage as Record<string, unknown>;
+  const messages = Array.isArray(record.messages) ? record.messages : [];
+  const entries: ConversationTimelineEntry[] = [];
+  for (const [index, message] of messages.entries()) {
+    const parsed = historyMessageText(message);
+    const text = parsed.text.trim();
+    const messageRecord = message && typeof message === "object"
+      ? message as Record<string, unknown>
+      : null;
+    const createdAt = typeof messageRecord?.created_at === "string"
+      ? messageRecord.created_at
+      : typeof messageRecord?.createdAt === "string"
+        ? messageRecord.createdAt
+        : undefined;
+    if (!text) {
+      continue;
+    }
+    if (parsed.role === "system") {
+      if (!text.startsWith("[COMMS") && !text.startsWith("[SYSTEM NOTICE")) {
+        continue;
+      }
+      if (text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")) {
+        continue;
+      }
+      entries.push({
+        kind: "message",
+        id: `history:${index}`,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        ...(createdAt ? { createdAt } : {}),
+        text,
+      });
+      continue;
+    }
+    if (parsed.role === "user" && text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")) {
+      continue;
+    }
+    const blocks = parseConversationRichBlocks(text);
+    entries.push({
+      kind: "message",
+      id: `history:${index}`,
+      identity: parsed.role === "user" ? USER_IDENTITY : agentIdentity(agent),
+      variant: blocks.length > 0 ? "rich" : "plain",
+      ...(createdAt ? { createdAt } : {}),
+      ...(blocks.length > 0 ? { blocks } : { text }),
+    });
+  }
+  return entries;
+}
+
 export function mapFramesToTimelineEntries(
   agent: ConsoleAgent | null,
   frames: ConsoleFrame[],
+  options: {
+    renderInteractionStartsAsUser?: boolean;
+  } = {},
 ): ConversationTimelineEntry[] {
+  const orderedFrames = sortFramesForTranscript(frames);
   const entries: ConversationTimelineEntry[] = [];
-  const toolBlocks = buildToolBlocks(frames);
+  const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = new Set<string>();
 
   let pendingText = "";
   let pendingId = "";
+  let pendingCreatedAt: string | undefined;
 
   function flushPendingText() {
     if (!pendingText) return;
@@ -427,18 +711,23 @@ export function mapFramesToTimelineEntries(
       id: pendingId,
       identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
+      ...(pendingCreatedAt ? { createdAt: pendingCreatedAt } : {}),
       ...(blocks.length > 0 ? { blocks } : { text: pendingText }),
     });
     pendingText = "";
     pendingId = "";
+    pendingCreatedAt = undefined;
   }
 
-  for (let i = 0; i < frames.length; i++) {
-    const frame = frames[i];
+  for (let i = 0; i < orderedFrames.length; i++) {
+    const frame = orderedFrames[i];
     const entryId = `${frame.id || frame.event || "frame"}:${i}`;
 
     if (frame.event === "text_delta") {
-      if (!pendingId) pendingId = entryId;
+      if (!pendingId) {
+        pendingId = entryId;
+        pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
+      }
       pendingText += summarizeFrameData(frame.data);
       continue;
     }
@@ -457,6 +746,7 @@ export function mapFramesToTimelineEntries(
           id: entryId,
           identity: agentIdentity(agent),
           variant: "rich",
+          createdAt: isoFromTimestampMs(frame.timestampMs),
           blocks: [block],
         });
         emittedToolCalls.add(toolCallId);
@@ -468,15 +758,34 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
+    if (options.renderInteractionStartsAsUser && frame.event === "interaction_started") {
+      flushPendingText();
+      const userEntry = renderHistoryUserEntry(frame, entryId);
+      if (userEntry) {
+        entries.push(userEntry);
+      }
+      continue;
+    }
+
+    if (frame.event === "text_complete") {
+      continue;
+    }
+
+    if (HIDDEN_EVENTS.has(frame.event)) {
+      continue;
+    }
+
+    const streamedText = pendingText;
     flushPendingText();
 
-    const terminalEntry = renderTerminalEntry(agent, frame, entryId);
+    const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
     if (terminalEntry) {
       entries.push(terminalEntry);
       continue;
     }
-
-    if (HIDDEN_EVENTS.has(frame.event)) continue;
+    if (frame.event === "interaction_complete") {
+      continue;
+    }
 
     const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
     entries.push({
@@ -484,6 +793,7 @@ export function mapFramesToTimelineEntries(
       id: entryId,
       identity: SYSTEM_IDENTITY,
       variant: "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
       text,
     });
   }
@@ -498,8 +808,33 @@ export function createUserEntry(message: string): ConversationTimelineEntry {
     id: `user:${Date.now()}`,
     identity: USER_IDENTITY,
     variant: "plain",
+    createdAt: new Date().toISOString(),
     text: message,
   };
+}
+
+export function sortConversationTimelineEntries(
+  entries: ConversationTimelineEntry[],
+): ConversationTimelineEntry[] {
+  return entries
+    .map((entry, index) => ({ entry, index }))
+    .sort((left, right) => {
+      const leftTs = Date.parse(String(left.entry.createdAt || ""));
+      const rightTs = Date.parse(String(right.entry.createdAt || ""));
+      const safeLeft = Number.isFinite(leftTs) ? leftTs : Number.NaN;
+      const safeRight = Number.isFinite(rightTs) ? rightTs : Number.NaN;
+      if (Number.isFinite(safeLeft) && Number.isFinite(safeRight) && safeLeft !== safeRight) {
+        return safeLeft - safeRight;
+      }
+      if (Number.isFinite(safeLeft) && !Number.isFinite(safeRight)) {
+        return 1;
+      }
+      if (!Number.isFinite(safeLeft) && Number.isFinite(safeRight)) {
+        return -1;
+      }
+      return left.index - right.index;
+    })
+    .map(({ entry }) => entry);
 }
 
 export function inferResponsePhaseFromFrames(
@@ -538,9 +873,11 @@ export function inferResponsePhaseFromFrames(
 export function buildConversationViewState(args: {
   memberId: string;
   agentLabel: string;
+  agent?: ConsoleAgent | null;
   entries: ConversationTimelineEntry[];
 }): ConversationViewState {
   const groups = groupConversationTimelineEntries(args.entries);
+  const suggestions = buildQuickPromptSuggestions(args.agent ?? null);
   return {
     conversationId: args.memberId || "console",
     title: args.agentLabel,
@@ -550,6 +887,7 @@ export function buildConversationViewState(args: {
     emptyState: args.entries.length === 0 ? {
       title: args.agentLabel,
       subtitle: "Send a message to start the conversation.",
+      ...(suggestions.length ? { suggestions } : {}),
     } : null,
   };
 }
@@ -578,6 +916,9 @@ export function buildActivityRailViewState(args: {
   }
 
   const filteredFrames = args.eventFrames.filter((frame) => {
+    if (ACTIVITY_HIDDEN_EVENTS.has(frame.event)) {
+      return false;
+    }
     const frameIdentity = frame.identity?.trim();
     if (!activePreset) return true;
     if (activePreset.watchedOnly && frameIdentity && !watchedIdentities.has(frameIdentity)) {

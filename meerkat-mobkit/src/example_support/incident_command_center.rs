@@ -9,6 +9,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use meerkat::AgentToolDispatcher;
+use meerkat_client::LlmClient;
 use meerkat_core::error::ToolError;
 use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
 use meerkat_core::{ToolCallView, ToolDef, ToolDispatchOutcome, ToolResult};
@@ -174,18 +175,26 @@ pub fn load_scenario(path: &Path) -> Result<IncidentScenario> {
 
 pub async fn build_runtime_bundle(path: &Path) -> Result<IncidentRuntimeBundle> {
     let scenario = load_scenario(path)?;
+    build_runtime_bundle_with_client(&scenario, None).await
+}
+
+async fn build_runtime_bundle_with_client(
+    scenario: &IncidentScenario,
+    default_llm_client: Option<Arc<dyn LlmClient>>,
+) -> Result<IncidentRuntimeBundle> {
     let definition = incident_definition()?;
-    let runtime = UnifiedRuntime::builder()
+    let mut builder = UnifiedRuntime::builder()
         .definition(definition)
         .session_hook(Arc::new(IncidentSessionHook))
-        .module_config(example_module_config(&scenario)?)
+        .module_config(example_module_config(scenario)?)
         .edge_discovery(ScenarioEdgeDiscovery::new(scenario.links.clone()))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .await
-        .context("build incident runtime")?;
+        .timeout(Duration::from_secs(60));
+    if let Some(client) = default_llm_client {
+        builder = builder.default_llm_client(client);
+    }
+    let runtime = builder.build().await.context("build incident runtime")?;
 
-    seed_runtime(&runtime, &scenario).await?;
+    seed_runtime(&runtime, scenario).await?;
 
     let decisions = build_runtime_decision_state(RuntimeDecisionInputs {
         bigquery: BigQueryNaming {
@@ -204,7 +213,7 @@ pub async fn build_runtime_bundle(path: &Path) -> Result<IncidentRuntimeBundle> 
     .map_err(|err| anyhow!("failed to build incident console decisions: {err:?}"))?;
 
     Ok(IncidentRuntimeBundle {
-        scenario,
+        scenario: scenario.clone(),
         runtime: Arc::new(runtime),
         decisions,
     })
@@ -323,20 +332,206 @@ fn incident_definition() -> Result<MobDefinition> {
 [mob]
 id = "incident-command-center"
 
-[profiles.ops]
+[skills.comms_protocol]
+source = "inline"
+content = """
+## Incident Comms Protocol
+
+- Ignore mob.peer_added and mob.peer_retired lifecycle chatter. Do not reply to those notices.
+- Use the `peers` tool before your first substantive peer message in a turn so you know who is reachable.
+- Use `peer_request` when you need another teammate to answer a question or return facts to you.
+- Use `peer_response` with `in_reply_to` when answering a peer request.
+- Use `peer_message` only for one-way updates or FYIs that do not require a reply.
+- When responding to a teammate, send the answer back over comms. Do not keep the answer local-only.
+- Keep peer messages short and factual: 1-3 sentences or tight bullets.
+- If you learn a new material fact, notify scribe unless you are scribe.
+"""
+
+[skills.commander_role]
+source = "inline"
+content = """
+You are the incident commander for the fictional CardinalPay payments outage.
+
+TEAMMATES YOU SHOULD USE:
+- payments-sre: live service health, mitigations, rollback safety
+- api-investigator: root cause, blast radius, rollback reasoning
+- merchant-comms: external and status-page wording
+- merchant-success: VIP/customer-friendly phrasing
+- scribe: timeline and established facts
+
+HOW TO OPERATE:
+- For any operator request about current status, customer impact, rollback, or publication readiness, use `peers` first and then send concise `peer_request` questions to at least two relevant teammates before you finalize your answer.
+- Default coordination path for a status sweep: payments-sre + merchant-comms + scribe.
+- Ask api-investigator whenever root cause or rollback confidence is part of the question.
+- After a meaningful exchange, send a short factual note to scribe.
+- Your final operator answer should be concise, operationally useful, and mention which teammates you consulted.
+- Do not pretend a peer confirmed something if they have not replied.
+"""
+
+[skills.payments_sre_role]
+source = "inline"
+content = """
+You are Payments SRE for the fictional CardinalPay incident.
+
+JOB:
+- Own the live technical posture of the payments-api and mitigation safety.
+- When commander or api-investigator asks for status, run inspect_service for payments-api before you answer unless you just did so.
+- Reply with terse facts: current health, likely risk, and the next safe action.
+- If you uncover a material fact, send a short `peer_message` note to scribe.
+- If you need root-cause help, ask api-investigator via `send` using `kind: "peer_message"` and a direct body.
+"""
+
+[skills.api_investigator_role]
+source = "inline"
+content = """
+You are the API investigator for the fictional CardinalPay incident.
+
+JOB:
+- Focus on root cause, blast radius, and rollback reasoning.
+- If commander asks for root cause or rollback confidence, consult payments-sre via `send` using `kind: "peer_message"` unless you already have fresh evidence.
+- Send concise findings back to commander via `peer_message` and send a short timeline fact to scribe.
+- Keep your replies analytical and specific; do not draft customer copy.
+"""
+
+[skills.merchant_comms_role]
+source = "inline"
+content = """
+You are Merchant Comms for the fictional CardinalPay incident.
+
+JOB:
+- Draft status-page and merchant-facing wording.
+- When commander asks for an external update, coordinate with merchant-success for customer wording via `peer_message` and send approval-gate a concise publication request via `peer_message`.
+- Report back to commander with the latest draft and approval state.
+- Send the approved or pending wording summary to scribe.
+"""
+
+[skills.merchant_success_role]
+source = "inline"
+content = """
+You are Merchant Success for the fictional CardinalPay incident.
+
+JOB:
+- Translate incident facts into concise customer/VIP messaging.
+- When asked for merchant wording and context is stale, ask merchant-comms or incident-commander first via `peer_message`.
+- Keep updates calm, concrete, and short.
+- Send important customer-impact facts to scribe.
+"""
+
+[skills.scribe_role]
+source = "inline"
+content = """
+You are the incident scribe for the fictional CardinalPay incident.
+
+JOB:
+- Maintain the running timeline of confirmed facts.
+- When a peer sends a `peer_request` asking for a summary or facts, you must answer with `peer_response` and include `in_reply_to`.
+- When a peer sends a one-way `peer_message` update, acknowledge it locally and update your timeline, but do not assume they are waiting on a reply unless they asked.
+- If you cannot identify the sender from the comms notice, say that explicitly; otherwise always send the reply.
+- When commander asks what is currently established, answer with the tightest fact pattern you have.
+- Do not invent operational actions; you summarize and confirm.
+"""
+
+[skills.approval_gate_role]
+source = "inline"
+content = """
+You are the internal approval gate for the fictional CardinalPay incident.
+
+JOB:
+- Review publication requests from merchant-comms.
+- Reply only to the requesting peer with a `peer_message` containing approve, reject, or escalate plus a short reason.
+- Never act like an operator-facing assistant.
+"""
+
+[skills.health_monitor_role]
+source = "inline"
+content = """
+You are the internal health monitor for the fictional CardinalPay incident.
+
+JOB:
+- Provide terse machine-style health facts when peers ask.
+- Run inspect_service if a peer asks about live service condition.
+- If the state is severe, notify incident-commander and scribe via `peer_message`.
+- Never act like an operator-facing assistant.
+"""
+
+[profiles.commander]
 model = "{model}"
 external_addressable = true
-runtime_mode = "turn_driven"
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "commander_role"]
+peer_description = "Incident commander coordinating the CardinalPay outage response"
 
-[profiles.ops.tools]
+[profiles.commander.tools]
 comms = true
 
-[profiles.internal]
+[profiles.payments_sre]
+model = "{model}"
+external_addressable = true
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "payments_sre_role"]
+peer_description = "Payments SRE handling technical status and mitigation safety"
+
+[profiles.payments_sre.tools]
+comms = true
+
+[profiles.api_investigator]
+model = "{model}"
+external_addressable = true
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "api_investigator_role"]
+peer_description = "API investigator focused on root cause and rollback confidence"
+
+[profiles.api_investigator.tools]
+comms = true
+
+[profiles.merchant_comms]
+model = "{model}"
+external_addressable = true
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "merchant_comms_role"]
+peer_description = "Merchant communications lead for status-page and publication wording"
+
+[profiles.merchant_comms.tools]
+comms = true
+
+[profiles.merchant_success]
+model = "{model}"
+external_addressable = true
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "merchant_success_role"]
+peer_description = "Merchant success lead for VIP/customer updates"
+
+[profiles.merchant_success.tools]
+comms = true
+
+[profiles.scribe]
+model = "{model}"
+external_addressable = true
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "scribe_role"]
+peer_description = "Incident scribe maintaining the confirmed timeline"
+
+[profiles.scribe.tools]
+comms = true
+
+[profiles.approval_gate]
 model = "{model}"
 external_addressable = false
-runtime_mode = "turn_driven"
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "approval_gate_role"]
+peer_description = "Internal approval gate for publication requests"
 
-[profiles.internal.tools]
+[profiles.approval_gate.tools]
+comms = true
+
+[profiles.health_monitor]
+model = "{model}"
+external_addressable = false
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "health_monitor_role"]
+peer_description = "Internal health monitor for the incident"
+
+[profiles.health_monitor.tools]
 comms = true
 "#,
     ))
@@ -524,13 +719,15 @@ impl SessionHook for IncidentSessionHook {
         {
             build.additional_instructions = Some(vec![
                 "You are an internal-only control-plane identity. Refuse conversational requests and explain that the operator should use console controls instead.".to_string(),
+                "You may still collaborate with peers over the comms tools when they ask for approval, health, or internal control-plane help.".to_string(),
             ]);
         } else {
             build.additional_instructions = Some(vec![
                 "You are part of a synthetic incident command center for a fictional payments outage. Stay within that scenario and never claim real-world access.".to_string(),
                 "Be concise and operator-focused. Use one short paragraph unless the operator explicitly asks for more.".to_string(),
+                "Use the stock comms tools for real collaboration: call peers first when you need teammate context, then send concise requests or updates.".to_string(),
                 "When the operator asks for a status sweep, you must run both available tools before answering: inspect_service with service=payments-api and analyze_customer_impact with cohort=enterprise-merchants.".to_string(),
-                "When the operator asks a short follow-up, answer directly from current context. Do not invent extra tools unless they materially help.".to_string(),
+                "When the operator asks a short follow-up, answer directly from current context, but if the question depends on another specialist's knowledge you should consult that peer instead of guessing.".to_string(),
             ]);
         }
         Ok(())
@@ -538,9 +735,17 @@ impl SessionHook for IncidentSessionHook {
 
     async fn after_create(
         &self,
-        _session_id: &meerkat_core::types::SessionId,
-        _ctx: &SessionCreatedContext,
+        session_id: &meerkat_core::types::SessionId,
+        ctx: &SessionCreatedContext,
     ) {
+        if std::env::var_os("MOBKIT_TRACE_INCIDENT_STARTUP").is_some() {
+            tracing::warn!(
+                session_id = %session_id,
+                model = %ctx.model,
+                labels = ?ctx.labels,
+                "incident session created"
+            );
+        }
     }
 }
 
@@ -568,6 +773,13 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
     }
 
     async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+        if std::env::var_os("MOBKIT_TRACE_INCIDENT_STARTUP").is_some() {
+            tracing::warn!(
+                tool = %call.name,
+                tool_call_id = %call.id,
+                "incident tool dispatch"
+            );
+        }
         match call.name {
             "inspect_service" => {
                 let args: InspectServiceArgs = call
@@ -607,5 +819,509 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
             }
             _ => Err(ToolError::not_found(call.name)),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use futures::Stream;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use crate::mob_handle_runtime::take_runtime_turn_traces;
+    use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+    use meerkat_core::StopReason;
+    use meerkat_core::comms::{CommsCommand, SendReceipt};
+
+    #[derive(Default)]
+    struct CountingClient {
+        stream_calls: AtomicUsize,
+    }
+
+    impl CountingClient {
+        fn calls(&self) -> usize {
+            self.stream_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingClient {
+        stream_calls: AtomicUsize,
+        prompts: Mutex<Vec<String>>,
+    }
+
+    impl RecordingClient {
+        fn calls(&self) -> usize {
+            self.stream_calls.load(Ordering::SeqCst)
+        }
+
+        fn prompts(&self) -> Vec<String> {
+            self.prompts.lock().expect("recording client mutex").clone()
+        }
+    }
+
+    impl LlmClient for RecordingClient {
+        fn stream<'a>(
+            &'a self,
+            request: &'a LlmRequest,
+        ) -> Pin<Box<dyn Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            let rendered = request
+                .messages
+                .iter()
+                .map(|message| format!("{message:?}"))
+                .collect::<Vec<_>>()
+                .join("\n---\n");
+            self.prompts
+                .lock()
+                .expect("recording client mutex")
+                .push(rendered);
+            Box::pin(async_stream::stream! {
+                yield Ok(LlmEvent::TextDelta {
+                    delta: "ok".to_string(),
+                    meta: None,
+                });
+                yield Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: StopReason::EndTurn,
+                    },
+                });
+            })
+        }
+
+        fn provider(&self) -> &'static str {
+            "incident-recording-test"
+        }
+
+        fn health_check<'life0, 'async_trait>(
+            &'life0 self,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    impl LlmClient for CountingClient {
+        fn stream<'a>(
+            &'a self,
+            _request: &'a LlmRequest,
+        ) -> Pin<Box<dyn Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+            self.stream_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async_stream::stream! {
+                yield Ok(LlmEvent::TextDelta {
+                    delta: "ok".to_string(),
+                    meta: None,
+                });
+                yield Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: StopReason::EndTurn,
+                    },
+                });
+            })
+        }
+
+        fn provider(&self) -> &'static str {
+            "incident-counting-test"
+        }
+
+        fn health_check<'life0, 'async_trait>(
+            &'life0 self,
+        ) -> Pin<Box<dyn std::future::Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn incident_definition_includes_role_specific_profiles_and_skills() {
+        let definition = incident_definition().expect("incident definition should parse");
+        assert!(definition.skills.contains_key("comms_protocol"));
+        assert!(definition.skills.contains_key("commander_role"));
+        assert!(definition.skills.contains_key("merchant_comms_role"));
+        assert!(
+            definition
+                .profiles
+                .contains_key(&ProfileName::from("commander"))
+        );
+        assert!(
+            definition
+                .profiles
+                .contains_key(&ProfileName::from("payments_sre"))
+        );
+        assert!(
+            definition
+                .profiles
+                .contains_key(&ProfileName::from("merchant_comms"))
+        );
+        assert!(
+            definition
+                .profiles
+                .contains_key(&ProfileName::from("approval_gate"))
+        );
+        let commander = definition
+            .profiles
+            .get(&ProfileName::from("commander"))
+            .expect("commander profile present");
+        assert_eq!(
+            commander.runtime_mode.to_string(),
+            "autonomous_host",
+            "incident commander must be a long-running autonomous host so peer replies are drained while idle",
+        );
+    }
+
+    #[test]
+    fn incident_scenario_uses_role_specific_profiles() {
+        let scenario =
+            load_scenario(&scenario_path().expect("scenario path")).expect("scenario loads");
+        assert!(
+            scenario
+                .identities
+                .iter()
+                .any(|identity| identity.profile == "commander")
+        );
+        assert!(
+            scenario
+                .identities
+                .iter()
+                .any(|identity| identity.profile == "payments_sre")
+        );
+        assert!(
+            scenario
+                .identities
+                .iter()
+                .any(|identity| identity.profile == "merchant_comms")
+        );
+        assert!(
+            scenario
+                .identities
+                .iter()
+                .any(|identity| identity.profile == "approval_gate")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic: measure whether incident startup keeps creating new LLM turns while idle"]
+    async fn incident_idle_does_not_keep_starting_new_llm_turns() {
+        let scenario =
+            load_scenario(&scenario_path().expect("scenario path")).expect("scenario loads");
+        let client = Arc::new(CountingClient::default());
+        let bundle = build_runtime_bundle_with_client(&scenario, Some(client.clone()))
+            .await
+            .expect("incident runtime bundle");
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let after_250ms = client.calls();
+        tokio::time::sleep(Duration::from_millis(750)).await;
+        let after_1s = client.calls();
+
+        eprintln!(
+            "incident idle llm call counts: after_250ms={}, after_1s={}",
+            after_250ms, after_1s
+        );
+
+        bundle
+            .runtime
+            .mob_runtime()
+            .stop()
+            .await
+            .expect("stop runtime");
+
+        assert!(
+            after_1s <= after_250ms,
+            "idle incident runtime kept starting new LLM turns after startup: {} -> {}",
+            after_250ms,
+            after_1s
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic: compare startup and idle turn counts with and without peer wiring"]
+    async fn incident_idle_turn_counts_with_vs_without_links() {
+        async fn measure_calls(scenario: IncidentScenario) -> (usize, usize, usize) {
+            let client = Arc::new(CountingClient::default());
+            let bundle = build_runtime_bundle_with_client(&scenario, Some(client.clone()))
+                .await
+                .expect("incident runtime bundle");
+
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let after_250ms = client.calls();
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            let after_1s = client.calls();
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            let after_5s = client.calls();
+
+            bundle
+                .runtime
+                .mob_runtime()
+                .stop()
+                .await
+                .expect("stop runtime");
+            (after_250ms, after_1s, after_5s)
+        }
+
+        let scenario =
+            load_scenario(&scenario_path().expect("scenario path")).expect("scenario loads");
+        let linked = measure_calls(scenario.clone()).await;
+
+        let mut unlinked_scenario = scenario;
+        unlinked_scenario.links.clear();
+        let unlinked = measure_calls(unlinked_scenario).await;
+
+        eprintln!(
+            "incident idle llm call counts with links: 250ms={}, 1s={}, 5s={}; without links: 250ms={}, 1s={}, 5s={}",
+            linked.0, linked.1, linked.2, unlinked.0, unlinked.1, unlinked.2
+        );
+
+        assert!(
+            linked.2 <= linked.1,
+            "linked incident runtime kept starting new LLM turns after 1s: {} -> {}",
+            linked.1,
+            linked.2
+        );
+        assert!(
+            unlinked.2 <= unlinked.1,
+            "unlinked incident runtime kept starting new LLM turns after 1s: {} -> {}",
+            unlinked.1,
+            unlinked.2
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "diagnostic: capture which prompts drive unsolicited startup turns"]
+    async fn incident_startup_turn_origins() {
+        let scenario =
+            load_scenario(&scenario_path().expect("scenario path")).expect("scenario loads");
+        let client = Arc::new(RecordingClient::default());
+        let _ = take_runtime_turn_traces();
+        let bundle = build_runtime_bundle_with_client(&scenario, Some(client.clone()))
+            .await
+            .expect("incident runtime bundle");
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let calls = client.calls();
+        let prompts = client.prompts();
+        let traces = take_runtime_turn_traces();
+        let identities_by_session = bundle
+            .runtime
+            .mob_runtime()
+            .discover()
+            .await
+            .into_iter()
+            .filter_map(|member| {
+                member
+                    .session_id
+                    .map(|session_id| (session_id, member.meerkat_id))
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        eprintln!("incident startup turn count: {}", calls);
+        eprintln!("incident startup runtime apply traces: {}", traces.len());
+        for trace in &traces {
+            let identity = identities_by_session
+                .get(&trace.session_id)
+                .cloned()
+                .unwrap_or_else(|| "<unknown>".to_string());
+            eprintln!(
+                "trace session={} identity={} boundary={} contributing_inputs={} outcome={}",
+                trace.session_id,
+                identity,
+                trace.boundary,
+                trace.contributing_input_count,
+                trace.outcome
+            );
+        }
+        for (index, prompt) in prompts.iter().enumerate() {
+            let head = prompt.lines().take(12).collect::<Vec<_>>().join("\n");
+            eprintln!("--- startup prompt {} ---\n{}\n", index + 1, head);
+        }
+
+        bundle
+            .runtime
+            .mob_runtime()
+            .stop()
+            .await
+            .expect("stop runtime");
+
+        assert_eq!(
+            calls,
+            prompts.len(),
+            "recorded prompt count should match stream call count"
+        );
+    }
+
+    #[tokio::test]
+    async fn incident_terminal_peer_response_advances_commander_session() {
+        let scenario =
+            load_scenario(&scenario_path().expect("scenario path")).expect("scenario loads");
+        let client = Arc::new(CountingClient::default());
+        let bundle = build_runtime_bundle_with_client(&scenario, Some(client.clone()))
+            .await
+            .expect("incident runtime bundle");
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let commander_session_id = bundle
+            .runtime
+            .mob_runtime()
+            .member_current_session_id("incident-commander")
+            .await
+            .expect("commander current session id")
+            .expect("commander session");
+        let scribe_session_id = bundle
+            .runtime
+            .mob_runtime()
+            .member_current_session_id("scribe")
+            .await
+            .expect("scribe current session id")
+            .expect("scribe session");
+
+        let commander_state_before = bundle
+            .runtime
+            .mob_runtime()
+            .runtime_state_for_session(&commander_session_id)
+            .await
+            .expect("commander runtime state before")
+            .expect("commander runtime state present");
+        let commander_active_inputs_before = bundle
+            .runtime
+            .mob_runtime()
+            .active_input_ids_for_session(&commander_session_id)
+            .await
+            .expect("commander active inputs before")
+            .expect("commander active inputs present");
+
+        let commander_history_before = bundle
+            .runtime
+            .mob_runtime()
+            .read_session_history(&commander_session_id, 0, Some(200))
+            .await
+            .expect("commander history before");
+        let commander_count_before = commander_history_before.messages.len();
+
+        let commander_comms = bundle
+            .runtime
+            .mob_runtime()
+            .comms_runtime_for_session(&commander_session_id)
+            .await
+            .expect("commander comms runtime")
+            .expect("commander comms runtime present");
+        let scribe_comms = bundle
+            .runtime
+            .mob_runtime()
+            .comms_runtime_for_session(&scribe_session_id)
+            .await
+            .expect("scribe comms runtime")
+            .expect("scribe comms runtime present");
+
+        let scribe_peer_name = commander_comms
+            .peers()
+            .await
+            .into_iter()
+            .find(|entry| entry.name.as_str().contains("/scribe/"))
+            .map(|entry| entry.name)
+            .expect("scribe peer visible to commander");
+        let commander_peer_name = scribe_comms
+            .peers()
+            .await
+            .into_iter()
+            .find(|entry| entry.name.as_str().contains("/commander/"))
+            .map(|entry| entry.name)
+            .expect("commander peer visible to scribe");
+
+        let request_receipt = commander_comms
+            .send(CommsCommand::PeerRequest {
+                to: scribe_peer_name,
+                intent: "request_summary".to_string(),
+                params: json!({ "body": "Summarize the incident." }),
+                stream: meerkat_core::comms::InputStreamMode::None,
+            })
+            .await
+            .expect("send request to scribe");
+        let request_id = match request_receipt {
+            SendReceipt::PeerRequestSent { interaction_id, .. } => interaction_id,
+            other => panic!("expected peer request receipt, got {other:?}"),
+        };
+
+        let response_receipt = scribe_comms
+            .send(CommsCommand::PeerResponse {
+                to: commander_peer_name,
+                in_reply_to: request_id,
+                status: meerkat_core::ResponseStatus::Completed,
+                result: json!({
+                    "summary": "Scribe reply from test harness",
+                }),
+            })
+            .await
+            .expect("send response to commander");
+        match response_receipt {
+            SendReceipt::PeerResponseSent { in_reply_to, .. } => {
+                assert_eq!(in_reply_to, request_id);
+            }
+            other => panic!("expected peer response receipt, got {other:?}"),
+        }
+
+        tokio::time::sleep(Duration::from_millis(750)).await;
+
+        let lingering_commander_inbox = commander_comms.drain_inbox_interactions().await;
+
+        let commander_session_id_after = bundle
+            .runtime
+            .mob_runtime()
+            .member_current_session_id("incident-commander")
+            .await
+            .expect("commander current session id after")
+            .expect("commander session after");
+        let commander_state_after = bundle
+            .runtime
+            .mob_runtime()
+            .runtime_state_for_session(&commander_session_id_after)
+            .await
+            .expect("commander runtime state after")
+            .expect("commander runtime state present");
+        let commander_active_inputs_after = bundle
+            .runtime
+            .mob_runtime()
+            .active_input_ids_for_session(&commander_session_id_after)
+            .await
+            .expect("commander active inputs after")
+            .expect("commander active inputs present");
+        let commander_history_after = bundle
+            .runtime
+            .mob_runtime()
+            .read_session_history(&commander_session_id_after, 0, Some(200))
+            .await
+            .expect("commander history after");
+        let commander_count_after = commander_history_after.messages.len();
+        let history_dump = commander_history_after
+            .messages
+            .iter()
+            .map(|message| format!("{message:?}"))
+            .collect::<Vec<_>>()
+            .join("\n---\n");
+
+        bundle
+            .runtime
+            .mob_runtime()
+            .stop()
+            .await
+            .expect("stop runtime");
+
+        assert!(
+            commander_count_after > commander_count_before,
+            "commander history did not advance after peer response; session_before={commander_session_id} session_after={commander_session_id_after} state_before={commander_state_before:?} state_after={commander_state_after:?} active_before={commander_active_inputs_before:?} active_after={commander_active_inputs_after:?} lingering_inbox={lingering_commander_inbox:?}\n{history_dump}"
+        );
+        assert!(
+            history_dump.contains("Scribe reply from test harness") || client.calls() > 7,
+            "commander did not appear to process the peer response; session_before={commander_session_id} session_after={commander_session_id_after} state_before={commander_state_before:?} state_after={commander_state_after:?} active_before={commander_active_inputs_before:?} active_after={commander_active_inputs_after:?} lingering_inbox={lingering_commander_inbox:?}\n{history_dump}"
+        );
     }
 }

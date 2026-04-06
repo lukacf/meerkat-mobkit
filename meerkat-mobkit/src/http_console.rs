@@ -670,6 +670,7 @@ async fn handle_console_runtime_rpc(
                 "mobkit/find_members",
                 "mobkit/member_status",
                 "mobkit/member_current_session_id",
+                "mobkit/read_session_history",
                 "mobkit/member_session_ref",
                 "mobkit/collect_completed",
                 "mobkit/flow_status",
@@ -1267,11 +1268,20 @@ async fn handle_console_runtime_rpc(
                         internal_error(response_id, format!("event log query failed: {err}"))
                     }
                 },
-                None => response_value(
-                    response_id,
-                    Some(serde_json::json!({ "status": "no_event_log_configured", "events": [] })),
-                    None,
-                ),
+                None => {
+                    let fallback_events = match console_events {
+                        Some(store) => store.query(&query).await,
+                        None => Vec::new(),
+                    };
+                    response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "status": "no_event_log_configured",
+                            "events": fallback_events,
+                        })),
+                        None,
+                    )
+                }
             }
         }
         // 0.5 API methods
@@ -1320,6 +1330,35 @@ async fn handle_console_runtime_rpc(
                     response_id,
                     format!("member_current_session_id failed: {err}"),
                 ),
+            }
+        }
+        "mobkit/read_session_history" => {
+            let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "session_id required");
+            };
+            let offset = request
+                .params
+                .get("offset")
+                .and_then(Value::as_u64)
+                .map(|value| value as usize)
+                .unwrap_or(0);
+            let limit = match request.params.get("limit") {
+                Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
+                Some(Value::Null) | None => None,
+                Some(_) => return invalid_params(response_id, "limit must be a positive integer"),
+            };
+            match runtime
+                .read_session_history(session_id, offset, limit)
+                .await
+            {
+                Ok(page) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(page).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => {
+                    internal_error(response_id, format!("read_session_history failed: {err}"))
+                }
             }
         }
         "mobkit/member_session_ref" => {

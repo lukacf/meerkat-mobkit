@@ -23,6 +23,7 @@ export interface ConsoleFrame {
   event: string;
   identity?: string;
   interactionId?: string;
+  timestampMs?: number;
   data: unknown;
 }
 
@@ -51,6 +52,7 @@ export interface ConsoleAgent extends SidebarWatchFields {
   identity?: string;
   agent_id: string;
   member_id: string;
+  session_id?: string;
   label: string;
   kind: string;
   profile?: string;
@@ -71,6 +73,7 @@ export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatu
   identity?: string;
   agent_id?: string;
   member_id?: string;
+  session_id?: string;
   label?: string;
   kind?: string;
   profile?: string;
@@ -180,6 +183,15 @@ export interface ConsoleGatingActionPayload extends GatingActionRequest {}
 export interface ConsoleGatingActionResponse extends GatingActionResult {}
 
 export interface ConsoleReplayUnavailablePayload extends ReplayUnavailableError {}
+
+export interface ConsoleSessionHistoryPage {
+  session_id?: string;
+  message_count?: number;
+  offset?: number;
+  limit?: number | null;
+  has_more?: boolean;
+  messages?: unknown[];
+}
 
 export interface ConsoleDockAddressedTarget {
   addressingMode: ConsoleDockTargetAddressingMode;

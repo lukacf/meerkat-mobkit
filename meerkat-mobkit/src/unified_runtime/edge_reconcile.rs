@@ -31,6 +31,11 @@ impl UnifiedRuntime {
             .map_err(UnifiedRuntimeReconcileError::Mob)?;
         // 2. Refresh active members
         let active_snapshots = self.mob_runtime.discover().await;
+        for member in &active_snapshots {
+            self.console_events
+                .register_runtime_identity(member.meerkat_id.clone(), member.meerkat_id.clone())
+                .await;
+        }
         let active_member_ids = active_snapshots
             .iter()
             .map(|m| m.meerkat_id.clone())

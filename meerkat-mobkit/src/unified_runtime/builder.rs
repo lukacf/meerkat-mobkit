@@ -528,12 +528,11 @@ impl UnifiedRuntimeBuilder {
             })?;
             let store_path = temp_dir.path().to_path_buf();
 
-            let mut spec = MobBootstrapSpec::ephemeral_inner(
+            let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
                 definition,
                 MobStorage::in_memory(),
                 store_path,
                 DEFAULT_MAX_SESSIONS,
-                None,
                 hook,
                 caps,
                 after_hook,
@@ -549,5 +548,40 @@ impl UnifiedRuntimeBuilder {
         };
 
         Ok(spec)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn definition_based_ephemeral_spec_provides_runtime_adapter() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-ephemeral"
+
+[profiles.worker]
+model = "gpt-4.1-mini"
+runtime_mode = "autonomous_host"
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .expect("definition parses");
+
+        let builder = UnifiedRuntimeBuilder::default().definition(definition);
+        let spec = builder.resolve_mob_spec().await.expect("spec resolves");
+        assert!(
+            spec.runtime_adapter.is_none(),
+            "definition-based ephemeral specs should rely on the session service's runtime adapter",
+        );
+        assert!(
+            spec.session_service.runtime_adapter().is_some(),
+            "definition-based ephemeral specs must be backed by a runtime-capable session service",
+        );
     }
 }
