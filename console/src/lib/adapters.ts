@@ -378,6 +378,8 @@ const HIDDEN_EVENTS = new Set([
   "turn_started",
   "turn_completed",
   "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
   "interaction_started",
   "run_failed",
   "keep-alive",
