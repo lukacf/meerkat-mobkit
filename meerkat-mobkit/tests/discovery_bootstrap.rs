@@ -107,7 +107,7 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
 
-    assert_eq!(spawn.profile_name.as_str(), "worker");
+    assert_eq!(spawn.role_name.as_str(), "worker");
     assert_eq!(spawn.meerkat_id.as_str(), "agent-1");
     assert!(
         spawn.initial_message.is_none(),
@@ -178,7 +178,7 @@ fn mk001_discovery_spec_to_spawn_spec_minimal() {
     };
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
-    assert_eq!(spawn.profile_name.as_str(), "lead");
+    assert_eq!(spawn.role_name.as_str(), "lead");
     assert_eq!(spawn.meerkat_id.as_str(), "leader");
     assert!(spawn.initial_message.is_none());
     assert!(spawn.context.is_none());

@@ -1232,10 +1232,16 @@ impl MobRuntime {
             &session_id,
         )
         .await;
-        let spawned = runtime_adapter
-            .maybe_spawn_comms_drain(&session_id, true, comms_runtime)
-            .await;
-        Ok(Some(spawned))
+        if let Some(comms) = comms_runtime {
+            let _handle = meerkat_runtime::comms_drain::spawn_comms_drain(
+                runtime_adapter.clone(),
+                session_id,
+                comms,
+            );
+            Ok(Some(true))
+        } else {
+            Ok(Some(false))
+        }
     }
 
     pub fn status(&self) -> MobState {
@@ -1836,6 +1842,7 @@ mod tests {
             skill_references: None,
             flow_tool_overlay: None,
             additional_instructions: Some(vec!["notice".to_string()]),
+            execution_kind: None,
         };
 
         let expected_prompt = req.prompt.clone();

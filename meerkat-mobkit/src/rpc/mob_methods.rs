@@ -13,7 +13,7 @@ use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 pub(crate) fn parse_helper_options(options_val: Option<&Value>) -> Result<HelperOptions, String> {
     let mut opts = HelperOptions::default();
     if let Some(o) = options_val {
-        opts.profile_name = o
+        opts.role_name = o
             .get("profile")
             .and_then(Value::as_str)
             .map(ProfileName::from);

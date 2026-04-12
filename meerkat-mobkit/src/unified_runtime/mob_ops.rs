@@ -29,7 +29,7 @@ impl UnifiedRuntime {
 
     pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
         let member_id = spec.meerkat_id.to_string();
-        let profile = spec.profile_name.to_string();
+        let profile = spec.role_name.to_string();
         match self.mob_runtime.spawn(spec).await {
             Ok(member_ref) => {
                 if let Some(hook) = &self.post_spawn_hook {

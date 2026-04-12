@@ -34,7 +34,8 @@ import {
   callConsoleRpc,
   fetchJson,
   queryEvents,
-  sendAddressedInteractionStreaming,
+  sendInteract as sendInteractRpc,
+  sendMessage,
   subscribeConsoleEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
@@ -147,227 +148,86 @@ function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): Conv
   return sanitized;
 }
 
-function sliceTranscriptToLatestUserTurn(entries: ConversationTimelineEntry[]): ConversationTimelineEntry[] {
-  let lastUserIndex = -1;
-  let lastPeerActivityIndex = -1;
-  for (let index = 0; index < entries.length; index += 1) {
-    const entry = entries[index];
-    if (entry.kind === "message" && entry.identity.id === "user") {
-      lastUserIndex = index;
-    }
-    if (
-      entry.kind === "message"
-      && entry.identity.id === "system"
-      && /^(Peer request:|Peer response:|Peer message:)/.test(entry.text || "")
-    ) {
-      lastPeerActivityIndex = index;
-    }
-  }
-  if (lastUserIndex >= 0) {
-    return entries.slice(lastUserIndex);
-  }
-  if (lastPeerActivityIndex >= 0) {
-    return entries.slice(lastPeerActivityIndex);
-  }
-  return entries;
-}
-
 const DEFAULT_APPROVER_ID = "console-ops-lead";
 
+// --- Event sets for the SSE handler ---
+const REFRESH_TRIGGER_EVENTS = new Set([
+  "interaction_complete",
+  "interaction_failed",
+  "state_changed",
+  "member_ready",
+  "member_retired",
+  "gating_decision",
+  "route_changed",
+]);
+const PANEL_ROUTABLE_EVENTS = new Set([
+  "interaction_started",
+  "interaction_complete",
+  "interaction_failed",
+  "text_delta",
+  "text_complete",
+  "tool_call_requested",
+  "tool_call",
+  "tool_result_received",
+  "tool_execution_started",
+  "tool_execution_completed",
+  "run_started",
+  "run_completed",
+  "run_failed",
+]);
+const HISTORY_REFRESH_EVENTS = new Set([
+  "interaction_complete",
+  "interaction_failed",
+  "run_completed",
+  "run_failed",
+]);
+
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
+  // --- React state (low-frequency, UI-driven) ---
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(null);
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
-  const [transcriptEntriesByKey, setTranscriptEntriesByKey] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
-  const [pendingUserEntryByKey, setPendingUserEntryByKey] = React.useState<Record<string, ConversationTimelineEntry | null>>({});
-  const [liveFramesByKey, setLiveFramesByKey] = React.useState<Record<string, ConsoleFrame[]>>({});
-  const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
   const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>({});
   const [sendingPanels, setSendingPanels] = React.useState<Set<string>>(new Set());
   const [pinnedAgentIds, setPinnedAgentIds] = React.useState<Set<string>>(new Set());
-  const [panelPhaseByKey, setPanelPhaseByKey] = React.useState<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
   const [inspectByIdentity, setInspectByIdentity] = React.useState<Record<string, IdentityInspectViewState | null>>({});
   const [routingData, setRoutingData] = React.useState<RoutingPanelData>({ routes: [], deliveries: [] });
   const [gatingData, setGatingData] = React.useState<GatingPanelData>({ pending: [], audit: [] });
   const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("all");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+
+  // --- Render trigger (the ONLY high-frequency React state) ---
+  const [, setRenderTick] = React.useState(0);
+  const forceRender = React.useCallback(() => setRenderTick((n) => n + 1), []);
+
+  // --- Mutable refs for high-frequency event-driven data ---
+  const transcriptRef = React.useRef<Record<string, ConversationTimelineEntry[]>>({});
+  const pendingUserRef = React.useRef<Record<string, ConversationTimelineEntry | null>>({});
+  const liveFramesRef = React.useRef<Record<string, ConsoleFrame[]>>({});
+  const activityRef = React.useRef<ConsoleFrame[]>([]);
+  const phaseRef = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
+
+  // --- Scheduling refs ---
+  const refreshInFlightRef = React.useRef<Set<string>>(new Set());
+  const experienceTimerRef = React.useRef<number | null>(null);
+
+  // --- Existing refs (phase debounce, history guards, multi-panel) ---
   const initialTargetOpened = React.useRef(false);
   const phaseValueByKey = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
   const phaseSinceByKey = React.useRef<Record<string, number>>({});
   const phaseTimerByKey = React.useRef<Record<string, number>>({});
   const historyLoadedByKey = React.useRef<Record<string, boolean>>({});
-  const historySourceByKey = React.useRef<Record<string, string>>({});
-  const panelInteractionIdsByKey = React.useRef<Record<string, Set<string>>>({});
   const panelBaselineEntriesByKey = React.useRef<Record<string, ConversationTimelineEntry[]>>({});
   const identityPanelCountByIdentity = React.useRef<Record<string, number>>({});
   const previousIdentityPanelCountByIdentity = React.useRef<Record<string, number>>({});
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
+  const dockRef = React.useRef<{ panels: Array<{ id: string; target: MobKitDockTarget | null }> }>({ panels: [] });
 
   React.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
 
-  React.useEffect(() => {
-    const currentDebug = (window as typeof window & {
-      __mobkitConsoleDebug?: Record<string, unknown>;
-    }).__mobkitConsoleDebug || {};
-    (window as typeof window & {
-      __mobkitConsoleDebug?: Record<string, unknown>;
-    }).__mobkitConsoleDebug = {
-      ...currentDebug,
-      transcriptEntriesByKey,
-      pendingUserEntryByKey,
-      liveFramesByKey,
-      panelPhaseByKey,
-    };
-  }, [liveFramesByKey, panelPhaseByKey, pendingUserEntryByKey, transcriptEntriesByKey]);
-
-  const refreshChatPanelHistory = React.useCallback(async (
-    panelId: string,
-    target: Extract<MobKitDockTarget, { kind: "agent-chat" }>,
-    force = false,
-  ) => {
-    const panelKey = buildPanelConversationKey(panelId, target);
-    const agent = agentsRef.current.find((candidate) => candidate.member_id === target.memberId) || null;
-    const sourceKey = `events:${target.identity || target.memberId}`;
-    const identityKey = target.identity || target.memberId;
-    const sameIdentityPanelCount = identityPanelCountByIdentity.current[identityKey] || 0;
-    const trackedInteractionIds = panelInteractionIdsByKey.current[panelKey];
-    const hasTrackedInteractionIds = Boolean(trackedInteractionIds && trackedInteractionIds.size > 0);
-    if (
-      sameIdentityPanelCount > 1
-      && !hasTrackedInteractionIds
-      && historyLoadedByKey.current[panelKey]
-    ) {
-      return;
-    }
-    if (
-      !force
-      && historyLoadedByKey.current[panelKey]
-      && historySourceByKey.current[panelKey] === sourceKey
-    ) {
-      return;
-    }
-    historyLoadedByKey.current[panelKey] = true;
-    historySourceByKey.current[panelKey] = sourceKey;
-    try {
-      const frames = await queryEvents(baseUrl, {
-        memberId: target.memberId,
-        ...(target.identity ? { identity: target.identity } : {}),
-      }, 400);
-      const mappedEntries = mapFramesToTimelineEntries(agent, frames, {
-          renderInteractionStartsAsUser: true,
-          renderTextDeltas: false,
-        });
-      let lastMappedUserIndex = -1;
-      for (let index = 0; index < mappedEntries.length; index += 1) {
-        const entry = mappedEntries[index];
-        if (entry.kind === "message" && entry.identity.id === "user") {
-          lastMappedUserIndex = index;
-        }
-      }
-      const transcriptEntries = clipTranscriptWindow(sliceTranscriptToLatestUserTurn(mappedEntries));
-      if (!panelBaselineEntriesByKey.current[panelKey]) {
-        panelBaselineEntriesByKey.current[panelKey] = transcriptEntries;
-      }
-      const filteredEntries = hasTrackedInteractionIds
-        ? clipTranscriptWindow(mapFramesToTimelineEntries(
-            agent,
-            frames.filter((frame) => Boolean(frame.interactionId && trackedInteractionIds.has(frame.interactionId))),
-            {
-              renderInteractionStartsAsUser: true,
-              renderTextDeltas: false,
-            },
-          ))
-        : transcriptEntries;
-      const nextTranscriptBase =
-        sameIdentityPanelCount > 1
-          ? hasTrackedInteractionIds
-            ? sortConversationTimelineEntries([
-                ...(panelBaselineEntriesByKey.current[panelKey] || []),
-                ...filteredEntries,
-              ])
-            : panelBaselineEntriesByKey.current[panelKey] || transcriptEntries
-          : filteredEntries;
-      const persistedTexts = new Set(
-        nextTranscriptBase
-          .map((entry) => entry.kind === "message" ? normalizeComparableTranscriptText(entry.text?.trim() || "") : "")
-          .filter(Boolean),
-      );
-      const latestPersistedAt = nextTranscriptBase.reduce<number>((latest, entry) => {
-        const parsed = Date.parse(String(entry.createdAt || ""));
-        return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
-      }, Number.NEGATIVE_INFINITY);
-      (window as typeof window & {
-        __mobkitConsoleDebug?: Record<string, unknown>;
-      }).__mobkitConsoleDebug = {
-        ...((window as typeof window & { __mobkitConsoleDebug?: Record<string, unknown> }).__mobkitConsoleDebug || {}),
-        lastHistoryRefresh: {
-          panelKey,
-          sourceKey,
-          frameCount: frames.length,
-          frameTail: frames.slice(-8),
-          mappedCount: mappedEntries.length,
-          mappedTail: mappedEntries.slice(-12),
-          lastMappedUserIndex,
-          lastMappedUser: lastMappedUserIndex >= 0 ? mappedEntries[lastMappedUserIndex] : null,
-          transcriptCount: nextTranscriptBase.length,
-          transcriptTail: nextTranscriptBase.slice(-6),
-          persistedTexts: Array.from(persistedTexts).slice(-6),
-          refreshedAt: new Date().toISOString(),
-        },
-      };
-      setTranscriptEntriesByKey((current) => {
-        const existing = current[panelKey] || [];
-        const pendingOptimisticEntries = existing.filter((entry) => {
-          if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) {
-            return false;
-          }
-          const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
-          if (!text || persistedTexts.has(text)) {
-            return false;
-          }
-          return true;
-        });
-        const nextEntries = sortConversationTimelineEntries([
-          ...nextTranscriptBase,
-          ...pendingOptimisticEntries,
-        ]);
-        return {
-          ...current,
-          [panelKey]: nextEntries,
-        };
-      });
-      setPendingUserEntryByKey((current) => {
-        const pendingEntry = current[panelKey];
-        if (!pendingEntry || pendingEntry.kind !== "message") {
-          return current;
-        }
-        const pendingText = normalizeComparableTranscriptText(pendingEntry.text?.trim() || "");
-        if (!pendingText || !persistedTexts.has(pendingText)) {
-          return current;
-        }
-        return { ...current, [panelKey]: null };
-      });
-      setLiveFramesByKey((current) => {
-        const existing = current[panelKey] || [];
-        if (!existing.length) {
-          return current;
-        }
-        const retained = Number.isFinite(latestPersistedAt)
-          ? existing.filter((frame) => typeof frame.timestampMs !== "number" || frame.timestampMs > latestPersistedAt)
-          : existing;
-        if (retained.length === existing.length) {
-          return current;
-        }
-        return { ...current, [panelKey]: retained };
-      });
-    } catch {
-      historyLoadedByKey.current[panelKey] = false;
-      delete historySourceByKey.current[panelKey];
-    }
-  }, [baseUrl]);
-
+  // --- Dock controller ---
   const dock = useConsoleDockController<MobKitDockTarget>({
     createPanelState: ({ target }) => ({
       id: `panel-${crypto.randomUUID()}`,
@@ -376,6 +236,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }),
   });
 
+  // Keep dockRef in sync so SSE callback can read current panels
+  React.useEffect(() => {
+    dockRef.current = {
+      panels: dock.viewState.panels.map((panel) => ({
+        id: panel.id,
+        target: panel.target as MobKitDockTarget | null,
+      })),
+    };
+  }, [dock.viewState.panels]);
+
+  // --- Panel count tracking ---
   React.useEffect(() => {
     const counts: Record<string, number> = {};
     for (const panel of dock.viewState.panels) {
@@ -387,21 +258,43 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identityPanelCountByIdentity.current = counts;
   }, [dock.viewState.panels]);
 
+  // --- Prune closed panels from refs ---
   React.useEffect(() => {
     const activePanelKeys = new Set(
       dock.viewState.panels
         .map((panel) => {
-          if (!panel.target) {
-            return null;
-          }
+          if (!panel.target) return null;
           return buildPanelConversationKey(panel.id, panel.target as MobKitDockTarget);
         })
         .filter((value): value is string => Boolean(value)),
     );
 
-    const pruneStateRecord = <T,>(current: Record<string, T>) => {
+    const pruneRef = <T,>(record: Record<string, T>) => {
+      for (const key of Object.keys(record)) {
+        if (!activePanelKeys.has(key)) {
+          delete record[key];
+        }
+      }
+    };
+
+    pruneRef(transcriptRef.current);
+    pruneRef(pendingUserRef.current);
+    pruneRef(liveFramesRef.current);
+    pruneRef(phaseRef.current);
+    pruneRef(historyLoadedByKey.current);
+    pruneRef(panelBaselineEntriesByKey.current);
+    pruneRef(phaseValueByKey.current);
+    pruneRef(phaseSinceByKey.current);
+    for (const key of Object.keys(phaseTimerByKey.current)) {
+      if (!activePanelKeys.has(key)) {
+        window.clearTimeout(phaseTimerByKey.current[key]);
+        delete phaseTimerByKey.current[key];
+      }
+    }
+
+    setDraftByKey((current) => {
       let changed = false;
-      const next: Record<string, T> = {};
+      const next: Record<string, string> = {};
       for (const [key, value] of Object.entries(current)) {
         if (activePanelKeys.has(key)) {
           next[key] = value;
@@ -410,40 +303,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         }
       }
       return changed ? next : current;
-    };
-
-    setTranscriptEntriesByKey((current) => pruneStateRecord(current));
-    setPendingUserEntryByKey((current) => pruneStateRecord(current));
-    setLiveFramesByKey((current) => pruneStateRecord(current));
-    setPanelPhaseByKey((current) => pruneStateRecord(current));
-    setDraftByKey((current) => pruneStateRecord(current));
-
-    const pruneRefRecord = <T,>(record: Record<string, T>) => {
-      for (const key of Object.keys(record)) {
-        if (!activePanelKeys.has(key)) {
-          delete record[key];
-        }
-      }
-    };
-
-    pruneRefRecord(historyLoadedByKey.current);
-    pruneRefRecord(historySourceByKey.current);
-    pruneRefRecord(panelInteractionIdsByKey.current);
-    pruneRefRecord(panelBaselineEntriesByKey.current);
-    pruneRefRecord(phaseValueByKey.current);
-    pruneRefRecord(phaseSinceByKey.current);
-    for (const key of Object.keys(phaseTimerByKey.current)) {
-      if (!activePanelKeys.has(key)) {
-        window.clearTimeout(phaseTimerByKey.current[key]);
-        delete phaseTimerByKey.current[key];
-      }
-    }
+    });
   }, [dock.viewState.panels]);
 
+  // --- Seed transcript for newly opened multi-panels ---
   React.useEffect(() => {
     const previousCounts = previousIdentityPanelCountByIdentity.current;
     const nextCounts = identityPanelCountByIdentity.current;
-    const nextTranscriptSeeds: Record<string, ConversationTimelineEntry[]> = {};
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -456,40 +322,29 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           return candidateTarget?.kind === "agent-chat" && (candidateTarget.identity || candidateTarget.memberId) === identityKey;
         });
         const seedTranscript = siblingPanels
-          .map((candidate) => transcriptEntriesByKey[buildPanelConversationKey(candidate.id, candidate.target as Extract<MobKitDockTarget, { kind: "agent-chat" }>)])
+          .map((candidate) => transcriptRef.current[buildPanelConversationKey(candidate.id, candidate.target as Extract<MobKitDockTarget, { kind: "agent-chat" }>)])
           .find((entries): entries is ConversationTimelineEntry[] => Array.isArray(entries) && entries.length > 0);
         if (seedTranscript?.length) {
           for (const sibling of siblingPanels) {
             const siblingTarget = sibling.target as Extract<MobKitDockTarget, { kind: "agent-chat" }>;
             const siblingKey = buildPanelConversationKey(sibling.id, siblingTarget);
             panelBaselineEntriesByKey.current[siblingKey] = seedTranscript;
-            nextTranscriptSeeds[siblingKey] = seedTranscript;
+            if (!transcriptRef.current[siblingKey]?.length) {
+              transcriptRef.current[siblingKey] = seedTranscript;
+            }
           }
         }
       }
     }
-    if (Object.keys(nextTranscriptSeeds).length > 0) {
-      setTranscriptEntriesByKey((current) => {
-        let changed = false;
-        const next = { ...current };
-        for (const [panelKey, seedTranscript] of Object.entries(nextTranscriptSeeds)) {
-          if (!current[panelKey]?.length) {
-            next[panelKey] = seedTranscript;
-            changed = true;
-          }
-        }
-        return changed ? next : current;
-      });
-    }
     previousIdentityPanelCountByIdentity.current = { ...nextCounts };
-  }, [dock.viewState.panels, transcriptEntriesByKey]);
+  }, [dock.viewState.panels]);
 
+  // --- Load experience ---
   const loadExperience = React.useCallback(async () => {
     const [experienceJson, modulesJson] = await Promise.all([
       fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
       fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
     ]);
-
     const loadedModules = Array.isArray(modulesJson.modules)
       ? modulesJson.modules.map((moduleId) => String(moduleId))
       : [];
@@ -499,11 +354,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     setActiveActivityPresetId((current) => current || experienceJson.activity_feed?.active_preset_id || "all");
   }, [baseUrl]);
 
+  // Initial experience load
   React.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
-
     void loadExperience()
       .catch((loadError) => {
         if (mounted) setError(errorMessage(loadError));
@@ -511,208 +366,218 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       .finally(() => {
         if (mounted) setLoading(false);
       });
-
-    const interval = window.setInterval(() => {
-      void loadExperience().catch(() => {});
-    }, 5000);
-
-    return () => {
-      mounted = false;
-      window.clearInterval(interval);
-    };
+    return () => { mounted = false; };
   }, [loadExperience]);
 
+  // --- Open first agent on initial load ---
   React.useEffect(() => {
-    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) {
-      return;
-    }
+    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
     const firstAddressable =
       agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
-    if (!firstAddressable) {
-      return;
-    }
+    if (!firstAddressable) return;
     initialTargetOpened.current = true;
     dock.openTarget(buildDockTarget(firstAddressable), "replace_focused");
   }, [agents, dock]);
 
-  React.useEffect(() => {
-    let cancelled = false;
-    void queryEvents(baseUrl, {}, 80)
-      .then((frames) => {
-        if (!cancelled) {
-          setActivityFrames(dedupeFrames(frames).slice(-80).reverse());
-        }
-      })
-      .catch(() => {});
-    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
-      setActivityFrames((current) => [frame, ...current].slice(0, 200));
-    });
-    return () => {
-      cancelled = true;
-      unsubscribe();
-    };
+  // --- Refresh panel data (inspect/routing/gating) ---
+  const refreshPanelData = React.useCallback(async () => {
+    const openPanels = dockRef.current.panels.map((p) => p.target).filter(Boolean) as MobKitDockTarget[];
+    const inspectTargets = openPanels.filter((t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> => t.kind === "identity-inspect");
+    const hasRouting = openPanels.some((t) => t.kind === "routing");
+    const hasGating = openPanels.some((t) => t.kind === "gating");
+
+    if (inspectTargets.length) {
+      const entries = await Promise.all(
+        inspectTargets.map(async (target) => {
+          const result = await callConsoleRpc<IdentityInspectViewState>(baseUrl, "mobkit/inspect_identity", { identity: target.identity });
+          return [target.identity, result] as const;
+        }),
+      );
+      setInspectByIdentity((current) => ({ ...current, ...Object.fromEntries(entries) }));
+    }
+    if (hasRouting) {
+      const [routesResponse, historyResponse] = await Promise.all([
+        callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
+        callConsoleRpc(baseUrl, "mobkit/delivery/history", {}),
+      ]);
+      setRoutingData(buildRoutingSectionView({ routesResponse, historyResponse }));
+    }
+    if (hasGating) {
+      const [pendingResponse, auditResponse] = await Promise.all([
+        callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
+        callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
+      ]);
+      setGatingData({
+        pending: Array.isArray(pendingResponse.pending) ? pendingResponse.pending : [],
+        audit: Array.isArray(auditResponse.entries) ? auditResponse.entries : [],
+      });
+    }
   }, [baseUrl]);
 
+  // Initial panel data load when panels change
+  React.useEffect(() => {
+    void refreshPanelData().catch(() => {});
+  }, [dock.viewState.panels, refreshPanelData]);
+
+  // --- Schedule experience + panel data refresh (debounced, called from SSE handler) ---
+  const scheduleExperienceRefresh = React.useCallback(() => {
+    if (experienceTimerRef.current !== null) return;
+    experienceTimerRef.current = window.setTimeout(async () => {
+      experienceTimerRef.current = null;
+      await loadExperience().catch(() => {});
+      await refreshPanelData().catch(() => {});
+    }, 500);
+  }, [loadExperience, refreshPanelData]);
+
+  // --- Schedule history refresh for an identity (called from SSE handler on terminal events) ---
+  const scheduleHistoryRefresh = React.useCallback((identity: string) => {
+    if (refreshInFlightRef.current.has(identity)) return;
+    refreshInFlightRef.current.add(identity);
+
+    setTimeout(async () => {
+      try {
+        for (const panel of dockRef.current.panels) {
+          const target = panel.target;
+          if (!target || target.kind !== "agent-chat") continue;
+          if ((target.identity || target.memberId) !== identity) continue;
+          const panelKey = buildPanelConversationKey(panel.id, target);
+          const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
+
+          const frames = await queryEvents(baseUrl, {
+            memberId: target.memberId,
+            ...(target.identity ? { identity: target.identity } : {}),
+          }, 400);
+
+          const mapped = mapFramesToTimelineEntries(agent, frames, {
+            renderInteractionStartsAsUser: true,
+            renderTextDeltas: false,
+          });
+
+          // Reconcile pending user entry
+          const persistedTexts = new Set(
+            mapped
+              .filter((e) => e.kind === "message" && e.identity.id === "user")
+              .map((e) => normalizeComparableTranscriptText(e.text?.trim() || ""))
+              .filter(Boolean),
+          );
+          const pending = pendingUserRef.current[panelKey];
+          if (pending?.kind === "message") {
+            const pendingText = normalizeComparableTranscriptText(pending.text?.trim() || "");
+            if (pendingText && persistedTexts.has(pendingText)) {
+              pendingUserRef.current[panelKey] = null;
+            }
+          }
+
+          // Keep un-persisted optimistic user entries
+          const existingOptimistic = (transcriptRef.current[panelKey] || []).filter((entry) => {
+            if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) return false;
+            const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
+            return text && !persistedTexts.has(text);
+          });
+
+          transcriptRef.current[panelKey] = clipTranscriptWindow(
+            sortConversationTimelineEntries([...mapped, ...existingOptimistic]),
+          );
+          liveFramesRef.current[panelKey] = [];
+          phaseRef.current[panelKey] = null;
+        }
+        forceRender();
+      } finally {
+        refreshInFlightRef.current.delete(identity);
+      }
+    }, 200);
+  }, [baseUrl, forceRender]);
+
+  // --- Load initial history when panels open ---
+  React.useEffect(() => {
+    for (const panel of dock.viewState.panels) {
+      const target = panel.target as MobKitDockTarget | null;
+      if (!target || target.kind !== "agent-chat") continue;
+      const panelKey = buildPanelConversationKey(panel.id, target);
+      if (historyLoadedByKey.current[panelKey]) continue;
+      historyLoadedByKey.current[panelKey] = true;
+
+      void (async () => {
+        try {
+          const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
+          const frames = await queryEvents(baseUrl, {
+            memberId: target.memberId,
+            ...(target.identity ? { identity: target.identity } : {}),
+          }, 400);
+          const mapped = mapFramesToTimelineEntries(agent, frames, {
+            renderInteractionStartsAsUser: true,
+            renderTextDeltas: false,
+          });
+          transcriptRef.current[panelKey] = clipTranscriptWindow(mapped);
+          if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
+          forceRender();
+        } catch {
+          historyLoadedByKey.current[panelKey] = false;
+        }
+      })();
+    }
+  }, [baseUrl, dock.viewState.panels, forceRender]);
+
+  // --- Global SSE event stream (the CORE event loop) ---
+  React.useEffect(() => {
+    // Seed activity with recent history
+    void queryEvents(baseUrl, {}, 80)
+      .then((frames) => {
+        activityRef.current = dedupeFrames(frames).slice(-80).reverse();
+        forceRender();
+      })
+      .catch(() => {});
+
+    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+      // 1. Activity rail — mutate ref
+      activityRef.current = [frame, ...activityRef.current].slice(0, 200);
+
+      // 2. Route to open chat panels by identity — mutate ref
+      const identity = frame.identity?.trim();
+      if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
+        for (const panel of dockRef.current.panels) {
+          const target = panel.target;
+          if (!target || target.kind !== "agent-chat") continue;
+          const panelIdentity = target.identity || target.memberId;
+          if (panelIdentity !== identity) continue;
+          const panelKey = buildPanelConversationKey(panel.id, target);
+          if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
+          liveFramesRef.current[panelKey] = dedupeFrames([
+            ...liveFramesRef.current[panelKey],
+            frame,
+          ]);
+          updatePanelPhaseFromFrame(panelKey, frame);
+        }
+      }
+
+      // 3. Force React re-render
+      forceRender();
+
+      // 4. On terminal events, schedule history refresh + experience reload
+      if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
+        scheduleHistoryRefresh(identity);
+      }
+      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
+        scheduleExperienceRefresh();
+      }
+    });
+
+    return () => { unsubscribe(); };
+  }, [baseUrl, forceRender, scheduleHistoryRefresh, scheduleExperienceRefresh]);
+
+  // --- Timer cleanup on unmount ---
   React.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current)) {
         window.clearTimeout(timer);
       }
+      if (experienceTimerRef.current !== null) {
+        window.clearTimeout(experienceTimerRef.current);
+      }
     };
   }, []);
 
-  React.useEffect(() => {
-    const openPanels = dock.viewState.panels.map((panel) => panel.target).filter(Boolean) as MobKitDockTarget[];
-    const inspectTargets = openPanels.filter((target): target is Extract<MobKitDockTarget, { kind: "identity-inspect" }> => target.kind === "identity-inspect");
-    const hasRouting = openPanels.some((target) => target.kind === "routing");
-    const hasGating = openPanels.some((target) => target.kind === "gating");
-
-    let cancelled = false;
-    async function refreshPanelData() {
-      try {
-        if (inspectTargets.length) {
-          const inspectEntries = await Promise.all(
-            inspectTargets.map(async (target) => {
-              const result = await callConsoleRpc<IdentityInspectViewState>(baseUrl, "mobkit/inspect_identity", {
-                identity: target.identity,
-              });
-              return [target.identity, result] as const;
-            }),
-          );
-          if (!cancelled) {
-            setInspectByIdentity((current) => ({ ...current, ...Object.fromEntries(inspectEntries) }));
-          }
-        }
-
-        if (hasRouting) {
-          const [routesResponse, historyResponse] = await Promise.all([
-            callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
-            callConsoleRpc(baseUrl, "mobkit/delivery/history", {}),
-          ]);
-          if (!cancelled) {
-            setRoutingData(buildRoutingSectionView({ routesResponse, historyResponse }));
-          }
-        }
-
-        if (hasGating) {
-          const [pendingResponse, auditResponse] = await Promise.all([
-            callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
-            callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
-          ]);
-          if (!cancelled) {
-            setGatingData({
-              pending: Array.isArray(pendingResponse.pending) ? pendingResponse.pending : [],
-              audit: Array.isArray(auditResponse.entries) ? auditResponse.entries : [],
-            });
-          }
-        }
-      } catch (panelError) {
-        if (!cancelled) {
-          setError(errorMessage(panelError));
-        }
-      }
-    }
-
-    void refreshPanelData();
-    const interval = window.setInterval(() => void refreshPanelData(), 5000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [baseUrl, dock.viewState.panels]);
-
-  React.useEffect(() => {
-    const chatPanels = dock.viewState.panels
-      .map((panel) => ({ id: panel.id, target: panel.target }))
-      .filter((panel): panel is { id: string; target: Extract<MobKitDockTarget, { kind: "agent-chat" }> } =>
-        panel.target?.kind === "agent-chat");
-    let cancelled = false;
-
-    async function loadPanelHistory() {
-      for (const panel of chatPanels) {
-        if (cancelled) return;
-        try {
-          await refreshChatPanelHistory(panel.id, panel.target, true);
-        } catch {
-          if (!cancelled) {
-            const panelKey = buildPanelConversationKey(panel.id, panel.target);
-            historyLoadedByKey.current[panelKey] = false;
-          }
-        }
-      }
-    }
-
-    void loadPanelHistory();
-    return () => {
-      cancelled = true;
-    };
-  }, [dock.viewState.panels, refreshChatPanelHistory]);
-
-  React.useEffect(() => {
-    const chatPanels = dock.viewState.panels
-      .map((panel) => ({ id: panel.id, target: panel.target }))
-      .filter((panel): panel is { id: string; target: Extract<MobKitDockTarget, { kind: "agent-chat" }> } =>
-        panel.target?.kind === "agent-chat");
-    if (!chatPanels.length) {
-      return;
-    }
-    const interval = window.setInterval(() => {
-      for (const panel of chatPanels) {
-        void refreshChatPanelHistory(panel.id, panel.target, true).catch(() => {});
-      }
-    }, 2000);
-    return () => {
-      window.clearInterval(interval);
-    };
-  }, [dock.viewState.panels, refreshChatPanelHistory]);
-
-  function onSelectAgent(
-    _block: unknown,
-    _section: unknown,
-    item: { id: string },
-  ) {
-    const agent = agents.find((candidate) => candidate.member_id === item.id);
-    if (agent) {
-      dock.openTarget(buildDockTarget(agent), "replace_focused");
-    }
-  }
-
-  function appendPanelFrame(
-    panelId: string,
-    target: Extract<MobKitDockTarget, { kind: "agent-chat" }>,
-    frame: ConsoleFrame,
-  ) {
-    const panelKey = buildPanelConversationKey(panelId, target);
-    if (typeof frame.interactionId === "string" && frame.interactionId.trim()) {
-      const existing = panelInteractionIdsByKey.current[panelKey] || new Set<string>();
-      existing.add(frame.interactionId.trim());
-      panelInteractionIdsByKey.current[panelKey] = existing;
-    }
-    setLiveFramesByKey((current) => {
-      const nextFrames = dedupeFrames([...(current[panelKey] || []), frame]);
-      return { ...current, [panelKey]: nextFrames };
-    });
-    if (frame.event === "interaction_started" && frame.data && typeof frame.data === "object") {
-      const record = frame.data as Record<string, unknown>;
-      const content = typeof record.content === "string" ? record.content : "";
-      const normalizedContent = normalizeComparableTranscriptText(content);
-      if (normalizedContent) {
-        setPendingUserEntryByKey((current) => {
-          const pendingEntry = current[panelKey];
-          if (!pendingEntry || pendingEntry.kind !== "message" || pendingEntry.identity.id !== "user") {
-            return current;
-          }
-          const pendingText = normalizeComparableTranscriptText(pendingEntry.text || "");
-          if (pendingText !== normalizedContent) {
-            return current;
-          }
-          return { ...current, [panelKey]: null };
-        });
-      }
-    }
-    updatePanelPhaseFromFrame(panelKey, frame);
-  }
-
+  // --- Helpers ---
   function dedupeFrames(frames: ConsoleFrame[]): ConsoleFrame[] {
     const byId = new Map<string, ConsoleFrame>();
     const ordered: ConsoleFrame[] = [];
@@ -733,27 +598,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
-  function commitPanelPhase(
-    panelKey: string,
-    phase: "waiting" | "tool-executing" | "generating" | null,
-  ) {
+  function commitPanelPhase(panelKey: string, phase: "waiting" | "tool-executing" | "generating" | null) {
     clearPhaseTimer(panelKey);
     phaseValueByKey.current[panelKey] = phase;
     phaseSinceByKey.current[panelKey] = Date.now();
-    setPanelPhaseByKey((current) => ({ ...current, [panelKey]: phase }));
+    phaseRef.current[panelKey] = phase;
   }
 
-  function schedulePanelPhase(
-    panelKey: string,
-    phase: "waiting" | "tool-executing" | "generating" | null,
-    delayMs: number,
-  ) {
+  function schedulePanelPhase(panelKey: string, phase: "waiting" | "tool-executing" | "generating" | null, delayMs: number) {
     clearPhaseTimer(panelKey);
     phaseTimerByKey.current[panelKey] = window.setTimeout(() => {
       delete phaseTimerByKey.current[panelKey];
       phaseValueByKey.current[panelKey] = phase;
       phaseSinceByKey.current[panelKey] = Date.now();
-      setPanelPhaseByKey((current) => ({ ...current, [panelKey]: phase }));
+      phaseRef.current[panelKey] = phase;
+      forceRender();
     }, delayMs);
   }
 
@@ -801,6 +660,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
+  // --- Agent selection ---
+  function onSelectAgent(_block: unknown, _section: unknown, item: { id: string }) {
+    const agent = agents.find((candidate) => candidate.member_id === item.id);
+    if (agent) {
+      dock.openTarget(buildDockTarget(agent), "replace_focused");
+    }
+  }
+
+  // --- Send message (RPC-only, global SSE handles response events) ---
   async function onSendMessage(panelId: string, target: MobKitDockTarget | null) {
     if (!target || target.kind !== "agent-chat") return;
     const panelKey = buildPanelConversationKey(panelId, target);
@@ -810,43 +678,32 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const userEntry = createUserEntry(text);
     setDraftByKey((current) => ({ ...current, [panelKey]: "" }));
     setSendingPanels((current) => new Set(current).add(panelKey));
-    commitPanelPhase(panelKey, "waiting");
-    setTranscriptEntriesByKey((current) => ({
-      ...current,
-      [panelKey]: (() => {
-        const existing = current[panelKey] || [];
-        const hasPriorUserTurns = existing.some((entry) => entry.kind === "message" && entry.identity.id === "user");
-        return sortConversationTimelineEntries(hasPriorUserTurns ? [
-          ...existing,
-          userEntry,
-        ] : [userEntry]);
-      })(),
-    }));
-    setPendingUserEntryByKey((current) => ({ ...current, [panelKey]: userEntry }));
-    setLiveFramesByKey((current) => ({ ...current, [panelKey]: [] }));
+
+    // Optimistic update — write to refs directly
+    transcriptRef.current[panelKey] = sortConversationTimelineEntries([
+      ...(transcriptRef.current[panelKey] || []),
+      userEntry,
+    ]);
+    pendingUserRef.current[panelKey] = userEntry;
+    phaseRef.current[panelKey] = "waiting";
+    if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
+    forceRender();
 
     try {
-      await sendAddressedInteractionStreaming(
-        baseUrl,
-        {
-          addressingMode: target.addressingMode,
-          memberId: target.memberId,
-          ...(target.identity ? { identity: target.identity } : {}),
-        },
-        text,
-        `console:${panelId}`,
-        (frame) => appendPanelFrame(panelId, target, frame),
-      );
-      await refreshChatPanelHistory(panelId, target, true).catch(() => {});
-      commitPanelPhase(panelKey, null);
+      const identity = target.identity?.trim();
+      if (identity) {
+        await sendInteractRpc(baseUrl, identity, text, `console:${panelId}`);
+      } else {
+        await sendMessage(baseUrl, target.memberId, text);
+      }
     } catch (submitError) {
       setError(errorMessage(submitError));
-      setTranscriptEntriesByKey((current) => ({
-        ...current,
-        [panelKey]: (current[panelKey] || []).filter((entry) => entry.id !== userEntry.id),
-      }));
-      setPendingUserEntryByKey((current) => ({ ...current, [panelKey]: null }));
-      commitPanelPhase(panelKey, null);
+      // Rollback optimistic update
+      transcriptRef.current[panelKey] = (transcriptRef.current[panelKey] || [])
+        .filter((e) => e.id !== userEntry.id);
+      pendingUserRef.current[panelKey] = null;
+      phaseRef.current[panelKey] = null;
+      forceRender();
     } finally {
       setSendingPanels((current) => {
         const next = new Set(current);
@@ -856,6 +713,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
+  // --- Lifecycle actions ---
   async function onLifecycleAction(identity: string, method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset") {
     await callConsoleRpc(baseUrl, method, { identity });
     await loadExperience();
@@ -878,6 +736,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
+  // --- Resize handlers ---
   const SIDEBAR_MIN = 180;
   const SIDEBAR_MAX = 420;
   function handleSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
@@ -891,7 +750,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     document.documentElement.setAttribute("data-cc-resizing", "true");
     function onPointerMove(e: PointerEvent) {
       const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)));
-      root.style.setProperty("--cc-workbench-sidebar-width", `${next}px`);
+      root!.style.setProperty("--cc-workbench-sidebar-width", `${next}px`);
     }
     function cleanup() {
       document.documentElement.removeAttribute("data-cc-resizing");
@@ -920,7 +779,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     document.documentElement.setAttribute("data-cc-resizing", "true");
     function onPointerMove(e: PointerEvent) {
       const next = Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)));
-      root.style.setProperty("--cc-workbench-activity-width", `${next}px`);
+      root!.style.setProperty("--cc-workbench-activity-width", `${next}px`);
     }
     function cleanup() {
       document.documentElement.removeAttribute("data-cc-resizing");
@@ -936,6 +795,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     window.addEventListener("pointercancel", cleanup);
   }
 
+  // --- Render guards ---
   if (loading) {
     return <div data-testid="console-loading">Loading console...</div>;
   }
@@ -943,32 +803,34 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return <div data-testid="console-error">{error}</div>;
   }
 
+  // --- Build view states (reads refs at render time) ---
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : "";
   const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
   const activityVS = buildActivityRailViewState({
     agents,
-    eventFrames: activityFrames,
+    eventFrames: activityRef.current,
     filterPresets: experience?.activity_feed?.filter_presets,
     activePresetId: activeActivityPresetId,
   });
 
+  // --- Panel renderers ---
   function renderChatPanel(panel: { id: string; target?: MobKitDockTarget | null }) {
     const target = panel.target;
-    if (!target || target.kind !== "agent-chat") {
-      return null;
-    }
+    if (!target || target.kind !== "agent-chat") return null;
     const panelKey = buildPanelConversationKey(panel.id, target);
     const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
-    const persistedEntries = transcriptEntriesByKey[panelKey] || [];
+
+    // Read from refs (not React state)
+    const persistedEntries = transcriptRef.current[panelKey] || [];
     const latestPersistedAt = persistedEntries.reduce<number>((latest, entry) => {
       const parsed = Date.parse(String(entry.createdAt || ""));
       return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
     }, Number.NEGATIVE_INFINITY);
-    const combinedFrames = liveFramesByKey[panelKey] || [];
+    const combinedFrames = liveFramesRef.current[panelKey] || [];
     const liveFrames = Number.isFinite(latestPersistedAt)
       ? combinedFrames.filter((frame) => typeof frame.timestampMs !== "number" || frame.timestampMs > latestPersistedAt)
       : combinedFrames;
-    const pendingUserEntry = pendingUserEntryByKey[panelKey];
+    const pendingUserEntry = pendingUserRef.current[panelKey];
     const baseEntries = [
       ...persistedEntries,
       ...mapFramesToTimelineEntries(agent, liveFrames, {
@@ -992,7 +854,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
     const draft = draftByKey[panelKey] || "";
     const isSending = sendingPanels.has(panelKey);
-    const phase = panelPhaseByKey[panelKey] ?? agent?.response_phase ?? null;
+    const phase = phaseRef.current[panelKey] ?? agent?.response_phase ?? null;
 
     const quickPrompts = buildQuickPromptSuggestions(agent).map((suggestion) => ({
       id: suggestion.id,
@@ -1190,6 +1052,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
   }
 
+  // --- Main render ---
   return (
     <div className="cc-theme-scope" data-cc-theme="dark" data-testid="meerkat-console">
       <SpriteSheet />

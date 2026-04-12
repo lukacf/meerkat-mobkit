@@ -183,7 +183,7 @@ async fn list_tools_with_timeout(
     connection: &McpConnection,
     timeout_duration: Duration,
 ) -> Result<Vec<meerkat_core::ToolDef>, RuntimeBoundaryError> {
-    timeout(timeout_duration, connection.list_tools())
+    timeout(timeout_duration, connection.list_tools(module_id))
         .await
         .map_err(|_| mcp_timeout_error(module_id, "list_tools", timeout_duration))?
         .map_err(|error| mcp_list_tools_error(module_id, error))

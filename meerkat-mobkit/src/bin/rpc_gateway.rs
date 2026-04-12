@@ -248,6 +248,7 @@ impl CallbackToolDispatcher {
                     name,
                     description: "Python callback tool".to_string(),
                     input_schema: json!({"type": "object"}),
+                    provenance: None,
                 })
             })
             .collect();
@@ -593,7 +594,10 @@ external_addressable = true
         let known_models: std::collections::HashSet<&str> =
             catalog.iter().map(|entry| entry.id).collect();
 
-        for (profile_name, profile) in &definition.profiles {
+        for (profile_name, binding) in &definition.profiles {
+            let Some(profile) = binding.as_inline() else {
+                continue; // Realm refs are resolved at runtime, not validated here.
+            };
             if !known_models.contains(profile.model.as_str()) {
                 let model = &profile.model;
                 // Find similar model names for the error hint

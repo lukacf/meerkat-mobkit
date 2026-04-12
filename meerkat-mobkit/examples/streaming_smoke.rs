@@ -53,8 +53,10 @@ comms = true
 "#,
     )
     .expect("parse mob definition");
-    for profile in definition.profiles.values_mut() {
-        profile.model = model.clone();
+    for binding in definition.profiles.values_mut() {
+        if let Some(profile) = binding.as_inline_mut() {
+            profile.model = model.clone();
+        }
     }
 
     let handle = MobBuilder::new(definition, MobStorage::in_memory())

@@ -529,7 +529,7 @@ export async function sendInteraction(
   return { sendResult, frames };
 }
 
-async function sendInteract(
+export async function sendInteract(
   baseUrl: string,
   identity: string,
   content: string,
