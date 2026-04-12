@@ -766,12 +766,14 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
                 description: "Inspect the current health and saturation of a named service"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<InspectServiceArgs>(),
+                provenance: None,
             }),
             Arc::new(ToolDef {
                 name: "analyze_customer_impact".to_string(),
                 description: "Estimate customer-facing impact for a named merchant cohort"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<AnalyzeImpactArgs>(),
+                provenance: None,
             }),
         ]
         .into()
@@ -974,7 +976,9 @@ mod tests {
         let commander = definition
             .profiles
             .get(&ProfileName::from("commander"))
-            .expect("commander profile present");
+            .expect("commander profile present")
+            .as_inline()
+            .expect("commander is an inline profile");
         assert_eq!(
             commander.runtime_mode.to_string(),
             "autonomous_host",
@@ -1248,12 +1252,12 @@ mod tests {
                 to: scribe_peer_name,
                 intent: "request_summary".to_string(),
                 params: json!({ "body": "Summarize the incident." }),
-                stream: meerkat_core::comms::InputStreamMode::None,
+                handling_mode: meerkat_core::types::HandlingMode::Queue,
             })
             .await
             .expect("send request to scribe");
         let request_id = match request_receipt {
-            SendReceipt::PeerRequestSent { interaction_id, .. } => interaction_id,
+            SendReceipt::PeerRequestSent { request_id, .. } => request_id,
             other => panic!("expected peer request receipt, got {other:?}"),
         };
 
@@ -1265,6 +1269,7 @@ mod tests {
                 result: json!({
                     "summary": "Scribe reply from test harness",
                 }),
+                handling_mode: Some(meerkat_core::types::HandlingMode::Queue),
             })
             .await
             .expect("send response to commander");

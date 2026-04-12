@@ -186,8 +186,10 @@ comms = true
 "#,
     )
     .expect("parse mob definition");
-    for profile in definition.profiles.values_mut() {
-        profile.model = "gpt-5.2".to_string();
+    for binding in definition.profiles.values_mut() {
+        if let Some(profile) = binding.as_inline_mut() {
+            profile.model = "gpt-5.2".to_string();
+        }
     }
 
     let mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
