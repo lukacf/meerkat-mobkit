@@ -6,9 +6,12 @@ import {
   type ConversationRichCodeBlock,
   type ConversationRichCommandBlock,
   type ConversationRichFileChangeBlock,
+  type ConversationRichToolCallBlock,
   type ConversationTableAlignment,
   type ConversationRichThinkingBlock,
 } from "@console-core";
+
+import { useState } from "react";
 
 import { ChangeStatPair } from "./change-stat-pair";
 import { CopyButton } from "../copy-button";
@@ -195,11 +198,63 @@ function renderBlock(
     );
   }
 
+  if (block.type === "tool-call") {
+    return <ToolCallBlock block={block} key={`tool-call-${index}`} />;
+  }
+
   const thinking = renderThinkingBlock(block);
   if (!thinking) {
     return null;
   }
   return <div key={`thinking-${index}`}>{thinking}</div>;
+}
+
+function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
+  const [expanded, setExpanded] = useState(false);
+  const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";
+  const statusClass = `cc-tool-call--${block.status}`;
+
+  // Try to format arguments as readable text
+  let argsPreview = block.arguments || "";
+  try {
+    const parsed = JSON.parse(argsPreview);
+    if (typeof parsed === "object" && parsed !== null) {
+      argsPreview = Object.entries(parsed)
+        .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+        .join(", ");
+    }
+  } catch { /* use raw */ }
+
+  return (
+    <section className={clsx("cc-tool-call", statusClass)}>
+      <button
+        className="cc-tool-call__header"
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+      >
+        <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
+        <span className="cc-tool-call__name">{block.name}</span>
+        <span className="cc-tool-call__status">{statusIcon} {block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"}</span>
+      </button>
+      {expanded && (
+        <div className="cc-tool-call__body">
+          {argsPreview && (
+            <div className="cc-tool-call__section">
+              <div className="cc-tool-call__section-label">Arguments</div>
+              <pre className="cc-tool-call__pre">{argsPreview}</pre>
+            </div>
+          )}
+          {block.result && (
+            <div className="cc-tool-call__section">
+              <div className="cc-tool-call__section-label">Result</div>
+              <pre className="cc-tool-call__pre">{block.result}</pre>
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function ConversationRichContent({

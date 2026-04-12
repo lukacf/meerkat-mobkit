@@ -195,6 +195,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("all");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [theme, setTheme] = React.useState<"dark" | "light">(() => {
+    try { return (localStorage.getItem("mobkit-console-theme") as "dark" | "light") || "dark"; } catch { return "dark"; }
+  });
 
   // --- Render trigger (the ONLY high-frequency React state) ---
   const [, setRenderTick] = React.useState(0);
@@ -1054,10 +1057,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   // --- Main render ---
   return (
-    <div className="cc-theme-scope" data-cc-theme="dark" data-testid="meerkat-console">
+    <div className="cc-theme-scope" data-cc-theme={theme} data-testid="meerkat-console">
       <SpriteSheet />
       <ConsoleWorkbench
         launcherResizeHandle={<div className="pane-resizer" aria-hidden="true" data-testid="resize:sidebar" onPointerDown={handleSidebarResize} />}
+        launcherHeader={
+          <button
+            className="console-theme-toggle"
+            data-testid="theme-toggle"
+            type="button"
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+            onClick={() => {
+              const next = theme === "dark" ? "light" : "dark";
+              setTheme(next);
+              try { localStorage.setItem("mobkit-console-theme", next); } catch {}
+            }}
+          >
+            {theme === "dark" ? "☀" : "☾"}
+          </button>
+        }
         launcher={(
           <ConsoleSidebar
             viewState={sidebarVS}

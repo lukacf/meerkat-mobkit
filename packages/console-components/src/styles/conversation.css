@@ -1036,3 +1036,76 @@
 :is([data-cc-theme="light"], .cc-theme-scope[data-cc-theme="light"]) .cc-change-stat__value.is-minus {
   color: var(--_cc-negative);
 }
+
+/* ── Tool call blocks ── */
+.cc-tool-call {
+  border: 1px solid var(--_cc-border-soft, rgba(255,255,255,0.08));
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+.cc-tool-call__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  width: 100%;
+  background: var(--_cc-surface-soft, rgba(255,255,255,0.04));
+  border: none;
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.cc-tool-call__header:hover {
+  background: var(--_cc-surface-hover, rgba(255,255,255,0.06));
+}
+.cc-tool-call__chevron {
+  font-size: 10px;
+  width: 12px;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+.cc-tool-call__name {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  color: var(--_cc-foreground, rgba(232,234,237,0.96));
+  font-weight: 500;
+}
+.cc-tool-call__status {
+  margin-left: auto;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.cc-tool-call--success .cc-tool-call__status { color: var(--_cc-positive, #3fb950); }
+.cc-tool-call--error .cc-tool-call__status { color: var(--_cc-negative, #f85149); }
+.cc-tool-call--pending .cc-tool-call__status { color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38)); }
+
+.cc-tool-call__body {
+  border-top: 1px solid var(--_cc-border-soft, rgba(255,255,255,0.08));
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cc-tool-call__section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
+  margin-bottom: 2px;
+}
+.cc-tool-call__pre {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+  background: var(--_cc-surface-soft, rgba(255,255,255,0.04));
+  border-radius: 4px;
+  padding: 6px 8px;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow: auto;
+}

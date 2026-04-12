@@ -93,7 +93,8 @@ export type ConversationRichBlock =
   | ConversationRichCommandBlock
   | ConversationRichFileChangeBlock
   | ConversationRichDividerBlock
-  | ConversationRichThinkingBlock;
+  | ConversationRichThinkingBlock
+  | ConversationRichToolCallBlock;
 
 function escapeHtml(value: string): string {
   return String(value || "")

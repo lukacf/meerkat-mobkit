@@ -385,9 +385,6 @@ const HIDDEN_EVENTS = new Set([
   "keep-alive",
   "tool_config_changed",
   "tool_scope_changed",
-  "tool_call_requested",
-  "tool_call",
-  "tool_execution_started",
 ]);
 
 const ACTIVITY_HIDDEN_EVENTS = new Set([
@@ -493,6 +490,50 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   return toolCalls;
 }
 
+function parsePeerSummary(text: string): { verb: string; summary: string } | null {
+  // Match "Peer response: ..." / "Peer request: ..." / "Peer message: ..." at any position
+  const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);
+  if (!match) return null;
+
+  const [, verb, body] = match;
+  let summary = body.trim();
+
+  // Try to parse JSON payload and extract clean text
+  try {
+    const parsed = JSON.parse(summary);
+    if (typeof parsed === "object" && parsed !== null) {
+      if (typeof parsed.summary === "string") summary = parsed.summary;
+      else if (typeof parsed.text === "string") summary = parsed.text;
+      else if (typeof parsed.body === "string") summary = parsed.body;
+      else if (typeof parsed.message === "string") summary = parsed.message;
+    }
+  } catch {
+    summary = summary.replace(/^["']|["']$/g, "");
+  }
+
+  return { verb, summary };
+}
+
+function renderPeerEntry(
+  frame: ConsoleFrame,
+  entryId: string,
+): ConversationTimelineEntry | null {
+  const rawText = summarizeFrameData(frame.data);
+  if (!rawText) return null;
+
+  const peer = parsePeerSummary(rawText);
+  if (!peer) return null;
+
+  return {
+    kind: "message",
+    id: entryId,
+    identity: SYSTEM_IDENTITY,
+    variant: "meta",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    text: `↩ ${peer.verb}: ${peer.summary}`,
+  };
+}
+
 function renderTerminalEntry(
   agent: ConsoleAgent | null,
   frame: ConsoleFrame,
@@ -502,9 +543,24 @@ function renderTerminalEntry(
   if (frame.event === "interaction_complete") {
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
+
+    // Peer responses always render as compact meta, even if text was streamed
+    const peer = parsePeerSummary(text);
+    if (peer) {
+      return {
+        kind: "message",
+        id: entryId,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        createdAt: isoFromTimestampMs(frame.timestampMs),
+        text: `↩ ${peer.verb}: ${peer.summary}`,
+      };
+    }
+
     if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
       return null;
     }
+
     const blocks = parseConversationRichBlocks(text);
     return {
       kind: "message",
@@ -604,7 +660,7 @@ function renderRunStartedPromptEntries(
       entries.push({
         kind: "message",
         id: entryId,
-        identity: SYSTEM_IDENTITY,
+        identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
         variant: "meta",
         ...(createdAt ? { createdAt } : {}),
         text: summarized,
@@ -652,28 +708,47 @@ function summarizeCommsTransport(text: string): string {
   if (header.startsWith("[COMMS REQUEST")) {
     const intentLine = body.find((line) => line.startsWith("Intent:"));
     if (intentLine) {
-      const summary = intentLine.replace(/^Intent:\s*/, "Peer request: ");
-      if (summary === "Peer request: mob.peer_added" || summary === "Peer request: mob.peer_removed") {
+      const intent = intentLine.replace(/^Intent:\s*/, "").trim();
+      if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
         return "";
       }
-      return summary;
+      return `↪ request: ${intent}`;
     }
-    return "Peer request received.";
+    return "↪ request received";
   }
   if (header.startsWith("[COMMS RESPONSE")) {
+    // Extract status line
+    const statusLine = body.find((line) => line.startsWith("Status:"));
+    const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
+    // Extract result JSON and parse it cleanly
     const resultIndex = body.findIndex((line) => line.startsWith("Result:"));
     if (resultIndex >= 0) {
-      const joined = body
-        .slice(resultIndex)
-        .filter((line) => !line.startsWith("[COMMS "))
-        .join(" ");
-      return joined.replace(/^Result:\s*/, "Peer response: ");
+      // Collect result lines until we hit another control line (Status:, [COMMS, etc.)
+      const resultLines: string[] = [];
+      for (let i = resultIndex; i < body.length; i++) {
+        const line = body[i];
+        if (i > resultIndex && (line.startsWith("Status:") || line.startsWith("[COMMS "))) break;
+        resultLines.push(line);
+      }
+      const resultText = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
+      let summary = resultText;
+      try {
+        const parsed = JSON.parse(resultText);
+        if (typeof parsed === "object" && parsed !== null) {
+          if (typeof parsed.summary === "string") summary = parsed.summary;
+          else if (typeof parsed.text === "string") summary = parsed.text;
+          else if (typeof parsed.body === "string") summary = parsed.body;
+          else if (typeof parsed.message === "string") summary = parsed.message;
+        }
+      } catch { /* use raw */ }
+      const label = status ? `↩ response (${status})` : "↩ response";
+      return `${label}: ${summary}`;
     }
-    return "Peer response received.";
+    return status ? `↩ response (${status})` : "↩ response received";
   }
   if (header.startsWith("[COMMS MESSAGE")) {
     const joined = [headerTail, ...body].join(" ").trim();
-    return joined ? `Peer message: ${joined}` : "Peer message received.";
+    return joined ? `↩ message: ${joined}` : "↩ message received";
   }
   return text;
 }
@@ -963,6 +1038,19 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
+    // Try to render as a clean peer message
+    const peerEntry = renderPeerEntry(frame, entryId);
+    if (peerEntry) {
+      entries.push(peerEntry);
+      continue;
+    }
+
+    // Skip remaining tool lifecycle events (handled by tool blocks above)
+    if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started"
+      || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      continue;
+    }
+
     const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
     entries.push({
       kind: "message",
@@ -1113,15 +1201,18 @@ export function buildActivityRailViewState(args: {
   });
 
   const pulseItems: ConsoleActivityPulseItem[] = filteredFrames
-    .slice(0, 50)
+    .slice(0, 200)
     .map((frame, index) => {
       const frameIdentity = frame.identity?.trim();
       const agent = frameIdentity ? agentByIdentity.get(frameIdentity) : null;
+      const ts = typeof frame.timestampMs === "number"
+        ? new Date(frame.timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : "";
       return {
         id: `event:${frame.id || index}`,
         title: agent?.label || frameIdentity || frame.event || "event",
         line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
-        meta: frame.event || frame.id || "",
+        meta: `${frame.event}${ts ? ` · ${ts}` : ""}`,
         ...(agent ? { focusId: agent.member_id } : {}),
       };
     });

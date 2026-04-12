@@ -1,5 +1,22 @@
 /* MobKit Console — host styles */
 
+/* ── Theme toggle ── */
+.console-theme-toggle {
+  background: none;
+  border: 1px solid var(--_cc-border-soft, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 8px;
+  line-height: 1;
+  transition: color 0.15s, border-color 0.15s;
+}
+.console-theme-toggle:hover {
+  color: var(--_cc-foreground, rgba(232,234,237,0.96));
+  border-color: var(--_cc-border-strong, rgba(255,255,255,0.16));
+}
+
 /* ── Reset ── */
 
 *,
@@ -20,8 +37,8 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #131316;
-  color: rgba(232, 234, 237, 0.96);
+  background: var(--_cc-surface-canvas, #131316);
+  color: var(--_cc-foreground, rgba(232, 234, 237, 0.96));
 }
 
 button {
@@ -80,8 +97,8 @@ svg {
 
 /* Sidebar: elevated surface matching dock panel tone */
 .cc-workbench__launcher {
-  background: rgba(21, 22, 27, 0.82);
-  border-right: 1px solid rgba(255, 255, 255, 0.058);
+  background: var(--_cc-surface-raised, rgba(21, 22, 27, 0.82));
+  border-right: 1px solid var(--_cc-border-soft, rgba(255, 255, 255, 0.058));
 }
 
 /* Main area: no outer padding — panel fills flush */
