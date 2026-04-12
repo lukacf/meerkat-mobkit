@@ -1,2 +1,0 @@
-[24401204ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:63210/interactions/stream:0
-[24401204ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://127.0.0.1:63210/console/rpc:0
