@@ -390,6 +390,9 @@ const HIDDEN_EVENTS = new Set([
 const ACTIVITY_HIDDEN_EVENTS = new Set([
   ...HIDDEN_EVENTS,
   "text_delta",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
   "tool_result_received",
   "tool_execution_completed",
 ]);
