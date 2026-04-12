@@ -506,7 +506,7 @@ impl UnifiedRuntimeBuilder {
             let mob_storage = if self.mob_storage_in_memory {
                 MobStorage::in_memory()
             } else {
-                MobStorage::redb(state_path.join("mob.redb")).map_err(|e| {
+                MobStorage::persistent(state_path.join("mob.redb")).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!("failed to open redb mob storage: {e}"))
                 })?
             };

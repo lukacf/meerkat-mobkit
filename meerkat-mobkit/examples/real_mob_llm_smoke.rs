@@ -21,7 +21,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::{MeerkatId, MobBuilder, MobStorage, Prefab, ProfileName};
+use meerkat_mob::{MeerkatId, MobBuilder, MobDefinition, MobStorage, ProfileName};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -39,10 +39,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
     let session_service = Arc::new(build_ephemeral_service(factory, config, 16));
 
-    let mut definition = Prefab::CodingSwarm.definition();
-    for profile in definition.profiles.values_mut() {
-        profile.model = model.clone();
-    }
+    let definition = MobDefinition::from_toml(&format!(
+        r#"
+[mob]
+id = "real-smoke-mob"
+
+[profiles.lead]
+model = "{model}"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#
+    ))
+    .expect("parse mob definition");
 
     let handle = MobBuilder::new(definition, MobStorage::in_memory())
         .with_session_service(session_service)

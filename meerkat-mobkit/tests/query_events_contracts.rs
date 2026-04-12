@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::{MobStorage, Prefab};
+use meerkat_mob::{MobDefinition, MobStorage};
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
     EventLogConfig, EventLogStore, EventQuery, JsonRpcResponse, MobBootstrapOptions,
@@ -89,7 +89,20 @@ async fn build_runtime_with_event_log(
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let mut definition = Prefab::CodingSwarm.definition();
+    let mut definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "test-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse mob definition");
     for profile in definition.profiles.values_mut() {
         profile.model = "gpt-5.2".to_string();
     }

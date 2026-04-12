@@ -212,17 +212,21 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
   );
 });
 
-test("mapSessionHistoryToTimelineEntries preserves real session ordering and inbound comms notices", () => {
+test("mapSessionHistoryToTimelineEntries preserves session ordering while turning comms transport into meta messages", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
-      message_count: 5,
+      message_count: 7,
       offset: 0,
       has_more: false,
       messages: [
         {
           role: "system",
-          content: "You are the incident commander.",
+          content: "## Incident Comms Protocol\nIgnore lifecycle chatter.",
+        },
+        {
+          role: "user",
+          content: "You have been spawned as 'scribe' (role: scribe) in mob 'incident-command-center'.",
         },
         {
           role: "user",
@@ -233,7 +237,7 @@ test("mapSessionHistoryToTimelineEntries preserves real session ordering and inb
           content: "[SYSTEM NOTICE][TOOL_SCOPE] Tool configuration changed at turn boundary",
         },
         {
-          role: "system",
+          role: "user",
           content: "[COMMS MESSAGE from incident-command-center/incident_commander/incident-commander] Please summarize the timeline.",
         },
         {
@@ -256,6 +260,7 @@ test("mapSessionHistoryToTimelineEntries preserves real session ordering and inb
   assert.equal(entries.length, 3);
   assert.equal(entries[0]?.identity.label, "You");
   assert.equal(entries[1]?.identity.label, "System");
+  assert.equal("text" in (entries[1] || {}) ? entries[1]?.text : "", "Peer message: Please summarize the timeline.");
   assert.equal(entries[2]?.identity.label, "Scribe");
   assert.equal(
     entries[2] && "blocks" in entries[2] && Array.isArray(entries[2].blocks)
@@ -265,6 +270,121 @@ test("mapSessionHistoryToTimelineEntries preserves real session ordering and inb
       : "",
     "Scribe is preparing a summary.",
   );
+});
+
+test("mapSessionHistoryToTimelineEntries drops bootstrap scaffolding and tool-scope chatter", () => {
+  const entries = mapSessionHistoryToTimelineEntries(
+    {
+      session_id: "session-1",
+      message_count: 5,
+      offset: 0,
+      has_more: false,
+      messages: [
+        { role: "system", content: "## Incident Comms Protocol\nIgnore lifecycle chatter." },
+        { role: "user", content: "You have been spawned as 'incident-commander' (role: commander) in mob 'incident-command-center'." },
+        { role: "system", content: "[SYSTEM NOTICE][TOOL_SCOPE] Tool configuration changed at turn boundary" },
+        { role: "tool_results", results: [{ content: "{\"status\":\"sent\"}" }] },
+        {
+          role: "block_assistant",
+          blocks: [{ block_type: "text", data: { text: "Real assistant reply." } }],
+          stop_reason: "end_turn",
+        },
+      ],
+    },
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+  );
+
+  assert.deepEqual(entries.map((entry) => entry.identity.label), ["Incident Commander"]);
+});
+
+test("mapSessionHistoryToTimelineEntries anchors receiver panes on recent peer activity instead of bootstrap chatter", () => {
+  const entries = mapSessionHistoryToTimelineEntries(
+    {
+      session_id: "session-1",
+      message_count: 5,
+      offset: 0,
+      has_more: false,
+      messages: [
+        { role: "assistant", content: "Current established facts: Payments API is degraded." },
+        { role: "assistant", content: "I have acknowledged the addition of the following peers: api-investigator, incident-commander." },
+        { role: "user", content: "[COMMS REQUEST from incident-command-center/incident_commander/incident-commander]\nIntent: request_summary\nBody: Summarize the incident timeline." },
+        {
+          role: "block_assistant",
+          blocks: [{ block_type: "text", data: { text: "Summary prepared and sent back to commander." } }],
+          stop_reason: "end_turn",
+        },
+      ],
+    },
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.label, "System");
+  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Peer request: request_summary");
+  assert.equal(entries[1]?.identity.label, "Scribe");
+});
+
+test("mapSessionHistoryToTimelineEntries strips rpc transport prefix from operator prompts", () => {
+  const entries = mapSessionHistoryToTimelineEntries(
+    {
+      session_id: "session-1",
+      message_count: 1,
+      offset: 0,
+      has_more: false,
+      messages: [
+        { role: "user", content: "[EVENT via rpc] Ask scribe for a concise update and tell me the answer." },
+      ],
+    },
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.label, "You");
+  assert.equal(entries[0]?.variant, "plain");
+  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Ask scribe for a concise update and tell me the answer.");
+});
+
+test("mapSessionHistoryToTimelineEntries extracts embedded rpc prompts from mixed comms blobs", () => {
+  const entries = mapSessionHistoryToTimelineEntries(
+    {
+      session_id: "session-1",
+      message_count: 1,
+      offset: 0,
+      has_more: false,
+      messages: [
+        {
+          role: "user",
+          content: "[COMMS RESPONSE from incident-command-center/scribe/scribe]\nStatus: completed\n[EVENT via rpc] Ask scribe for a concise update and tell me the answer.\n[COMMS RESPONSE from incident-command-center/merchant_comms/merchant-comms]\nStatus: completed",
+        },
+      ],
+    },
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.label, "You");
+  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Ask scribe for a concise update and tell me the answer.");
+  assert.equal(entries[1]?.identity.label, "System");
 });
 
 test("sortConversationTimelineEntries keeps optimistic user messages after older assistant replies", () => {
@@ -371,6 +491,39 @@ test("mapFramesToTimelineEntries can render historical interaction_started frame
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.identity.role, "user");
   assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Run a status sweep.");
+});
+
+test("mapFramesToTimelineEntries surfaces inbound comms requests from run_started prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-1",
+        event: "run_started",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          prompt: "[COMMS REQUEST from incident-command-center/incident_commander/incident-commander]\nIntent: request_summary\nBody: Summarize the incident.",
+        },
+      },
+      {
+        id: "evt-2",
+        event: "interaction_complete",
+        timestampMs: Date.parse("2026-04-06T23:00:02.000Z"),
+        data: { result: "Summary sent back to commander." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.kind, "message");
+  assert.equal(entries[0]?.identity.id, "system");
+  assert.match(entries[0]?.text || "", /Peer request:/);
+  assert.equal(entries[1]?.identity.id, "scribe");
 });
 
 test("mapFramesToTimelineEntries orders persisted interaction history by interaction semantics, not raw arrival order", () => {

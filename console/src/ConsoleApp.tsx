@@ -21,12 +21,10 @@ import {
   buildDockTarget,
   buildQuickPromptSuggestions,
   buildInspectTarget,
-  mergeConversationFrames,
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
   createUserEntry,
-  mapSessionHistoryToTimelineEntries,
   mapFramesToTimelineEntries,
   sortConversationTimelineEntries,
   type MobKitDockTarget,
@@ -36,10 +34,8 @@ import {
   callConsoleRpc,
   fetchJson,
   queryEvents,
-  readSessionHistory,
   sendAddressedInteractionStreaming,
   subscribeConsoleEvents,
-  subscribeIdentityEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
 import type {
@@ -62,15 +58,128 @@ type GatingPanelData = {
   audit: unknown[];
 };
 
+function normalizeComparableTranscriptText(value: string): string {
+  return value.replace(/^\[EVENT via rpc\]\s*/i, "").replace(/\s+/g, " ").trim();
+}
+
+function sameUserMessage(
+  entry: ConversationTimelineEntry | null | undefined,
+  candidate: ConversationTimelineEntry | null | undefined,
+): boolean {
+  if (!entry || !candidate || entry.kind !== "message" || candidate.kind !== "message") {
+    return false;
+  }
+  if (entry.identity.id !== "user" || candidate.identity.id !== "user") {
+    return false;
+  }
+  return normalizeComparableTranscriptText(entry.text || "") === normalizeComparableTranscriptText(candidate.text || "");
+}
+
+function clipTranscriptWindow(entries: ConversationTimelineEntry[]): ConversationTimelineEntry[] {
+  const maxEntries = 100;
+  return entries.slice(-maxEntries);
+}
+
+function hasVisibleConversationContent(entry: ConversationTimelineEntry): boolean {
+  if (entry.kind !== "message") {
+    return true;
+  }
+  if (Array.isArray(entry.blocks) && entry.blocks.length > 0) {
+    return entry.blocks.some((block) => {
+      const record = block as Record<string, unknown>;
+      const text = [
+        typeof record.text === "string" ? record.text : "",
+        typeof record.label === "string" ? record.label : "",
+        typeof record.result === "string" ? record.result : "",
+        typeof record.body === "string" ? record.body : "",
+        typeof record.title === "string" ? record.title : "",
+      ].join(" ").trim();
+      return text.length > 0;
+    });
+  }
+  return Boolean(entry.text && entry.text.trim().length > 0);
+}
+
+function richBlockHasVisibleContent(block: unknown): boolean {
+  if (!block || typeof block !== "object") {
+    return false;
+  }
+  const record = block as Record<string, unknown>;
+  const scalarText = [
+    typeof record.text === "string" ? record.text : "",
+    typeof record.label === "string" ? record.label : "",
+    typeof record.result === "string" ? record.result : "",
+    typeof record.body === "string" ? record.body : "",
+    typeof record.title === "string" ? record.title : "",
+    typeof record.name === "string" ? record.name : "",
+  ].join(" ").trim();
+  if (scalarText.length > 0) {
+    return true;
+  }
+  if (Array.isArray(record.headers) && record.headers.some((value) => String(value || "").trim().length > 0)) {
+    return true;
+  }
+  if (Array.isArray(record.rows) && record.rows.some((row) => Array.isArray(row) && row.some((value) => String(value || "").trim().length > 0))) {
+    return true;
+  }
+  return false;
+}
+
+function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): ConversationTimelineEntry[] {
+  const sanitized: ConversationTimelineEntry[] = [];
+  for (const entry of entries) {
+    if (entry.kind !== "message") {
+      sanitized.push(entry);
+      continue;
+    }
+    if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
+      const blocks = entry.blocks.filter(richBlockHasVisibleContent);
+      if (!blocks.length) {
+        continue;
+      }
+      sanitized.push({ ...entry, blocks });
+      continue;
+    }
+    if (hasVisibleConversationContent(entry)) {
+      sanitized.push(entry);
+    }
+  }
+  return sanitized;
+}
+
+function sliceTranscriptToLatestUserTurn(entries: ConversationTimelineEntry[]): ConversationTimelineEntry[] {
+  let lastUserIndex = -1;
+  let lastPeerActivityIndex = -1;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    if (entry.kind === "message" && entry.identity.id === "user") {
+      lastUserIndex = index;
+    }
+    if (
+      entry.kind === "message"
+      && entry.identity.id === "system"
+      && /^(Peer request:|Peer response:|Peer message:)/.test(entry.text || "")
+    ) {
+      lastPeerActivityIndex = index;
+    }
+  }
+  if (lastUserIndex >= 0) {
+    return entries.slice(lastUserIndex);
+  }
+  if (lastPeerActivityIndex >= 0) {
+    return entries.slice(lastPeerActivityIndex);
+  }
+  return entries;
+}
+
 const DEFAULT_APPROVER_ID = "console-ops-lead";
 
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(null);
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
-  const [historyFramesByKey, setHistoryFramesByKey] = React.useState<Record<string, ConsoleFrame[]>>({});
-  const [historyEntriesByKey, setHistoryEntriesByKey] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
-  const [panelFramesByKey, setPanelFramesByKey] = React.useState<Record<string, ConsoleFrame[]>>({});
-  const [localEntriesByKey, setLocalEntriesByKey] = React.useState<Record<string, ReturnType<typeof createUserEntry>[]>>({});
+  const [transcriptEntriesByKey, setTranscriptEntriesByKey] = React.useState<Record<string, ConversationTimelineEntry[]>>({});
+  const [pendingUserEntryByKey, setPendingUserEntryByKey] = React.useState<Record<string, ConversationTimelineEntry | null>>({});
+  const [liveFramesByKey, setLiveFramesByKey] = React.useState<Record<string, ConsoleFrame[]>>({});
   const [activityFrames, setActivityFrames] = React.useState<ConsoleFrame[]>([]);
   const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>({});
   const [sendingPanels, setSendingPanels] = React.useState<Set<string>>(new Set());
@@ -88,6 +197,30 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const phaseTimerByKey = React.useRef<Record<string, number>>({});
   const historyLoadedByKey = React.useRef<Record<string, boolean>>({});
   const historySourceByKey = React.useRef<Record<string, string>>({});
+  const panelInteractionIdsByKey = React.useRef<Record<string, Set<string>>>({});
+  const panelBaselineEntriesByKey = React.useRef<Record<string, ConversationTimelineEntry[]>>({});
+  const identityPanelCountByIdentity = React.useRef<Record<string, number>>({});
+  const previousIdentityPanelCountByIdentity = React.useRef<Record<string, number>>({});
+  const agentsRef = React.useRef<ConsoleAgent[]>([]);
+
+  React.useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
+
+  React.useEffect(() => {
+    const currentDebug = (window as typeof window & {
+      __mobkitConsoleDebug?: Record<string, unknown>;
+    }).__mobkitConsoleDebug || {};
+    (window as typeof window & {
+      __mobkitConsoleDebug?: Record<string, unknown>;
+    }).__mobkitConsoleDebug = {
+      ...currentDebug,
+      transcriptEntriesByKey,
+      pendingUserEntryByKey,
+      liveFramesByKey,
+      panelPhaseByKey,
+    };
+  }, [liveFramesByKey, panelPhaseByKey, pendingUserEntryByKey, transcriptEntriesByKey]);
 
   const refreshChatPanelHistory = React.useCallback(async (
     panelId: string,
@@ -95,10 +228,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     force = false,
   ) => {
     const panelKey = buildPanelConversationKey(panelId, target);
-    const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
-    const sourceKey = agent?.session_id?.trim()
-      ? `session:${agent.session_id.trim()}`
-      : `events:${target.identity || target.memberId}`;
+    const agent = agentsRef.current.find((candidate) => candidate.member_id === target.memberId) || null;
+    const sourceKey = `events:${target.identity || target.memberId}`;
+    const identityKey = target.identity || target.memberId;
+    const sameIdentityPanelCount = identityPanelCountByIdentity.current[identityKey] || 0;
+    const trackedInteractionIds = panelInteractionIdsByKey.current[panelKey];
+    const hasTrackedInteractionIds = Boolean(trackedInteractionIds && trackedInteractionIds.size > 0);
+    if (
+      sameIdentityPanelCount > 1
+      && !hasTrackedInteractionIds
+      && historyLoadedByKey.current[panelKey]
+    ) {
+      return;
+    }
     if (
       !force
       && historyLoadedByKey.current[panelKey]
@@ -109,29 +251,122 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     historyLoadedByKey.current[panelKey] = true;
     historySourceByKey.current[panelKey] = sourceKey;
     try {
-      const historyPage = agent?.session_id
-        ? await readSessionHistory(baseUrl, agent.session_id, 200)
-        : null;
-      const frames = historyPage
-        ? []
-        : await queryEvents(baseUrl, {
-          memberId: target.memberId,
-          ...(target.identity ? { identity: target.identity } : {}),
-        }, 120);
-      setHistoryFramesByKey((current) => ({ ...current, [panelKey]: dedupeFrames(frames) }));
-      setHistoryEntriesByKey((current) => ({
-        ...current,
-        [panelKey]: historyPage ? mapSessionHistoryToTimelineEntries(historyPage, agent) : [],
-      }));
-      if (historyPage) {
-        setPanelFramesByKey((current) => ({ ...current, [panelKey]: [] }));
-        setLocalEntriesByKey((current) => ({ ...current, [panelKey]: [] }));
+      const frames = await queryEvents(baseUrl, {
+        memberId: target.memberId,
+        ...(target.identity ? { identity: target.identity } : {}),
+      }, 400);
+      const mappedEntries = mapFramesToTimelineEntries(agent, frames, {
+          renderInteractionStartsAsUser: true,
+          renderTextDeltas: false,
+        });
+      let lastMappedUserIndex = -1;
+      for (let index = 0; index < mappedEntries.length; index += 1) {
+        const entry = mappedEntries[index];
+        if (entry.kind === "message" && entry.identity.id === "user") {
+          lastMappedUserIndex = index;
+        }
       }
+      const transcriptEntries = clipTranscriptWindow(sliceTranscriptToLatestUserTurn(mappedEntries));
+      if (!panelBaselineEntriesByKey.current[panelKey]) {
+        panelBaselineEntriesByKey.current[panelKey] = transcriptEntries;
+      }
+      const filteredEntries = hasTrackedInteractionIds
+        ? clipTranscriptWindow(mapFramesToTimelineEntries(
+            agent,
+            frames.filter((frame) => Boolean(frame.interactionId && trackedInteractionIds.has(frame.interactionId))),
+            {
+              renderInteractionStartsAsUser: true,
+              renderTextDeltas: false,
+            },
+          ))
+        : transcriptEntries;
+      const nextTranscriptBase =
+        sameIdentityPanelCount > 1
+          ? hasTrackedInteractionIds
+            ? sortConversationTimelineEntries([
+                ...(panelBaselineEntriesByKey.current[panelKey] || []),
+                ...filteredEntries,
+              ])
+            : panelBaselineEntriesByKey.current[panelKey] || transcriptEntries
+          : filteredEntries;
+      const persistedTexts = new Set(
+        nextTranscriptBase
+          .map((entry) => entry.kind === "message" ? normalizeComparableTranscriptText(entry.text?.trim() || "") : "")
+          .filter(Boolean),
+      );
+      const latestPersistedAt = nextTranscriptBase.reduce<number>((latest, entry) => {
+        const parsed = Date.parse(String(entry.createdAt || ""));
+        return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
+      }, Number.NEGATIVE_INFINITY);
+      (window as typeof window & {
+        __mobkitConsoleDebug?: Record<string, unknown>;
+      }).__mobkitConsoleDebug = {
+        ...((window as typeof window & { __mobkitConsoleDebug?: Record<string, unknown> }).__mobkitConsoleDebug || {}),
+        lastHistoryRefresh: {
+          panelKey,
+          sourceKey,
+          frameCount: frames.length,
+          frameTail: frames.slice(-8),
+          mappedCount: mappedEntries.length,
+          mappedTail: mappedEntries.slice(-12),
+          lastMappedUserIndex,
+          lastMappedUser: lastMappedUserIndex >= 0 ? mappedEntries[lastMappedUserIndex] : null,
+          transcriptCount: nextTranscriptBase.length,
+          transcriptTail: nextTranscriptBase.slice(-6),
+          persistedTexts: Array.from(persistedTexts).slice(-6),
+          refreshedAt: new Date().toISOString(),
+        },
+      };
+      setTranscriptEntriesByKey((current) => {
+        const existing = current[panelKey] || [];
+        const pendingOptimisticEntries = existing.filter((entry) => {
+          if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) {
+            return false;
+          }
+          const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
+          if (!text || persistedTexts.has(text)) {
+            return false;
+          }
+          return true;
+        });
+        const nextEntries = sortConversationTimelineEntries([
+          ...nextTranscriptBase,
+          ...pendingOptimisticEntries,
+        ]);
+        return {
+          ...current,
+          [panelKey]: nextEntries,
+        };
+      });
+      setPendingUserEntryByKey((current) => {
+        const pendingEntry = current[panelKey];
+        if (!pendingEntry || pendingEntry.kind !== "message") {
+          return current;
+        }
+        const pendingText = normalizeComparableTranscriptText(pendingEntry.text?.trim() || "");
+        if (!pendingText || !persistedTexts.has(pendingText)) {
+          return current;
+        }
+        return { ...current, [panelKey]: null };
+      });
+      setLiveFramesByKey((current) => {
+        const existing = current[panelKey] || [];
+        if (!existing.length) {
+          return current;
+        }
+        const retained = Number.isFinite(latestPersistedAt)
+          ? existing.filter((frame) => typeof frame.timestampMs !== "number" || frame.timestampMs > latestPersistedAt)
+          : existing;
+        if (retained.length === existing.length) {
+          return current;
+        }
+        return { ...current, [panelKey]: retained };
+      });
     } catch {
       historyLoadedByKey.current[panelKey] = false;
       delete historySourceByKey.current[panelKey];
     }
-  }, [agents, baseUrl]);
+  }, [baseUrl]);
 
   const dock = useConsoleDockController<MobKitDockTarget>({
     createPanelState: ({ target }) => ({
@@ -140,6 +375,114 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       mode: "console" as const,
     }),
   });
+
+  React.useEffect(() => {
+    const counts: Record<string, number> = {};
+    for (const panel of dock.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      const key = target.identity || target.memberId;
+      counts[key] = (counts[key] || 0) + 1;
+    }
+    identityPanelCountByIdentity.current = counts;
+  }, [dock.viewState.panels]);
+
+  React.useEffect(() => {
+    const activePanelKeys = new Set(
+      dock.viewState.panels
+        .map((panel) => {
+          if (!panel.target) {
+            return null;
+          }
+          return buildPanelConversationKey(panel.id, panel.target as MobKitDockTarget);
+        })
+        .filter((value): value is string => Boolean(value)),
+    );
+
+    const pruneStateRecord = <T,>(current: Record<string, T>) => {
+      let changed = false;
+      const next: Record<string, T> = {};
+      for (const [key, value] of Object.entries(current)) {
+        if (activePanelKeys.has(key)) {
+          next[key] = value;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    };
+
+    setTranscriptEntriesByKey((current) => pruneStateRecord(current));
+    setPendingUserEntryByKey((current) => pruneStateRecord(current));
+    setLiveFramesByKey((current) => pruneStateRecord(current));
+    setPanelPhaseByKey((current) => pruneStateRecord(current));
+    setDraftByKey((current) => pruneStateRecord(current));
+
+    const pruneRefRecord = <T,>(record: Record<string, T>) => {
+      for (const key of Object.keys(record)) {
+        if (!activePanelKeys.has(key)) {
+          delete record[key];
+        }
+      }
+    };
+
+    pruneRefRecord(historyLoadedByKey.current);
+    pruneRefRecord(historySourceByKey.current);
+    pruneRefRecord(panelInteractionIdsByKey.current);
+    pruneRefRecord(panelBaselineEntriesByKey.current);
+    pruneRefRecord(phaseValueByKey.current);
+    pruneRefRecord(phaseSinceByKey.current);
+    for (const key of Object.keys(phaseTimerByKey.current)) {
+      if (!activePanelKeys.has(key)) {
+        window.clearTimeout(phaseTimerByKey.current[key]);
+        delete phaseTimerByKey.current[key];
+      }
+    }
+  }, [dock.viewState.panels]);
+
+  React.useEffect(() => {
+    const previousCounts = previousIdentityPanelCountByIdentity.current;
+    const nextCounts = identityPanelCountByIdentity.current;
+    const nextTranscriptSeeds: Record<string, ConversationTimelineEntry[]> = {};
+    for (const panel of dock.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      const identityKey = target.identity || target.memberId;
+      const nextCount = nextCounts[identityKey] || 0;
+      const previousCount = previousCounts[identityKey] || 0;
+      if (nextCount > 1 && nextCount > previousCount) {
+        const siblingPanels = dock.viewState.panels.filter((candidate) => {
+          const candidateTarget = candidate.target;
+          return candidateTarget?.kind === "agent-chat" && (candidateTarget.identity || candidateTarget.memberId) === identityKey;
+        });
+        const seedTranscript = siblingPanels
+          .map((candidate) => transcriptEntriesByKey[buildPanelConversationKey(candidate.id, candidate.target as Extract<MobKitDockTarget, { kind: "agent-chat" }>)])
+          .find((entries): entries is ConversationTimelineEntry[] => Array.isArray(entries) && entries.length > 0);
+        if (seedTranscript?.length) {
+          for (const sibling of siblingPanels) {
+            const siblingTarget = sibling.target as Extract<MobKitDockTarget, { kind: "agent-chat" }>;
+            const siblingKey = buildPanelConversationKey(sibling.id, siblingTarget);
+            panelBaselineEntriesByKey.current[siblingKey] = seedTranscript;
+            nextTranscriptSeeds[siblingKey] = seedTranscript;
+          }
+        }
+      }
+    }
+    if (Object.keys(nextTranscriptSeeds).length > 0) {
+      setTranscriptEntriesByKey((current) => {
+        let changed = false;
+        const next = { ...current };
+        for (const [panelKey, seedTranscript] of Object.entries(nextTranscriptSeeds)) {
+          if (!current[panelKey]?.length) {
+            next[panelKey] = seedTranscript;
+            changed = true;
+          }
+        }
+        return changed ? next : current;
+      });
+    }
+    previousIdentityPanelCountByIdentity.current = { ...nextCounts };
+  }, [dock.viewState.panels, transcriptEntriesByKey]);
 
   const loadExperience = React.useCallback(async () => {
     const [experienceJson, modulesJson] = await Promise.all([
@@ -289,7 +632,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       for (const panel of chatPanels) {
         if (cancelled) return;
         try {
-          await refreshChatPanelHistory(panel.id, panel.target);
+          await refreshChatPanelHistory(panel.id, panel.target, true);
         } catch {
           if (!cancelled) {
             const panelKey = buildPanelConversationKey(panel.id, panel.target);
@@ -310,19 +653,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       .map((panel) => ({ id: panel.id, target: panel.target }))
       .filter((panel): panel is { id: string; target: Extract<MobKitDockTarget, { kind: "agent-chat" }> } =>
         panel.target?.kind === "agent-chat");
-    const unsubscribers = chatPanels
-      .filter((panel) => Boolean(panel.target.identity))
-      .map((panel) => {
-        return subscribeIdentityEvents(baseUrl, panel.target.identity!, (frame) => {
-          appendPanelFrame(panel.id, panel.target, frame);
-        });
-      });
-    return () => {
-      for (const unsubscribe of unsubscribers) {
-        unsubscribe();
+    if (!chatPanels.length) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      for (const panel of chatPanels) {
+        void refreshChatPanelHistory(panel.id, panel.target, true).catch(() => {});
       }
+    }, 2000);
+    return () => {
+      window.clearInterval(interval);
     };
-  }, [baseUrl, dock.viewState.panels]);
+  }, [dock.viewState.panels, refreshChatPanelHistory]);
 
   function onSelectAgent(
     _block: unknown,
@@ -341,40 +683,34 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     frame: ConsoleFrame,
   ) {
     const panelKey = buildPanelConversationKey(panelId, target);
-    if (frame.event === "interaction_started") {
-      const content = frame.data && typeof frame.data === "object"
-        ? (frame.data as Record<string, unknown>).content
-        : undefined;
-      const normalizedContent = typeof content === "string" ? content.trim() : "";
-      setLocalEntriesByKey((current) => {
-        const existing = current[panelKey] || [];
-        if (existing.length === 0) {
-          return current;
-        }
-        const matchIndex = existing.findIndex((entry) => {
-          const entryText = typeof entry.text === "string" ? entry.text.trim() : "";
-          return normalizedContent ? entryText === normalizedContent : true;
-        });
-        if (matchIndex === -1) {
-          return current;
-        }
-        const nextEntries = existing.filter((_, index) => index !== matchIndex);
-        return { ...current, [panelKey]: nextEntries };
-      });
+    if (typeof frame.interactionId === "string" && frame.interactionId.trim()) {
+      const existing = panelInteractionIdsByKey.current[panelKey] || new Set<string>();
+      existing.add(frame.interactionId.trim());
+      panelInteractionIdsByKey.current[panelKey] = existing;
     }
-    setPanelFramesByKey((current) => {
+    setLiveFramesByKey((current) => {
       const nextFrames = dedupeFrames([...(current[panelKey] || []), frame]);
       return { ...current, [panelKey]: nextFrames };
     });
-    updatePanelPhaseFromFrame(panelKey, frame);
-    if (
-      frame.event === "interaction_complete"
-      || frame.event === "interaction_failed"
-      || frame.event === "run_completed"
-      || frame.event === "run_failed"
-    ) {
-      void refreshChatPanelHistory(panelId, target, true);
+    if (frame.event === "interaction_started" && frame.data && typeof frame.data === "object") {
+      const record = frame.data as Record<string, unknown>;
+      const content = typeof record.content === "string" ? record.content : "";
+      const normalizedContent = normalizeComparableTranscriptText(content);
+      if (normalizedContent) {
+        setPendingUserEntryByKey((current) => {
+          const pendingEntry = current[panelKey];
+          if (!pendingEntry || pendingEntry.kind !== "message" || pendingEntry.identity.id !== "user") {
+            return current;
+          }
+          const pendingText = normalizeComparableTranscriptText(pendingEntry.text || "");
+          if (pendingText !== normalizedContent) {
+            return current;
+          }
+          return { ...current, [panelKey]: null };
+        });
+      }
     }
+    updatePanelPhaseFromFrame(panelKey, frame);
   }
 
   function dedupeFrames(frames: ConsoleFrame[]): ConsoleFrame[] {
@@ -422,6 +758,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   function updatePanelPhaseFromFrame(panelKey: string, frame: ConsoleFrame) {
+    const currentPhase = phaseValueByKey.current[panelKey] ?? null;
+    const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "interaction_started":
         commitPanelPhase(panelKey, "waiting");
@@ -431,17 +769,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "tool_execution_started":
       case "tool_result_received":
       case "tool_execution_completed":
+        if (currentPhase === "waiting" && elapsedMs < 300) {
+          schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
+          break;
+        }
         commitPanelPhase(panelKey, "tool-executing");
         break;
       case "text_delta": {
-        const currentPhase = phaseValueByKey.current[panelKey] ?? null;
         if (currentPhase === "tool-executing") {
-          const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
           const remainingMs = Math.max(0, 300 - elapsedMs);
           if (remainingMs > 0) {
             schedulePanelPhase(panelKey, "generating", remainingMs);
             break;
           }
+        }
+        if (currentPhase === "waiting" && elapsedMs < 300) {
+          schedulePanelPhase(panelKey, "generating", 300 - elapsedMs);
+          break;
         }
         commitPanelPhase(panelKey, "generating");
         break;
@@ -467,10 +811,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     setDraftByKey((current) => ({ ...current, [panelKey]: "" }));
     setSendingPanels((current) => new Set(current).add(panelKey));
     commitPanelPhase(panelKey, "waiting");
-    setLocalEntriesByKey((current) => ({
+    setTranscriptEntriesByKey((current) => ({
       ...current,
-      [panelKey]: [...(current[panelKey] || []), userEntry],
+      [panelKey]: (() => {
+        const existing = current[panelKey] || [];
+        const hasPriorUserTurns = existing.some((entry) => entry.kind === "message" && entry.identity.id === "user");
+        return sortConversationTimelineEntries(hasPriorUserTurns ? [
+          ...existing,
+          userEntry,
+        ] : [userEntry]);
+      })(),
     }));
+    setPendingUserEntryByKey((current) => ({ ...current, [panelKey]: userEntry }));
+    setLiveFramesByKey((current) => ({ ...current, [panelKey]: [] }));
 
     try {
       await sendAddressedInteractionStreaming(
@@ -484,13 +837,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         `console:${panelId}`,
         (frame) => appendPanelFrame(panelId, target, frame),
       );
+      await refreshChatPanelHistory(panelId, target, true).catch(() => {});
       commitPanelPhase(panelKey, null);
     } catch (submitError) {
       setError(errorMessage(submitError));
-      setLocalEntriesByKey((current) => ({
+      setTranscriptEntriesByKey((current) => ({
         ...current,
         [panelKey]: (current[panelKey] || []).filter((entry) => entry.id !== userEntry.id),
       }));
+      setPendingUserEntryByKey((current) => ({ ...current, [panelKey]: null }));
       commitPanelPhase(panelKey, null);
     } finally {
       setSendingPanels((current) => {
@@ -604,14 +959,30 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
     const panelKey = buildPanelConversationKey(panel.id, target);
     const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
-    const combinedFrames = mergeConversationFrames(
-      historyFramesByKey[panelKey],
-      panelFramesByKey[panelKey],
-    );
-    const entries = sortConversationTimelineEntries([
-      ...(historyEntriesByKey[panelKey] || []),
-      ...mapFramesToTimelineEntries(agent, combinedFrames, { renderInteractionStartsAsUser: true }),
-      ...(localEntriesByKey[panelKey] || []),
+    const persistedEntries = transcriptEntriesByKey[panelKey] || [];
+    const latestPersistedAt = persistedEntries.reduce<number>((latest, entry) => {
+      const parsed = Date.parse(String(entry.createdAt || ""));
+      return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
+    }, Number.NEGATIVE_INFINITY);
+    const combinedFrames = liveFramesByKey[panelKey] || [];
+    const liveFrames = Number.isFinite(latestPersistedAt)
+      ? combinedFrames.filter((frame) => typeof frame.timestampMs !== "number" || frame.timestampMs > latestPersistedAt)
+      : combinedFrames;
+    const pendingUserEntry = pendingUserEntryByKey[panelKey];
+    const baseEntries = [
+      ...persistedEntries,
+      ...mapFramesToTimelineEntries(agent, liveFrames, {
+        renderInteractionStartsAsUser: false,
+        renderTextDeltas: false,
+        suppressEmbeddedRunStartedPrompt: true,
+      }),
+    ];
+    const pendingAlreadyMaterialized = pendingUserEntry
+      ? baseEntries.some((entry) => sameUserMessage(entry, pendingUserEntry))
+      : false;
+    const entries = sanitizeConversationEntries([
+      ...(!pendingAlreadyMaterialized && pendingUserEntry ? [pendingUserEntry] : []),
+      ...baseEntries,
     ]);
     const conversation = buildConversationViewState({
       memberId: target.memberId,

@@ -1742,6 +1742,7 @@ mod tests {
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
         };
 
         // create_session will fail (no LLM) but the hook runs first.
@@ -1895,6 +1896,7 @@ mod tests {
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
         };
         // before_create must succeed with default impl.
         hook.before_create(&mut req).await.unwrap();
@@ -1934,6 +1936,7 @@ mod tests {
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
         };
         let result = hook.before_create(&mut req).await;
         assert!(result.is_err());
@@ -1967,6 +1970,7 @@ mod tests {
             initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
             build: None,
             labels: None,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
         };
         hook.before_create(&mut req).await.unwrap();
         assert_eq!(req.model, "hook-overridden");

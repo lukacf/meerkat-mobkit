@@ -26,7 +26,7 @@ use axum::http::{Request, StatusCode};
 use futures::StreamExt;
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
-use meerkat_mob::{MobStorage, Prefab, ProfileName};
+use meerkat_mob::{MobDefinition, MobStorage, ProfileName};
 use meerkat_mobkit::identity_first::contracts::RosterProvider;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
@@ -172,7 +172,20 @@ async fn build_unified_runtime() -> Fixture {
     let factory = AgentFactory::new(&session_path).comms(true);
     let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
 
-    let mut definition = Prefab::CodingSwarm.definition();
+    let mut definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "test-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse mob definition");
     for profile in definition.profiles.values_mut() {
         profile.model = "gpt-5.2".to_string();
     }

@@ -485,7 +485,9 @@ fn replay_slice(
     latest_event_id: Option<String>,
 ) -> Result<Vec<ConsoleIdentityEventEnvelope>, ReplayUnavailableError> {
     let Some(last_event_id) = last_event_id.filter(|value| !value.trim().is_empty()) else {
-        return Ok(Vec::new());
+        // Fresh connection (no Last-Event-ID): return all buffered events
+        // so new subscribers see the conversation so far.
+        return Ok(events.into_iter().collect());
     };
     let mut replay = events.into_iter().collect::<Vec<_>>();
     let Some(start_idx) = replay
@@ -499,7 +501,9 @@ fn replay_slice(
             latest_event_id: latest_event_id.unwrap_or_default(),
         });
     };
-    Ok(replay.split_off(start_idx.saturating_add(1)))
+    // Inclusive replay: include the checkpoint event so clients can
+    // verify continuity and deduplicate by event_id.
+    Ok(replay.split_off(start_idx))
 }
 
 fn current_time_ms() -> u64 {
@@ -546,12 +550,15 @@ mod tests {
             )
             .await;
 
+        // Inclusive replay: checkpoint event itself is included so
+        // clients can verify continuity and deduplicate.
         let replay = store
             .replay_identity("identity:luka", Some(&first.event_id))
             .await
             .expect("known checkpoint");
-        assert_eq!(replay.len(), 1);
-        assert_eq!(replay[0].event_id, second.event_id);
+        assert_eq!(replay.len(), 2);
+        assert_eq!(replay[0].event_id, first.event_id);
+        assert_eq!(replay[1].event_id, second.event_id);
 
         let err = store
             .replay_identity("identity:luka", Some("evt-too-old"))
@@ -563,7 +570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_subscriptions_without_checkpoint_do_not_replay_history() {
+    async fn fresh_subscriptions_replay_full_buffer() {
         let store = ConsoleEventStore::new();
         store
             .append(
@@ -582,17 +589,20 @@ mod tests {
             )
             .await;
 
+        // Fresh connections (no checkpoint) get full catchup.
         let replay = store
             .replay_identity("identity:luka", None)
             .await
             .expect("fresh subscription");
-        assert!(replay.is_empty());
+        assert_eq!(replay.len(), 2);
 
+        // Global replay includes the bootstrap `runtime_bootstrapped` event
+        // created by ConsoleEventStore::new(), plus the 2 appended events.
         let global_replay = store
             .replay_all(None)
             .await
             .expect("fresh all-events subscription");
-        assert!(global_replay.is_empty());
+        assert_eq!(global_replay.len(), 3);
     }
 
     #[tokio::test]
@@ -866,7 +876,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "replay_all(None) returns empty for fresh connections; needs checkpoint-based test"]
     async fn replay_all_retains_latest_4096_events() {
         let store = ConsoleEventStore::new();
         for idx in 0..(ALL_EVENTS_REPLAY_CAP + 8) {

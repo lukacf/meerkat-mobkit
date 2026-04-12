@@ -44,6 +44,9 @@ function alignmentAttr(alignment: ConversationTableAlignment | null | undefined)
 }
 
 function renderThinkingBlock(block: ConversationRichThinkingBlock) {
+  if (!block.label?.trim() && !block.text?.trim()) {
+    return null;
+  }
   return (
     <div
       className={clsx(
@@ -192,7 +195,11 @@ function renderBlock(
     );
   }
 
-  return <div key={`thinking-${index}`}>{renderThinkingBlock(block)}</div>;
+  const thinking = renderThinkingBlock(block);
+  if (!thinking) {
+    return null;
+  }
+  return <div key={`thinking-${index}`}>{thinking}</div>;
 }
 
 export function ConversationRichContent({
@@ -200,7 +207,13 @@ export function ConversationRichContent({
   richStyle = "default",
   Icon,
 }: ConversationRichContentProps) {
-  const body = blocks.map((block, index) => renderBlock(block, index, Icon));
+  const body = blocks
+    .map((block, index) => renderBlock(block, index, Icon))
+    .filter(Boolean);
+
+  if (body.length === 0) {
+    return null;
+  }
 
   if (richStyle === "streaming") {
     return <div className="cc-rich-streaming">{body}</div>;
