@@ -478,9 +478,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             return text && !persistedTexts.has(text);
           });
 
-          transcriptRef.current[panelKey] = clipTranscriptWindow(
-            sortConversationTimelineEntries([...mapped, ...existingOptimistic]),
-          );
+          transcriptRef.current[panelKey] = clipTranscriptWindow([
+            ...mapped,
+            ...existingOptimistic,
+          ]);
           liveFramesRef.current[panelKey] = [];
           phaseRef.current[panelKey] = null;
         }
