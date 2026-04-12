@@ -39,7 +39,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::default();
     let session_service = Arc::new(build_ephemeral_service(factory, config, 16));
 
-    let mut definition = MobDefinition::from_toml(&format!(
+    let definition = MobDefinition::from_toml(&format!(
         r#"
 [mob]
 id = "real-smoke-mob"

@@ -576,23 +576,32 @@ fn build_console_experience_contract(
                 "node_id_field": "identity",
                 "edge_fields": ["wired_to"],
             },
-            "live_snapshot": {
-                "nodes": live_snapshot.members.iter().map(|member| {
-                    let addressable = member
-                        .labels
-                        .get("addressable")
-                        .map(|value| value != "false")
-                        .unwrap_or(true);
-                    serde_json::json!({
-                        "identity": member.meerkat_id,
-                        "label": member.labels.get("display_name").cloned().unwrap_or_else(|| member.meerkat_id.clone()),
-                        "profile": member.profile,
-                        "state": member.state,
-                        "wired_to": member.wired_to,
-                        "addressable": addressable,
-                    })
-                }).collect::<Vec<_>>(),
-                "node_count": live_snapshot.members.len(),
+            "live_snapshot": if live_snapshot.members.is_empty() {
+                // Module-only runtime: topology nodes are loaded module IDs.
+                serde_json::json!({
+                    "nodes": &live_snapshot.loaded_modules,
+                    "node_count": live_snapshot.loaded_modules.len(),
+                })
+            } else {
+                // Mob runtime: identity-native topology from members.
+                serde_json::json!({
+                    "nodes": live_snapshot.members.iter().map(|member| {
+                        let addressable = member
+                            .labels
+                            .get("addressable")
+                            .map(|value| value != "false")
+                            .unwrap_or(true);
+                        serde_json::json!({
+                            "identity": member.meerkat_id,
+                            "label": member.labels.get("display_name").cloned().unwrap_or_else(|| member.meerkat_id.clone()),
+                            "profile": member.profile,
+                            "state": member.state,
+                            "wired_to": member.wired_to,
+                            "addressable": addressable,
+                        })
+                    }).collect::<Vec<_>>(),
+                    "node_count": live_snapshot.members.len(),
+                })
             }
         },
         "health_overview": {

@@ -364,10 +364,24 @@ async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ
         .build_reference_app_router(decision_state(false));
     let console_json = get_console_experience(&app).await;
 
-    assert_eq!(
-        console_json["topology"]["live_snapshot"]["nodes"],
-        json!(["delivery", "router"])
+    // Topology now shows identity-native nodes from mob members, not config modules.
+    let topology_nodes = console_json["topology"]["live_snapshot"]["nodes"]
+        .as_array()
+        .expect("topology nodes array");
+    assert_eq!(topology_nodes.len(), 2);
+    assert!(
+        topology_nodes.iter().any(|n| n["identity"] == "billing"),
+        "expected billing in topology nodes"
     );
+    assert!(
+        topology_nodes.iter().any(|n| n["identity"] == "triage"),
+        "expected triage in topology nodes"
+    );
+    assert_eq!(
+        console_json["topology"]["live_snapshot"]["node_count"],
+        json!(2)
+    );
+    // Health overview loaded_modules still comes from config.
     assert_eq!(
         console_json["health_overview"]["live_snapshot"]["loaded_modules"],
         json!(["delivery", "router"])

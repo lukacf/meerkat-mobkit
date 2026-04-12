@@ -568,6 +568,51 @@ function renderHistoryUserEntry(frame: ConsoleFrame, entryId: string): Conversat
   };
 }
 
+function renderRunStartedPromptEntries(
+  frame: ConsoleFrame,
+  entryId: string,
+  options: { suppressEmbeddedRpcPrompt?: boolean } = {},
+): ConversationTimelineEntry[] {
+  if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
+    return [];
+  }
+  const record = frame.data as Record<string, unknown>;
+  const prompt = typeof record.prompt === "string" ? record.prompt.trim() : "";
+  if (!prompt) {
+    return [];
+  }
+  const createdAt = isoFromTimestampMs(frame.timestampMs);
+  const entries: ConversationTimelineEntry[] = [];
+
+  const embeddedPrompt = extractEmbeddedRpcPrompt(prompt);
+  if (embeddedPrompt && !options.suppressEmbeddedRpcPrompt) {
+    entries.push({
+      kind: "message",
+      id: `${entryId}:event`,
+      identity: USER_IDENTITY,
+      variant: "plain",
+      ...(createdAt ? { createdAt } : {}),
+      text: embeddedPrompt,
+    });
+  }
+
+  if (prompt.startsWith("[COMMS")) {
+    const summarized = summarizeCommsTransport(prompt).trim();
+    if (summarized) {
+      entries.push({
+        kind: "message",
+        id: entryId,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        ...(createdAt ? { createdAt } : {}),
+        text: summarized,
+      });
+    }
+  }
+
+  return entries;
+}
+
 function extractTextFromContentBlocks(blocks: unknown): string {
   if (typeof blocks === "string") {
     return blocks;
@@ -588,15 +633,68 @@ function extractTextFromContentBlocks(blocks: unknown): string {
     .join("");
 }
 
-function historyMessageText(message: unknown): { role: "user" | "assistant" | "system" | null; text: string; blocks?: ConversationRichToolCallBlock[] } {
+function stripRpcEventPrefix(text: string): string {
+  return text.replace(/^\[EVENT via rpc\]\s*/i, "").trim();
+}
+
+function summarizeCommsTransport(text: string): string {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) {
+    return "";
+  }
+  const header = lines[0] || "";
+  const headerTail = header.includes("]") ? header.slice(header.indexOf("]") + 1).trim() : "";
+  const body = lines
+    .slice(1)
+    .filter((line) => !line.startsWith("[EVENT via rpc]"));
+  if (header.startsWith("[COMMS REQUEST")) {
+    const intentLine = body.find((line) => line.startsWith("Intent:"));
+    if (intentLine) {
+      const summary = intentLine.replace(/^Intent:\s*/, "Peer request: ");
+      if (summary === "Peer request: mob.peer_added" || summary === "Peer request: mob.peer_removed") {
+        return "";
+      }
+      return summary;
+    }
+    return "Peer request received.";
+  }
+  if (header.startsWith("[COMMS RESPONSE")) {
+    const resultIndex = body.findIndex((line) => line.startsWith("Result:"));
+    if (resultIndex >= 0) {
+      const joined = body
+        .slice(resultIndex)
+        .filter((line) => !line.startsWith("[COMMS "))
+        .join(" ");
+      return joined.replace(/^Result:\s*/, "Peer response: ");
+    }
+    return "Peer response received.";
+  }
+  if (header.startsWith("[COMMS MESSAGE")) {
+    const joined = [headerTail, ...body].join(" ").trim();
+    return joined ? `Peer message: ${joined}` : "Peer message received.";
+  }
+  return text;
+}
+
+function extractEmbeddedRpcPrompt(text: string): string | null {
+  const match = text.match(/^\[EVENT via rpc\]\s*(.+)$/im);
+  return match?.[1]?.trim() || null;
+}
+
+function historyMessageText(message: unknown): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichToolCallBlock[] } {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
   const record = message as Record<string, unknown>;
   const role = typeof record.role === "string" ? record.role : null;
   switch (role) {
-    case "user":
-      return { role: "user", text: extractTextFromContentBlocks(record.content) };
+    case "user": {
+      const text = extractTextFromContentBlocks(record.content);
+      if (text.startsWith("[COMMS")) {
+        return { role: "meta", text: summarizeCommsTransport(text) };
+      }
+      return { role: "user", text: stripRpcEventPrefix(text) };
+    }
     case "assistant":
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
@@ -646,6 +744,7 @@ export function mapSessionHistoryToTimelineEntries(
     const messageRecord = message && typeof message === "object"
       ? message as Record<string, unknown>
       : null;
+    const rawContent = typeof messageRecord?.content === "string" ? messageRecord.content : "";
     const createdAt = typeof messageRecord?.created_at === "string"
       ? messageRecord.created_at
       : typeof messageRecord?.createdAt === "string"
@@ -655,10 +754,30 @@ export function mapSessionHistoryToTimelineEntries(
       continue;
     }
     if (parsed.role === "system") {
-      if (!text.startsWith("[COMMS") && !text.startsWith("[SYSTEM NOTICE")) {
+      continue;
+    }
+    if (parsed.role === "user") {
+      if (
+        text.startsWith("## Incident Comms Protocol")
+        || text.startsWith("You have been spawned as")
+        || text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")
+      ) {
         continue;
       }
-      if (text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")) {
+    }
+    if (parsed.role === "meta") {
+      const embeddedPrompt = rawContent ? extractEmbeddedRpcPrompt(rawContent) : null;
+      if (embeddedPrompt) {
+        entries.push({
+          kind: "message",
+          id: `history:${index}:event`,
+          identity: USER_IDENTITY,
+          variant: "plain",
+          ...(createdAt ? { createdAt } : {}),
+          text: embeddedPrompt,
+        });
+      }
+      if (!text) {
         continue;
       }
       entries.push({
@@ -671,20 +790,57 @@ export function mapSessionHistoryToTimelineEntries(
       });
       continue;
     }
-    if (parsed.role === "user" && text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")) {
+    if (parsed.role === "user") {
+      entries.push({
+        kind: "message",
+        id: `history:${index}`,
+        identity: USER_IDENTITY,
+        variant: "plain",
+        ...(createdAt ? { createdAt } : {}),
+        text,
+      });
+      continue;
+    }
+    if (
+      parsed.role === "assistant"
+      && /^I have acknowledged the addition of the following peers:/i.test(text)
+    ) {
       continue;
     }
     const blocks = parseConversationRichBlocks(text);
     entries.push({
       kind: "message",
       id: `history:${index}`,
-      identity: parsed.role === "user" ? USER_IDENTITY : agentIdentity(agent),
+      identity: agentIdentity(agent),
       variant: blocks.length > 0 ? "rich" : "plain",
       ...(createdAt ? { createdAt } : {}),
       ...(blocks.length > 0 ? { blocks } : { text }),
     });
   }
-  return entries;
+  let lastOperatorPromptIndex = -1;
+  let lastPeerActivityIndex = -1;
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index];
+    if (entry?.kind === "message" && entry.identity.id === USER_IDENTITY.id) {
+      lastOperatorPromptIndex = index;
+    }
+    if (
+      entry?.kind === "message"
+      && entry.identity.id === SYSTEM_IDENTITY.id
+      && "text" in entry
+      && typeof entry.text === "string"
+      && /^(Peer request:|Peer response:|Peer message:)/.test(entry.text)
+    ) {
+      lastPeerActivityIndex = index;
+    }
+  }
+  if (lastOperatorPromptIndex >= 0) {
+    return entries.slice(lastOperatorPromptIndex);
+  }
+  if (lastPeerActivityIndex >= 0) {
+    return entries.slice(lastPeerActivityIndex);
+  }
+  return entries.slice(-8);
 }
 
 export function mapFramesToTimelineEntries(
@@ -692,6 +848,8 @@ export function mapFramesToTimelineEntries(
   frames: ConsoleFrame[],
   options: {
     renderInteractionStartsAsUser?: boolean;
+    renderTextDeltas?: boolean;
+    suppressEmbeddedRunStartedPrompt?: boolean;
   } = {},
 ): ConversationTimelineEntry[] {
   const orderedFrames = sortFramesForTranscript(frames);
@@ -724,6 +882,9 @@ export function mapFramesToTimelineEntries(
     const entryId = `${frame.id || frame.event || "frame"}:${i}`;
 
     if (frame.event === "text_delta") {
+      if (options.renderTextDeltas === false) {
+        continue;
+      }
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
@@ -765,6 +926,19 @@ export function mapFramesToTimelineEntries(
         entries.push(userEntry);
       }
       continue;
+    }
+
+    if (frame.event === "run_started") {
+      flushPendingText();
+      const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
+        suppressEmbeddedRpcPrompt:
+          options.renderInteractionStartsAsUser === true
+          || options.suppressEmbeddedRunStartedPrompt === true,
+      });
+      if (promptEntries.length > 0) {
+        entries.push(...promptEntries);
+        continue;
+      }
     }
 
     if (frame.event === "text_complete") {

@@ -359,20 +359,6 @@ function SidebarRow({
       onKeyDown={handleKeyDown}
     >
       <span className="cc-sidebar-row__main">
-        {item.actions?.length && onItemAction ? (
-          <span className="cc-sidebar-row__actions">
-            {item.actions.map((action, actionIndex) => (
-              <SectionIconButton
-                action={action}
-                className="cc-sidebar-row__action"
-                Icon={Icon}
-                buttonProps={getActionButtonProps?.({ kind: "item", block, section, item, action })}
-                key={`${item.id}:${action.id}:${actionIndex}`}
-                onClick={() => onItemAction(block, section, item, action)}
-              />
-            ))}
-          </span>
-        ) : null}
         <span className="cc-sidebar-row__copy">
           <span className="cc-sidebar-row__title-row">
             {item.iconName && Icon ? (
@@ -399,7 +385,25 @@ function SidebarRow({
           </span>
         ))}
       </span>
-      {trailingContent ? <span className="cc-sidebar-row__trailing">{trailingContent}</span> : null}
+      {(trailingContent || (item.actions?.length && onItemAction)) ? (
+        <span className="cc-sidebar-row__trailing">
+          {trailingContent ? <span className="cc-sidebar-row__trailing-content">{trailingContent}</span> : null}
+          {item.actions?.length && onItemAction ? (
+            <span className="cc-sidebar-row__actions">
+              {item.actions.map((action, actionIndex) => (
+                <SectionIconButton
+                  action={action}
+                  className="cc-sidebar-row__action"
+                  Icon={Icon}
+                  buttonProps={getActionButtonProps?.({ kind: "item", block, section, item, action })}
+                  key={`${item.id}:${action.id}:${actionIndex}`}
+                  onClick={() => onItemAction(block, section, item, action)}
+                />
+              ))}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
 }

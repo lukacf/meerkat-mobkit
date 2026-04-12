@@ -2517,8 +2517,6 @@ dependencies = [
 [[package]]
 name = "meerkat-session"
 version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1aa1330c81a9010e6bc3158bcd68e6a556837efe3bb04a203a2f7a4b892c2d2e"
 dependencies = [
  "async-trait",
  "futures",

@@ -166,7 +166,7 @@ smoke:
   prompts:
     tool_sweep: >
       Run a status sweep for the fictional CardinalPay payments incident. Use the peers tool
-      first, then use the send tool with kind "peer_message" to contact payments-sre,
+      first, then use the send tool with kind "peer_request" to contact payments-sre,
       merchant-comms, and scribe. Send plain-text body messages only. Then call
       inspect_service with {"service":"payments-api"} and analyze_customer_impact with
       {"cohort":"enterprise-merchants"}. Wait for at least one peer reply before answering,

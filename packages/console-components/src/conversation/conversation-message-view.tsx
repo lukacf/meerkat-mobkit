@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 
 import {
+  conversationRichBlockCopyText,
   conversationIdentityPresentation,
   type ConversationTimelineEntry,
 } from "@console-core";
@@ -64,12 +65,20 @@ export function ConversationMessageView({
     );
   }
 
-  if (entry.variant === "rich" && entry.blocks?.length) {
+  const visibleRichBlocks = entry.variant === "rich" && entry.blocks?.length
+    ? entry.blocks.filter((block) => conversationRichBlockCopyText(block).trim().length > 0)
+    : [];
+
+  if (entry.variant === "rich" && visibleRichBlocks.length) {
     return (
       <article className={`${assistantClassName} cc-message--rich`}>
-        <ConversationRichContent blocks={entry.blocks} Icon={Icon} richStyle={entry.richStyle} />
+        <ConversationRichContent blocks={visibleRichBlocks} Icon={Icon} richStyle={entry.richStyle} />
       </article>
     );
+  }
+
+  if (entry.variant === "rich") {
+    return null;
   }
 
   return (

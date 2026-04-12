@@ -97,3 +97,6 @@ tag-message = "Release v{{version}}"
 pre-release-hook = ["bash", "-c", "$(git rev-parse --show-toplevel)/scripts/release-hook.sh {{version}}"]
 publish = false
 push = true
+
+[patch.crates-io]
+meerkat-session = { path = "vendor/meerkat-session" }

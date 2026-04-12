@@ -243,7 +243,8 @@ svg {
 /* ── Composer ── */
 
 .cc-composer {
-  max-width: var(--_cc-content-width);
+  width: 100%;
+  min-width: 0;
   margin: 0 auto;
 }
 
