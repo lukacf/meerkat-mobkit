@@ -607,13 +607,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       suppressEmbeddedRunStartedPrompt: true,
     });
 
-    // 3. Optimistic user message (if not yet reconciled)
+    // 3. Optimistic user message (if not yet reconciled against SERVER history)
+    // Only reconcile against serverHistoryRef — never against live overlay.
+    // The optimistic stays visible until the server confirms the interaction.
     const optimistic = optimisticUserRef.current[identity];
     let optimisticEntry: ConversationTimelineEntry | null = null;
     if (optimistic) {
-      const allFrames = [...serverFrames, ...liveFrames];
       const reconciled = optimistic.interactionId &&
-        allFrames.some((f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId);
+        serverFrames.some((f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId);
       if (reconciled) {
         optimisticUserRef.current[identity] = null;
       } else {
