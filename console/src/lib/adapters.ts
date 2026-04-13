@@ -446,8 +446,38 @@ function parseToolArguments(frame: ConsoleFrame): string {
 
 function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
-  const result = summarizeFrameData(frame.data).trim();
   const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
+
+  // Extract actual result content — prefer tool_execution_completed which has the real result
+  let result = "";
+  if (typeof record?.result === "string") {
+    // Try to parse JSON result and format it readably
+    try {
+      const parsed = JSON.parse(record.result);
+      if (typeof parsed === "object" && parsed !== null) {
+        // Remove metadata keys, keep the actual content
+        const clean = { ...parsed };
+        delete clean.source_event_type;
+        delete clean.type;
+        result = JSON.stringify(clean, null, 2);
+      } else {
+        result = record.result;
+      }
+    } catch {
+      result = record.result;
+    }
+  } else if (typeof record?.result === "object" && record.result !== null) {
+    const clean = { ...(record.result as Record<string, unknown>) };
+    delete clean.source_event_type;
+    delete clean.type;
+    result = JSON.stringify(clean, null, 2);
+  }
+
+  // For tool_result_received without a result field, don't use the metadata dump
+  if (!result && frame.event === "tool_result_received") {
+    return { status: isError ? "error" : "success" };
+  }
+
   return {
     ...(result ? { result } : {}),
     status: isError ? "error" : "success",
@@ -479,13 +509,36 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       const toolCallId = parseToolCallId(frame);
       if (!toolCallId || toolCalls.has(toolCallId)) continue;
       const pending = pendingResults.get(toolCallId);
+      const name = parseToolName(frame);
+      const args = frame.data && typeof frame.data === "object" ? (frame.data as Record<string, unknown>).args : null;
+      const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : null;
+
+      // Extract peer comms metadata for send_* tools
+      const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
+      const peerTarget = isPeerTool && typeof argsRecord?.to === "string"
+        ? argsRecord.to.split("/").pop() || argsRecord.to as string
+        : undefined;
+      const peerIntent = isPeerTool && typeof argsRecord?.intent === "string"
+        ? argsRecord.intent as string
+        : undefined;
+      const peerBody = isPeerTool
+        ? typeof argsRecord?.body === "string"
+          ? argsRecord.body as string
+          : typeof argsRecord?.params === "object" && argsRecord.params !== null
+            ? JSON.stringify(argsRecord.params)
+            : undefined
+        : undefined;
+
       toolCalls.set(toolCallId, {
         type: "tool-call",
         toolCallId,
-        name: parseToolName(frame),
+        name,
         arguments: parseToolArguments(frame),
         ...(pending?.result ? { result: pending.result } : {}),
         status: pending?.status || "pending",
+        ...(peerTarget ? { peerTarget } : {}),
+        ...(peerIntent ? { peerIntent } : {}),
+        ...(peerBody ? { peerBody } : {}),
       });
     }
   }
@@ -983,14 +1036,28 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const block = toolBlocks.get(toolCallId);
       if (block) {
-        entries.push({
-          kind: "message",
-          id: entryId,
-          identity: agentIdentity(agent),
-          variant: "rich",
-          createdAt: isoFromTimestampMs(frame.timestampMs),
-          blocks: [block],
-        });
+        // Group consecutive peer tool calls into one entry
+        const isPeer = block.peerTarget !== undefined;
+        const lastEntry = entries[entries.length - 1];
+        const lastIsPeerGroup = lastEntry
+          && lastEntry.variant === "rich"
+          && Array.isArray(lastEntry.blocks)
+          && lastEntry.blocks.length > 0
+          && lastEntry.blocks.every((b: Record<string, unknown>) => b.type === "tool-call" && b.peerTarget);
+
+        if (isPeer && lastIsPeerGroup) {
+          // Append to existing peer group
+          (lastEntry.blocks as unknown[]).push(block);
+        } else {
+          entries.push({
+            kind: "message",
+            id: entryId,
+            identity: agentIdentity(agent),
+            variant: "rich",
+            createdAt: isoFromTimestampMs(frame.timestampMs),
+            blocks: [block],
+          });
+        }
         emittedToolCalls.add(toolCallId);
       }
       continue;

@@ -209,12 +209,41 @@ function renderBlock(
   return <div key={`thinking-${index}`}>{thinking}</div>;
 }
 
+const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
+
 function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   const [expanded, setExpanded] = useState(false);
+  const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";
   const statusClass = `cc-tool-call--${block.status}`;
 
-  // Try to format arguments as readable text
+  if (isPeer) {
+    const target = block.peerTarget || "peer";
+    const content = block.peerBody || block.peerIntent || "";
+    return (
+      <section className={clsx("cc-tool-call cc-tool-call--peer", statusClass)}>
+        <button
+          className="cc-tool-call__header"
+          type="button"
+          onClick={() => setExpanded((prev) => !prev)}
+          aria-expanded={expanded}
+        >
+          <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
+          <span className="cc-tool-call__icon">↗</span>
+          <span className="cc-tool-call__name">{target}</span>
+          {content && <span className="cc-tool-call__preview">{content}</span>}
+          <span className="cc-tool-call__status">{statusIcon}</span>
+        </button>
+        {expanded && block.result && (
+          <div className="cc-tool-call__body">
+            <pre className="cc-tool-call__pre">{block.result}</pre>
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  // Generic tool call
   let argsPreview = block.arguments || "";
   try {
     const parsed = JSON.parse(argsPreview);
@@ -234,14 +263,16 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
+        <span className="cc-tool-call__icon">⚙</span>
         <span className="cc-tool-call__name">{block.name}</span>
+        {argsPreview && <span className="cc-tool-call__preview">{argsPreview}</span>}
         <span className="cc-tool-call__status">{statusIcon} {block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"}</span>
       </button>
       {expanded && (
         <div className="cc-tool-call__body">
           {argsPreview && (
             <div className="cc-tool-call__section">
-              <div className="cc-tool-call__section-label">Arguments</div>
+              <div className="cc-tool-call__section-label">Input</div>
               <pre className="cc-tool-call__pre">{argsPreview}</pre>
             </div>
           )}
@@ -257,11 +288,58 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   );
 }
 
+function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const targets = blocks.map((b) => b.peerTarget || "peer");
+  const allSuccess = blocks.every((b) => b.status === "success");
+  const anyError = blocks.some((b) => b.status === "error");
+  const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
+  const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
+
+  return (
+    <section className={clsx("cc-tool-call cc-tool-call--peer-group", statusClass)}>
+      <button
+        className="cc-tool-call__header"
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+      >
+        <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
+        <span className="cc-tool-call__icon">↗</span>
+        <span className="cc-tool-call__name">Sent to {targets.join(", ")}</span>
+        <span className="cc-tool-call__status">{statusIcon}</span>
+      </button>
+      {expanded && (
+        <div className="cc-tool-call__body">
+          {blocks.map((block, i) => (
+            <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
+              <span className="cc-tool-call__peer-target">→ {block.peerTarget || "peer"}</span>
+              {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
+              {block.peerBody && <span className="cc-tool-call__peer-body">{block.peerBody}</span>}
+              <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
+                {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function ConversationRichContent({
   blocks,
   richStyle = "default",
   Icon,
 }: ConversationRichContentProps) {
+  // Check if all blocks are peer tool calls — render as grouped blob
+  const allPeerTools = blocks.length > 1
+    && blocks.every((b) => b.type === "tool-call" && PEER_TOOL_NAMES.has((b as ConversationRichToolCallBlock).name));
+
+  if (allPeerTools) {
+    return <PeerToolGroup blocks={blocks as ConversationRichToolCallBlock[]} />;
+  }
+
   const body = blocks
     .map((block, index) => renderBlock(block, index, Icon))
     .filter(Boolean);

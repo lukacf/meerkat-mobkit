@@ -60,6 +60,10 @@ export interface ConversationRichToolCallBlock {
   arguments: string;
   result?: string;
   status: "pending" | "success" | "error";
+  /** For peer comms tools (send_request, send_message, send_response) */
+  peerTarget?: string;
+  peerIntent?: string;
+  peerBody?: string;
 }
 
 export interface ConversationRichFileChangeBlock {

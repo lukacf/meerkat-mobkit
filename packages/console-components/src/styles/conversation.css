@@ -1096,6 +1096,61 @@
   color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
   margin-bottom: 2px;
 }
+.cc-tool-call__icon {
+  font-size: 12px;
+  width: 16px;
+  flex-shrink: 0;
+  text-align: center;
+  opacity: 0.7;
+}
+.cc-tool-call__preview {
+  color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Peer tool group */
+.cc-tool-call--peer-group .cc-tool-call__name {
+  font-family: inherit;
+  font-weight: 400;
+}
+.cc-tool-call__peer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  border-bottom: 1px solid var(--_cc-border-soft, rgba(255,255,255,0.05));
+}
+.cc-tool-call__peer-row:last-child {
+  border-bottom: none;
+}
+.cc-tool-call__peer-target {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  color: var(--_cc-foreground, rgba(232,234,237,0.96));
+  font-weight: 500;
+  white-space: nowrap;
+}
+.cc-tool-call__peer-intent {
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+}
+.cc-tool-call__peer-body {
+  color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.cc-tool-call__peer-status { white-space: nowrap; margin-left: auto; }
+.cc-tool-call__peer-status--success { color: var(--_cc-positive, #3fb950); }
+.cc-tool-call__peer-status--error { color: var(--_cc-negative, #f85149); }
+.cc-tool-call__peer-status--pending { color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38)); }
+
 .cc-tool-call__pre {
   font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
   font-size: 11px;
