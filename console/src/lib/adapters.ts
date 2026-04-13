@@ -937,6 +937,7 @@ export function mapFramesToTimelineEntries(
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = new Set<string>();
 
+
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt: string | undefined;

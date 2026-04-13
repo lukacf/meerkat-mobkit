@@ -150,6 +150,8 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
       return block.text.trim();
     case "thinking":
       return [block.label, block.text].filter(Boolean).join("\n").trim();
+    case "tool-call":
+      return [block.name, block.arguments, block.result || ""].filter(Boolean).join("\n").trim();
     default:
       return "";
   }
