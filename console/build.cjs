@@ -31,7 +31,7 @@ const html = `<!doctype html>
     <title>MobKit Console</title>
     <link rel="stylesheet" href="/console/assets/console-app.css" />
   </head>
-  <body class="cc-theme-scope" data-cc-theme="dark">
+  <body>
     <div id="root"></div>
     <script src="/console/assets/console-app.js" defer></script>
   </body>

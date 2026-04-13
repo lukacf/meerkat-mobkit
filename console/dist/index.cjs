@@ -37,7 +37,7 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react6 = __toESM(require("react"));
+var import_react7 = __toESM(require("react"));
 
 // node_modules/clsx/dist/clsx.mjs
 function r(e) {
@@ -1840,6 +1840,9 @@ function formatCount(value) {
 }
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
+var import_react3 = require("react");
+
+// ../packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_react2 = require("react");
 
 // ../packages/console-components/src/conversation/change-stat-pair.tsx
@@ -2063,11 +2066,57 @@ function renderBlock(block, index, Icon2) {
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__line" })
     ] }, `divider-${index}`);
   }
+  if (block.type === "tool-call") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolCallBlock, { block }, `tool-call-${index}`);
+  }
   const thinking = renderThinkingBlock(block);
   if (!thinking) {
     return null;
   }
   return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { children: thinking }, `thinking-${index}`);
+}
+function ToolCallBlock({ block }) {
+  const [expanded, setExpanded] = (0, import_react2.useState)(false);
+  const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
+  const statusClass = `cc-tool-call--${block.status}`;
+  let argsPreview = block.arguments || "";
+  try {
+    const parsed = JSON.parse(argsPreview);
+    if (typeof parsed === "object" && parsed !== null) {
+      argsPreview = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(", ");
+    }
+  } catch {
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call", statusClass), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "button",
+      {
+        className: "cc-tool-call__header",
+        type: "button",
+        onClick: () => setExpanded((prev) => !prev),
+        "aria-expanded": expanded,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.name }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__status", children: [
+            statusIcon,
+            " ",
+            block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"
+          ] })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__body", children: [
+      argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Arguments" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: argsPreview })
+      ] }),
+      block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Result" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result })
+      ] })
+    ] })
+  ] });
 }
 function ConversationRichContent({
   blocks,
@@ -2106,7 +2155,7 @@ function SummaryCard({ entry, onAction }) {
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_jsx_runtime7 = require("react/jsx-runtime");
 function renderMultilineText(text) {
-  return text.split("\n").map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_react2.Fragment, { children: [
+  return text.split("\n").map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_react3.Fragment, { children: [
     index > 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}) : null,
     line
   ] }, `${line}-${index}`));
@@ -2348,7 +2397,7 @@ function ConversationPane({
 }
 
 // ../packages/console-components/src/dock/console-dock.tsx
-var import_react3 = require("react");
+var import_react4 = require("react");
 
 // ../packages/console-components/src/dock/resize-lock.ts
 var RESIZE_LOCK_DATA_KEY = "ccResizeLockCount";
@@ -2498,11 +2547,11 @@ function PanelNodeView({
     );
   }
   const splitNode = node;
-  const splitRef = (0, import_react3.useRef)(null);
-  const resizeCleanupRef = (0, import_react3.useRef)(null);
+  const splitRef = (0, import_react4.useRef)(null);
+  const resizeCleanupRef = (0, import_react4.useRef)(null);
   const firstFlex = typeof splitNode.ratio === "number" && splitNode.ratio > 0 && splitNode.ratio < 1 ? splitNode.ratio : 0.5;
   const secondFlex = 1 - firstFlex;
-  (0, import_react3.useEffect)(() => () => {
+  (0, import_react4.useEffect)(() => () => {
     resizeCleanupRef.current?.();
     resizeCleanupRef.current = null;
   }, []);
@@ -2722,7 +2771,7 @@ function ConsoleDock({
 }
 
 // ../packages/console-components/src/dock/use-console-dock-controller.ts
-var import_react4 = require("react");
+var import_react5 = require("react");
 function useConsoleDockController({
   initialTarget = null,
   initialPresetId = "single",
@@ -2731,9 +2780,9 @@ function useConsoleDockController({
   resolvePanelView,
   resolveTabView
 }) {
-  const panelCounterRef = (0, import_react4.useRef)(1);
-  const splitCounterRef = (0, import_react4.useRef)(1);
-  const tabCounterRef = (0, import_react4.useRef)(1);
+  const panelCounterRef = (0, import_react5.useRef)(1);
+  const splitCounterRef = (0, import_react5.useRef)(1);
+  const tabCounterRef = (0, import_react5.useRef)(1);
   function nextPanelId() {
     return `panel-${panelCounterRef.current++}`;
   }
@@ -2743,7 +2792,7 @@ function useConsoleDockController({
   function nextTabId() {
     return `tab-${tabCounterRef.current++}`;
   }
-  const [state, setState] = (0, import_react4.useState)(() => createConsoleDockState({
+  const [state, setState] = (0, import_react5.useState)(() => createConsoleDockState({
     initialTarget,
     initialPresetId,
     createPanelState: (args) => {
@@ -2757,11 +2806,11 @@ function useConsoleDockController({
     createTabId: nextTabId,
     suggestTargets
   }));
-  const viewState = (0, import_react4.useMemo)(() => buildConsoleDockViewState(state, {
+  const viewState = (0, import_react5.useMemo)(() => buildConsoleDockViewState(state, {
     resolvePanelView,
     resolveTabView
   }), [resolvePanelView, resolveTabView, state]);
-  const focusedPanel = (0, import_react4.useMemo)(
+  const focusedPanel = (0, import_react5.useMemo)(
     () => state.panels.find((panel) => panel.id === state.focusedPanelId) || null,
     [state.focusedPanelId, state.panels]
   );
@@ -2803,7 +2852,7 @@ function useConsoleDockController({
 }
 
 // ../packages/console-components/src/sidebar/console-sidebar.tsx
-var import_react5 = require("react");
+var import_react6 = require("react");
 var import_jsx_runtime13 = require("react/jsx-runtime");
 function SectionIconButton({
   action,
@@ -2843,7 +2892,7 @@ function ActionStrip({
   }
   return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("section", { className: "cc-sidebar-block cc-sidebar-block--action-strip", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-action-strip", children: block.actions.map((action, actionIndex) => {
     const buttonProps = getActionButtonProps?.({ kind: "block", block, action });
-    return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(import_react5.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
+    return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(import_react6.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
       "button",
       {
         ...buttonProps,
@@ -3074,7 +3123,7 @@ function ListBlock({
           item.id
         )) })
       ] }, section.id);
-      return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(import_react5.Fragment, { children: renderSectionContainer ? renderSectionContainer({ block, section, defaultSection }) : defaultSection }, section.id);
+      return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(import_react6.Fragment, { children: renderSectionContainer ? renderSectionContainer({ block, section, defaultSection }) : defaultSection }, section.id);
     }) })
   ] });
 }
@@ -3651,14 +3700,14 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "run_failed",
   "keep-alive",
   "tool_config_changed",
-  "tool_scope_changed",
-  "tool_call_requested",
-  "tool_call",
-  "tool_execution_started"
+  "tool_scope_changed"
 ]);
 var ACTIVITY_HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   ...HIDDEN_EVENTS,
   "text_delta",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
   "tool_result_received",
   "tool_execution_completed"
 ]);
@@ -3731,10 +3780,53 @@ function buildToolBlocks(frames) {
   }
   return toolCalls;
 }
+function parsePeerSummary(text) {
+  const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);
+  if (!match) return null;
+  const [, verb, body] = match;
+  let summary = body.trim();
+  try {
+    const parsed = JSON.parse(summary);
+    if (typeof parsed === "object" && parsed !== null) {
+      if (typeof parsed.summary === "string") summary = parsed.summary;
+      else if (typeof parsed.text === "string") summary = parsed.text;
+      else if (typeof parsed.body === "string") summary = parsed.body;
+      else if (typeof parsed.message === "string") summary = parsed.message;
+    }
+  } catch {
+    summary = summary.replace(/^["']|["']$/g, "");
+  }
+  return { verb, summary };
+}
+function renderPeerEntry(frame, entryId) {
+  const rawText = summarizeFrameData(frame.data);
+  if (!rawText) return null;
+  const peer = parsePeerSummary(rawText);
+  if (!peer) return null;
+  return {
+    kind: "message",
+    id: entryId,
+    identity: SYSTEM_IDENTITY,
+    variant: "meta",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    text: `\u21A9 ${peer.verb}: ${peer.summary}`
+  };
+}
 function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   if (frame.event === "interaction_complete") {
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
+    const peer = parsePeerSummary(text);
+    if (peer) {
+      return {
+        kind: "message",
+        id: entryId,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        createdAt: isoFromTimestampMs(frame.timestampMs),
+        text: `\u21A9 ${peer.verb}: ${peer.summary}`
+      };
+    }
     if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
       return null;
     }
@@ -3825,7 +3917,7 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
       entries.push({
         kind: "message",
         id: entryId,
-        identity: SYSTEM_IDENTITY,
+        identity: { id: "comms", label: "", role: "system", showLabel: false },
         variant: "meta",
         ...createdAt ? { createdAt } : {},
         text: summarized
@@ -3845,25 +3937,45 @@ function summarizeCommsTransport(text) {
   if (header.startsWith("[COMMS REQUEST")) {
     const intentLine = body.find((line) => line.startsWith("Intent:"));
     if (intentLine) {
-      const summary = intentLine.replace(/^Intent:\s*/, "Peer request: ");
-      if (summary === "Peer request: mob.peer_added" || summary === "Peer request: mob.peer_removed") {
+      const intent = intentLine.replace(/^Intent:\s*/, "").trim();
+      if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
         return "";
       }
-      return summary;
+      return `\u21AA request: ${intent}`;
     }
-    return "Peer request received.";
+    return "\u21AA request received";
   }
   if (header.startsWith("[COMMS RESPONSE")) {
+    const statusLine = body.find((line) => line.startsWith("Status:"));
+    const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
     const resultIndex = body.findIndex((line) => line.startsWith("Result:"));
     if (resultIndex >= 0) {
-      const joined = body.slice(resultIndex).filter((line) => !line.startsWith("[COMMS ")).join(" ");
-      return joined.replace(/^Result:\s*/, "Peer response: ");
+      const resultLines = [];
+      for (let i = resultIndex; i < body.length; i++) {
+        const line = body[i];
+        if (i > resultIndex && (line.startsWith("Status:") || line.startsWith("[COMMS "))) break;
+        resultLines.push(line);
+      }
+      const resultText = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
+      let summary = resultText;
+      try {
+        const parsed = JSON.parse(resultText);
+        if (typeof parsed === "object" && parsed !== null) {
+          if (typeof parsed.summary === "string") summary = parsed.summary;
+          else if (typeof parsed.text === "string") summary = parsed.text;
+          else if (typeof parsed.body === "string") summary = parsed.body;
+          else if (typeof parsed.message === "string") summary = parsed.message;
+        }
+      } catch {
+      }
+      const label = status ? `\u21A9 response (${status})` : "\u21A9 response";
+      return `${label}: ${summary}`;
     }
-    return "Peer response received.";
+    return status ? `\u21A9 response (${status})` : "\u21A9 response received";
   }
   if (header.startsWith("[COMMS MESSAGE")) {
     const joined = [headerTail, ...body].join(" ").trim();
-    return joined ? `Peer message: ${joined}` : "Peer message received.";
+    return joined ? `\u21A9 message: ${joined}` : "\u21A9 message received";
   }
   return text;
 }
@@ -3962,6 +4074,14 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "interaction_complete") {
       continue;
     }
+    const peerEntry = renderPeerEntry(frame, entryId);
+    if (peerEntry) {
+      entries.push(peerEntry);
+      continue;
+    }
+    if (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      continue;
+    }
     const text = `${frame.event}: ${summarizeFrameData(frame.data)}`.trim();
     entries.push({
       kind: "message",
@@ -4055,14 +4175,15 @@ function buildActivityRailViewState(args) {
     }
     return true;
   });
-  const pulseItems = filteredFrames.slice(0, 50).map((frame, index) => {
+  const pulseItems = filteredFrames.slice(0, 200).map((frame, index) => {
     const frameIdentity = frame.identity?.trim();
     const agent = frameIdentity ? agentByIdentity.get(frameIdentity) : null;
+    const ts = typeof frame.timestampMs === "number" ? new Date(frame.timestampMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
     return {
       id: `event:${frame.id || index}`,
       title: agent?.label || frameIdentity || frame.event || "event",
       line: summarizeFrameData(frame.data).slice(0, 120) || frame.event,
-      meta: frame.event || frame.id || "",
+      meta: `${frame.event}${ts ? ` \xB7 ${ts}` : ""}`,
       ...agent ? { focusId: agent.member_id } : {}
     };
   });
@@ -4666,37 +4787,44 @@ var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
   "run_failed"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const [experience, setExperience] = import_react6.default.useState(null);
-  const [agents, setAgents] = import_react6.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react6.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react6.default.useState(/* @__PURE__ */ new Set());
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react6.default.useState(/* @__PURE__ */ new Set());
-  const [inspectByIdentity, setInspectByIdentity] = import_react6.default.useState({});
-  const [routingData, setRoutingData] = import_react6.default.useState({ routes: [], deliveries: [] });
-  const [gatingData, setGatingData] = import_react6.default.useState({ pending: [], audit: [] });
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react6.default.useState("all");
-  const [loading, setLoading] = import_react6.default.useState(true);
-  const [error, setError] = import_react6.default.useState("");
-  const [, setRenderTick] = import_react6.default.useState(0);
-  const forceRender = import_react6.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const transcriptRef = import_react6.default.useRef({});
-  const pendingUserRef = import_react6.default.useRef({});
-  const liveFramesRef = import_react6.default.useRef({});
-  const activityRef = import_react6.default.useRef([]);
-  const phaseRef = import_react6.default.useRef({});
-  const refreshInFlightRef = import_react6.default.useRef(/* @__PURE__ */ new Set());
-  const experienceTimerRef = import_react6.default.useRef(null);
-  const initialTargetOpened = import_react6.default.useRef(false);
-  const phaseValueByKey = import_react6.default.useRef({});
-  const phaseSinceByKey = import_react6.default.useRef({});
-  const phaseTimerByKey = import_react6.default.useRef({});
-  const historyLoadedByKey = import_react6.default.useRef({});
-  const panelBaselineEntriesByKey = import_react6.default.useRef({});
-  const identityPanelCountByIdentity = import_react6.default.useRef({});
-  const previousIdentityPanelCountByIdentity = import_react6.default.useRef({});
-  const agentsRef = import_react6.default.useRef([]);
-  const dockRef = import_react6.default.useRef({ panels: [] });
-  import_react6.default.useEffect(() => {
+  const [experience, setExperience] = import_react7.default.useState(null);
+  const [agents, setAgents] = import_react7.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react7.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react7.default.useState(/* @__PURE__ */ new Set());
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react7.default.useState(/* @__PURE__ */ new Set());
+  const [inspectByIdentity, setInspectByIdentity] = import_react7.default.useState({});
+  const [routingData, setRoutingData] = import_react7.default.useState({ routes: [], deliveries: [] });
+  const [gatingData, setGatingData] = import_react7.default.useState({ pending: [], audit: [] });
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react7.default.useState("all");
+  const [loading, setLoading] = import_react7.default.useState(true);
+  const [error, setError] = import_react7.default.useState("");
+  const [theme, setTheme] = import_react7.default.useState(() => {
+    try {
+      return localStorage.getItem("mobkit-console-theme") || "dark";
+    } catch {
+      return "dark";
+    }
+  });
+  const [, setRenderTick] = import_react7.default.useState(0);
+  const forceRender = import_react7.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const transcriptRef = import_react7.default.useRef({});
+  const pendingUserRef = import_react7.default.useRef({});
+  const liveFramesRef = import_react7.default.useRef({});
+  const activityRef = import_react7.default.useRef([]);
+  const phaseRef = import_react7.default.useRef({});
+  const refreshInFlightRef = import_react7.default.useRef(/* @__PURE__ */ new Set());
+  const experienceTimerRef = import_react7.default.useRef(null);
+  const initialTargetOpened = import_react7.default.useRef(false);
+  const phaseValueByKey = import_react7.default.useRef({});
+  const phaseSinceByKey = import_react7.default.useRef({});
+  const phaseTimerByKey = import_react7.default.useRef({});
+  const historyLoadedByKey = import_react7.default.useRef({});
+  const panelBaselineEntriesByKey = import_react7.default.useRef({});
+  const identityPanelCountByIdentity = import_react7.default.useRef({});
+  const previousIdentityPanelCountByIdentity = import_react7.default.useRef({});
+  const agentsRef = import_react7.default.useRef([]);
+  const dockRef = import_react7.default.useRef({ panels: [] });
+  import_react7.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
   const dock = useConsoleDockController({
@@ -4706,7 +4834,7 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     dockRef.current = {
       panels: dock.viewState.panels.map((panel) => ({
         id: panel.id,
@@ -4714,7 +4842,7 @@ function ConsoleApp({ baseUrl }) {
       }))
     };
   }, [dock.viewState.panels]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     const counts = {};
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
@@ -4724,7 +4852,7 @@ function ConsoleApp({ baseUrl }) {
     }
     identityPanelCountByIdentity.current = counts;
   }, [dock.viewState.panels]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     const activePanelKeys = new Set(
       dock.viewState.panels.map((panel) => {
         if (!panel.target) return null;
@@ -4765,7 +4893,7 @@ function ConsoleApp({ baseUrl }) {
       return changed ? next : current;
     });
   }, [dock.viewState.panels]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     const previousCounts = previousIdentityPanelCountByIdentity.current;
     const nextCounts = identityPanelCountByIdentity.current;
     for (const panel of dock.viewState.panels) {
@@ -4794,7 +4922,7 @@ function ConsoleApp({ baseUrl }) {
     }
     previousIdentityPanelCountByIdentity.current = { ...nextCounts };
   }, [dock.viewState.panels]);
-  const loadExperience = import_react6.default.useCallback(async () => {
+  const loadExperience = import_react7.default.useCallback(async () => {
     const [experienceJson, modulesJson] = await Promise.all([
       fetchJson(baseUrl, "/console/experience"),
       fetchJson(baseUrl, "/console/modules")
@@ -4805,7 +4933,7 @@ function ConsoleApp({ baseUrl }) {
     setAgents(nextAgents);
     setActiveActivityPresetId((current) => current || experienceJson.activity_feed?.active_preset_id || "all");
   }, [baseUrl]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -4818,14 +4946,14 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
     const firstAddressable = agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
     if (!firstAddressable) return;
     initialTargetOpened.current = true;
     dock.openTarget(buildDockTarget(firstAddressable), "replace_focused");
   }, [agents, dock]);
-  const refreshPanelData = import_react6.default.useCallback(async () => {
+  const refreshPanelData = import_react7.default.useCallback(async () => {
     const openPanels = dockRef.current.panels.map((p) => p.target).filter(Boolean);
     const inspectTargets = openPanels.filter((t) => t.kind === "identity-inspect");
     const hasRouting = openPanels.some((t) => t.kind === "routing");
@@ -4857,11 +4985,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }, [baseUrl]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react6.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react7.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -4871,7 +4999,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 500);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react6.default.useCallback((identity) => {
+  const scheduleHistoryRefresh = import_react7.default.useCallback((identity) => {
     if (refreshInFlightRef.current.has(identity)) return;
     refreshInFlightRef.current.add(identity);
     setTimeout(async () => {
@@ -4905,9 +5033,10 @@ function ConsoleApp({ baseUrl }) {
             const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
             return text && !persistedTexts.has(text);
           });
-          transcriptRef.current[panelKey] = clipTranscriptWindow(
-            sortConversationTimelineEntries([...mapped, ...existingOptimistic])
-          );
+          transcriptRef.current[panelKey] = clipTranscriptWindow([
+            ...mapped,
+            ...existingOptimistic
+          ]);
           liveFramesRef.current[panelKey] = [];
           phaseRef.current[panelKey] = null;
         }
@@ -4917,7 +5046,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }, 200);
   }, [baseUrl, forceRender]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -4944,7 +5073,7 @@ function ConsoleApp({ baseUrl }) {
       })();
     }
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     void queryEvents(baseUrl, {}, 80).then((frames) => {
       activityRef.current = dedupeFrames(frames).slice(-80).reverse();
       forceRender();
@@ -4980,7 +5109,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe();
     };
   }, [baseUrl, forceRender, scheduleHistoryRefresh, scheduleExperienceRefresh]);
-  import_react6.default.useEffect(() => {
+  import_react7.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current)) {
         window.clearTimeout(timer);
@@ -5423,12 +5552,30 @@ function ConsoleApp({ baseUrl }) {
       row.addressability
     ] }, row.identity)) }) });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-theme-scope", "data-cc-theme": "dark", "data-testid": "meerkat-console", children: [
+  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-theme-scope", "data-cc-theme": theme, "data-testid": "meerkat-console", children: [
     /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(SpriteSheet, {}),
     /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
       ConsoleWorkbench,
       {
         launcherResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "pane-resizer", "aria-hidden": "true", "data-testid": "resize:sidebar", onPointerDown: handleSidebarResize }),
+        launcherHeader: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          "button",
+          {
+            className: "console-theme-toggle",
+            "data-testid": "theme-toggle",
+            type: "button",
+            title: `Switch to ${theme === "dark" ? "light" : "dark"} mode`,
+            onClick: () => {
+              const next = theme === "dark" ? "light" : "dark";
+              setTheme(next);
+              try {
+                localStorage.setItem("mobkit-console-theme", next);
+              } catch {
+              }
+            },
+            children: theme === "dark" ? "\u2600" : "\u263E"
+          }
+        ),
         launcher: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
           ConsoleSidebar,
           {
