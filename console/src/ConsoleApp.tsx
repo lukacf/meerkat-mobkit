@@ -112,6 +112,14 @@ const PANEL_ROUTABLE_EVENTS = new Set([
 const HISTORY_REFRESH_EVENTS = new Set([
   "interaction_complete", "interaction_failed", "run_completed", "run_failed",
 ]);
+// Events filtered from the activity rail — don't buffer them
+const ACTIVITY_SKIP_EVENTS = new Set([
+  "subscribed", "run_started", "run_completed", "turn_started", "turn_completed",
+  "text_complete", "reasoning_delta", "reasoning_complete", "interaction_started",
+  "run_failed", "keep-alive", "tool_config_changed", "tool_scope_changed",
+  "text_delta", "tool_call_requested", "tool_call", "tool_execution_started",
+  "tool_result_received", "tool_execution_completed",
+]);
 
 // ============================================================================
 // CONSOLE APP
@@ -418,8 +426,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       .catch(() => {});
 
     const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
-      // 1. Activity rail
-      activityRef.current = [frame, ...activityRef.current].slice(0, 200);
+      // 1. Activity rail — only buffer events that pass the display filter
+      if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
+        activityRef.current = [frame, ...activityRef.current].slice(0, 200);
+      }
 
       // 2. Live overlay — append by identity with event_id dedup
       const identity = frame.identity?.trim();

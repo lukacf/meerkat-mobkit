@@ -211,6 +211,40 @@ function renderBlock(
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
 
+function copyText(text: string) {
+  navigator.clipboard?.writeText(text).catch(() => {});
+}
+
+function toolBlockCopyText(block: ConversationRichToolCallBlock): string {
+  if (block.peerTarget) {
+    const dir = block.peerIncoming ? "← from" : "→ to";
+    return [
+      `${dir} ${block.peerTarget}`,
+      block.peerIntent,
+      block.peerBody,
+      block.result,
+    ].filter(Boolean).join(": ").trim();
+  }
+  const parts = [`$ ${block.name}`];
+  if (block.arguments) parts.push(`Input: ${block.arguments}`);
+  if (block.result) parts.push(`Result: ${block.result}`);
+  return parts.join("\n").trim();
+}
+
+function CopyBtn({ text, label = "Copy" }: { text: string; label?: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      className="cc-tool-call__copy"
+      type="button"
+      title={label}
+      onClick={(e) => { e.stopPropagation(); copyText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+    >
+      {copied ? "✓" : "⎘"}
+    </button>
+  );
+}
+
 function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   const [expanded, setExpanded] = useState(false);
   const isPeer = PEER_TOOL_NAMES.has(block.name);
@@ -234,6 +268,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
           <span className="cc-tool-call__name">{block.peerIncoming ? `Received from ${target}` : target}</span>
           {content && <span className="cc-tool-call__preview">{content}</span>}
           <span className="cc-tool-call__status">{statusIcon}</span>
+          <CopyBtn text={toolBlockCopyText(block)} />
         </button>
         {expanded && block.result && (
           <div className="cc-tool-call__body">
@@ -268,6 +303,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
         <span className="cc-tool-call__name">{block.name}</span>
         {argsPreview && <span className="cc-tool-call__preview">{argsPreview}</span>}
         <span className="cc-tool-call__status">{statusIcon} {block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"}</span>
+        <CopyBtn text={toolBlockCopyText(block)} />
       </button>
       {expanded && (
         <div className="cc-tool-call__body">
@@ -314,6 +350,7 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
         <span className="cc-tool-call__icon">{arrow}</span>
         <span className="cc-tool-call__name">{label}</span>
         <span className="cc-tool-call__status">{statusIcon}</span>
+        <CopyBtn text={blocks.map((b) => toolBlockCopyText(b)).join("\n")} />
       </button>
       {expanded && (
         <div className="cc-tool-call__body">
