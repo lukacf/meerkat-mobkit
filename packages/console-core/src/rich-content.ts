@@ -64,6 +64,8 @@ export interface ConversationRichToolCallBlock {
   peerTarget?: string;
   peerIntent?: string;
   peerBody?: string;
+  /** Incoming peer message (received via comms drain, not a tool call) */
+  peerIncoming?: boolean;
 }
 
 export interface ConversationRichFileChangeBlock {

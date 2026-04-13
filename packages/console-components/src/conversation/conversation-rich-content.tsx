@@ -217,11 +217,12 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   const statusIcon = block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯";
   const statusClass = `cc-tool-call--${block.status}`;
 
-  if (isPeer) {
+  if (isPeer || block.peerIncoming) {
     const target = block.peerTarget || "peer";
     const content = block.peerBody || block.peerIntent || "";
+    const arrow = block.peerIncoming ? "↙" : "↗";
     return (
-      <section className={clsx("cc-tool-call cc-tool-call--peer", statusClass)}>
+      <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass)}>
         <button
           className="cc-tool-call__header"
           type="button"
@@ -229,7 +230,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
           aria-expanded={expanded}
         >
           <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
-          <span className="cc-tool-call__icon">↗</span>
+          <span className="cc-tool-call__icon">{arrow}</span>
           <span className="cc-tool-call__name">{target}</span>
           {content && <span className="cc-tool-call__preview">{content}</span>}
           <span className="cc-tool-call__status">{statusIcon}</span>
@@ -295,9 +296,14 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
   const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
+  const isIncoming = blocks[0]?.peerIncoming;
+  const arrow = isIncoming ? "↙" : "↗";
+  const label = isIncoming
+    ? `Received from ${targets.join(", ")}`
+    : `Sent to ${targets.join(", ")}`;
 
   return (
-    <section className={clsx("cc-tool-call cc-tool-call--peer-group", statusClass)}>
+    <section className={clsx("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass)}>
       <button
         className="cc-tool-call__header"
         type="button"
@@ -305,15 +311,15 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
         aria-expanded={expanded}
       >
         <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
-        <span className="cc-tool-call__icon">↗</span>
-        <span className="cc-tool-call__name">Sent to {targets.join(", ")}</span>
+        <span className="cc-tool-call__icon">{arrow}</span>
+        <span className="cc-tool-call__name">{label}</span>
         <span className="cc-tool-call__status">{statusIcon}</span>
       </button>
       {expanded && (
         <div className="cc-tool-call__body">
           {blocks.map((block, i) => (
             <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
-              <span className="cc-tool-call__peer-target">→ {block.peerTarget || "peer"}</span>
+              <span className="cc-tool-call__peer-target">{isIncoming ? "←" : "→"} {block.peerTarget || "peer"}</span>
               {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
               {block.peerBody && <span className="cc-tool-call__peer-body">{block.peerBody}</span>}
               <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
@@ -334,7 +340,11 @@ export function ConversationRichContent({
 }: ConversationRichContentProps) {
   // Check if all blocks are peer tool calls — render as grouped blob
   const allPeerTools = blocks.length > 1
-    && blocks.every((b) => b.type === "tool-call" && PEER_TOOL_NAMES.has((b as ConversationRichToolCallBlock).name));
+    && blocks.every((b) => {
+      if (b.type !== "tool-call") return false;
+      const tc = b as ConversationRichToolCallBlock;
+      return PEER_TOOL_NAMES.has(tc.name) || tc.peerIncoming;
+    });
 
   if (allPeerTools) {
     return <PeerToolGroup blocks={blocks as ConversationRichToolCallBlock[]} />;
