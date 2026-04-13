@@ -457,7 +457,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           });
 
           // Reconcile pending user entry
-          const persistedTexts = new Set(
+          const persistedUserTexts = new Set(
             mapped
               .filter((e) => e.kind === "message" && e.identity.id === "user")
               .map((e) => normalizeComparableTranscriptText(e.text?.trim() || ""))
@@ -466,22 +466,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           const pending = pendingUserRef.current[panelKey];
           if (pending?.kind === "message") {
             const pendingText = normalizeComparableTranscriptText(pending.text?.trim() || "");
-            if (pendingText && persistedTexts.has(pendingText)) {
+            if (pendingText && persistedUserTexts.has(pendingText)) {
               pendingUserRef.current[panelKey] = null;
             }
           }
 
-          // Keep un-persisted optimistic user entries
-          const existingOptimistic = (transcriptRef.current[panelKey] || []).filter((entry) => {
-            if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) return false;
-            const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
-            return text && !persistedTexts.has(text);
-          });
-
-          transcriptRef.current[panelKey] = clipTranscriptWindow([
-            ...mapped,
-            ...existingOptimistic,
-          ]);
+          transcriptRef.current[panelKey] = clipTranscriptWindow(mapped);
           liveFramesRef.current[panelKey] = [];
           phaseRef.current[panelKey] = null;
         }

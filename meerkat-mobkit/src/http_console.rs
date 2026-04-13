@@ -873,26 +873,34 @@ async fn handle_console_runtime_rpc(
                 );
             }
 
+            // Emit interaction_started BEFORE dispatching so the event has
+            // a lower sequence number than any agent response events it triggers.
+            if let Some(store) = &console_events {
+                store.accept_interaction(identity, &interaction_id).await;
+            }
+
             match runtime
                 .send_message(identity, ContentInput::Text(request_params.content.clone()))
                 .await
             {
-                Ok(_session_id) => {
-                    if let Some(store) = &console_events {
-                        store.accept_interaction(identity, &interaction_id).await;
-                    }
-                    response_value(
-                        response_id,
-                        Some(json!({
-                            "interaction_id": interaction_id,
-                            "identity": identity,
-                        })),
-                        None,
-                    )
-                }
+                Ok(_session_id) => response_value(
+                    response_id,
+                    Some(json!({
+                        "interaction_id": interaction_id,
+                        "identity": identity,
+                    })),
+                    None,
+                ),
                 Err(err) => {
                     if let Some(store) = &console_events {
-                        store.discard_interaction(identity, &interaction_id).await;
+                        store
+                            .fail_interaction(
+                                identity,
+                                &interaction_id,
+                                "dispatch_failed",
+                                json!({ "reason": err.to_string() }),
+                            )
+                            .await;
                     }
                     internal_error(response_id, format!("interact failed: {err}"))
                 }
