@@ -120,6 +120,31 @@ svg {
   color: rgba(78, 93, 114, 0.5);
 }
 
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__pill,
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__sub-pill {
+  color: rgba(23, 32, 44, 0.82);
+  background: rgba(91, 109, 136, 0.1);
+  border-color: rgba(91, 109, 136, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__pill svg,
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__sub-pill svg {
+  stroke: rgba(23, 32, 44, 0.6);
+}
+
+/* Activity rail: hide pointless dots */
+.cc-activity-rail__pulse-mark {
+  display: none;
+}
+
+/* Activity filter buttons in light mode */
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-activity-rail__action {
+  color: rgba(23, 32, 44, 0.7);
+  background: rgba(91, 109, 136, 0.08);
+  border-color: rgba(91, 109, 136, 0.14);
+}
+
 [data-testid="meerkat-console"][data-cc-theme="light"] .cc-activity-rail__rail {
   background: rgba(255, 255, 255, 0.92);
   border-color: rgba(91, 109, 136, 0.14);

@@ -406,10 +406,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // =========================================================================
 
   React.useEffect(() => {
-    // Seed activity with recent history
-    void queryEvents(baseUrl, {}, 80)
-      .then((frames) => { activityRef.current = dedupeFrames(frames).slice(-80).reverse(); forceRender(); })
-      .catch(() => {});
+    // Seed activity with recent history (only if empty — don't reset on effect re-run)
+    if (activityRef.current.length === 0) {
+      void queryEvents(baseUrl, {}, 80)
+        .then((frames) => { activityRef.current = dedupeFrames(frames).slice(-80).reverse(); forceRender(); })
+        .catch(() => {});
+    }
 
     const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
       // 1. Activity rail
