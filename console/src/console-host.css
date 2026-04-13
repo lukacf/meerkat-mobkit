@@ -95,6 +95,15 @@ svg {
   --cc-sidebar-pad-right: 14px;
 }
 
+/* ── MobKit dark theme: deeper than shared defaults ── */
+[data-testid="meerkat-console"][data-cc-theme="dark"] {
+  --cc-surface-canvas: #131316;
+  --cc-surface-card: rgba(21, 22, 27, 0.92);
+  --cc-surface-soft: rgba(255, 255, 255, 0.04);
+  --cc-surface-raised: rgba(255, 255, 255, 0.05);
+  --cc-surface-hover: rgba(255, 255, 255, 0.06);
+}
+
 /* ── Workbench ── */
 
 .cc-workbench {
@@ -121,7 +130,7 @@ svg {
 
 /* Single panel: same surface, rounded on the right side only */
 .cc-dock-panel.is-solitary {
-  background: var(--_cc-surface-card, var(--_cc-surface-canvas));
+  background: var(--cc-surface-card, var(--_cc-surface-card));
   border: none;
   border-radius: 0 16px 16px 0;
   box-shadow: none;
