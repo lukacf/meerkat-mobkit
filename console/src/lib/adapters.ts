@@ -711,15 +711,16 @@ function renderRunStartedPromptEntries(
   }
 
   if (prompt.startsWith("[COMMS")) {
-    const incomingBlock = parseIncomingCommsBlock(prompt);
-    if (incomingBlock) {
+    const incomingBlocks = parseIncomingCommsBlocks(prompt);
+    if (incomingBlocks.length > 0) {
+      // All blocks from a single prompt go into one entry (they're batched)
       entries.push({
         kind: "message",
         id: entryId,
         identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
         variant: "rich",
         ...(createdAt ? { createdAt } : {}),
-        blocks: [incomingBlock],
+        blocks: incomingBlocks,
       });
     } else {
       const summarized = summarizeCommsTransport(prompt).trim();
@@ -821,83 +822,94 @@ function summarizeCommsTransport(text: string): string {
   return text;
 }
 
-function parseIncomingCommsBlock(prompt: string): ConversationRichToolCallBlock | null {
-  const lines = prompt.split("\n").map((line) => line.trim()).filter(Boolean);
-  const header = lines[0] || "";
-
-  // Extract sender from header: [COMMS RESPONSE from mob/profile/member-id ...]
-  const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
-  const sender = senderMatch ? senderMatch[1] : null;
-  if (!sender) return null;
-
-  const body = lines.slice(1).filter((line) => !line.startsWith("[COMMS ") && !line.startsWith("[EVENT via rpc]"));
-
-  if (header.startsWith("[COMMS RESPONSE")) {
-    const statusLine = body.find((line) => line.startsWith("Status:"));
-    const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
-    const resultIndex = body.findIndex((line) => line.startsWith("Result:"));
-    let resultSummary = "";
-    if (resultIndex >= 0) {
-      const resultLines: string[] = [];
-      for (let i = resultIndex; i < body.length; i++) {
-        if (i > resultIndex && (body[i].startsWith("Status:") || body[i].startsWith("[COMMS "))) break;
-        resultLines.push(body[i]);
-      }
-      const raw = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
-      try {
-        const parsed = JSON.parse(raw);
-        if (typeof parsed === "object" && parsed !== null) {
-          resultSummary = parsed.summary || parsed.text || parsed.body || parsed.message || raw;
-        } else {
-          resultSummary = raw;
-        }
-      } catch {
-        resultSummary = raw;
-      }
+function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock[] {
+  // Split prompt into individual [COMMS ...] sections
+  const sections: string[] = [];
+  let current = "";
+  for (const line of prompt.split("\n")) {
+    if (line.trimStart().startsWith("[COMMS ") && current) {
+      sections.push(current);
+      current = line + "\n";
+    } else {
+      current += line + "\n";
     }
-    return {
-      type: "tool-call",
-      toolCallId: `incoming-${sender}-${Date.now()}`,
-      name: "response",
-      arguments: "",
-      status: status === "completed" ? "success" : status === "failed" ? "error" : "success",
-      peerTarget: sender,
-      peerIntent: resultSummary || status || "response",
-      peerIncoming: true,
-    };
+  }
+  if (current.trim()) sections.push(current);
+
+  const blocks: ConversationRichToolCallBlock[] = [];
+  let counter = 0;
+
+  for (const section of sections) {
+    const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
+    const header = lines[0] || "";
+    if (!header.startsWith("[COMMS")) continue;
+
+    const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
+    const sender = senderMatch ? senderMatch[1] : null;
+    if (!sender) continue;
+
+    const body = lines.slice(1).filter((l) => !l.startsWith("[COMMS ") && !l.startsWith("[EVENT via rpc]"));
+    counter++;
+
+    if (header.startsWith("[COMMS RESPONSE")) {
+      const statusLine = body.find((l) => l.startsWith("Status:"));
+      const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
+      const resultIndex = body.findIndex((l) => l.startsWith("Result:"));
+      let resultSummary = "";
+      if (resultIndex >= 0) {
+        const resultLines: string[] = [];
+        for (let i = resultIndex; i < body.length; i++) {
+          if (i > resultIndex && (body[i].startsWith("Status:") || body[i].startsWith("[COMMS "))) break;
+          resultLines.push(body[i]);
+        }
+        const raw = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
+        try {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed === "object" && parsed !== null) {
+            resultSummary = parsed.summary || parsed.text || parsed.body || parsed.message || raw;
+          } else { resultSummary = raw; }
+        } catch { resultSummary = raw; }
+      }
+      blocks.push({
+        type: "tool-call",
+        toolCallId: `incoming-${sender}-${counter}`,
+        name: "response",
+        arguments: "",
+        status: status === "failed" ? "error" : "success",
+        peerTarget: sender,
+        peerIntent: resultSummary || status || "response",
+        peerIncoming: true,
+      });
+    } else if (header.startsWith("[COMMS REQUEST")) {
+      const intentLine = body.find((l) => l.startsWith("Intent:"));
+      const intent = intentLine ? intentLine.replace(/^Intent:\s*/, "").trim() : "";
+      if (intent === "mob.peer_added" || intent === "mob.peer_removed") continue;
+      blocks.push({
+        type: "tool-call",
+        toolCallId: `incoming-${sender}-${counter}`,
+        name: "request",
+        arguments: "",
+        status: "success",
+        peerTarget: sender,
+        peerIntent: intent || "request",
+        peerIncoming: true,
+      });
+    } else if (header.startsWith("[COMMS MESSAGE")) {
+      const joined = body.join(" ").trim();
+      blocks.push({
+        type: "tool-call",
+        toolCallId: `incoming-${sender}-${counter}`,
+        name: "message",
+        arguments: "",
+        status: "success",
+        peerTarget: sender,
+        peerIntent: joined || "message",
+        peerIncoming: true,
+      });
+    }
   }
 
-  if (header.startsWith("[COMMS REQUEST")) {
-    const intentLine = body.find((line) => line.startsWith("Intent:"));
-    const intent = intentLine ? intentLine.replace(/^Intent:\s*/, "").trim() : "";
-    if (intent === "mob.peer_added" || intent === "mob.peer_removed") return null;
-    return {
-      type: "tool-call",
-      toolCallId: `incoming-${sender}-${Date.now()}`,
-      name: "request",
-      arguments: "",
-      status: "success",
-      peerTarget: sender,
-      peerIntent: intent || "request",
-      peerIncoming: true,
-    };
-  }
-
-  if (header.startsWith("[COMMS MESSAGE")) {
-    const joined = body.join(" ").trim();
-    return {
-      type: "tool-call",
-      toolCallId: `incoming-${sender}-${Date.now()}`,
-      name: "message",
-      arguments: "",
-      status: "success",
-      peerTarget: sender,
-      peerIntent: joined || "message",
-      peerIncoming: true,
-    };
-  }
-
-  return null;
+  return blocks;
 }
 
 function extractEmbeddedRpcPrompt(text: string): string | null {
@@ -1175,27 +1187,7 @@ export function mapFramesToTimelineEntries(
           || options.suppressEmbeddedRunStartedPrompt === true,
       });
       if (promptEntries.length > 0) {
-        for (const promptEntry of promptEntries) {
-          // Group consecutive incoming peer blocks
-          if (
-            promptEntry.variant === "rich"
-            && Array.isArray(promptEntry.blocks)
-            && promptEntry.blocks.length === 1
-            && (promptEntry.blocks[0] as Record<string, unknown>).peerIncoming
-          ) {
-            const lastEntry = entries[entries.length - 1];
-            const lastIsIncomingGroup = lastEntry
-              && lastEntry.variant === "rich"
-              && Array.isArray(lastEntry.blocks)
-              && lastEntry.blocks.length > 0
-              && lastEntry.blocks.every((b: Record<string, unknown>) => b.type === "tool-call" && b.peerIncoming);
-            if (lastIsIncomingGroup) {
-              (lastEntry.blocks as unknown[]).push(promptEntry.blocks[0]);
-              continue;
-            }
-          }
-          entries.push(promptEntry);
-        }
+        entries.push(...promptEntries);
         continue;
       }
     }
