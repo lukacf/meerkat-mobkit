@@ -209,6 +209,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const liveFramesRef = React.useRef<Record<string, ConsoleFrame[]>>({});
   const activityRef = React.useRef<ConsoleFrame[]>([]);
   const phaseRef = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
+  // Identity-level frame buffer — accumulates events even when the panel isn't displayed
+  const identityFrameBuffer = React.useRef<Record<string, ConsoleFrame[]>>({});
 
   // --- Scheduling refs ---
   const refreshInFlightRef = React.useRef<Set<string>>(new Set());
@@ -484,6 +486,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
       phaseRef.current[panelKey] = null;
     }
+    // Clear identity buffer — events have been materialized
+    delete identityFrameBuffer.current[identity];
     forceRender();
   }, [forceRender]);
 
@@ -493,6 +497,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       const panelKey = buildPanelConversationKey(panel.id, target);
+      const identityKey = target.identity || target.memberId;
+
+      // Seed live frames from identity buffer (events that arrived while panel wasn't displayed)
+      const buffered = identityFrameBuffer.current[identityKey] || [];
+      if (buffered.length > 0) {
+        const existing = liveFramesRef.current[panelKey] || [];
+        liveFramesRef.current[panelKey] = dedupeFrames([...existing, ...buffered]);
+      }
+
       if (historyLoadedByKey.current[panelKey]) continue;
       historyLoadedByKey.current[panelKey] = true;
 
@@ -531,9 +544,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // 1. Activity rail — mutate ref
       activityRef.current = [frame, ...activityRef.current].slice(0, 200);
 
-      // 2. Route to open chat panels by identity — mutate ref
+      // 2. Buffer by identity (persists even when panel isn't displayed)
+      //    AND route to any currently displayed panels
       const identity = frame.identity?.trim();
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
+        if (!identityFrameBuffer.current[identity]) identityFrameBuffer.current[identity] = [];
+        identityFrameBuffer.current[identity] = dedupeFrames([
+          ...identityFrameBuffer.current[identity],
+          frame,
+        ]);
+
         for (const panel of dockRef.current.panels) {
           const target = panel.target;
           if (!target || target.kind !== "agent-chat") continue;
