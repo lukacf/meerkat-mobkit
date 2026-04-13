@@ -405,13 +405,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // GLOBAL SSE EVENT STREAM — the core event loop
   // =========================================================================
 
+  // Stable refs for callbacks used in SSE handler — prevents effect re-runs
+  const scheduleHistoryRefreshRef = React.useRef(scheduleHistoryRefresh);
+  scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
+  const scheduleExperienceRefreshRef = React.useRef(scheduleExperienceRefresh);
+  scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
+
   React.useEffect(() => {
-    // Seed activity with recent history (only if empty — don't reset on effect re-run)
-    if (activityRef.current.length === 0) {
-      void queryEvents(baseUrl, {}, 80)
-        .then((frames) => { activityRef.current = dedupeFrames(frames).slice(-80).reverse(); forceRender(); })
-        .catch(() => {});
-    }
+    // Seed activity with recent history (only on mount)
+    void queryEvents(baseUrl, {}, 80)
+      .then((frames) => { activityRef.current = dedupeFrames(frames).slice(-80).reverse(); forceRender(); })
+      .catch(() => {});
 
     const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
       // 1. Activity rail
@@ -432,15 +436,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
       // 4. Terminal events → refetch server history
       if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
-        scheduleHistoryRefresh(identity);
+        scheduleHistoryRefreshRef.current(identity);
       }
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
-        scheduleExperienceRefresh();
+        scheduleExperienceRefreshRef.current();
       }
     });
 
     return () => { unsubscribe(); };
-  }, [baseUrl, forceRender, scheduleHistoryRefresh, scheduleExperienceRefresh]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl]);
 
   // Timer cleanup on unmount
   React.useEffect(() => {

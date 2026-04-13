@@ -156,8 +156,16 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
       return block.text.trim();
     case "thinking":
       return [block.label, block.text].filter(Boolean).join("\n").trim();
-    case "tool-call":
-      return [block.name, block.arguments, block.result || ""].filter(Boolean).join("\n").trim();
+    case "tool-call": {
+      if (block.peerTarget) {
+        const dir = block.peerIncoming ? "← from" : "→ to";
+        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, block.result].filter(Boolean).join(": ").trim();
+      }
+      const parts = [`$ ${block.name}`];
+      if (block.arguments) parts.push(`Input: ${block.arguments}`);
+      if (block.result) parts.push(`Result: ${block.result}`);
+      return parts.join("\n").trim();
+    }
     default:
       return "";
   }

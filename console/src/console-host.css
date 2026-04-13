@@ -133,16 +133,9 @@ svg {
   stroke: rgba(23, 32, 44, 0.6);
 }
 
-/* Activity rail: hide pointless dots */
-.cc-activity-rail__pulse-mark {
+/* Activity rail: hide pointless status dots */
+.cc-activity-rail__pulse-status {
   display: none;
-}
-
-/* Activity filter buttons in light mode */
-[data-testid="meerkat-console"][data-cc-theme="light"] .cc-activity-rail__action {
-  color: rgba(23, 32, 44, 0.7);
-  background: rgba(91, 109, 136, 0.08);
-  border-color: rgba(91, 109, 136, 0.14);
 }
 
 [data-testid="meerkat-console"][data-cc-theme="light"] .cc-activity-rail__rail {
