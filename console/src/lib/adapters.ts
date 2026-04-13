@@ -1092,7 +1092,10 @@ export function mapFramesToTimelineEntries(
     suppressEmbeddedRunStartedPrompt?: boolean;
   } = {},
 ): ConversationTimelineEntry[] {
-  const orderedFrames = sortFramesForTranscript(frames);
+  // Use frames in their original store order — sortFramesForTranscript
+  // reorders by interaction group timestamp which interleaves unscoped
+  // comms events into the middle of user interactions.
+  const orderedFrames = frames;
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = new Set<string>();
