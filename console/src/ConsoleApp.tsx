@@ -499,16 +499,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const panelKey = buildPanelConversationKey(panel.id, target);
       const identityKey = target.identity || target.memberId;
 
-      // Seed live frames from identity buffer (events that arrived while panel wasn't displayed)
-      const buffered = identityFrameBuffer.current[identityKey] || [];
-      if (buffered.length > 0) {
-        const existing = liveFramesRef.current[panelKey] || [];
-        liveFramesRef.current[panelKey] = dedupeFrames([...existing, ...buffered]);
-      }
-
-      if (historyLoadedByKey.current[panelKey]) continue;
-      historyLoadedByKey.current[panelKey] = true;
-
+      // Fetch history from server — on first load this populates the transcript,
+      // on subsequent switches this picks up events that arrived while panel was hidden.
+      // Uses the ob3_validator pattern: server history is the source of truth.
       void (async () => {
         try {
           const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
@@ -520,11 +513,48 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             renderInteractionStartsAsUser: true,
             renderTextDeltas: false,
           });
-          transcriptRef.current[panelKey] = clipTranscriptWindow(mapped);
+
+          const existing = transcriptRef.current[panelKey] || [];
+          if (existing.length === 0) {
+            // First load — use server data directly
+            transcriptRef.current[panelKey] = clipTranscriptWindow(mapped);
+          } else {
+            // Subsequent switch — append entries the client doesn't have yet
+            const existingTexts = new Set(
+              existing
+                .filter((e) => e.kind === "message")
+                .map((e) => normalizeComparableTranscriptText(e.text?.trim() || ""))
+                .filter(Boolean),
+            );
+            const existingIds = new Set(existing.map((e) => e.id).filter(Boolean));
+            const newEntries = mapped.filter((e) => {
+              if (existingIds.has(e.id)) return false;
+              if (e.kind === "message") {
+                const text = normalizeComparableTranscriptText(e.text?.trim() || "");
+                if (text && existingTexts.has(text)) return false;
+              }
+              return true;
+            });
+            if (newEntries.length > 0) {
+              transcriptRef.current[panelKey] = clipTranscriptWindow([
+                ...existing,
+                ...newEntries,
+              ]);
+            }
+          }
+
+          // Seed live frames from identity buffer
+          const buffered = identityFrameBuffer.current[identityKey] || [];
+          if (buffered.length > 0) {
+            const existingLive = liveFramesRef.current[panelKey] || [];
+            liveFramesRef.current[panelKey] = dedupeFrames([...existingLive, ...buffered]);
+            delete identityFrameBuffer.current[identityKey];
+          }
+
           if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
           forceRender();
         } catch {
-          historyLoadedByKey.current[panelKey] = false;
+          // Silently fail — panel will show whatever is cached
         }
       })();
     }
