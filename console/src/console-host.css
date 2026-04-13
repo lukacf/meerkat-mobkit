@@ -41,8 +41,8 @@ body {
   color: rgba(232, 234, 237, 0.96);
 }
 
-/* The theme scope IS the visual root — use its variables for bg/color */
-.cc-theme-scope {
+/* The root theme scope is the visual background */
+[data-testid="meerkat-console"] {
   background: var(--_cc-surface-canvas);
   color: var(--_cc-foreground);
 }
@@ -83,8 +83,6 @@ svg {
 [data-testid="meerkat-console"] {
   height: 100%;
   width: 100%;
-  background: inherit;
-  color: inherit;
 }
 
 /* ── Spacing tokens ── */
