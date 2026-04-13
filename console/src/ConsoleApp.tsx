@@ -381,14 +381,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       const identity = target.identity || target.memberId;
-      if (serverHistoryRef.current[identity]) continue; // already loaded
 
-      // Fetch history for this identity
+      // If history exists and no stale live overlay, skip fetch
+      const hasHistory = Boolean(serverHistoryRef.current[identity]);
+      const hasStaleOverlay = (liveOverlayRef.current[identity]?.length || 0) > 0;
+      if (hasHistory && !hasStaleOverlay) continue;
+
+      // Clear live overlay immediately to prevent stale frames flashing
+      liveOverlayRef.current[identity] = [];
+
       void (async () => {
         try {
           const frames = await queryEvents(baseUrl, { identity }, 400);
           serverHistoryRef.current[identity] = frames;
-          liveOverlayRef.current[identity] = liveOverlayRef.current[identity] || [];
+          liveOverlayRef.current[identity] = [];
           forceRender();
         } catch { /* silent */ }
       })();
