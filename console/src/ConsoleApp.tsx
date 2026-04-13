@@ -432,65 +432,62 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }, 500);
   }, [loadExperience, refreshPanelData]);
 
-  // --- Schedule history refresh for an identity (called from SSE handler on terminal events) ---
-  const scheduleHistoryRefresh = React.useCallback((identity: string) => {
-    if (refreshInFlightRef.current.has(identity)) return;
-    refreshInFlightRef.current.add(identity);
+  // --- On terminal events: materialize live frames into transcript, clear live overlay ---
+  // This is the meerkat-app pattern: live events accumulate in liveFramesRef,
+  // and on run_completed we convert them to transcript entries and clear the overlay.
+  // We NEVER re-fetch and replace the transcript — that causes message jumping.
+  const materializeLiveFrames = React.useCallback((identity: string) => {
+    for (const panel of dockRef.current.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      const panelKey = buildPanelConversationKey(panel.id, target);
+      const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
 
-    setTimeout(async () => {
-      try {
-        for (const panel of dockRef.current.panels) {
-          const target = panel.target;
-          if (!target || target.kind !== "agent-chat") continue;
-          if ((target.identity || target.memberId) !== identity) continue;
-          const panelKey = buildPanelConversationKey(panel.id, target);
-          const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
+      const liveFrames = liveFramesRef.current[panelKey] || [];
+      if (liveFrames.length === 0) continue;
 
-          const frames = await queryEvents(baseUrl, {
-            memberId: target.memberId,
-            ...(target.identity ? { identity: target.identity } : {}),
-          }, 400);
+      // Convert live frames to transcript entries
+      const liveEntries = mapFramesToTimelineEntries(agent, liveFrames, {
+        renderInteractionStartsAsUser: false,
+        renderTextDeltas: false,
+        suppressEmbeddedRunStartedPrompt: true,
+      });
 
-          const mapped = mapFramesToTimelineEntries(agent, frames, {
-            renderInteractionStartsAsUser: true,
-            renderTextDeltas: false,
-          });
+      // Deduplicate against existing transcript
+      const existing = transcriptRef.current[panelKey] || [];
+      const existingTexts = new Set(
+        existing
+          .filter((e) => e.kind === "message")
+          .map((e) => normalizeComparableTranscriptText(e.text?.trim() || ""))
+          .filter(Boolean),
+      );
+      const newEntries = liveEntries.filter((e) => {
+        if (e.kind !== "message") return true;
+        const text = normalizeComparableTranscriptText(e.text?.trim() || "");
+        return !text || !existingTexts.has(text);
+      });
 
-          // Reconcile pending user entry
-          const persistedUserTexts = new Set(
-            mapped
-              .filter((e) => e.kind === "message" && e.identity.id === "user")
-              .map((e) => normalizeComparableTranscriptText(e.text?.trim() || ""))
-              .filter(Boolean),
-          );
-          const pending = pendingUserRef.current[panelKey];
-          if (pending?.kind === "message") {
-            const pendingText = normalizeComparableTranscriptText(pending.text?.trim() || "");
-            if (pendingText && persistedUserTexts.has(pendingText)) {
-              pendingUserRef.current[panelKey] = null;
-            }
-          }
+      // Append new entries to transcript, clear live overlay
+      transcriptRef.current[panelKey] = clipTranscriptWindow([
+        ...existing,
+        ...newEntries,
+      ]);
+      liveFramesRef.current[panelKey] = [];
 
-          // Keep un-persisted optimistic user entries
-          const existingOptimistic = (transcriptRef.current[panelKey] || []).filter((entry) => {
-            if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) return false;
-            const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
-            return text && !persistedUserTexts.has(text);
-          });
-
-          transcriptRef.current[panelKey] = clipTranscriptWindow([
-            ...mapped,
-            ...existingOptimistic,
-          ]);
-          liveFramesRef.current[panelKey] = [];
-          phaseRef.current[panelKey] = null;
+      // Clear pending user entry if it's now in the transcript
+      const pending = pendingUserRef.current[panelKey];
+      if (pending?.kind === "message") {
+        const pendingText = normalizeComparableTranscriptText(pending.text?.trim() || "");
+        if (pendingText && existingTexts.has(pendingText)) {
+          pendingUserRef.current[panelKey] = null;
         }
-        forceRender();
-      } finally {
-        refreshInFlightRef.current.delete(identity);
       }
-    }, 200);
-  }, [baseUrl, forceRender]);
+
+      phaseRef.current[panelKey] = null;
+    }
+    forceRender();
+  }, [forceRender]);
 
   // --- Load initial history when panels open ---
   React.useEffect(() => {
@@ -559,7 +556,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
       // 4. On terminal events, schedule history refresh + experience reload
       if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
-        scheduleHistoryRefresh(identity);
+        materializeLiveFrames(identity);
       }
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
         scheduleExperienceRefresh();
@@ -567,7 +564,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
 
     return () => { unsubscribe(); };
-  }, [baseUrl, forceRender, scheduleHistoryRefresh, scheduleExperienceRefresh]);
+  }, [baseUrl, forceRender, materializeLiveFrames, scheduleExperienceRefresh]);
 
   // --- Timer cleanup on unmount ---
   React.useEffect(() => {
