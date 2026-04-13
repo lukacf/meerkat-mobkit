@@ -803,11 +803,11 @@ function summarizeCommsTransport(text: string): string {
       let summary = resultText;
       try {
         const parsed = JSON.parse(resultText);
-        if (typeof parsed === "object" && parsed !== null) {
-          if (typeof parsed.summary === "string") summary = parsed.summary;
-          else if (typeof parsed.text === "string") summary = parsed.text;
-          else if (typeof parsed.body === "string") summary = parsed.body;
-          else if (typeof parsed.message === "string") summary = parsed.message;
+        if (typeof parsed === "string") {
+          summary = parsed;
+        } else if (typeof parsed === "object" && parsed !== null) {
+          const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
+          if (typeof val === "string") summary = val;
         }
       } catch { /* use raw */ }
       const label = status ? `↩ response (${status})` : "↩ response";
@@ -865,8 +865,12 @@ function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock
         const raw = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
         try {
           const parsed = JSON.parse(raw);
-          if (typeof parsed === "object" && parsed !== null) {
-            resultSummary = parsed.summary || parsed.text || parsed.body || parsed.message || raw;
+          if (typeof parsed === "string") {
+            resultSummary = parsed;
+          } else if (typeof parsed === "object" && parsed !== null) {
+            // Try common result field names
+            const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
+            resultSummary = typeof val === "string" ? val : raw;
           } else { resultSummary = raw; }
         } catch { resultSummary = raw; }
       }

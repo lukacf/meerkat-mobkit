@@ -231,7 +231,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
         >
           <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
           <span className="cc-tool-call__icon">{arrow}</span>
-          <span className="cc-tool-call__name">{target}</span>
+          <span className="cc-tool-call__name">{block.peerIncoming ? `Received from ${target}` : target}</span>
           {content && <span className="cc-tool-call__preview">{content}</span>}
           <span className="cc-tool-call__status">{statusIcon}</span>
         </button>
