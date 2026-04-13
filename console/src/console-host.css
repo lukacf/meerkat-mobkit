@@ -104,6 +104,28 @@ svg {
   --cc-surface-hover: rgba(255, 255, 255, 0.06);
 }
 
+/* ── MobKit light theme overrides ── */
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__shell {
+  background: rgba(255, 255, 255, 0.82);
+  border-color: rgba(91, 109, 136, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66), 0 1px 3px rgba(0, 0, 0, 0.06);
+  color: rgba(23, 32, 44, 0.9);
+}
+
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__textarea {
+  color: rgba(23, 32, 44, 0.9);
+}
+
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-composer__textarea::placeholder {
+  color: rgba(78, 93, 114, 0.5);
+}
+
+[data-testid="meerkat-console"][data-cc-theme="light"] .cc-activity-rail__rail {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(91, 109, 136, 0.14);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.66);
+}
+
 /* ── Workbench ── */
 
 .cc-workbench {
@@ -124,6 +146,7 @@ svg {
 /* Activity rail: left gap from panel, right edge padding, top aligns with panel content */
 .cc-workbench__activity {
   padding: 0 14px 0 14px;
+  background: transparent;
 }
 
 /* ── Dock ── */

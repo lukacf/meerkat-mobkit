@@ -471,7 +471,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             }
           }
 
-          transcriptRef.current[panelKey] = clipTranscriptWindow(mapped);
+          // Keep un-persisted optimistic user entries
+          const existingOptimistic = (transcriptRef.current[panelKey] || []).filter((entry) => {
+            if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) return false;
+            const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
+            return text && !persistedUserTexts.has(text);
+          });
+
+          transcriptRef.current[panelKey] = clipTranscriptWindow([
+            ...mapped,
+            ...existingOptimistic,
+          ]);
           liveFramesRef.current[panelKey] = [];
           phaseRef.current[panelKey] = null;
         }
