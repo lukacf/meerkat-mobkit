@@ -280,12 +280,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
     };
 
-    pruneRef(transcriptRef.current);
-    pruneRef(pendingUserRef.current);
-    pruneRef(liveFramesRef.current);
+    // Don't prune transcript, live frames, pending, or history-loaded
+    // for agent-chat panels — keep them cached so switching back to the
+    // same agent is instant and doesn't reload/reorder from queryEvents.
     pruneRef(phaseRef.current);
-    pruneRef(historyLoadedByKey.current);
-    pruneRef(panelBaselineEntriesByKey.current);
     pruneRef(phaseValueByKey.current);
     pruneRef(phaseSinceByKey.current);
     for (const key of Object.keys(phaseTimerByKey.current)) {
