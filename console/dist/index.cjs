@@ -764,6 +764,16 @@ function conversationRichBlockCopyText(block) {
       return block.text.trim();
     case "thinking":
       return [block.label, block.text].filter(Boolean).join("\n").trim();
+    case "tool-call": {
+      if (block.peerTarget) {
+        const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
+        return [`${dir} ${block.peerTarget}`, block.peerIntent, block.peerBody, block.result].filter(Boolean).join(": ").trim();
+      }
+      const parts = [`$ ${block.name}`];
+      if (block.arguments) parts.push(`Input: ${block.arguments}`);
+      if (block.result) parts.push(`Result: ${block.result}`);
+      return parts.join("\n").trim();
+    }
     default:
       return "";
   }
@@ -2075,10 +2085,74 @@ function renderBlock(block, index, Icon2) {
   }
   return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { children: thinking }, `thinking-${index}`);
 }
+var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
+function copyText(text) {
+  navigator.clipboard?.writeText(text).catch(() => {
+  });
+}
+function toolBlockCopyText(block) {
+  if (block.peerTarget) {
+    const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
+    return [
+      `${dir} ${block.peerTarget}`,
+      block.peerIntent,
+      block.peerBody,
+      block.result
+    ].filter(Boolean).join(": ").trim();
+  }
+  const parts = [`$ ${block.name}`];
+  if (block.arguments) parts.push(`Input: ${block.arguments}`);
+  if (block.result) parts.push(`Result: ${block.result}`);
+  return parts.join("\n").trim();
+}
+function CopyBtn({ text, label = "Copy" }) {
+  const [copied, setCopied] = (0, import_react2.useState)(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    "button",
+    {
+      className: "cc-tool-call__copy",
+      type: "button",
+      title: label,
+      onClick: (e) => {
+        e.stopPropagation();
+        copyText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      children: copied ? "\u2713" : "\u2398"
+    }
+  );
+}
 function ToolCallBlock({ block }) {
   const [expanded, setExpanded] = (0, import_react2.useState)(false);
+  const isPeer = PEER_TOOL_NAMES.has(block.name);
   const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
   const statusClass = `cc-tool-call--${block.status}`;
+  if (isPeer || block.peerIncoming) {
+    const target = block.peerTarget || "peer";
+    const content = block.peerBody || block.peerIntent || "";
+    const arrow = block.peerIncoming ? "\u2199" : "\u2197";
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+        "button",
+        {
+          className: "cc-tool-call__header",
+          type: "button",
+          onClick: () => setExpanded((prev) => !prev),
+          "aria-expanded": expanded,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.peerIncoming ? `Received from ${target}` : target }),
+            content && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: content }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
+          ]
+        }
+      ),
+      expanded && block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result }) })
+    ] });
+  }
   let argsPreview = block.arguments || "";
   try {
     const parsed = JSON.parse(argsPreview);
@@ -2097,18 +2171,21 @@ function ToolCallBlock({ block }) {
         "aria-expanded": expanded,
         children: [
           /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: "\u2699" }),
           /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.name }),
+          argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: argsPreview }),
           /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__status", children: [
             statusIcon,
             " ",
             block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"
-          ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
         ]
       }
     ),
     expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__body", children: [
       argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Arguments" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Input" }),
         /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: argsPreview })
       ] }),
       block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
@@ -2118,11 +2195,58 @@ function ToolCallBlock({ block }) {
     ] })
   ] });
 }
+function PeerToolGroup({ blocks }) {
+  const [expanded, setExpanded] = (0, import_react2.useState)(false);
+  const targets = blocks.map((b) => b.peerTarget || "peer");
+  const allSuccess = blocks.every((b) => b.status === "success");
+  const anyError = blocks.some((b) => b.status === "error");
+  const statusIcon = anyError ? "\u2717" : allSuccess ? "\u2713" : "\u22EF";
+  const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
+  const isIncoming = blocks[0]?.peerIncoming;
+  const arrow = isIncoming ? "\u2199" : "\u2197";
+  const label = isIncoming ? `Received from ${targets.join(", ")}` : `Sent to ${targets.join(", ")}`;
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "button",
+      {
+        className: "cc-tool-call__header",
+        type: "button",
+        onClick: () => setExpanded((prev) => !prev),
+        "aria-expanded": expanded,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: label }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: blocks.map((b) => toolBlockCopyText(b)).join("\n") })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: blocks.map((block, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__peer-row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__peer-target", children: [
+        isIncoming ? "\u2190" : "\u2192",
+        " ",
+        block.peerTarget || "peer"
+      ] }),
+      block.peerIntent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-intent", children: block.peerIntent }),
+      block.peerBody && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-body", children: block.peerBody }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: `cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`, children: block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF" })
+    ] }, block.toolCallId || i)) })
+  ] });
+}
 function ConversationRichContent({
   blocks,
   richStyle = "default",
   Icon: Icon2
 }) {
+  const allPeerTools = blocks.length > 1 && blocks.every((b) => {
+    if (b.type !== "tool-call") return false;
+    const tc = b;
+    return PEER_TOOL_NAMES.has(tc.name) || tc.peerIncoming;
+  });
+  if (allPeerTools) {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(PeerToolGroup, { blocks });
+  }
   const body = blocks.map((block, index) => renderBlock(block, index, Icon2)).filter(Boolean);
   if (body.length === 0) {
     return null;
@@ -2179,7 +2303,7 @@ function ConversationMessageView({
     return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("article", { className: `${assistantClassName} cc-message--meta`, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: entry.text }) });
   }
   if (presentation === "user") {
-    const copyText = entry.copyText || entry.text || "";
+    const copyText2 = entry.copyText || entry.text || "";
     return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("article", { className: "cc-message cc-message--user", children: [
       !compact ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
         CopyButton,
@@ -2188,7 +2312,7 @@ function ConversationMessageView({
           copiedLabel: "Copied message",
           Icon: Icon2,
           label: "Copy message",
-          text: copyText
+          text: copyText2
         }
       ) : null,
       /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: renderMultilineText(entry.text || "") })
@@ -2230,7 +2354,7 @@ function ConversationMessageGroup({
   if (isUserGroup) {
     return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_jsx_runtime8.Fragment, { children: group.entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ConversationMessageView, { compact, entry, Icon: Icon2 }, entry.id)) });
   }
-  const copyText = group.copyText || group.entries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
+  const copyText2 = group.copyText || group.entries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
   const showGroupCopy = !compact && !groupHasNestedCopyButton(group);
   const showIdentity = conversationIdentityShowsLabel(group.identity);
   return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
@@ -2258,7 +2382,7 @@ function ConversationMessageGroup({
             copiedLabel: "Copied response",
             Icon: Icon2,
             label: "Copy response",
-            text: copyText
+            text: copyText2
           }
         ) : null,
         /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "cc-message-group__body", children: group.entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ConversationMessageView, { compact, entry, Icon: Icon2 }, entry.id)) })
@@ -3629,64 +3753,6 @@ function summarizeFrameData(data) {
   }
   return String(data ?? "");
 }
-function eventSortRank(event) {
-  switch (event) {
-    case "interaction_started":
-      return 0;
-    case "tool_call_requested":
-    case "tool_call":
-    case "tool_execution_started":
-      return 20;
-    case "tool_result_received":
-    case "tool_execution_completed":
-      return 30;
-    case "text_delta":
-      return 40;
-    case "text_complete":
-      return 45;
-    case "interaction_complete":
-    case "interaction_failed":
-    case "run_completed":
-    case "run_failed":
-      return 90;
-    default:
-      return 50;
-  }
-}
-function sortFramesForTranscript(frames) {
-  const interactionStartMs = /* @__PURE__ */ new Map();
-  for (const frame of frames) {
-    const interactionId = frame.interactionId?.trim();
-    const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
-    if (!interactionId) continue;
-    const current = interactionStartMs.get(interactionId);
-    if (current === void 0 || timestampMs < current) {
-      interactionStartMs.set(interactionId, timestampMs);
-    }
-  }
-  return frames.map((frame, index) => ({ frame, index })).sort((left, right) => {
-    const leftInteraction = left.frame.interactionId?.trim() || "";
-    const rightInteraction = right.frame.interactionId?.trim() || "";
-    const leftGroupTs = (leftInteraction && interactionStartMs.get(leftInteraction)) ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
-    const rightGroupTs = (rightInteraction && interactionStartMs.get(rightInteraction)) ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
-    if (leftGroupTs !== rightGroupTs) {
-      return leftGroupTs - rightGroupTs;
-    }
-    if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
-      const leftRank = eventSortRank(left.frame.event);
-      const rightRank = eventSortRank(right.frame.event);
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
-      }
-    }
-    const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-    const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-    if (leftTs !== rightTs) {
-      return leftTs - rightTs;
-    }
-    return left.index - right.index;
-  }).map(({ frame }) => frame);
-}
 var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "subscribed",
   "run_started",
@@ -3738,8 +3804,31 @@ function parseToolArguments(frame) {
 }
 function parseToolResult(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
-  const result = summarizeFrameData(frame.data).trim();
   const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
+  let result = "";
+  if (typeof record?.result === "string") {
+    try {
+      const parsed = JSON.parse(record.result);
+      if (typeof parsed === "object" && parsed !== null) {
+        const clean = { ...parsed };
+        delete clean.source_event_type;
+        delete clean.type;
+        result = JSON.stringify(clean, null, 2);
+      } else {
+        result = record.result;
+      }
+    } catch {
+      result = record.result;
+    }
+  } else if (typeof record?.result === "object" && record.result !== null) {
+    const clean = { ...record.result };
+    delete clean.source_event_type;
+    delete clean.type;
+    result = JSON.stringify(clean, null, 2);
+  }
+  if (!result && frame.event === "tool_result_received") {
+    return { status: isError ? "error" : "success" };
+  }
   return {
     ...result ? { result } : {},
     status: isError ? "error" : "success"
@@ -3768,13 +3857,23 @@ function buildToolBlocks(frames) {
       const toolCallId = parseToolCallId(frame);
       if (!toolCallId || toolCalls.has(toolCallId)) continue;
       const pending = pendingResults.get(toolCallId);
+      const name = parseToolName(frame);
+      const args = frame.data && typeof frame.data === "object" ? frame.data.args : null;
+      const argsRecord = args && typeof args === "object" ? args : null;
+      const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
+      const peerTarget = isPeerTool && typeof argsRecord?.to === "string" ? argsRecord.to.split("/").pop() || argsRecord.to : void 0;
+      const peerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
+      const peerBody = isPeerTool ? typeof argsRecord?.body === "string" ? argsRecord.body : typeof argsRecord?.params === "object" && argsRecord.params !== null ? JSON.stringify(argsRecord.params) : void 0 : void 0;
       toolCalls.set(toolCallId, {
         type: "tool-call",
         toolCallId,
-        name: parseToolName(frame),
+        name,
         arguments: parseToolArguments(frame),
         ...pending?.result ? { result: pending.result } : {},
-        status: pending?.status || "pending"
+        status: pending?.status || "pending",
+        ...peerTarget ? { peerTarget } : {},
+        ...peerIntent ? { peerIntent } : {},
+        ...peerBody ? { peerBody } : {}
       });
     }
   }
@@ -3912,16 +4011,28 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
     });
   }
   if (prompt.startsWith("[COMMS")) {
-    const summarized = summarizeCommsTransport(prompt).trim();
-    if (summarized) {
+    const incomingBlocks = parseIncomingCommsBlocks(prompt);
+    if (incomingBlocks.length > 0) {
       entries.push({
         kind: "message",
         id: entryId,
         identity: { id: "comms", label: "", role: "system", showLabel: false },
-        variant: "meta",
+        variant: "rich",
         ...createdAt ? { createdAt } : {},
-        text: summarized
+        blocks: incomingBlocks
       });
+    } else {
+      const summarized = summarizeCommsTransport(prompt).trim();
+      if (summarized) {
+        entries.push({
+          kind: "message",
+          id: entryId,
+          identity: { id: "comms", label: "", role: "system", showLabel: false },
+          variant: "meta",
+          ...createdAt ? { createdAt } : {},
+          text: summarized
+        });
+      }
     }
   }
   return entries;
@@ -3960,11 +4071,11 @@ function summarizeCommsTransport(text) {
       let summary = resultText;
       try {
         const parsed = JSON.parse(resultText);
-        if (typeof parsed === "object" && parsed !== null) {
-          if (typeof parsed.summary === "string") summary = parsed.summary;
-          else if (typeof parsed.text === "string") summary = parsed.text;
-          else if (typeof parsed.body === "string") summary = parsed.body;
-          else if (typeof parsed.message === "string") summary = parsed.message;
+        if (typeof parsed === "string") {
+          summary = parsed;
+        } else if (typeof parsed === "object" && parsed !== null) {
+          const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
+          if (typeof val === "string") summary = val;
         }
       } catch {
       }
@@ -3979,12 +4090,101 @@ function summarizeCommsTransport(text) {
   }
   return text;
 }
+function parseIncomingCommsBlocks(prompt) {
+  const sections = [];
+  let current = "";
+  for (const line of prompt.split("\n")) {
+    if (line.trimStart().startsWith("[COMMS ") && current) {
+      sections.push(current);
+      current = line + "\n";
+    } else {
+      current += line + "\n";
+    }
+  }
+  if (current.trim()) sections.push(current);
+  const blocks = [];
+  let counter = 0;
+  for (const section of sections) {
+    const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
+    const header = lines[0] || "";
+    if (!header.startsWith("[COMMS")) continue;
+    const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
+    const sender = senderMatch ? senderMatch[1] : null;
+    if (!sender) continue;
+    const body = lines.slice(1).filter((l) => !l.startsWith("[COMMS ") && !l.startsWith("[EVENT via rpc]"));
+    counter++;
+    if (header.startsWith("[COMMS RESPONSE")) {
+      const statusLine = body.find((l) => l.startsWith("Status:"));
+      const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
+      const resultIndex = body.findIndex((l) => l.startsWith("Result:"));
+      let resultSummary = "";
+      if (resultIndex >= 0) {
+        const resultLines = [];
+        for (let i = resultIndex; i < body.length; i++) {
+          if (i > resultIndex && (body[i].startsWith("Status:") || body[i].startsWith("[COMMS "))) break;
+          resultLines.push(body[i]);
+        }
+        const raw = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
+        try {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed === "string") {
+            resultSummary = parsed;
+          } else if (typeof parsed === "object" && parsed !== null) {
+            const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
+            resultSummary = typeof val === "string" ? val : raw;
+          } else {
+            resultSummary = raw;
+          }
+        } catch {
+          resultSummary = raw;
+        }
+      }
+      blocks.push({
+        type: "tool-call",
+        toolCallId: `incoming-${sender}-${counter}`,
+        name: "response",
+        arguments: "",
+        status: status === "failed" ? "error" : "success",
+        peerTarget: sender,
+        peerIntent: resultSummary || status || "response",
+        peerIncoming: true
+      });
+    } else if (header.startsWith("[COMMS REQUEST")) {
+      const intentLine = body.find((l) => l.startsWith("Intent:"));
+      const intent = intentLine ? intentLine.replace(/^Intent:\s*/, "").trim() : "";
+      if (intent === "mob.peer_added" || intent === "mob.peer_removed") continue;
+      blocks.push({
+        type: "tool-call",
+        toolCallId: `incoming-${sender}-${counter}`,
+        name: "request",
+        arguments: "",
+        status: "success",
+        peerTarget: sender,
+        peerIntent: intent || "request",
+        peerIncoming: true
+      });
+    } else if (header.startsWith("[COMMS MESSAGE")) {
+      const joined = body.join(" ").trim();
+      blocks.push({
+        type: "tool-call",
+        toolCallId: `incoming-${sender}-${counter}`,
+        name: "message",
+        arguments: "",
+        status: "success",
+        peerTarget: sender,
+        peerIntent: joined || "message",
+        peerIncoming: true
+      });
+    }
+  }
+  return blocks;
+}
 function extractEmbeddedRpcPrompt(text) {
   const match = text.match(/^\[EVENT via rpc\]\s*(.+)$/im);
   return match?.[1]?.trim() || null;
 }
 function mapFramesToTimelineEntries(agent, frames, options = {}) {
-  const orderedFrames = sortFramesForTranscript(frames);
+  const orderedFrames = frames;
   const entries = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = /* @__PURE__ */ new Set();
@@ -4025,14 +4225,21 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       flushPendingText();
       const block = toolBlocks.get(toolCallId);
       if (block) {
-        entries.push({
-          kind: "message",
-          id: entryId,
-          identity: agentIdentity(agent),
-          variant: "rich",
-          createdAt: isoFromTimestampMs(frame.timestampMs),
-          blocks: [block]
-        });
+        const isPeer = block.peerTarget !== void 0;
+        const lastEntry = entries[entries.length - 1];
+        const lastIsPeerGroup = lastEntry && lastEntry.variant === "rich" && Array.isArray(lastEntry.blocks) && lastEntry.blocks.length > 0 && lastEntry.blocks.every((b) => b.type === "tool-call" && b.peerTarget);
+        if (isPeer && lastIsPeerGroup) {
+          lastEntry.blocks.push(block);
+        } else {
+          entries.push({
+            kind: "message",
+            id: entryId,
+            identity: agentIdentity(agent),
+            variant: "rich",
+            createdAt: isoFromTimestampMs(frame.timestampMs),
+            blocks: [block]
+          });
+        }
         emittedToolCalls.add(toolCallId);
       }
       continue;
@@ -4104,24 +4311,6 @@ function createUserEntry(message) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     text: message
   };
-}
-function sortConversationTimelineEntries(entries) {
-  return entries.map((entry, index) => ({ entry, index })).sort((left, right) => {
-    const leftTs = Date.parse(String(left.entry.createdAt || ""));
-    const rightTs = Date.parse(String(right.entry.createdAt || ""));
-    const safeLeft = Number.isFinite(leftTs) ? leftTs : Number.NaN;
-    const safeRight = Number.isFinite(rightTs) ? rightTs : Number.NaN;
-    if (Number.isFinite(safeLeft) && Number.isFinite(safeRight) && safeLeft !== safeRight) {
-      return safeLeft - safeRight;
-    }
-    if (Number.isFinite(safeLeft) && !Number.isFinite(safeRight)) {
-      return 1;
-    }
-    if (!Number.isFinite(safeLeft) && Number.isFinite(safeRight)) {
-      return -1;
-    }
-    return left.index - right.index;
-  }).map(({ entry }) => entry);
 }
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
@@ -4675,45 +4864,8 @@ function Icon({ name, className }) {
 
 // src/ConsoleApp.tsx
 var import_jsx_runtime17 = require("react/jsx-runtime");
-function normalizeComparableTranscriptText(value) {
-  return value.replace(/^\[EVENT via rpc\]\s*/i, "").replace(/\s+/g, " ").trim();
-}
-function sameUserMessage(entry, candidate) {
-  if (!entry || !candidate || entry.kind !== "message" || candidate.kind !== "message") {
-    return false;
-  }
-  if (entry.identity.id !== "user" || candidate.identity.id !== "user") {
-    return false;
-  }
-  return normalizeComparableTranscriptText(entry.text || "") === normalizeComparableTranscriptText(candidate.text || "");
-}
-function clipTranscriptWindow(entries) {
-  const maxEntries = 100;
-  return entries.slice(-maxEntries);
-}
-function hasVisibleConversationContent(entry) {
-  if (entry.kind !== "message") {
-    return true;
-  }
-  if (Array.isArray(entry.blocks) && entry.blocks.length > 0) {
-    return entry.blocks.some((block) => {
-      const record = block;
-      const text = [
-        typeof record.text === "string" ? record.text : "",
-        typeof record.label === "string" ? record.label : "",
-        typeof record.result === "string" ? record.result : "",
-        typeof record.body === "string" ? record.body : "",
-        typeof record.title === "string" ? record.title : ""
-      ].join(" ").trim();
-      return text.length > 0;
-    });
-  }
-  return Boolean(entry.text && entry.text.trim().length > 0);
-}
 function richBlockHasVisibleContent(block) {
-  if (!block || typeof block !== "object") {
-    return false;
-  }
+  if (!block || typeof block !== "object") return false;
   const record = block;
   const scalarText = [
     typeof record.text === "string" ? record.text : "",
@@ -4723,15 +4875,9 @@ function richBlockHasVisibleContent(block) {
     typeof record.title === "string" ? record.title : "",
     typeof record.name === "string" ? record.name : ""
   ].join(" ").trim();
-  if (scalarText.length > 0) {
-    return true;
-  }
-  if (Array.isArray(record.headers) && record.headers.some((value) => String(value || "").trim().length > 0)) {
-    return true;
-  }
-  if (Array.isArray(record.rows) && record.rows.some((row) => Array.isArray(row) && row.some((value) => String(value || "").trim().length > 0))) {
-    return true;
-  }
+  if (scalarText.length > 0) return true;
+  if (Array.isArray(record.headers) && record.headers.some((v) => String(v || "").trim().length > 0)) return true;
+  if (Array.isArray(record.rows) && record.rows.some((row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0))) return true;
   return false;
 }
 function sanitizeConversationEntries(entries) {
@@ -4743,15 +4889,11 @@ function sanitizeConversationEntries(entries) {
     }
     if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
       const blocks = entry.blocks.filter(richBlockHasVisibleContent);
-      if (!blocks.length) {
-        continue;
-      }
+      if (!blocks.length) continue;
       sanitized.push({ ...entry, blocks });
       continue;
     }
-    if (hasVisibleConversationContent(entry)) {
-      sanitized.push(entry);
-    }
+    if (entry.text && entry.text.trim().length > 0) sanitized.push(entry);
   }
   return sanitized;
 }
@@ -4786,6 +4928,27 @@ var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
   "run_completed",
   "run_failed"
 ]);
+var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
+  "subscribed",
+  "run_started",
+  "run_completed",
+  "turn_started",
+  "turn_completed",
+  "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
+  "interaction_started",
+  "run_failed",
+  "keep-alive",
+  "tool_config_changed",
+  "tool_scope_changed",
+  "text_delta",
+  "tool_call_requested",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed"
+]);
 function ConsoleApp({ baseUrl }) {
   const [experience, setExperience] = import_react7.default.useState(null);
   const [agents, setAgents] = import_react7.default.useState([]);
@@ -4807,26 +4970,21 @@ function ConsoleApp({ baseUrl }) {
   });
   const [, setRenderTick] = import_react7.default.useState(0);
   const forceRender = import_react7.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const transcriptRef = import_react7.default.useRef({});
-  const pendingUserRef = import_react7.default.useRef({});
-  const liveFramesRef = import_react7.default.useRef({});
+  const serverHistoryRef = import_react7.default.useRef({});
+  const liveOverlayRef = import_react7.default.useRef({});
+  const optimisticUserRef = import_react7.default.useRef({});
   const activityRef = import_react7.default.useRef([]);
   const phaseRef = import_react7.default.useRef({});
-  const refreshInFlightRef = import_react7.default.useRef(/* @__PURE__ */ new Set());
-  const experienceTimerRef = import_react7.default.useRef(null);
-  const initialTargetOpened = import_react7.default.useRef(false);
   const phaseValueByKey = import_react7.default.useRef({});
   const phaseSinceByKey = import_react7.default.useRef({});
   const phaseTimerByKey = import_react7.default.useRef({});
-  const historyLoadedByKey = import_react7.default.useRef({});
-  const panelBaselineEntriesByKey = import_react7.default.useRef({});
-  const identityPanelCountByIdentity = import_react7.default.useRef({});
-  const previousIdentityPanelCountByIdentity = import_react7.default.useRef({});
+  const refreshTimersRef = import_react7.default.useRef({});
+  const experienceTimerRef = import_react7.default.useRef(null);
   const agentsRef = import_react7.default.useRef([]);
-  const dockRef = import_react7.default.useRef({ panels: [] });
   import_react7.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
+  const initialTargetOpened = import_react7.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: `panel-${crypto.randomUUID()}`,
@@ -4834,301 +4992,16 @@ function ConsoleApp({ baseUrl }) {
       mode: "console"
     })
   });
-  import_react7.default.useEffect(() => {
-    dockRef.current = {
-      panels: dock.viewState.panels.map((panel) => ({
-        id: panel.id,
-        target: panel.target
-      }))
-    };
-  }, [dock.viewState.panels]);
-  import_react7.default.useEffect(() => {
-    const counts = {};
-    for (const panel of dock.viewState.panels) {
-      const target = panel.target;
-      if (!target || target.kind !== "agent-chat") continue;
-      const key = target.identity || target.memberId;
-      counts[key] = (counts[key] || 0) + 1;
-    }
-    identityPanelCountByIdentity.current = counts;
-  }, [dock.viewState.panels]);
-  import_react7.default.useEffect(() => {
-    const activePanelKeys = new Set(
-      dock.viewState.panels.map((panel) => {
-        if (!panel.target) return null;
-        return buildPanelConversationKey(panel.id, panel.target);
-      }).filter((value) => Boolean(value))
-    );
-    const pruneRef = (record) => {
-      for (const key of Object.keys(record)) {
-        if (!activePanelKeys.has(key)) {
-          delete record[key];
-        }
-      }
-    };
-    pruneRef(transcriptRef.current);
-    pruneRef(pendingUserRef.current);
-    pruneRef(liveFramesRef.current);
-    pruneRef(phaseRef.current);
-    pruneRef(historyLoadedByKey.current);
-    pruneRef(panelBaselineEntriesByKey.current);
-    pruneRef(phaseValueByKey.current);
-    pruneRef(phaseSinceByKey.current);
-    for (const key of Object.keys(phaseTimerByKey.current)) {
-      if (!activePanelKeys.has(key)) {
-        window.clearTimeout(phaseTimerByKey.current[key]);
-        delete phaseTimerByKey.current[key];
-      }
-    }
-    setDraftByKey((current) => {
-      let changed = false;
-      const next = {};
-      for (const [key, value] of Object.entries(current)) {
-        if (activePanelKeys.has(key)) {
-          next[key] = value;
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : current;
-    });
-  }, [dock.viewState.panels]);
-  import_react7.default.useEffect(() => {
-    const previousCounts = previousIdentityPanelCountByIdentity.current;
-    const nextCounts = identityPanelCountByIdentity.current;
-    for (const panel of dock.viewState.panels) {
-      const target = panel.target;
-      if (!target || target.kind !== "agent-chat") continue;
-      const identityKey = target.identity || target.memberId;
-      const nextCount = nextCounts[identityKey] || 0;
-      const previousCount = previousCounts[identityKey] || 0;
-      if (nextCount > 1 && nextCount > previousCount) {
-        const siblingPanels = dock.viewState.panels.filter((candidate) => {
-          const candidateTarget = candidate.target;
-          return candidateTarget?.kind === "agent-chat" && (candidateTarget.identity || candidateTarget.memberId) === identityKey;
-        });
-        const seedTranscript = siblingPanels.map((candidate) => transcriptRef.current[buildPanelConversationKey(candidate.id, candidate.target)]).find((entries) => Array.isArray(entries) && entries.length > 0);
-        if (seedTranscript?.length) {
-          for (const sibling of siblingPanels) {
-            const siblingTarget = sibling.target;
-            const siblingKey = buildPanelConversationKey(sibling.id, siblingTarget);
-            panelBaselineEntriesByKey.current[siblingKey] = seedTranscript;
-            if (!transcriptRef.current[siblingKey]?.length) {
-              transcriptRef.current[siblingKey] = seedTranscript;
-            }
-          }
-        }
-      }
-    }
-    previousIdentityPanelCountByIdentity.current = { ...nextCounts };
-  }, [dock.viewState.panels]);
-  const loadExperience = import_react7.default.useCallback(async () => {
-    const [experienceJson, modulesJson] = await Promise.all([
-      fetchJson(baseUrl, "/console/experience"),
-      fetchJson(baseUrl, "/console/modules")
-    ]);
-    const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map((moduleId) => String(moduleId)) : [];
-    const nextAgents = normalizeAgents(experienceJson, loadedModules);
-    setExperience(experienceJson);
-    setAgents(nextAgents);
-    setActiveActivityPresetId((current) => current || experienceJson.activity_feed?.active_preset_id || "all");
-  }, [baseUrl]);
-  import_react7.default.useEffect(() => {
-    let mounted = true;
-    setLoading(true);
-    setError("");
-    void loadExperience().catch((loadError) => {
-      if (mounted) setError(errorMessage(loadError));
-    }).finally(() => {
-      if (mounted) setLoading(false);
-    });
-    return () => {
-      mounted = false;
-    };
-  }, [loadExperience]);
-  import_react7.default.useEffect(() => {
-    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
-    const firstAddressable = agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
-    if (!firstAddressable) return;
-    initialTargetOpened.current = true;
-    dock.openTarget(buildDockTarget(firstAddressable), "replace_focused");
-  }, [agents, dock]);
-  const refreshPanelData = import_react7.default.useCallback(async () => {
-    const openPanels = dockRef.current.panels.map((p) => p.target).filter(Boolean);
-    const inspectTargets = openPanels.filter((t) => t.kind === "identity-inspect");
-    const hasRouting = openPanels.some((t) => t.kind === "routing");
-    const hasGating = openPanels.some((t) => t.kind === "gating");
-    if (inspectTargets.length) {
-      const entries = await Promise.all(
-        inspectTargets.map(async (target) => {
-          const result = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: target.identity });
-          return [target.identity, result];
-        })
-      );
-      setInspectByIdentity((current) => ({ ...current, ...Object.fromEntries(entries) }));
-    }
-    if (hasRouting) {
-      const [routesResponse, historyResponse] = await Promise.all([
-        callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
-        callConsoleRpc(baseUrl, "mobkit/delivery/history", {})
-      ]);
-      setRoutingData(buildRoutingSectionView({ routesResponse, historyResponse }));
-    }
-    if (hasGating) {
-      const [pendingResponse, auditResponse] = await Promise.all([
-        callConsoleRpc(baseUrl, "mobkit/gating/pending", {}),
-        callConsoleRpc(baseUrl, "mobkit/gating/audit", { limit: 50 })
-      ]);
-      setGatingData({
-        pending: Array.isArray(pendingResponse.pending) ? pendingResponse.pending : [],
-        audit: Array.isArray(auditResponse.entries) ? auditResponse.entries : []
-      });
-    }
-  }, [baseUrl]);
-  import_react7.default.useEffect(() => {
-    void refreshPanelData().catch(() => {
-    });
-  }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react7.default.useCallback(() => {
-    if (experienceTimerRef.current !== null) return;
-    experienceTimerRef.current = window.setTimeout(async () => {
-      experienceTimerRef.current = null;
-      await loadExperience().catch(() => {
-      });
-      await refreshPanelData().catch(() => {
-      });
-    }, 500);
-  }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react7.default.useCallback((identity) => {
-    if (refreshInFlightRef.current.has(identity)) return;
-    refreshInFlightRef.current.add(identity);
-    setTimeout(async () => {
-      try {
-        for (const panel of dockRef.current.panels) {
-          const target = panel.target;
-          if (!target || target.kind !== "agent-chat") continue;
-          if ((target.identity || target.memberId) !== identity) continue;
-          const panelKey = buildPanelConversationKey(panel.id, target);
-          const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
-          const frames = await queryEvents(baseUrl, {
-            memberId: target.memberId,
-            ...target.identity ? { identity: target.identity } : {}
-          }, 400);
-          const mapped = mapFramesToTimelineEntries(agent, frames, {
-            renderInteractionStartsAsUser: true,
-            renderTextDeltas: false
-          });
-          const persistedTexts = new Set(
-            mapped.filter((e) => e.kind === "message" && e.identity.id === "user").map((e) => normalizeComparableTranscriptText(e.text?.trim() || "")).filter(Boolean)
-          );
-          const pending = pendingUserRef.current[panelKey];
-          if (pending?.kind === "message") {
-            const pendingText = normalizeComparableTranscriptText(pending.text?.trim() || "");
-            if (pendingText && persistedTexts.has(pendingText)) {
-              pendingUserRef.current[panelKey] = null;
-            }
-          }
-          const existingOptimistic = (transcriptRef.current[panelKey] || []).filter((entry) => {
-            if (entry.kind !== "message" || entry.identity.id !== "user" || !String(entry.id).startsWith("user:")) return false;
-            const text = normalizeComparableTranscriptText(entry.text?.trim() || "");
-            return text && !persistedTexts.has(text);
-          });
-          transcriptRef.current[panelKey] = clipTranscriptWindow([
-            ...mapped,
-            ...existingOptimistic
-          ]);
-          liveFramesRef.current[panelKey] = [];
-          phaseRef.current[panelKey] = null;
-        }
-        forceRender();
-      } finally {
-        refreshInFlightRef.current.delete(identity);
-      }
-    }, 200);
-  }, [baseUrl, forceRender]);
-  import_react7.default.useEffect(() => {
-    for (const panel of dock.viewState.panels) {
-      const target = panel.target;
-      if (!target || target.kind !== "agent-chat") continue;
-      const panelKey = buildPanelConversationKey(panel.id, target);
-      if (historyLoadedByKey.current[panelKey]) continue;
-      historyLoadedByKey.current[panelKey] = true;
-      void (async () => {
-        try {
-          const agent = agentsRef.current.find((c) => c.member_id === target.memberId) || null;
-          const frames = await queryEvents(baseUrl, {
-            memberId: target.memberId,
-            ...target.identity ? { identity: target.identity } : {}
-          }, 400);
-          const mapped = mapFramesToTimelineEntries(agent, frames, {
-            renderInteractionStartsAsUser: true,
-            renderTextDeltas: false
-          });
-          transcriptRef.current[panelKey] = clipTranscriptWindow(mapped);
-          if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
-          forceRender();
-        } catch {
-          historyLoadedByKey.current[panelKey] = false;
-        }
-      })();
-    }
-  }, [baseUrl, dock.viewState.panels, forceRender]);
-  import_react7.default.useEffect(() => {
-    void queryEvents(baseUrl, {}, 80).then((frames) => {
-      activityRef.current = dedupeFrames(frames).slice(-80).reverse();
-      forceRender();
-    }).catch(() => {
-    });
-    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
-      activityRef.current = [frame, ...activityRef.current].slice(0, 200);
-      const identity = frame.identity?.trim();
-      if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
-        for (const panel of dockRef.current.panels) {
-          const target = panel.target;
-          if (!target || target.kind !== "agent-chat") continue;
-          const panelIdentity = target.identity || target.memberId;
-          if (panelIdentity !== identity) continue;
-          const panelKey = buildPanelConversationKey(panel.id, target);
-          if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
-          liveFramesRef.current[panelKey] = dedupeFrames([
-            ...liveFramesRef.current[panelKey],
-            frame
-          ]);
-          updatePanelPhaseFromFrame(panelKey, frame);
-        }
-      }
-      forceRender();
-      if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
-        scheduleHistoryRefresh(identity);
-      }
-      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
-        scheduleExperienceRefresh();
-      }
-    });
-    return () => {
-      unsubscribe();
-    };
-  }, [baseUrl, forceRender, scheduleHistoryRefresh, scheduleExperienceRefresh]);
-  import_react7.default.useEffect(() => {
-    return () => {
-      for (const timer of Object.values(phaseTimerByKey.current)) {
-        window.clearTimeout(timer);
-      }
-      if (experienceTimerRef.current !== null) {
-        window.clearTimeout(experienceTimerRef.current);
-      }
-    };
-  }, []);
   function dedupeFrames(frames) {
-    const byId = /* @__PURE__ */ new Map();
-    const ordered = [];
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
     for (const frame of frames) {
       const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-      if (byId.has(key)) continue;
-      byId.set(key, frame);
-      ordered.push(frame);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(frame);
     }
-    return ordered;
+    return result;
   }
   function clearPhaseTimer(panelKey) {
     const timer = phaseTimerByKey.current[panelKey];
@@ -5173,9 +5046,9 @@ function ConsoleApp({ baseUrl }) {
         break;
       case "text_delta": {
         if (currentPhase === "tool-executing") {
-          const remainingMs = Math.max(0, 300 - elapsedMs);
-          if (remainingMs > 0) {
-            schedulePanelPhase(panelKey, "generating", remainingMs);
+          const r2 = Math.max(0, 300 - elapsedMs);
+          if (r2 > 0) {
+            schedulePanelPhase(panelKey, "generating", r2);
             break;
           }
         }
@@ -5196,46 +5069,212 @@ function ConsoleApp({ baseUrl }) {
         break;
     }
   }
-  function onSelectAgent(_block, _section, item) {
-    const agent = agents.find((candidate) => candidate.member_id === item.id);
-    if (agent) {
-      dock.openTarget(buildDockTarget(agent), "replace_focused");
+  function updatePhaseForIdentity(identity, frame) {
+    for (const panel of dock.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      updatePanelPhaseFromFrame(buildPanelConversationKey(panel.id, target), frame);
     }
+  }
+  function clearPhaseForIdentity(identity) {
+    for (const panel of dock.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
+    }
+  }
+  const loadExperience = import_react7.default.useCallback(async () => {
+    const [experienceJson, modulesJson] = await Promise.all([
+      fetchJson(baseUrl, "/console/experience"),
+      fetchJson(baseUrl, "/console/modules")
+    ]);
+    const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
+    setExperience(experienceJson);
+    setAgents(normalizeAgents(experienceJson, loadedModules));
+    setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
+  }, [baseUrl]);
+  import_react7.default.useEffect(() => {
+    let mounted = true;
+    setLoading(true);
+    setError("");
+    void loadExperience().catch((e) => {
+      if (mounted) setError(errorMessage(e));
+    }).finally(() => {
+      if (mounted) setLoading(false);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [loadExperience]);
+  import_react7.default.useEffect(() => {
+    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
+    const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
+    if (!first) return;
+    initialTargetOpened.current = true;
+    dock.openTarget(buildDockTarget(first), "replace_focused");
+  }, [agents, dock]);
+  const refreshPanelData = import_react7.default.useCallback(async () => {
+    const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
+    const inspects = openPanels.filter((t) => t.kind === "identity-inspect");
+    if (inspects.length) {
+      const entries = await Promise.all(inspects.map(async (t) => {
+        const r2 = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
+        return [t.identity, r2];
+      }));
+      setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
+    }
+    if (openPanels.some((t) => t.kind === "routing")) {
+      const [routes, history] = await Promise.all([
+        callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
+        callConsoleRpc(baseUrl, "mobkit/delivery/history", {})
+      ]);
+      setRoutingData(buildRoutingSectionView({ routesResponse: routes, historyResponse: history }));
+    }
+    if (openPanels.some((t) => t.kind === "gating")) {
+      const [p, a] = await Promise.all([
+        callConsoleRpc(baseUrl, "mobkit/gating/pending", {}),
+        callConsoleRpc(baseUrl, "mobkit/gating/audit", { limit: 50 })
+      ]);
+      setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
+    }
+  }, [baseUrl, dock.viewState.panels]);
+  import_react7.default.useEffect(() => {
+    void refreshPanelData().catch(() => {
+    });
+  }, [dock.viewState.panels, refreshPanelData]);
+  const scheduleExperienceRefresh = import_react7.default.useCallback(() => {
+    if (experienceTimerRef.current !== null) return;
+    experienceTimerRef.current = window.setTimeout(async () => {
+      experienceTimerRef.current = null;
+      await loadExperience().catch(() => {
+      });
+      await refreshPanelData().catch(() => {
+      });
+    }, 500);
+  }, [loadExperience, refreshPanelData]);
+  const scheduleHistoryRefresh = import_react7.default.useCallback((identity) => {
+    clearTimeout(refreshTimersRef.current[identity]);
+    refreshTimersRef.current[identity] = window.setTimeout(async () => {
+      try {
+        const frames = await queryEvents(baseUrl, { identity }, 400);
+        serverHistoryRef.current[identity] = frames;
+        liveOverlayRef.current[identity] = [];
+        const optimistic = optimisticUserRef.current[identity];
+        if (optimistic && optimistic.interactionId) {
+          const found = frames.some(
+            (f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId
+          );
+          if (found) optimisticUserRef.current[identity] = null;
+        }
+        clearPhaseForIdentity(identity);
+        forceRender();
+      } catch {
+      }
+    }, 200);
+  }, [baseUrl, forceRender]);
+  import_react7.default.useEffect(() => {
+    for (const panel of dock.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      const identity = target.identity || target.memberId;
+      const hasHistory = Boolean(serverHistoryRef.current[identity]);
+      const hasStaleOverlay = (liveOverlayRef.current[identity]?.length || 0) > 0;
+      if (hasHistory && !hasStaleOverlay) continue;
+      liveOverlayRef.current[identity] = [];
+      void (async () => {
+        try {
+          const frames = await queryEvents(baseUrl, { identity }, 400);
+          serverHistoryRef.current[identity] = frames;
+          liveOverlayRef.current[identity] = [];
+          forceRender();
+        } catch {
+        }
+      })();
+    }
+  }, [baseUrl, dock.viewState.panels, forceRender]);
+  const scheduleHistoryRefreshRef = import_react7.default.useRef(scheduleHistoryRefresh);
+  scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
+  const scheduleExperienceRefreshRef = import_react7.default.useRef(scheduleExperienceRefresh);
+  scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
+  import_react7.default.useEffect(() => {
+    void queryEvents(baseUrl, {}, 80).then((frames) => {
+      activityRef.current = dedupeFrames(frames).slice(-80).reverse();
+      forceRender();
+    }).catch(() => {
+    });
+    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+      if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
+        activityRef.current = [frame, ...activityRef.current].slice(0, 200);
+      }
+      const identity = frame.identity?.trim();
+      if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
+        const existing = liveOverlayRef.current[identity] || [];
+        if (!existing.some((f) => f.id === frame.id)) {
+          liveOverlayRef.current[identity] = [...existing, frame];
+        }
+        updatePhaseForIdentity(identity, frame);
+      }
+      forceRender();
+      if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
+        scheduleHistoryRefreshRef.current(identity);
+      }
+      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
+        scheduleExperienceRefreshRef.current();
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [baseUrl]);
+  import_react7.default.useEffect(() => {
+    return () => {
+      for (const timer of Object.values(phaseTimerByKey.current)) window.clearTimeout(timer);
+      for (const timer of Object.values(refreshTimersRef.current)) window.clearTimeout(timer);
+      if (experienceTimerRef.current !== null) window.clearTimeout(experienceTimerRef.current);
+    };
+  }, []);
+  function onSelectAgent(_block, _section, item) {
+    const agent = agents.find((c) => c.member_id === item.id);
+    if (agent) dock.openTarget(buildDockTarget(agent), "replace_focused");
   }
   async function onSendMessage(panelId, target) {
     if (!target || target.kind !== "agent-chat") return;
     const panelKey = buildPanelConversationKey(panelId, target);
+    const identity = target.identity || target.memberId;
     const text = (draftByKey[panelKey] || "").trim();
     if (!text) return;
     const userEntry = createUserEntry(text);
-    setDraftByKey((current) => ({ ...current, [panelKey]: "" }));
-    setSendingPanels((current) => new Set(current).add(panelKey));
-    transcriptRef.current[panelKey] = sortConversationTimelineEntries([
-      ...transcriptRef.current[panelKey] || [],
-      userEntry
-    ]);
-    pendingUserRef.current[panelKey] = userEntry;
+    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    setSendingPanels((c) => new Set(c).add(panelKey));
+    optimisticUserRef.current[identity] = {
+      interactionId: "",
+      entry: userEntry,
+      sentAtMs: Date.now()
+    };
     phaseRef.current[panelKey] = "waiting";
-    if (!liveFramesRef.current[panelKey]) liveFramesRef.current[panelKey] = [];
     forceRender();
     try {
-      const identity = target.identity?.trim();
-      if (identity) {
-        await sendInteract(baseUrl, identity, text, `console:${panelId}`);
+      const id = target.identity?.trim();
+      if (id) {
+        const result = await sendInteract(baseUrl, id, text, `console:${panelId}`);
+        if (optimisticUserRef.current[identity]) {
+          optimisticUserRef.current[identity].interactionId = result.interaction_id;
+        }
       } else {
         await sendMessage(baseUrl, target.memberId, text);
       }
     } catch (submitError) {
-      setError(errorMessage(submitError));
-      transcriptRef.current[panelKey] = (transcriptRef.current[panelKey] || []).filter((e) => e.id !== userEntry.id);
-      pendingUserRef.current[panelKey] = null;
+      optimisticUserRef.current[identity] = null;
       phaseRef.current[panelKey] = null;
+      setError(errorMessage(submitError));
       forceRender();
     } finally {
-      setSendingPanels((current) => {
-        const next = new Set(current);
-        next.delete(panelKey);
-        return next;
+      setSendingPanels((c) => {
+        const n = new Set(c);
+        n.delete(panelKey);
+        return n;
       });
     }
   }
@@ -5250,17 +5289,13 @@ function ConsoleApp({ baseUrl }) {
       decision,
       reason: `console_${decision}`
     });
-    const [pendingResponse, auditResponse] = await Promise.all([
+    const [p, a] = await Promise.all([
       callConsoleRpc(baseUrl, "mobkit/gating/pending", {}),
       callConsoleRpc(baseUrl, "mobkit/gating/audit", { limit: 50 })
     ]);
-    setGatingData({
-      pending: Array.isArray(pendingResponse.pending) ? pendingResponse.pending : [],
-      audit: Array.isArray(auditResponse.entries) ? auditResponse.entries : []
-    });
+    setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
   }
-  const SIDEBAR_MIN = 180;
-  const SIDEBAR_MAX = 420;
+  const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
   function handleSidebarResize(event) {
     event.preventDefault();
     const startX = event.clientX;
@@ -5271,24 +5306,20 @@ function ConsoleApp({ baseUrl }) {
     if ("setPointerCapture" in handle) handle.setPointerCapture(event.pointerId);
     document.documentElement.setAttribute("data-cc-resizing", "true");
     function onPointerMove(e) {
-      const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)));
-      root.style.setProperty("--cc-workbench-sidebar-width", `${next}px`);
+      root.style.setProperty("--cc-workbench-sidebar-width", `${Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)))}px`);
     }
     function cleanup() {
       document.documentElement.removeAttribute("data-cc-resizing");
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
-      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) {
-        handle.releasePointerCapture(event.pointerId);
-      }
+      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
     }
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", cleanup);
     window.addEventListener("pointercancel", cleanup);
   }
-  const ACTIVITY_MIN = 200;
-  const ACTIVITY_MAX = 480;
+  const ACTIVITY_MIN = 200, ACTIVITY_MAX = 480;
   function handleActivityResize(event) {
     event.preventDefault();
     const startX = event.clientX;
@@ -5299,28 +5330,21 @@ function ConsoleApp({ baseUrl }) {
     if ("setPointerCapture" in handle) handle.setPointerCapture(event.pointerId);
     document.documentElement.setAttribute("data-cc-resizing", "true");
     function onPointerMove(e) {
-      const next = Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)));
-      root.style.setProperty("--cc-workbench-activity-width", `${next}px`);
+      root.style.setProperty("--cc-workbench-activity-width", `${Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)))}px`);
     }
     function cleanup() {
       document.documentElement.removeAttribute("data-cc-resizing");
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
-      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) {
-        handle.releasePointerCapture(event.pointerId);
-      }
+      if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
     }
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", cleanup);
     window.addEventListener("pointercancel", cleanup);
   }
-  if (loading) {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
-  }
-  if (error) {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-error", children: error });
-  }
+  if (loading) return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
+  if (error) return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : "";
   const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
   const activityVS = buildActivityRailViewState({
@@ -5333,27 +5357,35 @@ function ConsoleApp({ baseUrl }) {
     const target = panel.target;
     if (!target || target.kind !== "agent-chat") return null;
     const panelKey = buildPanelConversationKey(panel.id, target);
-    const agent = agents.find((candidate) => candidate.member_id === target.memberId) || null;
-    const persistedEntries = transcriptRef.current[panelKey] || [];
-    const latestPersistedAt = persistedEntries.reduce((latest, entry) => {
-      const parsed = Date.parse(String(entry.createdAt || ""));
-      return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
-    }, Number.NEGATIVE_INFINITY);
-    const combinedFrames = liveFramesRef.current[panelKey] || [];
-    const liveFrames = Number.isFinite(latestPersistedAt) ? combinedFrames.filter((frame) => typeof frame.timestampMs !== "number" || frame.timestampMs > latestPersistedAt) : combinedFrames;
-    const pendingUserEntry = pendingUserRef.current[panelKey];
-    const baseEntries = [
-      ...persistedEntries,
-      ...mapFramesToTimelineEntries(agent, liveFrames, {
-        renderInteractionStartsAsUser: false,
-        renderTextDeltas: false,
-        suppressEmbeddedRunStartedPrompt: true
-      })
-    ];
-    const pendingAlreadyMaterialized = pendingUserEntry ? baseEntries.some((entry) => sameUserMessage(entry, pendingUserEntry)) : false;
+    const identity = target.identity || target.memberId;
+    const agent = agents.find((c) => c.member_id === target.memberId) || null;
+    const serverFrames = serverHistoryRef.current[identity] || [];
+    const serverEntries = mapFramesToTimelineEntries(agent, serverFrames, {
+      renderInteractionStartsAsUser: true,
+      renderTextDeltas: false
+    });
+    const liveFrames = liveOverlayRef.current[identity] || [];
+    const serverIds = new Set(serverFrames.map((f) => f.id));
+    const newLiveFrames = liveFrames.filter((f) => !serverIds.has(f.id));
+    const liveEntries = mapFramesToTimelineEntries(agent, newLiveFrames, {
+      renderInteractionStartsAsUser: false,
+      renderTextDeltas: false,
+      suppressEmbeddedRunStartedPrompt: true
+    });
+    const optimistic = optimisticUserRef.current[identity];
+    let optimisticEntry = null;
+    if (optimistic) {
+      const reconciled = optimistic.interactionId && serverFrames.some((f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId);
+      if (reconciled) {
+        optimisticUserRef.current[identity] = null;
+      } else {
+        optimisticEntry = optimistic.entry;
+      }
+    }
     const entries = sanitizeConversationEntries([
-      ...!pendingAlreadyMaterialized && pendingUserEntry ? [pendingUserEntry] : [],
-      ...baseEntries
+      ...serverEntries,
+      ...optimisticEntry ? [optimisticEntry] : [],
+      ...liveEntries
     ]);
     const conversation = buildConversationViewState({
       memberId: target.memberId,
@@ -5364,11 +5396,11 @@ function ConsoleApp({ baseUrl }) {
     const draft = draftByKey[panelKey] || "";
     const isSending = sendingPanels.has(panelKey);
     const phase = phaseRef.current[panelKey] ?? agent?.response_phase ?? null;
-    const quickPrompts = buildQuickPromptSuggestions(agent).map((suggestion) => ({
-      id: suggestion.id,
+    const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
+      id: s.id,
       kind: "pill",
-      label: suggestion.label,
-      iconName: suggestion.iconName || "i-bolt"
+      label: s.label,
+      iconName: s.iconName || "i-bolt"
     }));
     const footerLeftItems = [
       { id: "target", kind: "sub-pill", label: `To: ${target.title}`, iconName: "i-team" },
@@ -5379,62 +5411,49 @@ function ConsoleApp({ baseUrl }) {
       ...phase ? [{ id: "phase", kind: "sub-pill", label: phase, iconName: "i-bolt" }] : [],
       { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
     ];
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-      "div",
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel console-panel--chat", "data-panel-id": panel.id, "data-panel-key": panelKey, "data-testid": `chat-panel:${identity}:${panel.id}`, children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+      ConversationPane,
       {
-        className: "console-panel console-panel--chat",
-        "data-panel-id": panel.id,
-        "data-panel-key": panelKey,
-        "data-testid": `chat-panel:${target.identity || target.memberId}:${panel.id}`,
-        children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          ConversationPane,
+        viewState: conversation,
+        Icon,
+        onApplySuggestion: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
+        footer: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+          ConsoleComposer,
           {
-            viewState: conversation,
             Icon,
-            onApplySuggestion: (value) => setDraftByKey((current) => ({ ...current, [panelKey]: value })),
-            footer: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-              ConsoleComposer,
-              {
-                Icon,
-                inputId: `composer-input:${panel.id}`,
-                shellId: `composer-shell:${panel.id}`,
-                submitButtonId: `composer-submit:${panel.id}`,
-                viewState: {
-                  value: draft,
-                  disabled: isSending,
-                  placeholder: `Message ${target.title}...`,
-                  submitDisabled: !draft.trim() || isSending,
-                  submitLabel: `Send to ${target.title}`,
-                  mainRowItems: quickPrompts,
-                  footerLeftItems,
-                  footerRightItems
-                },
-                getToolbarButtonProps: ({ zone, item }) => {
-                  const buttonProps = {
-                    "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}`
-                  };
-                  if (zone === "main") {
-                    const suggestion = buildQuickPromptSuggestions(agent).find((candidate) => candidate.id === item.id);
-                    if (suggestion) {
-                      buttonProps.onClick = () => setDraftByKey((current) => ({ ...current, [panelKey]: suggestion.value }));
-                    }
-                  }
-                  return buttonProps;
-                },
-                onChange: (value) => setDraftByKey((current) => ({ ...current, [panelKey]: value })),
-                onSubmit: () => void onSendMessage(panel.id, target),
-                onKeyDown: (event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    void onSendMessage(panel.id, target);
-                  }
-                }
+            inputId: `composer-input:${panel.id}`,
+            shellId: `composer-shell:${panel.id}`,
+            submitButtonId: `composer-submit:${panel.id}`,
+            viewState: {
+              value: draft,
+              disabled: isSending,
+              placeholder: `Message ${target.title}...`,
+              submitDisabled: !draft.trim() || isSending,
+              submitLabel: `Send to ${target.title}`,
+              mainRowItems: quickPrompts,
+              footerLeftItems,
+              footerRightItems
+            },
+            getToolbarButtonProps: ({ zone, item }) => {
+              const props = { "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}` };
+              if (zone === "main") {
+                const s = buildQuickPromptSuggestions(agent).find((c) => c.id === item.id);
+                if (s) props.onClick = () => setDraftByKey((c) => ({ ...c, [panelKey]: s.value }));
               }
-            )
+              return props;
+            },
+            onChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
+            onSubmit: () => void onSendMessage(panel.id, target),
+            onKeyDown: (e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void onSendMessage(panel.id, target);
+              }
+            }
           }
         )
       }
-    );
+    ) });
   }
   function renderInspectPanel(target) {
     const inspect = inspectByIdentity[target.identity];
@@ -5475,23 +5494,23 @@ function ConsoleApp({ baseUrl }) {
     return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": "routing-panel", children: [
       /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Routes" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.routes.map((route) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-route:${route.route_key}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: route.route_key }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.routes.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-route:${r2.route_key}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: r2.route_key }),
           " \u2192 ",
-          route.recipient,
+          r2.recipient,
           " via ",
-          route.sink
-        ] }, route.route_key)) })
+          r2.sink
+        ] }, r2.route_key)) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Deliveries" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.deliveries.map((delivery) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-delivery:${delivery.delivery_id}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: delivery.delivery_id }),
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.deliveries.map((d) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: d.delivery_id }),
           " \xB7 ",
-          delivery.status,
+          d.status,
           " \xB7 ",
-          delivery.recipient
-        ] }, delivery.delivery_id)) })
+          d.recipient
+        ] }, d.delivery_id)) })
       ] })
     ] });
   }
@@ -5500,57 +5519,57 @@ function ConsoleApp({ baseUrl }) {
       /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Pending" }),
         /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: gatingData.pending.map((entry, index) => {
-          const record = entry;
-          const pendingId = String(record.pending_id || `pending-${index}`);
-          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-pending:${pendingId}`, children: [
+          const r2 = entry;
+          const pid = String(r2.pending_id || `pending-${index}`);
+          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-pending:${pid}`, children: [
             /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(record.action_id || pendingId) }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(r2.action_id || pid) }),
               " \xB7 ",
-              String(record.risk_tier || "unknown")
+              String(r2.risk_tier || "unknown")
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__actions", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pendingId}:escalate`, type: "button", onClick: () => void onGatingDecision(pendingId, "escalate"), children: "Escalate" }),
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pendingId}:approve`, type: "button", onClick: () => void onGatingDecision(pendingId, "approve"), children: "Approve" }),
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pendingId}:reject`, type: "button", onClick: () => void onGatingDecision(pendingId, "reject"), children: "Reject" })
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pid}:escalate`, type: "button", onClick: () => void onGatingDecision(pid, "escalate"), children: "Escalate" }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pid}:approve`, type: "button", onClick: () => void onGatingDecision(pid, "approve"), children: "Approve" }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pid}:reject`, type: "button", onClick: () => void onGatingDecision(pid, "reject"), children: "Reject" })
             ] })
-          ] }, pendingId);
+          ] }, pid);
         }) })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
         /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Audit" }),
         /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: gatingData.audit.map((entry, index) => {
-          const record = entry;
-          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-audit:${String(record.audit_id || index)}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(record.event_type || "event") }),
+          const r2 = entry;
+          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-audit:${String(r2.audit_id || index)}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(r2.event_type || "event") }),
             " \xB7 ",
-            String(record.action_id || "unknown")
-          ] }, String(record.audit_id || index));
+            String(r2.action_id || "unknown")
+          ] }, String(r2.audit_id || index));
         }) })
       ] })
     ] });
   }
   function renderTopologyPanel(nodes) {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "topology-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: nodes.map((node) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `topology-node:${node.identity || node.label}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: node.label || node.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "topology-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: nodes.map((n) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `topology-node:${n.identity || n.label}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: n.label || n.identity }),
       /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
-        node.profile || "unknown",
+        n.profile || "unknown",
         " \xB7 ",
-        node.state || "unknown"
+        n.state || "unknown"
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
         "Peers: ",
-        node.wired_to?.join(", ") || "none"
+        n.wired_to?.join(", ") || "none"
       ] })
-    ] }, node.identity || node.label)) }) });
+    ] }, n.identity || n.label)) }) });
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: identities.map((row) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `health-identity:${row.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: row.display_name || row.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
-      row.state,
+      r2.state,
       " \xB7 ",
-      row.addressability
-    ] }, row.identity)) }) });
+      r2.addressability
+    ] }, r2.identity)) }) });
   }
   return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-theme-scope", "data-cc-theme": theme, "data-testid": "meerkat-console", children: [
     /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(SpriteSheet, {}),
@@ -5582,15 +5601,11 @@ function ConsoleApp({ baseUrl }) {
             viewState: sidebarVS,
             Icon,
             getActionButtonProps: (scope) => {
-              if (scope.kind === "block") {
-                return { "data-testid": `sidebar-action:${scope.action.id}` };
-              }
-              if (scope.kind === "item") {
-                return { "data-testid": `sidebar-item-action:${scope.item.id}:${scope.action.id}` };
-              }
+              if (scope.kind === "block") return { "data-testid": `sidebar-action:${scope.action.id}` };
+              if (scope.kind === "item") return { "data-testid": `sidebar-item-action:${scope.item.id}:${scope.action.id}` };
               return {};
             },
-            onBlockAction: (_block, action) => {
+            onBlockAction: (_b, action) => {
               switch (action.id) {
                 case "open_routing":
                   dock.openTarget(buildControlTarget("routing"), "new_tab");
@@ -5604,33 +5619,29 @@ function ConsoleApp({ baseUrl }) {
                 case "open_health":
                   dock.openTarget(buildControlTarget("health"), "new_tab");
                   break;
-                default:
-                  break;
               }
             },
             onSelectItem: onSelectAgent,
-            onItemAction: (_block, _section, item, action) => {
-              const agent = agents.find((candidate) => candidate.member_id === item.id);
+            onItemAction: (_b, _s, item, action) => {
+              const agent = agents.find((c) => c.member_id === item.id);
               if (!agent) return;
               if (action.id === "inspect_identity") {
                 dock.openTarget(buildInspectTarget(agent), "new_tab");
                 return;
               }
               if (action.id === "toggle_pin") {
-                setPinnedAgentIds((current) => {
-                  const next = new Set(current);
-                  if (next.has(item.id)) next.delete(item.id);
-                  else next.add(item.id);
-                  return next;
+                setPinnedAgentIds((c) => {
+                  const n = new Set(c);
+                  if (n.has(item.id)) n.delete(item.id);
+                  else n.add(item.id);
+                  return n;
                 });
               }
             },
-            onItemContextMenu: (_block, _section, item, event) => {
+            onItemContextMenu: (_b, _s, item, event) => {
               event.preventDefault();
-              const agent = agents.find((candidate) => candidate.member_id === item.id);
-              if (agent) {
-                dock.openTarget(buildInspectTarget(agent), "new_tab");
-              }
+              const agent = agents.find((c) => c.member_id === item.id);
+              if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab");
             }
           }
         ),
@@ -5642,7 +5653,7 @@ function ConsoleApp({ baseUrl }) {
             onSelectTab: (tab) => dock.selectTab(tab.id),
             onCloseTab: (tab) => dock.closeTab(tab.id),
             onFocusPanel: (panel) => dock.focusPanel(panel.id),
-            onSplitPanel: (panel, direction) => dock.splitPanel(panel.id, direction),
+            onSplitPanel: (panel, dir) => dock.splitPanel(panel.id, dir),
             onClosePanel: (panel) => dock.closePanel(panel.id),
             onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
             onCreateTab: () => dock.createTab(),
@@ -5669,13 +5680,11 @@ function ConsoleApp({ baseUrl }) {
             },
             onCollapse: () => {
             },
-            onPanelAction: (_panelId, actionId) => setActiveActivityPresetId(actionId),
+            onPanelAction: (_pid, actionId) => setActiveActivityPresetId(actionId),
             renderSlotPreview: () => null,
             onSelectItem: (focusId) => {
-              const agent = agents.find((candidate) => candidate.member_id === focusId);
-              if (agent) {
-                dock.openTarget(buildDockTarget(agent), "replace_focused");
-              }
+              const agent = agents.find((c) => c.member_id === focusId);
+              if (agent) dock.openTarget(buildDockTarget(agent), "replace_focused");
             }
           }
         )
