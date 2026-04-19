@@ -65,10 +65,7 @@ impl UnifiedRuntime {
         let specs = discovery.discover(serde_json::Value::Null).await;
         let spawn_specs: Vec<SpawnMemberSpec> =
             specs.iter().map(discovery_spec_to_spawn_spec).collect();
-        let spawned: Vec<String> = spawn_specs
-            .iter()
-            .map(|s| s.meerkat_id.to_string())
-            .collect();
+        let spawned: Vec<String> = spawn_specs.iter().map(|s| s.identity.to_string()).collect();
 
         // 3. Spawn discovered members
         self.mob_runtime.spawn_many(spawn_specs).await?;

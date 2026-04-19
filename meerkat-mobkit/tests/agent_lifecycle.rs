@@ -417,7 +417,10 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         .expect("bootstrap unified runtime")
     });
 
-    assert_eq!(runtime.status(), MobState::Running);
+    assert_eq!(
+        tokio_runtime.block_on(runtime.status()).unwrap(),
+        MobState::Running
+    );
     assert!(tokio_runtime.block_on(runtime.module_is_running()));
     assert_eq!(
         tokio_runtime.block_on(runtime.loaded_modules()),

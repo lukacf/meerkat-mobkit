@@ -2,7 +2,8 @@
 
 use std::collections::BTreeSet;
 
-use meerkat_mob::{MeerkatId, SpawnMemberSpec};
+use meerkat_mob::SpawnMemberSpec;
+use meerkat_mob::ids::MeerkatId;
 
 use crate::mob_handle_runtime::MobMemberSnapshot;
 use crate::runtime::RuntimeRoute;

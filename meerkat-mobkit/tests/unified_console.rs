@@ -25,7 +25,8 @@ use axum::http::{Request, StatusCode};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
-use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,

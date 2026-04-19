@@ -927,7 +927,7 @@ pub async fn handle_unified_rpc_json(
 
     let response = match request.method.as_str() {
         "mobkit/status" => {
-            let mob_state = runtime.status();
+            let mob_state = runtime.status().await.ok();
             let is_running = runtime.module_is_running().await;
             let loaded = runtime.loaded_modules().await;
             let mut result = serde_json::json!({

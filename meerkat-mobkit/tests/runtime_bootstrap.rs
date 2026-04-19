@@ -100,7 +100,7 @@ comms = true
 #[ignore]
 async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob_path() {
     let fixture = build_runtime_fixture().await;
-    assert_eq!(fixture.runtime.status(), MobState::Running);
+    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Running);
     assert!(fixture.runtime.discover().await.is_empty());
 
     fixture
@@ -138,9 +138,9 @@ async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob
     );
 
     fixture.runtime.stop().await.expect("stop runtime");
-    assert_eq!(fixture.runtime.status(), MobState::Stopped);
+    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Stopped);
     fixture.runtime.resume().await.expect("resume runtime");
-    assert_eq!(fixture.runtime.status(), MobState::Running);
+    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Running);
 
     fixture
         .runtime

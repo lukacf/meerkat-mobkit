@@ -19,7 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_client::TestClient;
-use meerkat_mob::{MeerkatId, MobDefinition, ProfileName, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MobKitConfig, PreSpawnData,
     RuntimeDecisionInputs, RuntimeOpsPolicy, SubscribeRequest, TrustedOidcRuntimeConfig,

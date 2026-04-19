@@ -107,7 +107,7 @@ async fn post_spawn_hook_receives_spawned_member_id() {
         .await
         .expect("build unified runtime");
 
-    assert_eq!(runtime.status(), MobState::Running);
+    assert_eq!(runtime.status().await.unwrap(), MobState::Running);
 
     runtime
         .spawn(spawn_spec("worker", "hook-worker-1"))
@@ -189,7 +189,7 @@ async fn mob_handle_returns_working_handle() {
     let handle: MobHandle = runtime.mob_handle();
 
     // The handle should report running state
-    assert_eq!(handle.status(), MobState::Running);
+    assert_eq!(handle.status().await.unwrap(), MobState::Running);
 
     // Spawn via the handle directly
     handle
@@ -200,7 +200,7 @@ async fn mob_handle_returns_working_handle() {
     // Verify the member is visible through the handle
     let members = handle.list_members().await;
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0].meerkat_id.to_string(), "handle-worker-1");
+    assert_eq!(members[0].agent_identity.to_string(), "handle-worker-1");
 
     runtime.shutdown().await;
 }

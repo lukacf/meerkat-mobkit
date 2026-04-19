@@ -243,7 +243,7 @@ pub(super) async fn handle_ensure_member(
 
             let mut spec = meerkat_mob::SpawnMemberSpec::new(
                 meerkat_mob::ProfileName::from(profile),
-                meerkat_mob::MeerkatId::from(meerkat_id),
+                meerkat_mob::ids::MeerkatId::from(meerkat_id),
             );
             if let Some(context) = context {
                 spec = spec.with_context(context);
@@ -252,7 +252,7 @@ pub(super) async fn handle_ensure_member(
                 spec = spec.with_labels(labels);
             }
             if let Some(sid) = resume_session_id {
-                spec = spec.with_resume_session_id(sid);
+                spec = spec.with_resume_bridge_session_id(sid);
             }
             if let Some(instructions) = additional_instructions {
                 spec = spec.with_additional_instructions(instructions);
@@ -815,16 +815,23 @@ pub(super) async fn handle_spawn_helper(
                 }
             };
             match runtime.spawn_helper(mid, task_str, options).await {
-                Ok(result) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
-                        "output": result.output,
-                        "tokens_used": result.tokens_used,
-                        "session_id": result.session_id.map(|s| s.to_string()),
-                    })),
-                    error: None,
-                },
+                Ok(result) => {
+                    let session_id = runtime
+                        .mob_handle()
+                        .resolve_bridge_session_id(&result.agent_identity)
+                        .await
+                        .map(|s| s.to_string());
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "output": result.output,
+                            "tokens_used": result.tokens_used,
+                            "session_id": session_id,
+                        })),
+                        error: None,
+                    }
+                }
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -897,16 +904,23 @@ pub(super) async fn handle_fork_helper(
                 .fork_helper(source, mid, task_str, fork_context, options)
                 .await
             {
-                Ok(result) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
-                        "output": result.output,
-                        "tokens_used": result.tokens_used,
-                        "session_id": result.session_id.map(|s| s.to_string()),
-                    })),
-                    error: None,
-                },
+                Ok(result) => {
+                    let session_id = runtime
+                        .mob_handle()
+                        .resolve_bridge_session_id(&result.agent_identity)
+                        .await
+                        .map(|s| s.to_string());
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "output": result.output,
+                            "tokens_used": result.tokens_used,
+                            "session_id": session_id,
+                        })),
+                        error: None,
+                    }
+                }
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,

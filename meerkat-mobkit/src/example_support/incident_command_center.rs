@@ -13,7 +13,8 @@ use meerkat_client::LlmClient;
 use meerkat_core::error::ToolError;
 use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
 use meerkat_core::{ToolCallView, ToolDef, ToolDispatchOutcome, ToolResult};
-use meerkat_mob::{MeerkatId, MobDefinition, ProfileName, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, ProfileName, SpawnMemberSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1253,11 +1254,12 @@ mod tests {
                 intent: "request_summary".to_string(),
                 params: json!({ "body": "Summarize the incident." }),
                 handling_mode: meerkat_core::types::HandlingMode::Queue,
+                stream: meerkat_core::comms::InputStreamMode::None,
             })
             .await
             .expect("send request to scribe");
         let request_id = match request_receipt {
-            SendReceipt::PeerRequestSent { request_id, .. } => request_id,
+            SendReceipt::PeerRequestSent { interaction_id, .. } => interaction_id,
             other => panic!("expected peer request receipt, got {other:?}"),
         };
 

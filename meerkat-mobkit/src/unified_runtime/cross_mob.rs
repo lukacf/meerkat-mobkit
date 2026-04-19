@@ -2,7 +2,8 @@
 
 use meerkat_core::comms::TrustedPeerSpec;
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::{MeerkatId, MobHandle, PeerTarget};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobHandle, PeerTarget};
 
 use crate::contact_directory::{ContactDirectory, ContactEntry};
 
@@ -207,14 +208,23 @@ impl UnifiedRuntime {
         let remote_mid = MeerkatId::from(remote_member_id);
         let content = content.into();
         let _ = from_local_member; // audit context; delivery is via remote handle
-        let receipt = remote_handle
+        let _receipt = remote_handle
             .member(&remote_mid)
             .await
             .map_err(CrossMobError::Mob)?
             .send(content, HandlingMode::Queue)
             .await
             .map_err(CrossMobError::Mob)?;
-        Ok(receipt.session_id.to_string())
+        // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
+        // Resolve the bridge session id from the remote mob handle.
+        let session_id = remote_handle
+            .resolve_bridge_session_id(&remote_mid)
+            .await
+            .ok_or_else(|| CrossMobError::NoCommsInfo {
+                member_id: remote_mid.to_string(),
+                mob_id: remote_mob_id.to_string(),
+            })?;
+        Ok(session_id.to_string())
     }
 
     /// List external mobs from the contact directory.
@@ -363,11 +373,14 @@ impl UnifiedRuntime {
                     member_id: meerkat_id.to_string(),
                     mob_id: mob_id.to_string(),
                 })?;
-        let peer_id = entry.peer_id.ok_or_else(|| CrossMobError::NoCommsInfo {
-            member_id: meerkat_id.to_string(),
-            mob_id: mob_id.to_string(),
-        })?;
-        let comms_name = format!("{}/{}/{}", mob_id, entry.profile, meerkat_id);
+        let peer_id = entry
+            .peer_id()
+            .ok_or_else(|| CrossMobError::NoCommsInfo {
+                member_id: meerkat_id.to_string(),
+                mob_id: mob_id.to_string(),
+            })?
+            .to_string();
+        let comms_name = format!("{}/{}/{}", mob_id, entry.role, meerkat_id);
         Ok((peer_id, comms_name))
     }
 }

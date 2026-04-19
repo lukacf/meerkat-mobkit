@@ -11,7 +11,8 @@ use futures::future::join_all;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerSpec;
 use meerkat_mob::MobState;
-use meerkat_mob::{MeerkatId, PeerTarget, ProfileName, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{PeerTarget, ProfileName, SpawnMemberSpec};
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -727,11 +728,12 @@ async fn handle_console_runtime_rpc(
             )
         }
         "mobkit/status" => {
+            let mob_state = runtime.status().await.ok();
             response_value(
                 response_id,
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
-                    "running": matches!(runtime.status(), MobState::Creating | MobState::Running),
+                    "running": matches!(mob_state, Some(MobState::Creating) | Some(MobState::Running)),
                     // Console routes to MobRuntime directly — no module runtime available.
                     // Return [] to keep StatusResult.loaded_modules schema-consistent.
                     "loaded_modules": serde_json::json!([]),
@@ -1210,7 +1212,7 @@ async fn handle_console_runtime_rpc(
                 spec = spec.with_context(ctx);
             }
             if let Some(sid) = resume_session_id {
-                spec = spec.with_resume_session_id(sid);
+                spec = spec.with_resume_bridge_session_id(sid);
             }
             if let Some(instructions) = additional_instructions {
                 spec = spec.with_additional_instructions(instructions);
@@ -1444,15 +1446,22 @@ async fn handle_console_runtime_rpc(
                 Err(msg) => return invalid_params(response_id, msg),
             };
             match runtime.spawn_helper(meerkat_id, task, options).await {
-                Ok(result) => response_value(
-                    response_id,
-                    Some(serde_json::json!({
-                        "output": result.output,
-                        "tokens_used": result.tokens_used,
-                        "session_id": result.session_id.map(|s| s.to_string()),
-                    })),
-                    None,
-                ),
+                Ok(result) => {
+                    let session_id = runtime
+                        .handle()
+                        .resolve_bridge_session_id(&result.agent_identity)
+                        .await
+                        .map(|s| s.to_string());
+                    response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "output": result.output,
+                            "tokens_used": result.tokens_used,
+                            "session_id": session_id,
+                        })),
+                        None,
+                    )
+                }
                 Err(err) => internal_error(response_id, format!("spawn_helper failed: {err}")),
             }
         }
@@ -1492,15 +1501,22 @@ async fn handle_console_runtime_rpc(
                 .fork_helper(source, meerkat_id, task, fork_context, options)
                 .await
             {
-                Ok(result) => response_value(
-                    response_id,
-                    Some(serde_json::json!({
-                        "output": result.output,
-                        "tokens_used": result.tokens_used,
-                        "session_id": result.session_id.map(|s| s.to_string()),
-                    })),
-                    None,
-                ),
+                Ok(result) => {
+                    let session_id = runtime
+                        .handle()
+                        .resolve_bridge_session_id(&result.agent_identity)
+                        .await
+                        .map(|s| s.to_string());
+                    response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "output": result.output,
+                            "tokens_used": result.tokens_used,
+                            "session_id": session_id,
+                        })),
+                        None,
+                    )
+                }
                 Err(err) => internal_error(response_id, format!("fork_helper failed: {err}")),
             }
         }
@@ -1639,9 +1655,9 @@ async fn handle_console_runtime_rpc(
                     let mob_id = handle.mob_id().to_string();
                     let meerkat_id = MeerkatId::from(mid);
                     match handle.get_member(&meerkat_id).await {
-                        Some(entry) => match entry.peer_id {
+                        Some(entry) => match entry.peer_id() {
                             Some(peer_id) => {
-                                let comms_name = format!("{}/{}/{}", mob_id, entry.profile, mid);
+                                let comms_name = format!("{}/{}/{}", mob_id, entry.role, mid);
                                 let address = format!("inproc://{comms_name}");
                                 response_value(
                                     response_id,
@@ -1708,7 +1724,10 @@ async fn build_live_snapshot(
     config_module_ids: &[String],
     console_events: Option<&ConsoleEventStore>,
 ) -> ConsoleLiveSnapshot {
-    let running = matches!(runtime.status(), MobState::Creating | MobState::Running);
+    let running = matches!(
+        runtime.status().await.ok(),
+        Some(MobState::Creating) | Some(MobState::Running)
+    );
     let members = runtime.discover().await;
     // Use configured module IDs when available because topology and health
     // surfaces describe loaded modules, not live mob members.

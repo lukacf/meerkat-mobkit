@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::routing::get;
-use meerkat_mob::MeerkatId;
+use meerkat_mob::ids::MeerkatId;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime_and_events};
 use crate::http_interactions::interaction_stream_router;
@@ -48,8 +48,8 @@ impl UnifiedRuntime {
                 })
             })))
             .merge(mob_events_sse_router(Arc::new(move || {
-                let router_handle = mob_runtime.handle().subscribe_mob_events();
-                Box::pin(async move { router_handle })
+                let mob_runtime = mob_runtime.clone();
+                Box::pin(async move { mob_runtime.handle().subscribe_mob_events().await })
             })))
             .merge(interaction_stream_router(self.mob_runtime.clone()))
     }

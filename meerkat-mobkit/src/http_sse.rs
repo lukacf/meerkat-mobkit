@@ -87,7 +87,7 @@ fn map_runtime_error(error: MobRuntimeError) -> (StatusCode, Json<Value>) {
     match error {
         MobRuntimeError::InvalidInput(message) => http_error(StatusCode::BAD_REQUEST, message),
         MobRuntimeError::Mob(
-            MobError::MeerkatNotFound(_)
+            MobError::MemberNotFound(_)
             | MobError::SessionError(SessionError::NotFound { .. })
             | MobError::CommsError(SendError::PeerNotFound(_)),
         ) => http_error(StatusCode::NOT_FOUND, "member_not_found"),

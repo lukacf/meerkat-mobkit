@@ -7,7 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
-use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, MOBKIT_CONTRACT_VERSION,
@@ -359,7 +360,7 @@ fn build_persistent_session_service(
     context_root: Option<PathBuf>,
 ) -> anyhow::Result<(
     Arc<dyn meerkat_mob::MobSessionService>,
-    Arc<meerkat_runtime::RuntimeSessionAdapter>,
+    Arc<meerkat_runtime::MeerkatMachine>,
 )> {
     let (store_dir, sqlite_path) = resolve_store_dir(store_path);
     fs::create_dir_all(&store_dir)
@@ -396,7 +397,7 @@ fn build_persistent_session_service(
     ));
     let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
         Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-    let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         runtime_store,
         blob_store,
     ));

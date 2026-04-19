@@ -5,17 +5,17 @@ use std::collections::BTreeMap;
 use meerkat_core::service::SessionHistoryPage;
 use meerkat_mob::launch::ForkContext;
 use meerkat_mob::{
-    HelperOptions, HelperResult, MemberRef, MemberSessionRef, MobHandle,
-    MobMemberSnapshot as RichMobMemberSnapshot, MobRun, MobState, SpawnMemberSpec,
+    HelperOptions, HelperResult, MobHandle, MobMemberSnapshot as RichMobMemberSnapshot, MobRun,
+    MobState, SpawnMemberSpec, SpawnResult,
 };
 
-use crate::mob_handle_runtime::{MobMemberSnapshot, MobRuntimeError};
+use crate::mob_handle_runtime::{MobMemberSnapshot, MobRuntimeError, MobkitMemberSessionRef};
 
 use super::UnifiedRuntime;
 
 impl UnifiedRuntime {
-    pub fn status(&self) -> MobState {
-        self.mob_runtime.status()
+    pub async fn status(&self) -> Result<MobState, MobRuntimeError> {
+        self.mob_runtime.status().await
     }
 
     pub fn mob_handle(&self) -> MobHandle {
@@ -27,8 +27,8 @@ impl UnifiedRuntime {
         &self.mob_runtime
     }
 
-    pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<MemberRef, MobRuntimeError> {
-        let member_id = spec.meerkat_id.to_string();
+    pub async fn spawn(&self, spec: SpawnMemberSpec) -> Result<SpawnResult, MobRuntimeError> {
+        let member_id = spec.identity.to_string();
         let profile = spec.role_name.to_string();
         match self.mob_runtime.spawn(spec).await {
             Ok(member_ref) => {
@@ -51,8 +51,8 @@ impl UnifiedRuntime {
     pub async fn spawn_many(
         &self,
         specs: Vec<SpawnMemberSpec>,
-    ) -> Result<Vec<MemberRef>, MobRuntimeError> {
-        let member_ids: Vec<String> = specs.iter().map(|s| s.meerkat_id.to_string()).collect();
+    ) -> Result<Vec<SpawnResult>, MobRuntimeError> {
+        let member_ids: Vec<String> = specs.iter().map(|s| s.identity.to_string()).collect();
         let refs = self.mob_runtime.spawn_many(specs).await?;
         if !member_ids.is_empty()
             && let Some(hook) = &self.post_spawn_hook
@@ -112,7 +112,7 @@ impl UnifiedRuntime {
     ) -> Result<MobMemberSnapshot, MobRuntimeError> {
         let spec = SpawnMemberSpec::new(
             meerkat_mob::ProfileName::from(profile),
-            meerkat_mob::MeerkatId::from(meerkat_id),
+            meerkat_mob::ids::MeerkatId::from(meerkat_id),
         )
         .with_labels(labels);
         self.ensure_member(spec).await
@@ -211,7 +211,7 @@ impl UnifiedRuntime {
     pub async fn member_session_ref(
         &self,
         member_id: &str,
-    ) -> Result<Option<MemberSessionRef>, MobRuntimeError> {
+    ) -> Result<Option<MobkitMemberSessionRef>, MobRuntimeError> {
         self.mob_runtime.member_session_ref(member_id).await
     }
 }

@@ -8,7 +8,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::{AttributedEvent, MeerkatId, MobEventRouterHandle, MobHandle, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{AttributedEvent, MobEventRouterHandle, MobHandle, SpawnMemberSpec};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
@@ -89,7 +90,7 @@ pub fn discovery_spec_to_spawn_spec(spec: &AgentDiscoverySpec) -> SpawnMemberSpe
         spawn = spawn.with_labels(labels);
     }
     if let Some(sid) = resume_session_id {
-        spawn = spawn.with_resume_session_id(sid);
+        spawn = spawn.with_resume_bridge_session_id(sid);
     }
     if let Some(instructions) = additional_instructions {
         spawn = spawn.with_additional_instructions(instructions);
@@ -139,8 +140,11 @@ impl UnifiedRuntime {
         UnifiedRuntimeBuilder::default()
     }
 
-    pub(crate) fn from_parts(mob_runtime: MobRuntime, module_runtime: MobkitRuntimeHandle) -> Self {
-        let mob_event_router = mob_runtime.handle().subscribe_mob_events();
+    pub(crate) async fn from_parts(
+        mob_runtime: MobRuntime,
+        module_runtime: MobkitRuntimeHandle,
+    ) -> Self {
+        let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
         let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
         Self {
             mob_runtime,
@@ -194,7 +198,7 @@ impl UnifiedRuntime {
         .join();
 
         match module_start_result {
-            Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime)),
+            Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime).await),
             Ok(Err(error)) => {
                 let startup_error = UnifiedRuntimeBootstrapError::Module(error);
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await

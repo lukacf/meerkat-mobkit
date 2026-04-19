@@ -4,8 +4,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
-use meerkat_mob::{MeerkatId, MobHandle, SpawnMemberSpec};
+use meerkat_mob::{MobHandle, SpawnMemberSpec};
 
 use super::types::{
     AgentBuildDraft, AgentIdentity, AgentRuntimeId, DurableAgentSpec, SessionSnapshot,
@@ -178,17 +179,9 @@ impl SessionBridge for MobSessionBridge {
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
 
-        // Retrieve the session ID from the spawned member
-        let member = self
-            .handle
-            .member(&mid)
+        self.handle
+            .resolve_bridge_session_id(&mid)
             .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))?;
-
-        member
-            .current_session_id()
-            .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))?
             .ok_or_else(|| BridgeError::Mob("member spawned but has no session ID".to_string()))
     }
 
@@ -205,7 +198,7 @@ impl SessionBridge for MobSessionBridge {
         // from the session store (conversation history intact).
         let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft);
         spawn_spec.launch_mode = MemberLaunchMode::Resume {
-            session_id: session_id.clone(),
+            bridge_session_id: session_id.clone(),
         };
 
         match self.handle.spawn_spec(spawn_spec).await {
@@ -227,15 +220,9 @@ impl SessionBridge for MobSessionBridge {
                     .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
 
                 let mid = MeerkatId::from(runtime_id.as_str());
-                let member = self
-                    .handle
-                    .member(&mid)
+                self.handle
+                    .resolve_bridge_session_id(&mid)
                     .await
-                    .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
-                member
-                    .current_session_id()
-                    .await
-                    .map_err(|e2| BridgeError::Mob(e2.to_string()))?
                     .ok_or_else(|| {
                         BridgeError::Mob(
                             "member spawned (fresh fallback) but has no session ID".to_string(),
@@ -261,12 +248,19 @@ impl SessionBridge for MobSessionBridge {
         // check. The identity layer owns addressability enforcement — the
         // bridge is an internal delivery mechanism regardless of whether the
         // identity is Addressable or InternalOnly.
-        let receipt = member
+        let _receipt = member
             .internal_turn(content.clone())
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
 
-        Ok(receipt.session_id)
+        // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
+        // Query the bridge session id directly from the mob handle.
+        self.handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .ok_or_else(|| {
+                BridgeError::Mob("member has no bridge session after deliver".to_string())
+            })
     }
 
     async fn checkpoint_session(

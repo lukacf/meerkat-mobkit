@@ -108,7 +108,7 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
     let spawn = discovery_spec_to_spawn_spec(&spec);
 
     assert_eq!(spawn.role_name.as_str(), "worker");
-    assert_eq!(spawn.meerkat_id.as_str(), "agent-1");
+    assert_eq!(spawn.identity.as_str(), "agent-1");
     assert!(
         spawn.initial_message.is_none(),
         "additional_instructions should not map to initial_message"
@@ -124,7 +124,10 @@ fn mk001_discovery_spec_to_spawn_spec_maps_all_fields() {
     let labels = spawn.labels.as_ref().expect("labels should be present");
     assert_eq!(labels.get("team").map(String::as_str), Some("alpha"));
     assert_eq!(labels.get("role").map(String::as_str), Some("analyst"));
-    assert!(spawn.resume_session_id().is_none());
+    assert!(matches!(
+        spawn.launch_mode,
+        meerkat_mob::launch::MemberLaunchMode::Fresh
+    ));
     assert!(spawn.runtime_mode.is_none());
     assert!(spawn.backend.is_none());
 }
@@ -142,9 +145,12 @@ fn mk001_discovery_spec_to_spawn_spec_handles_resume_session_id() {
     };
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
-    let sid = spawn
-        .resume_session_id()
-        .expect("resume_session_id should be set");
+    let sid = match &spawn.launch_mode {
+        meerkat_mob::launch::MemberLaunchMode::Resume { bridge_session_id } => {
+            bridge_session_id.clone()
+        }
+        other => panic!("expected Resume launch mode, got {other:?}"),
+    };
     assert_eq!(sid.to_string(), session_uuid);
 }
 
@@ -161,7 +167,10 @@ fn mk001_discovery_spec_to_spawn_spec_ignores_invalid_session_id() {
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
     assert!(
-        spawn.resume_session_id().is_none(),
+        matches!(
+            spawn.launch_mode,
+            meerkat_mob::launch::MemberLaunchMode::Fresh
+        ),
         "invalid session ID should be silently ignored"
     );
 }
@@ -179,11 +188,14 @@ fn mk001_discovery_spec_to_spawn_spec_minimal() {
 
     let spawn = discovery_spec_to_spawn_spec(&spec);
     assert_eq!(spawn.role_name.as_str(), "lead");
-    assert_eq!(spawn.meerkat_id.as_str(), "leader");
+    assert_eq!(spawn.identity.as_str(), "leader");
     assert!(spawn.initial_message.is_none());
     assert!(spawn.context.is_none());
     assert!(spawn.labels.is_none());
-    assert!(spawn.resume_session_id().is_none());
+    assert!(matches!(
+        spawn.launch_mode,
+        meerkat_mob::launch::MemberLaunchMode::Fresh
+    ));
 }
 
 #[test]
