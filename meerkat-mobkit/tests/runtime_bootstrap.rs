@@ -99,90 +99,106 @@ comms = true
 #[tokio::test]
 #[ignore]
 async fn phase_a_runtime_001_bootstrap_discovery_reconcile_spawn_resume_real_mob_path() {
-    let fixture = build_runtime_fixture().await;
-    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Running);
-    assert!(fixture.runtime.discover().await.is_empty());
+    use meerkat_mob::runtime::reconcile::ReconcileOptions;
 
-    fixture
-        .runtime
-        .spawn(spawn_spec("lead", "lead-1"))
+    let fixture = build_runtime_fixture().await;
+    let handle = fixture.runtime.handle();
+    assert_eq!(handle.status().await.unwrap(), MobState::Running);
+    assert!(handle.list_members_including_retiring().await.is_empty());
+
+    handle
+        .spawn_spec(spawn_spec("lead", "lead-1"))
         .await
         .expect("spawn lead");
 
-    let discovered_after_spawn = fixture.runtime.discover().await;
+    let discovered_after_spawn = handle.list_members_including_retiring().await;
     assert_eq!(discovered_after_spawn.len(), 1);
-    assert_eq!(discovered_after_spawn[0].meerkat_id, "lead-1");
-    assert_eq!(discovered_after_spawn[0].profile, "lead");
-    assert_eq!(discovered_after_spawn[0].state, "active");
+    assert_eq!(discovered_after_spawn[0].agent_identity.as_str(), "lead-1");
+    assert_eq!(discovered_after_spawn[0].role.as_str(), "lead");
+    assert_eq!(
+        discovered_after_spawn[0].state,
+        meerkat_mob::MemberState::Active
+    );
 
-    let reconcile = fixture
-        .runtime
-        .reconcile(vec![
-            spawn_spec("lead", "lead-1"),
-            spawn_spec("worker", "worker-1"),
-        ])
+    let reconcile = handle
+        .reconcile(
+            vec![
+                spawn_spec("lead", "lead-1"),
+                spawn_spec("worker", "worker-1"),
+            ],
+            ReconcileOptions { retire_stale: true },
+        )
         .await
         .expect("reconcile");
 
-    assert_eq!(reconcile.desired, vec!["lead-1", "worker-1"]);
-    assert_eq!(reconcile.retained, vec!["lead-1"]);
-    assert_eq!(reconcile.spawned, vec!["worker-1"]);
-    assert_eq!(reconcile.retired, Vec::<String>::new());
+    let desired_ids: Vec<String> = reconcile.desired.iter().map(|id| id.to_string()).collect();
+    let retained_ids: Vec<String> = reconcile.retained.iter().map(|id| id.to_string()).collect();
+    let spawned_ids: Vec<String> = reconcile
+        .spawned
+        .iter()
+        .map(|r| r.agent_identity.to_string())
+        .collect();
+    let retired_ids: Vec<String> = reconcile.retired.iter().map(|id| id.to_string()).collect();
+    assert_eq!(desired_ids, vec!["lead-1", "worker-1"]);
+    assert_eq!(retained_ids, vec!["lead-1"]);
+    assert_eq!(spawned_ids, vec!["worker-1"]);
+    assert!(retired_ids.is_empty());
 
-    let discovered_after_reconcile = fixture.runtime.discover().await;
+    let discovered_after_reconcile = handle.list_members_including_retiring().await;
     assert_eq!(discovered_after_reconcile.len(), 2);
     assert!(
         discovered_after_reconcile
             .iter()
-            .any(|member| member.meerkat_id == "worker-1")
+            .any(|member| member.agent_identity.as_str() == "worker-1")
     );
 
-    fixture.runtime.stop().await.expect("stop runtime");
-    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Stopped);
-    fixture.runtime.resume().await.expect("resume runtime");
-    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Running);
+    handle.stop().await.expect("stop runtime");
+    assert_eq!(handle.status().await.unwrap(), MobState::Stopped);
+    handle.resume().await.expect("resume runtime");
+    assert_eq!(handle.status().await.unwrap(), MobState::Running);
 
-    fixture
-        .runtime
-        .handle()
-        .retire_all()
-        .await
-        .expect("retire all");
+    handle.retire_all().await.expect("retire all");
 }
 
 #[tokio::test]
 #[ignore]
 async fn phase_a_runtime_002_reconcile_retires_stale_members_by_default() {
+    use meerkat_mob::runtime::reconcile::ReconcileOptions;
+
     let fixture = build_runtime_fixture().await;
-    fixture
-        .runtime
-        .spawn(spawn_spec("lead", "lead-1"))
+    let handle = fixture.runtime.handle();
+    handle
+        .spawn_spec(spawn_spec("lead", "lead-1"))
         .await
         .expect("spawn lead");
-    fixture
-        .runtime
-        .spawn(spawn_spec("worker", "worker-1"))
+    handle
+        .spawn_spec(spawn_spec("worker", "worker-1"))
         .await
         .expect("spawn worker");
 
-    let reconcile = fixture
-        .runtime
-        .reconcile(vec![spawn_spec("lead", "lead-1")])
+    let reconcile = handle
+        .reconcile(
+            vec![spawn_spec("lead", "lead-1")],
+            ReconcileOptions { retire_stale: true },
+        )
         .await
         .expect("reconcile");
 
-    assert_eq!(reconcile.desired, vec!["lead-1"]);
-    assert_eq!(reconcile.retained, vec!["lead-1"]);
-    assert_eq!(reconcile.spawned, Vec::<String>::new());
-    assert_eq!(reconcile.retired, vec!["worker-1"]);
+    let desired_ids: Vec<String> = reconcile.desired.iter().map(|id| id.to_string()).collect();
+    let retained_ids: Vec<String> = reconcile.retained.iter().map(|id| id.to_string()).collect();
+    let spawned_ids: Vec<String> = reconcile
+        .spawned
+        .iter()
+        .map(|r| r.agent_identity.to_string())
+        .collect();
+    let retired_ids: Vec<String> = reconcile.retired.iter().map(|id| id.to_string()).collect();
+    assert_eq!(desired_ids, vec!["lead-1"]);
+    assert_eq!(retained_ids, vec!["lead-1"]);
+    assert!(spawned_ids.is_empty());
+    assert_eq!(retired_ids, vec!["worker-1"]);
 
-    let discovered = fixture.runtime.discover().await;
+    let discovered = handle.list_members_including_retiring().await;
     assert_eq!(discovered.len(), 1);
-    assert_eq!(discovered[0].meerkat_id, "lead-1");
-    fixture
-        .runtime
-        .handle()
-        .retire_all()
-        .await
-        .expect("retire all");
+    assert_eq!(discovered[0].agent_identity.as_str(), "lead-1");
+    handle.retire_all().await.expect("retire all");
 }

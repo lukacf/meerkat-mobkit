@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::mob_handle_runtime::MobRuntimeError;
+use crate::mob_handle_runtime::{MobRuntimeError, send_message_on_mob};
 use crate::runtime::{
     MobkitRuntimeHandle, RuntimeDecisionState, ScheduleDefinition, ScheduleDispatchReport,
     ScheduleValidationError,
@@ -67,11 +67,8 @@ impl UnifiedRuntime {
             specs.iter().map(discovery_spec_to_spawn_spec).collect();
         let spawned: Vec<String> = spawn_specs.iter().map(|s| s.identity.to_string()).collect();
 
-        // 3. Spawn discovered members
-        self.mob_runtime.spawn_many(spawn_specs).await?;
-        if let Some(hook) = &self.post_spawn_hook {
-            hook(spawned.clone()).await;
-        }
+        // 3. Spawn discovered members (hook-aware variant fires post_spawn_hook)
+        self.spawn_many(spawn_specs).await?;
 
         // 4. Clear stale managed edges (old topology is gone after reset)
         self.managed_dynamic_edges.write().await.clear();
@@ -164,7 +161,11 @@ impl UnifiedRuntime {
 
         // Phase 3: Shutdown modules and mob
         let module_shutdown = self.module_runtime.lock().await.shutdown();
-        let mob_stop = self.mob_runtime.stop().await;
+        let mob_stop = self
+            .mob_handle()
+            .stop()
+            .await
+            .map_err(MobRuntimeError::from);
         UnifiedRuntimeShutdownReport {
             drain,
             module_shutdown,
@@ -271,13 +272,12 @@ impl UnifiedRuntime {
                 continue;
             };
 
-            let injection_result = self
-                .mob_runtime
-                .send_message(
-                    &runtime_injection.member_id,
-                    runtime_injection.message.clone(),
-                )
-                .await;
+            let injection_result = send_message_on_mob(
+                &self.mob_handle(),
+                &runtime_injection.member_id,
+                runtime_injection.message.clone(),
+            )
+            .await;
 
             match injection_result {
                 Ok(session_id) => {

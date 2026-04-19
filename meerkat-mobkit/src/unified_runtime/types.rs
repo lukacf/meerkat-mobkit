@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
-use crate::mob_handle_runtime::{MobReconcileReport, MobRuntimeError};
+use crate::mob_handle_runtime::MobRuntimeError;
 use crate::runtime::{
     NormalizationError, RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleValidationError,
     SubscribeError,
@@ -199,6 +199,46 @@ pub struct UnifiedRuntimeReconcileRoutingReport {
     pub active_members: Vec<String>,
     pub added_route_keys: Vec<String>,
     pub removed_route_keys: Vec<String>,
+}
+
+/// Roster half of a reconcile pass — mobkit's wire projection of meerkat's
+/// `ReconcileReport` (which isn't `Serialize`). Field names preserve the
+/// `/mobkit/reconcile` HTTP JSON shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MobReconcileReport {
+    pub desired: Vec<String>,
+    pub retained: Vec<String>,
+    pub spawned: Vec<String>,
+    #[serde(default)]
+    pub retired: Vec<String>,
+}
+
+impl MobReconcileReport {
+    /// Project meerkat's native `ReconcileReport` into mobkit's wire shape.
+    pub fn from_meerkat(report: meerkat_mob::runtime::reconcile::ReconcileReport) -> Self {
+        Self {
+            desired: report
+                .desired
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            retained: report
+                .retained
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+            spawned: report
+                .spawned
+                .into_iter()
+                .map(|receipt| receipt.agent_identity.to_string())
+                .collect(),
+            retired: report
+                .retired
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

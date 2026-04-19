@@ -223,7 +223,10 @@ async fn req_002_builder_returns_unified_runtime_and_reference_app_is_unified_on
         .build()
         .await
         .expect("builder should return unified runtime");
-    assert_eq!(runtime.status().await.unwrap(), MobState::Running);
+    assert_eq!(
+        runtime.mob_handle().status().await.unwrap(),
+        MobState::Running
+    );
     assert!(runtime.module_is_running().await);
 
     let example_source = include_str!("../examples/library_mode_reference.rs");

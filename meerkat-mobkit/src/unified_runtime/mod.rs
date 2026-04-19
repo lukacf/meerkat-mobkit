@@ -14,7 +14,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 use self::console_events::ConsoleEventStore;
-use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime};
+use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime, MobRuntimeError};
 use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_with_options};
 use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
 
@@ -365,11 +365,11 @@ impl UnifiedRuntime {
         mob_runtime: MobRuntime,
         startup_error: UnifiedRuntimeBootstrapError,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
-        match mob_runtime.stop().await {
+        match mob_runtime.handle().stop().await {
             Ok(()) => Err(startup_error),
-            Err(rollback_error) => Err(UnifiedRuntimeBootstrapError::ModuleStartupRollbackFailed {
+            Err(err) => Err(UnifiedRuntimeBootstrapError::ModuleStartupRollbackFailed {
                 startup_error: Box::new(startup_error),
-                rollback_error,
+                rollback_error: MobRuntimeError::from(err),
             }),
         }
     }

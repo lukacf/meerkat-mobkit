@@ -162,8 +162,8 @@ export function parseReconcileResult(raw: unknown): ReconcileResult {
 export interface SpawnResult {
   readonly accepted: boolean;
   readonly moduleId: string;
-  readonly meerkatId: string | null;
-  readonly profile: string | null;
+  readonly agentIdentity: string | null;
+  readonly role: string | null;
 }
 
 /** Alias for backward compatibility. */
@@ -174,8 +174,9 @@ export function parseSpawnResult(raw: unknown): SpawnResult {
   return {
     accepted: Boolean(d.accepted),
     moduleId: String(d.module_id ?? ""),
-    meerkatId: typeof d.meerkat_id === "string" ? d.meerkat_id : null,
-    profile: typeof d.profile === "string" ? d.profile : null,
+    agentIdentity:
+      typeof d.agent_identity === "string" ? d.agent_identity : null,
+    role: typeof d.role === "string" ? d.role : null,
   };
 }
 
@@ -369,8 +370,8 @@ export function parseCallToolResult(raw: unknown): CallToolResult {
 // -- MemberSnapshot -------------------------------------------------------
 
 export interface MemberSnapshot {
-  readonly meerkatId: string;
-  readonly profile: string;
+  readonly agentIdentity: string;
+  readonly role: string;
   readonly state: string;
   readonly wiredTo: readonly string[];
   readonly labels: Readonly<Record<string, string>>;
@@ -379,8 +380,8 @@ export interface MemberSnapshot {
 export function parseMemberSnapshot(raw: unknown): MemberSnapshot {
   const d = asRecord(raw);
   return {
-    meerkatId: String(d.meerkat_id ?? ""),
-    profile: String(d.profile ?? ""),
+    agentIdentity: String(d.agent_identity ?? ""),
+    role: String(d.role ?? ""),
     state: String(d.state ?? ""),
     wiredTo: asStringArray(d.wired_to),
     labels: asStringRecord(d.labels),

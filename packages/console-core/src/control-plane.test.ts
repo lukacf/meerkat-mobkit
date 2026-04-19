@@ -50,7 +50,7 @@ test("normalizeIdentityStatusRow and response phase trim data without inventing 
     normalizeIdentityStatusRow({
       identity: " identity:luka ",
       display_name: " Luka ",
-      profile: " operator ",
+      role: " operator ",
       state: " active ",
       addressability: "addressable",
       labels: { team: " console ", empty: "   ", " ": "ignored" },
@@ -61,7 +61,7 @@ test("normalizeIdentityStatusRow and response phase trim data without inventing 
     {
       identity: "identity:luka",
       display_name: "Luka",
-      profile: "operator",
+      role: "operator",
       state: "active",
       addressability: "addressable",
       labels: { team: "console" },
@@ -152,7 +152,7 @@ test("normalize inspect, dock addressing, and typed console errors", () => {
     normalizeIdentityInspectViewState({
       identity: " identity:luka ",
       display_name: " Luka ",
-      profile: "operator",
+      role: "operator",
       state: "running",
       addressability: "addressable",
       labels: { role: " primary " },
@@ -173,7 +173,7 @@ test("normalize inspect, dock addressing, and typed console errors", () => {
     {
       identity: "identity:luka",
       display_name: "Luka",
-      profile: "operator",
+      role: "operator",
       state: "running",
       addressability: "addressable",
       labels: { role: "primary" },

@@ -386,7 +386,7 @@ export class MobKitRuntime {
  * ```ts
  * const handle = runtime.mobHandle();
  * const members = await handle.listMembers();
- * await handle.send(members[0].meerkatId, "Hello!");
+ * await handle.send(members[0].agentIdentity, "Hello!");
  * ```
  */
 export class MobHandle {
@@ -488,7 +488,7 @@ export class MobHandle {
 
   async ensureMember(
     memberId: string,
-    profile: string,
+    role: string,
     options?: {
       labels?: Record<string, string>;
       context?: unknown;
@@ -497,8 +497,8 @@ export class MobHandle {
     },
   ): Promise<MemberSnapshot> {
     const params: Record<string, unknown> = {
-      profile,
-      meerkat_id: memberId,
+      role,
+      agent_identity: memberId,
     };
     if (options?.labels) params.labels = options.labels;
     if (options?.context !== undefined) params.context = options.context;

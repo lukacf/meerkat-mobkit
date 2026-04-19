@@ -830,7 +830,10 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
     };
 
     let fixture = build_unified_runtime_fixture(config).await;
-    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Running);
+    assert_eq!(
+        fixture.runtime.mob_handle().status().await.unwrap(),
+        MobState::Running
+    );
     assert!(fixture.runtime.module_is_running().await);
     assert_eq!(
         fixture.runtime.loaded_modules().await,
@@ -845,7 +848,10 @@ async fn req_001_unified_owner_starts_and_shuts_down_from_single_object() {
     );
     assert!(shutdown.mob_stop.is_ok());
     assert!(!fixture.runtime.module_is_running().await);
-    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Stopped);
+    assert_eq!(
+        fixture.runtime.mob_handle().status().await.unwrap(),
+        MobState::Stopped
+    );
 }
 
 #[tokio::test]
@@ -1180,7 +1186,10 @@ async fn req_001_reference_entrypoint_real_listener_graceful_shutdown_stops_runt
     );
     assert!(shutdown.mob_stop.is_ok());
     assert!(!fixture.runtime.module_is_running().await);
-    assert_eq!(fixture.runtime.status().await.unwrap(), MobState::Stopped);
+    assert_eq!(
+        fixture.runtime.mob_handle().status().await.unwrap(),
+        MobState::Stopped
+    );
 
     let kill_status = Command::new("sh")
         .args(["-c", &format!("kill -0 {module_pid}")])

@@ -721,7 +721,7 @@ use meerkat_mobkit::unified_runtime::edge_types::DesiredPeerEdge;
 
 #[tokio::test]
 async fn identity_first_contracts_edge_discovery_topology_adapter() {
-    use meerkat_mobkit::mob_handle_runtime::MobMemberSnapshot;
+    use meerkat_mobkit::unified_runtime::edge_types::EdgeMemberView;
     use std::future::Future;
     use std::pin::Pin;
 
@@ -729,7 +729,7 @@ async fn identity_first_contracts_edge_discovery_topology_adapter() {
     impl meerkat_mobkit::unified_runtime::edge_types::EdgeDiscovery for TestEdgeDiscovery {
         fn discover_edges(
             &self,
-            _active_members: Vec<MobMemberSnapshot>,
+            _active_members: Vec<EdgeMemberView>,
         ) -> Pin<Box<dyn Future<Output = Vec<DesiredPeerEdge>> + Send + '_>> {
             Box::pin(async { vec![DesiredPeerEdge::new("a:main", "b:main").unwrap()] })
         }

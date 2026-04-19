@@ -99,23 +99,20 @@ impl TopologyProvider for EdgeDiscoveryTopologyAdapter {
         _target_identities: &[AgentIdentity],
         context: &TopologyContext,
     ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
-        // Synthesize MobMemberSnapshot from the roster context so that legacy
-        // EdgeDiscovery impls see real member state instead of an empty vec.
-        let snapshots: Vec<crate::mob_handle_runtime::MobMemberSnapshot> = context
+        // Project the roster context to EdgeMemberView so legacy EdgeDiscovery
+        // impls see real member identities/labels instead of an empty vec.
+        let member_views: Vec<crate::unified_runtime::edge_types::EdgeMemberView> = context
             .roster
             .iter()
-            .map(|spec| crate::mob_handle_runtime::MobMemberSnapshot {
-                meerkat_id: spec.identity.as_str().to_string(),
-                profile: spec.profile.as_str().to_string(),
-                state: crate::mob_handle_runtime::MEMBER_STATE_ACTIVE.to_string(),
-                runtime_mode: None,
-                session_id: None,
-                wired_to: Vec::new(),
+            .map(|spec| crate::unified_runtime::edge_types::EdgeMemberView {
+                agent_identity: spec.identity.as_str().to_string(),
+                role: spec.profile.as_str().to_string(),
+                wired_to: std::collections::BTreeSet::new(),
                 labels: spec.labels.clone(),
             })
             .collect();
 
-        let desired_edges = self.inner.discover_edges(snapshots).await;
+        let desired_edges = self.inner.discover_edges(member_views).await;
         let mut edges = Vec::with_capacity(desired_edges.len());
         for edge in &desired_edges {
             let (a_str, b_str) = edge.endpoints();

@@ -116,11 +116,11 @@ async def test_spawn_helper_rpc_name():
     handle, calls = make_mock_mob_handle({
         "mobkit/spawn_helper": {"output": "done", "tokens_used": 10}
     })
-    result = await handle.spawn_helper("h1", "do stuff", profile="worker")
+    result = await handle.spawn_helper("h1", "do stuff", role="worker")
     assert calls[0][0] == "mobkit/spawn_helper"
-    assert calls[0][1]["meerkat_id"] == "h1"
+    assert calls[0][1]["agent_identity"] == "h1"
     assert calls[0][1]["task"] == "do stuff"
-    assert calls[0][1]["options"]["profile"] == "worker"
+    assert calls[0][1]["options"]["role"] == "worker"
     assert result.output == "done"
 
 

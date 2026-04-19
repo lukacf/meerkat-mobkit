@@ -22,7 +22,7 @@ test("buildSidebarViewState preserves host-derived watch and degraded fields", (
         member_id: "member-1",
         label: "Luka",
         kind: "operator",
-        profile: "console",
+        role: "console",
         state: "running",
         watched: true,
         alertLevel: "elevated",

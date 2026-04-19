@@ -690,13 +690,13 @@ impl ScenarioEdgeDiscovery {
 impl EdgeDiscovery for ScenarioEdgeDiscovery {
     fn discover_edges(
         &self,
-        active_members: Vec<crate::mob_handle_runtime::MobMemberSnapshot>,
+        active_members: Vec<crate::unified_runtime::edge_types::EdgeMemberView>,
     ) -> Pin<Box<dyn futures::Future<Output = Vec<DesiredPeerEdge>> + Send + '_>> {
         let desired = Arc::clone(&self.desired);
         Box::pin(async move {
             let active = active_members
                 .into_iter()
-                .map(|member| member.meerkat_id)
+                .map(|member| member.agent_identity)
                 .collect::<BTreeSet<_>>();
             desired
                 .iter()
@@ -1039,9 +1039,10 @@ mod tests {
 
         bundle
             .runtime
-            .mob_runtime()
+            .mob_handle()
             .stop()
             .await
+            .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
             .expect("stop runtime");
 
         assert!(
@@ -1070,9 +1071,10 @@ mod tests {
 
             bundle
                 .runtime
-                .mob_runtime()
+                .mob_handle()
                 .stop()
                 .await
+                .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
                 .expect("stop runtime");
             (after_250ms, after_1s, after_5s)
         }
@@ -1120,18 +1122,19 @@ mod tests {
         let calls = client.calls();
         let prompts = client.prompts();
         let traces = take_runtime_turn_traces();
-        let identities_by_session = bundle
-            .runtime
-            .mob_runtime()
-            .discover()
-            .await
-            .into_iter()
-            .filter_map(|member| {
-                member
-                    .session_id
-                    .map(|session_id| (session_id, member.meerkat_id))
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let runtime_handle = bundle.runtime.mob_handle();
+        let entries = runtime_handle.list_members_including_retiring().await;
+        let mut identities_by_session: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for entry in entries {
+            if let Some(session_id) = runtime_handle
+                .resolve_bridge_session_id(&entry.agent_identity)
+                .await
+            {
+                identities_by_session
+                    .insert(session_id.to_string(), entry.agent_identity.to_string());
+            }
+        }
 
         eprintln!("incident startup turn count: {}", calls);
         eprintln!("incident startup runtime apply traces: {}", traces.len());
@@ -1156,9 +1159,10 @@ mod tests {
 
         bundle
             .runtime
-            .mob_runtime()
+            .mob_handle()
             .stop()
             .await
+            .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
             .expect("stop runtime");
 
         assert_eq!(
@@ -1182,18 +1186,18 @@ mod tests {
 
         let commander_session_id = bundle
             .runtime
-            .mob_runtime()
-            .member_current_session_id("incident-commander")
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::ids::MeerkatId::from("incident-commander"))
             .await
-            .expect("commander current session id")
-            .expect("commander session");
+            .expect("commander session")
+            .to_string();
         let scribe_session_id = bundle
             .runtime
-            .mob_runtime()
-            .member_current_session_id("scribe")
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::ids::MeerkatId::from("scribe"))
             .await
-            .expect("scribe current session id")
-            .expect("scribe session");
+            .expect("scribe session")
+            .to_string();
 
         let commander_state_before = bundle
             .runtime
@@ -1288,11 +1292,11 @@ mod tests {
 
         let commander_session_id_after = bundle
             .runtime
-            .mob_runtime()
-            .member_current_session_id("incident-commander")
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::ids::MeerkatId::from("incident-commander"))
             .await
-            .expect("commander current session id after")
-            .expect("commander session after");
+            .expect("commander session after")
+            .to_string();
         let commander_state_after = bundle
             .runtime
             .mob_runtime()
@@ -1323,9 +1327,10 @@ mod tests {
 
         bundle
             .runtime
-            .mob_runtime()
+            .mob_handle()
             .stop()
             .await
+            .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
             .expect("stop runtime");
 
         assert!(

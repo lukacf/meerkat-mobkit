@@ -5,8 +5,8 @@
 // -- DiscoverySpec --------------------------------------------------------
 
 export interface DiscoverySpec {
-  readonly profile: string;
-  readonly meerkatId: string;
+  readonly role: string;
+  readonly agentIdentity: string;
   readonly labels?: Readonly<Record<string, string>>;
   readonly appContext?: unknown;
   readonly additionalInstructions?: readonly string[];
@@ -17,8 +17,8 @@ export function discoverySpecToDict(
   spec: DiscoverySpec,
 ): Record<string, unknown> {
   const result: Record<string, unknown> = {
-    profile: spec.profile,
-    meerkat_id: spec.meerkatId,
+    role: spec.role,
+    agent_identity: spec.agentIdentity,
   };
   if (spec.labels && Object.keys(spec.labels).length > 0) {
     result.labels = { ...spec.labels };

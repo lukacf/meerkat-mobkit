@@ -131,7 +131,7 @@ function normalizeIdentityStatusRow(value) {
     addressability,
     labels: stringRecord(record.labels),
     ...trimString(record.display_name) ? { display_name: trimString(record.display_name) } : {},
-    ...trimString(record.profile) ? { profile: trimString(record.profile) } : {},
+    ...trimString(record.role) ? { role: trimString(record.role) } : {},
     ...typeof record.generation === "number" && Number.isFinite(record.generation) ? { generation: record.generation } : {},
     ...typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version) ? { checkpoint_version: record.checkpoint_version } : {},
     ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {}
@@ -1433,8 +1433,8 @@ function normalizeAgents(experience, modules) {
         member_id: String(entry.member_id || statusRow?.identity || entry.identity || entry.agent_id || ""),
         ...typeof entry.session_id === "string" && entry.session_id.trim() ? { session_id: entry.session_id.trim() } : {},
         label: String(entry.label || statusRow?.display_name || entry.display_name || statusRow?.identity || entry.identity || entry.member_id || entry.agent_id || "unknown"),
-        kind: String(entry.kind || statusRow?.profile || entry.profile || "module_agent"),
-        ...statusRow?.profile !== void 0 ? { profile: statusRow.profile } : entry.profile !== void 0 ? { profile: String(entry.profile) } : {},
+        kind: String(entry.kind || statusRow?.role || entry.role || "module_agent"),
+        ...statusRow?.role !== void 0 ? { role: statusRow.role } : entry.role !== void 0 ? { role: String(entry.role) } : {},
         ...statusRow?.state !== void 0 ? { state: statusRow.state } : entry.state !== void 0 ? { state: String(entry.state) } : {},
         ...statusRow?.addressability ? { addressability: statusRow.addressability } : {},
         ...statusRow?.generation !== void 0 ? { generation: statusRow.generation } : {},
@@ -1460,8 +1460,8 @@ function normalizeAgents(experience, modules) {
         member_id: identity ? `identity-only:${identity}` : "",
         ...typeof statusRow?.session_id === "string" && statusRow.session_id.trim() ? { session_id: statusRow.session_id.trim() } : {},
         label: String(statusRow?.display_name || identity || "unknown"),
-        kind: String(statusRow?.profile || "identity"),
-        ...statusRow?.profile !== void 0 ? { profile: statusRow.profile } : {},
+        kind: String(statusRow?.role || "identity"),
+        ...statusRow?.role !== void 0 ? { role: statusRow.role } : {},
         ...statusRow?.state !== void 0 ? { state: statusRow.state } : {},
         ...statusRow?.addressability ? { addressability: statusRow.addressability } : {},
         ...statusRow?.generation !== void 0 ? { generation: statusRow.generation } : {},
@@ -1496,7 +1496,7 @@ function buildPanelConversationKey(panelId, target) {
   return `panel:${panelId}:${target.kind}:${targetKey}`;
 }
 function buildDockTarget(agent) {
-  const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
+  const subtitle = [agent.role, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
   const identity = typeof agent.identity === "string" && agent.identity.trim() ? agent.identity.trim() : void 0;
   const addressingMode = identity ? "identity" : "member";
   return {
@@ -1544,7 +1544,7 @@ function buildControlTarget(kind) {
   }
 }
 function agentGroupKey(agent) {
-  return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
+  return agent.group?.trim() || agent.role?.trim() || agent.kind?.trim() || "Agents";
 }
 function agentStateTone(state) {
   switch (state) {
@@ -2876,7 +2876,7 @@ function TopologyPanel({ nodes, agents }) {
   const nodeList = nodes.length > 0 ? nodes : agents.map((a) => ({
     identity: a.identity || a.member_id,
     label: a.label,
-    profile: a.profile,
+    role: a.role,
     state: a.state,
     wired_to: a.wired_to
   }));
@@ -2956,7 +2956,7 @@ function TopologyPanel({ nodes, agents }) {
             const key = normalize(n.identity || n.label || "");
             const pos = positions[key];
             if (!pos) return null;
-            const color = nodeColor(n.state, n.profile);
+            const color = nodeColor(n.state, n.role);
             const isActive = (n.state || "").toLowerCase() === "active" || (n.state || "").toLowerCase() === "running";
             return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)(
               "g",
@@ -3269,7 +3269,7 @@ var import_react10 = __toESM(require("react"));
 var import_jsx_runtime20 = require("react/jsx-runtime");
 var ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"];
 function roleOf(a) {
-  const p = (a.profile || a.kind || "").toLowerCase();
+  const p = (a.role || a.kind || "").toLowerCase();
   const g = (a.group || "").toLowerCase();
   if (p.includes("personal") || g.includes("personal")) return "personal";
   if (p.includes("coord") || p.includes("triage") || p.includes("router")) return "coordinator";
@@ -3287,7 +3287,7 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
     return agents.filter((a) => {
       if (role !== "all" && roleOf(a) !== role) return false;
       if (!q) return true;
-      const hay = `${a.label} ${a.member_id} ${a.identity || ""} ${a.profile || ""} ${a.kind || ""}`.toLowerCase();
+      const hay = `${a.label} ${a.member_id} ${a.identity || ""} ${a.role || ""} ${a.kind || ""}`.toLowerCase();
       return hay.includes(q.toLowerCase());
     });
   }, [agents, q, role]);
@@ -3347,7 +3347,7 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
                 ] }),
                 /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: roleOf(r) }),
                 /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__state", children: stateLabel(r.state) }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.profile || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.role || "\u2014" }),
                 /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r.generation ?? "\u2014" }),
                 /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r.checkpoint_version ?? "\u2014" }),
                 /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.lease_healthy === false ? "unhealthy" : "ok" })
@@ -3361,11 +3361,11 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
         /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rd__head", children: [
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__title", children: active.label }),
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__id", children: active.identity || active.member_id }),
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__tags", children: [active.profile, active.kind, roleOf(active)].filter(Boolean).map((t) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "chip", children: String(t) }, String(t))) })
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__tags", children: [active.role, active.kind, roleOf(active)].filter(Boolean).map((t) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "chip", children: String(t) }, String(t))) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dl", { className: "rd__grid", children: [
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Profile" }),
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: active.profile || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: active.role || "\u2014" }),
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Kind" }),
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: active.kind || "\u2014" }),
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Role" }),
@@ -3899,7 +3899,7 @@ var import_react15 = __toESM(require("react"));
 var import_jsx_runtime26 = require("react/jsx-runtime");
 function bucketOf(a) {
   const g = (a.group || "").toLowerCase();
-  const p = (a.profile || a.kind || "").toLowerCase();
+  const p = (a.role || a.kind || "").toLowerCase();
   if (g.includes("coordinator") || p.includes("coord") || p.includes("triage") || p.includes("router") || p.includes("commander")) return "Coordinators";
   if (g.includes("personal") || p.includes("personal") || p.includes("identity") || p.includes("lead")) return "Personal";
   if (g.includes("internal") || p.includes("gate") || p.includes("monitor") || p.includes("scribe")) return "Internal";
@@ -3937,7 +3937,7 @@ function Sidebar({ agents, selectedMemberId, recentActivity, onSelect, onInspect
     if (!q) return agents;
     const needle = q.toLowerCase();
     return agents.filter(
-      (a) => a.label.toLowerCase().includes(needle) || (a.identity || "").toLowerCase().includes(needle) || (a.member_id || "").toLowerCase().includes(needle) || (a.profile || "").toLowerCase().includes(needle)
+      (a) => a.label.toLowerCase().includes(needle) || (a.identity || "").toLowerCase().includes(needle) || (a.member_id || "").toLowerCase().includes(needle) || (a.role || "").toLowerCase().includes(needle)
     );
   }, [agents, q]);
   const grouped = import_react15.default.useMemo(() => {
@@ -4297,7 +4297,7 @@ function ChatPane({
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "conv__title", children: agentLabel }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv__identity", children: [
           identity,
-          agent?.profile ? ` \xB7 ${agent.profile}` : ""
+          agent?.role ? ` \xB7 ${agent.role}` : ""
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv__actions", children: [
@@ -4361,7 +4361,7 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "k", children: "@" }),
             " mention"
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "composer__chip mono", children: agent?.profile || "agent" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "composer__spacer" }),
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
             "button",
@@ -4382,9 +4382,9 @@ function ChatPane({
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono", children: identity }),
-        agent?.profile && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+        agent?.role && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
-          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: agent.profile })
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: agent.role })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
         /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "dot", style: {
@@ -5268,7 +5268,7 @@ function ConsoleApp({ baseUrl }) {
       { id: "identity", kind: "sub-pill", label: target.identity || target.memberId, iconName: "i-terminal" }
     ];
     const footerRightItems = [
-      ...agent?.profile ? [{ id: "profile", kind: "sub-pill", label: agent.profile }] : [],
+      ...agent?.role ? [{ id: "role", kind: "sub-pill", label: agent.role }] : [],
       ...phase ? [{ id: "phase", kind: "sub-pill", label: phase, iconName: "i-bolt" }] : [],
       { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
     ];
@@ -5306,8 +5306,8 @@ function ConsoleApp({ baseUrl }) {
       !inspect ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("dl", { className: "console-panel__grid", children: [
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "State" }),
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.state }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Profile" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.profile || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Role" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.role || "n/a" }),
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Addressability" }),
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.addressability }),
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Generation" }),

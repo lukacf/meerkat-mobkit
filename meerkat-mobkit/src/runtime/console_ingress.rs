@@ -1,8 +1,27 @@
 //! Console ingress types and JSON request/response structures.
 
 use super::*;
-use crate::mob_handle_runtime::MobMemberSnapshot;
 use crate::rpc::MOBKIT_CONTRACT_VERSION;
+
+/// Console-facing view of a single mob member.
+///
+/// Narrow projection of meerkat's `MobMemberListEntry` enriched with the
+/// current bridge session id (which meerkat doesn't carry on the entry).
+/// Wire field names match the console JSON — `agent_identity`, `role`,
+/// `state` — so the admin UI reads them unchanged from the live snapshot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleMember {
+    pub agent_identity: String,
+    pub role: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub wired_to: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleRestJsonRequest {
@@ -26,7 +45,7 @@ pub struct ConsoleAgentLiveSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
+    pub role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -59,7 +78,7 @@ pub struct ConsoleLiveSnapshot {
     pub loaded_modules: Vec<String>,
     #[serde(default)]
     pub agents: Vec<ConsoleAgentLiveSnapshot>,
-    pub members: Vec<MobMemberSnapshot>,
+    pub members: Vec<ConsoleMember>,
     pub has_mob_runtime: bool,
 }
 
@@ -69,7 +88,7 @@ impl ConsoleLiveSnapshot {
         running: bool,
         loaded_modules: Vec<String>,
         agents: Vec<ConsoleAgentLiveSnapshot>,
-        members: Vec<MobMemberSnapshot>,
+        members: Vec<ConsoleMember>,
         has_mob_runtime: bool,
     ) -> Self {
         let mut seen = BTreeSet::new();
@@ -192,7 +211,7 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             label: module_id.clone(),
             kind: "module_agent".to_string(),
             identity: None,
-            profile: None,
+            role: None,
             state: Some("idle".to_string()),
             session_id: None,
             response_phase: None,
@@ -217,7 +236,7 @@ fn build_console_experience_contract(
     live_snapshot: &ConsoleLiveSnapshot,
 ) -> Value {
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
-        agent.profile.is_some()
+        agent.role.is_some()
             || agent.session_id.is_some()
             || agent.response_phase.is_some()
             || agent.watched.is_some()
@@ -249,89 +268,88 @@ fn build_console_experience_contract(
     // runtime is present, so multi-instance profiles (e.g. 5 profiles → 15
     // agents) enumerate every individual agent, not just profile-level IDs.
     // Fall back to loaded_modules for module-only runtimes.
-    let sidebar_agents: Vec<Value> = if live_snapshot.has_mob_runtime
-        && !live_snapshot.members.is_empty()
-    {
-        let mut sorted_members: Vec<&MobMemberSnapshot> = live_snapshot.members.iter().collect();
-        sorted_members.sort_by(|a, b| a.meerkat_id.cmp(&b.meerkat_id));
-        sorted_members
-            .iter()
-            .map(|member| {
-                let label = member
-                    .labels
-                    .get("display_name")
-                    .cloned()
-                    .unwrap_or_else(|| member.meerkat_id.clone());
-                let addressable = member
-                    .labels
-                    .get("addressable")
-                    .map(|v| v != "false")
-                    .unwrap_or(true);
-                let watched = member
-                    .labels
-                    .get("console_watched")
-                    .map(|value| value == "true");
-                let alert_level = member
-                    .labels
-                    .get("console_alert_level")
-                    .filter(|value| matches!(value.as_str(), "elevated" | "critical"))
-                    .cloned();
-                let degraded = member
-                    .labels
-                    .get("console_degraded")
-                    .map(|value| value == "true");
-                let degraded_reason = member.labels.get("console_degraded_reason").cloned();
-                let singleton = member
-                    .labels
-                    .get("singleton")
-                    .map(|v| v == "true")
-                    .unwrap_or(false);
-                let group = member
-                    .labels
-                    .get("group")
-                    .cloned()
-                    .unwrap_or_else(|| member.profile.clone());
-                serde_json::json!({
-                    "agent_id": member.meerkat_id,
-                    "member_id": member.meerkat_id,
-                    "identity": member.meerkat_id,
-                    "label": label,
-                    "kind": "mob_agent",
-                    "profile": member.profile,
-                    "state": member.state,
-                    "session_id": member.session_id,
-                    "wired_to": member.wired_to,
-                    "labels": member.labels,
-                    "group": group,
-                    "addressable": addressable,
-                    "watched": watched,
-                    "alertLevel": alert_level,
-                    "degraded": degraded,
-                    "degradedReason": degraded_reason,
-                    "affordances": {
+    let sidebar_agents: Vec<Value> =
+        if live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty() {
+            let mut sorted_members: Vec<&ConsoleMember> = live_snapshot.members.iter().collect();
+            sorted_members.sort_by(|a, b| a.agent_identity.cmp(&b.agent_identity));
+            sorted_members
+                .iter()
+                .map(|member| {
+                    let label = member
+                        .labels
+                        .get("display_name")
+                        .cloned()
+                        .unwrap_or_else(|| member.agent_identity.clone());
+                    let addressable = member
+                        .labels
+                        .get("addressable")
+                        .map(|v| v != "false")
+                        .unwrap_or(true);
+                    let watched = member
+                        .labels
+                        .get("console_watched")
+                        .map(|value| value == "true");
+                    let alert_level = member
+                        .labels
+                        .get("console_alert_level")
+                        .filter(|value| matches!(value.as_str(), "elevated" | "critical"))
+                        .cloned();
+                    let degraded = member
+                        .labels
+                        .get("console_degraded")
+                        .map(|value| value == "true");
+                    let degraded_reason = member.labels.get("console_degraded_reason").cloned();
+                    let singleton = member
+                        .labels
+                        .get("singleton")
+                        .map(|v| v == "true")
+                        .unwrap_or(false);
+                    let group = member
+                        .labels
+                        .get("group")
+                        .cloned()
+                        .unwrap_or_else(|| member.role.clone());
+                    serde_json::json!({
+                        "agent_id": member.agent_identity,
+                        "member_id": member.agent_identity,
+                        "identity": member.agent_identity,
+                        "label": label,
+                        "kind": "mob_agent",
+                        "role": member.role,
+                        "state": member.state,
+                        "session_id": member.session_id,
+                        "wired_to": member.wired_to,
+                        "labels": member.labels,
+                        "group": group,
                         "addressable": addressable,
-                        "can_send_message": addressable,
-                        "can_retire": !singleton,
-                        "can_respawn": true,
-                        "runtime_mode": "mob_agent",
-                    },
+                        "watched": watched,
+                        "alertLevel": alert_level,
+                        "degraded": degraded,
+                        "degradedReason": degraded_reason,
+                        "affordances": {
+                            "addressable": addressable,
+                            "can_send_message": addressable,
+                            "can_retire": !singleton,
+                            "can_respawn": true,
+                            "runtime_mode": "mob_agent",
+                        },
+                    })
                 })
-            })
-            .collect()
-    } else {
-        live_snapshot
-            .loaded_modules
-            .iter()
-            .map(|module_id| {
-                serde_json::json!({
-                    "agent_id": module_id,
-                    "member_id": module_id,
-                    "label": module_id,
-                    "kind": "module_agent",
+                .collect()
+        } else {
+            live_snapshot
+                .loaded_modules
+                .iter()
+                .map(|module_id| {
+                    serde_json::json!({
+                        "agent_id": module_id,
+                        "member_id": module_id,
+                        "label": module_id,
+                        "kind": "module_agent",
+                    })
                 })
-            })
-            .collect()
-    };
+                .collect()
+        };
 
     let sidebar_agents: Vec<Value> =
         if live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty() {
@@ -352,8 +370,8 @@ fn build_console_experience_contract(
                     );
                     record.insert("label".to_string(), Value::String(agent.label.clone()));
                     record.insert("kind".to_string(), Value::String(agent.kind.clone()));
-                    if let Some(profile) = &agent.profile {
-                        record.insert("profile".to_string(), Value::String(profile.clone()));
+                    if let Some(role) = &agent.role {
+                        record.insert("role".to_string(), Value::String(role.clone()));
                     }
                     if let Some(state) = &agent.state {
                         record.insert("state".to_string(), Value::String(state.clone()));
@@ -400,7 +418,7 @@ fn build_console_experience_contract(
         let mut profiles: BTreeMap<String, (usize, bool, bool)> = BTreeMap::new();
         for member in &live_snapshot.members {
             let entry = profiles
-                .entry(member.profile.clone())
+                .entry(member.role.clone())
                 .or_insert((0, true, false));
             entry.0 += 1; // instance_count
             // addressable = all instances addressable
@@ -437,7 +455,7 @@ fn build_console_experience_contract(
             "can_wire_members": has_mob,
             "can_retire_members": has_mob,
             "available_spawn_modes": if has_mob {
-                vec!["module", "profile"]
+                vec!["module", "role"]
             } else {
                 vec!["module"]
             },
@@ -473,7 +491,7 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "identity", "label", "kind", "profile", "state", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
+                "fields": ["agent_id", "member_id", "identity", "label", "kind", "role", "state", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
                 "group_by_field": "group",
@@ -483,7 +501,7 @@ fn build_console_experience_contract(
                     "singleton": "set \"true\" to prevent retire (e.g. review, summarizer agents)",
                     "group": "sidebar group name; overrides profile-based grouping",
                 },
-                "refresh_projection": "source_method returns MobMemberSnapshot rows (meerkat_id, profile, state, wired_to, labels). Clients must project: agent_id=meerkat_id, member_id=meerkat_id, label=labels.display_name||meerkat_id, group=labels.group||profile, addressable=labels.addressable!='false', affordances derived from labels.singleton and addressable.",
+                "refresh_projection": "source_method returns ConsoleMember rows (agent_identity, role, state, wired_to, labels). Clients must project: agent_id=agent_identity, member_id=agent_identity, label=labels.display_name||agent_identity, group=labels.group||role, addressable=labels.addressable!='false', affordances derived from labels.singleton and addressable.",
             },
             "live_snapshot": {
                 "agents": sidebar_agents,
@@ -592,9 +610,9 @@ fn build_console_experience_contract(
                             .map(|value| value != "false")
                             .unwrap_or(true);
                         serde_json::json!({
-                            "identity": member.meerkat_id,
-                            "label": member.labels.get("display_name").cloned().unwrap_or_else(|| member.meerkat_id.clone()),
-                            "profile": member.profile,
+                            "identity": member.agent_identity,
+                            "label": member.labels.get("display_name").cloned().unwrap_or_else(|| member.agent_identity.clone()),
+                            "role": member.role,
                             "state": member.state,
                             "wired_to": member.wired_to,
                             "addressable": addressable,
@@ -709,7 +727,7 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
                 .get("label")
                 .and_then(Value::as_str)
                 .filter(|label| *label != identity);
-            let profile = agent.get("profile").and_then(Value::as_str);
+            let role = agent.get("role").and_then(Value::as_str);
             let state = agent
                 .get("state")
                 .and_then(Value::as_str)
@@ -736,8 +754,8 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             if let Some(display_name) = display_name {
                 row["display_name"] = Value::String(display_name.to_string());
             }
-            if let Some(profile) = profile {
-                row["profile"] = Value::String(profile.to_string());
+            if let Some(role) = role {
+                row["role"] = Value::String(role.to_string());
             }
             if let Some(generation) = agent.get("generation").and_then(Value::as_u64) {
                 row["generation"] = Value::from(generation);

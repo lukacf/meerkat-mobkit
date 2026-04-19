@@ -645,6 +645,7 @@ async fn run() -> anyhow::Result<()> {
             labels.insert("realm".to_string(), realm.to_string());
         }
         runtime
+            .mob_handle()
             .ensure_member(
                 SpawnMemberSpec::new(ProfileName::from("alpha"), MeerkatId::from("alpha"))
                     .with_labels(labels),

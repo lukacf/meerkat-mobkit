@@ -300,13 +300,13 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
         .expect("reconcile worker");
 
     // Send a message to create activity while module crash/recovery proceeds.
-    runtime
-        .send_message(
-            "worker-1",
-            "Keep this interaction open briefly while runtime work proceeds.".to_string(),
-        )
-        .await
-        .expect("send_message should succeed");
+    meerkat_mobkit::send_message_on_mob(
+        &runtime.mob_handle(),
+        "worker-1",
+        "Keep this interaction open briefly while runtime work proceeds.".to_string(),
+    )
+    .await
+    .expect("send_message should succeed");
 
     let added = runtime
         .reconcile_modules(vec!["forced-crash".to_string()], Duration::from_secs(1))
@@ -418,7 +418,9 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
     });
 
     assert_eq!(
-        tokio_runtime.block_on(runtime.status()).unwrap(),
+        tokio_runtime
+            .block_on(runtime.mob_handle().status())
+            .unwrap(),
         MobState::Running
     );
     assert!(tokio_runtime.block_on(runtime.module_is_running()));
@@ -466,10 +468,13 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         });
 
         // Send a message (fire-and-forget) to drive agent activity.
-        runtime
-            .send_message("worker-1", "phase5 happy path interaction".to_string())
-            .await
-            .expect("send_message should succeed");
+        meerkat_mobkit::send_message_on_mob(
+            &runtime.mob_handle(),
+            "worker-1",
+            "phase5 happy path interaction".to_string(),
+        )
+        .await
+        .expect("send_message should succeed");
 
         let dispatch = runtime
             .dispatch_schedule_tick(

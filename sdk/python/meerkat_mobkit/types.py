@@ -98,16 +98,16 @@ class SpawnResult:
     """Result of spawning a mob member (both spec-based and module-id-based)."""
     accepted: bool
     module_id: str
-    meerkat_id: str | None = None
-    profile: str | None = None
+    agent_identity: str | None = None
+    role: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> SpawnResult:
         return cls(
             accepted=data["accepted"],
             module_id=data.get("module_id", ""),
-            meerkat_id=data.get("meerkat_id"),
-            profile=data.get("profile"),
+            agent_identity=data.get("agent_identity"),
+            role=data.get("role"),
         )
 
 
@@ -376,8 +376,8 @@ class MemberSnapshot:
     The ``state`` field is one of :data:`MEMBER_STATE_ACTIVE` or
     :data:`MEMBER_STATE_RETIRING`.
     """
-    meerkat_id: str
-    profile: str
+    agent_identity: str
+    role: str
     state: str
     wired_to: list[str]
     labels: dict[str, str]
@@ -385,8 +385,8 @@ class MemberSnapshot:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MemberSnapshot:
         return cls(
-            meerkat_id=data["meerkat_id"],
-            profile=data["profile"],
+            agent_identity=data["agent_identity"],
+            role=data["role"],
             state=data["state"],
             wired_to=list(data.get("wired_to", [])),
             labels=dict(data.get("labels", {})),

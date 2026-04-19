@@ -25,15 +25,15 @@ import {
 describe("discoverySpecToDict", () => {
   it("converts all fields to snake_case wire format", () => {
     const result = discoverySpecToDict({
-      profile: "assistant",
-      meerkatId: "mk-1",
+      role: "assistant",
+      agentIdentity: "mk-1",
       labels: { role: "lead", tier: "gold" },
       appContext: { theme: "dark" },
       additionalInstructions: ["Be concise", "Use formal tone"],
       resumeSessionId: "sess-old",
     });
-    assert.equal(result.profile, "assistant");
-    assert.equal(result.meerkat_id, "mk-1");
+    assert.equal(result.role, "assistant");
+    assert.equal(result.agent_identity, "mk-1");
     assert.deepEqual(result.labels, { role: "lead", tier: "gold" });
     assert.deepEqual(result.app_context, { theme: "dark" });
     assert.deepEqual(result.additional_instructions, [
@@ -45,11 +45,11 @@ describe("discoverySpecToDict", () => {
 
   it("with minimal fields (required only)", () => {
     const result = discoverySpecToDict({
-      profile: "worker",
-      meerkatId: "mk-2",
+      role: "worker",
+      agentIdentity: "mk-2",
     });
-    assert.equal(result.profile, "worker");
-    assert.equal(result.meerkat_id, "mk-2");
+    assert.equal(result.role, "worker");
+    assert.equal(result.agent_identity, "mk-2");
     // Optional fields should be absent, not null/undefined values
     assert.equal(result.labels, undefined);
     assert.equal(result.app_context, undefined);
@@ -59,8 +59,8 @@ describe("discoverySpecToDict", () => {
 
   it("omits empty labels object", () => {
     const result = discoverySpecToDict({
-      profile: "p",
-      meerkatId: "m",
+      role: "p",
+      agentIdentity: "m",
       labels: {},
     });
     assert.equal(result.labels, undefined);
@@ -68,8 +68,8 @@ describe("discoverySpecToDict", () => {
 
   it("omits empty additionalInstructions array", () => {
     const result = discoverySpecToDict({
-      profile: "p",
-      meerkatId: "m",
+      role: "p",
+      agentIdentity: "m",
       additionalInstructions: [],
     });
     assert.equal(result.additional_instructions, undefined);
@@ -78,8 +78,8 @@ describe("discoverySpecToDict", () => {
   it("copies labels (no shared reference)", () => {
     const labels = { a: "1" };
     const result = discoverySpecToDict({
-      profile: "p",
-      meerkatId: "m",
+      role: "p",
+      agentIdentity: "m",
       labels,
     });
     assert.deepEqual(result.labels, { a: "1" });
@@ -89,8 +89,8 @@ describe("discoverySpecToDict", () => {
   it("copies additionalInstructions (no shared reference)", () => {
     const instructions = ["x"];
     const result = discoverySpecToDict({
-      profile: "p",
-      meerkatId: "m",
+      role: "p",
+      agentIdentity: "m",
       additionalInstructions: instructions,
     });
     assert.deepEqual(result.additional_instructions, ["x"]);

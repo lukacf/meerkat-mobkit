@@ -12,7 +12,7 @@ test("normalizeAgents preserves identity-status summary fields without invention
             {
               identity: " identity:luka ",
               display_name: " Luka ",
-              profile: " operator ",
+              role: " operator ",
               state: " running ",
               addressability: "addressable",
               generation: 4,
@@ -32,7 +32,7 @@ test("normalizeAgents preserves identity-status summary fields without invention
   assert.equal(agent?.identity, "identity:luka");
   assert.equal(agent?.member_id, "identity:luka");
   assert.equal(agent?.label, "Luka");
-  assert.equal(agent?.profile, "operator");
+  assert.equal(agent?.role, "operator");
   assert.equal(agent?.state, "running");
   assert.equal(agent?.addressability, "addressable");
   assert.equal(agent?.generation, 4);
@@ -51,7 +51,7 @@ test("normalizeAgents falls back to identity_status rows when sidebar snapshot i
           {
             identity: " identity:luka ",
             display_name: " Luka ",
-            profile: " operator ",
+            role: " operator ",
             state: " running ",
             addressability: "addressable",
             labels: { team: " console " },
@@ -70,7 +70,7 @@ test("normalizeAgents falls back to identity_status rows when sidebar snapshot i
   assert.equal(agent?.identity, "identity:luka");
   assert.equal(agent?.member_id, "identity-only:identity:luka");
   assert.equal(agent?.label, "Luka");
-  assert.equal(agent?.profile, "operator");
+  assert.equal(agent?.role, "operator");
   assert.equal(agent?.state, "running");
   assert.equal(agent?.addressability, "addressable");
   assert.equal(agent?.addressable, false);
@@ -105,7 +105,7 @@ test("normalizeAgents enriches sidebar snapshot rows with identity_status when b
           {
             identity: "domain:billing",
             display_name: "Billing",
-            profile: "operator",
+            role: "operator",
             state: "running",
             addressability: "addressable",
             labels: { team: "finance" },

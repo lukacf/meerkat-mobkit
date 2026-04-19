@@ -63,9 +63,9 @@ pub use http_sse::{
     mob_events_sse_router,
 };
 pub use mob_handle_runtime::{
-    AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot,
-    MobReconcileOptions, MobReconcileReport, MobRuntime, MobRuntimeError, RealMobRuntime,
-    SessionCreatedContext, SessionHook,
+    AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
+    MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook, member_entry_to_json,
+    send_message_on_mob,
 };
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};

@@ -14,7 +14,7 @@ type Bucket = "Personal" | "Coordinators" | "Domains" | "Internal" | "Other";
 
 function bucketOf(a: ConsoleAgent): Bucket {
   const g = (a.group || "").toLowerCase();
-  const p = (a.profile || a.kind || "").toLowerCase();
+  const p = (a.role || a.kind || "").toLowerCase();
   if (g.includes("coordinator") || p.includes("coord") || p.includes("triage") || p.includes("router") || p.includes("commander")) return "Coordinators";
   if (g.includes("personal") || p.includes("personal") || p.includes("identity") || p.includes("lead")) return "Personal";
   if (g.includes("internal") || p.includes("gate") || p.includes("monitor") || p.includes("scribe")) return "Internal";
@@ -63,7 +63,7 @@ export function Sidebar({ agents, selectedMemberId, recentActivity, onSelect, on
       a.label.toLowerCase().includes(needle) ||
       (a.identity || "").toLowerCase().includes(needle) ||
       (a.member_id || "").toLowerCase().includes(needle) ||
-      (a.profile || "").toLowerCase().includes(needle),
+      (a.role || "").toLowerCase().includes(needle),
     );
   }, [agents, q]);
 

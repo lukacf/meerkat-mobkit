@@ -53,10 +53,10 @@ async fn test_builder_ephemeral() {
         .expect("ephemeral build");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ async fn test_builder_persistent_default() {
         .expect("persistent build");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
 
@@ -87,7 +87,7 @@ async fn test_builder_persistent_default() {
         "SQLite session store must be created"
     );
 
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -108,10 +108,10 @@ async fn test_builder_toml_definition() {
         .expect("toml definition build");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -131,10 +131,10 @@ async fn test_builder_capability_flags() {
         .expect("build with shell disabled");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -162,10 +162,10 @@ async fn test_builder_session_hook_before_create() {
         .expect("build with session hook");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -208,10 +208,10 @@ async fn test_builder_mob_spec_escape_hatch() {
         .expect("escape hatch build");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -230,10 +230,10 @@ async fn test_builder_defaults() {
         .expect("build with defaults");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ async fn test_builder_persistent_custom_store() {
         .expect("persistent build with custom store");
 
     assert_eq!(
-        runtime.mob_runtime().status().await.unwrap(),
+        runtime.mob_handle().status().await.unwrap(),
         MobState::Running
     );
 
@@ -278,5 +278,5 @@ async fn test_builder_persistent_custom_store() {
         "builder must use custom store, not create default SQLite"
     );
 
-    runtime.mob_runtime().stop().await.expect("stop");
+    runtime.mob_handle().stop().await.expect("stop");
 }

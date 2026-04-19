@@ -12,8 +12,8 @@ class DiscoverySpec:
     Maps to Rust SpawnMemberSpec fields via the MobKit discovery pipeline.
     """
 
-    profile: str
-    meerkat_id: str
+    role: str
+    agent_identity: str
     labels: dict[str, str] = field(default_factory=dict)
     app_context: Any | None = None
     additional_instructions: list[str] = field(default_factory=list)
@@ -21,8 +21,8 @@ class DiscoverySpec:
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
-            "profile": self.profile,
-            "meerkat_id": self.meerkat_id,
+            "role": self.role,
+            "agent_identity": self.agent_identity,
         }
         if self.labels:
             result["labels"] = dict(self.labels)
@@ -39,7 +39,7 @@ class DiscoverySpec:
 class PreSpawnData:
     """Pre-spawn data for session resume and cache warming.
 
-    The resume_map maps meerkat_id -> session_id for agents that should
+    The resume_map maps agent_identity -> session_id for agents that should
     resume existing sessions instead of creating new ones.
     """
 

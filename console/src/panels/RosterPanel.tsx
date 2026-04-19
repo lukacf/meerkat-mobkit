@@ -12,7 +12,7 @@ const ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"] as
 type Role = typeof ROLE_BUCKETS[number];
 
 function roleOf(a: ConsoleAgent): Role {
-  const p = (a.profile || a.kind || "").toLowerCase();
+  const p = (a.role || a.kind || "").toLowerCase();
   const g = (a.group || "").toLowerCase();
   if (p.includes("personal") || g.includes("personal")) return "personal";
   if (p.includes("coord") || p.includes("triage") || p.includes("router")) return "coordinator";
@@ -33,7 +33,7 @@ export function RosterPanel({ agents, onSelect, onInspect, onLifecycle }: Roster
     return agents.filter((a) => {
       if (role !== "all" && roleOf(a) !== role) return false;
       if (!q) return true;
-      const hay = `${a.label} ${a.member_id} ${a.identity || ""} ${a.profile || ""} ${a.kind || ""}`.toLowerCase();
+      const hay = `${a.label} ${a.member_id} ${a.identity || ""} ${a.role || ""} ${a.kind || ""}`.toLowerCase();
       return hay.includes(q.toLowerCase());
     });
   }, [agents, q, role]);
@@ -83,7 +83,7 @@ export function RosterPanel({ agents, onSelect, onInspect, onLifecycle }: Roster
                 </span>
                 <span>{roleOf(r)}</span>
                 <span className="roster__state">{stateLabel(r.state)}</span>
-                <span className="mono dim">{r.profile || "—"}</span>
+                <span className="mono dim">{r.role || "—"}</span>
                 <span className="mono">{r.generation ?? "—"}</span>
                 <span className="mono">{r.checkpoint_version ?? "—"}</span>
                 <span className="mono dim">{r.lease_healthy === false ? "unhealthy" : "ok"}</span>
@@ -98,13 +98,13 @@ export function RosterPanel({ agents, onSelect, onInspect, onLifecycle }: Roster
                 <div className="rd__title">{active.label}</div>
                 <div className="rd__id">{active.identity || active.member_id}</div>
                 <div className="rd__tags">
-                  {[active.profile, active.kind, roleOf(active)].filter(Boolean).map((t) => (
+                  {[active.role, active.kind, roleOf(active)].filter(Boolean).map((t) => (
                     <span key={String(t)} className="chip">{String(t)}</span>
                   ))}
                 </div>
               </div>
               <dl className="rd__grid">
-                <dt>Profile</dt><dd>{active.profile || "—"}</dd>
+                <dt>Profile</dt><dd>{active.role || "—"}</dd>
                 <dt>Kind</dt><dd>{active.kind || "—"}</dd>
                 <dt>Role</dt><dd>{roleOf(active)}</dd>
                 <dt>State</dt><dd><span className="roster__state">{stateLabel(active.state)}</span></dd>

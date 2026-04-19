@@ -597,7 +597,7 @@ class MobHandle:
     # -----------------------------------------------------------------
 
     async def ensure_member(
-        self, member_id: str, profile: str, **kwargs: Any
+        self, member_id: str, role: str, **kwargs: Any
     ) -> MemberSnapshot:
         """Ensure a mob member exists, spawning it if missing.
 
@@ -606,12 +606,12 @@ class MobHandle:
         from an unknown user (e.g. new Slack DM).
 
         Args:
-            member_id: Meerkat ID for the member.
-            profile: Profile name from mob.toml to spawn with.
+            member_id: Agent identity for the member.
+            role: Role (profile name from mob.toml) to spawn with.
             **kwargs: Optional fields (labels, context, resume_session_id,
                       additional_instructions).
         """
-        params: dict[str, Any] = {"profile": profile, "meerkat_id": member_id}
+        params: dict[str, Any] = {"role": role, "agent_identity": member_id}
         if "labels" in kwargs:
             params["labels"] = kwargs["labels"]
         if "context" in kwargs:
@@ -636,7 +636,7 @@ class MobHandle:
             # Find the agent for a specific owner
             agents = await handle.find_members("owner_id", "user-123")
             if agents:
-                meerkat_id = agents[0].meerkat_id
+                agent_identity = agents[0].agent_identity
         """
         raw = await self._runtime._rpc(
             "mobkit/find_members",
@@ -1052,19 +1052,19 @@ class MobHandle:
 
     async def spawn_helper(
         self,
-        meerkat_id: str,
+        agent_identity: str,
         task: str,
         *,
-        profile: str | None = None,
+        role: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,
     ) -> HelperResult:
         """Spawn a short-lived helper member and return its result."""
         from .types import HelperResult
-        params: dict[str, Any] = {"meerkat_id": meerkat_id, "task": task}
+        params: dict[str, Any] = {"agent_identity": agent_identity, "task": task}
         options: dict[str, Any] = {}
-        if profile is not None:
-            options["profile"] = profile
+        if role is not None:
+            options["role"] = role
         if runtime_mode is not None:
             options["runtime_mode"] = runtime_mode
         if backend is not None:
@@ -1077,11 +1077,11 @@ class MobHandle:
     async def fork_helper(
         self,
         source_member_id: str,
-        meerkat_id: str,
+        agent_identity: str,
         task: str,
         *,
         fork_context: dict | None = None,
-        profile: str | None = None,
+        role: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,
     ) -> HelperResult:
@@ -1089,14 +1089,14 @@ class MobHandle:
         from .types import HelperResult
         params: dict[str, Any] = {
             "source_member_id": source_member_id,
-            "meerkat_id": meerkat_id,
+            "agent_identity": agent_identity,
             "task": task,
         }
         if fork_context is not None:
             params["fork_context"] = fork_context
         options: dict[str, Any] = {}
-        if profile is not None:
-            options["profile"] = profile
+        if role is not None:
+            options["role"] = role
         if runtime_mode is not None:
             options["runtime_mode"] = runtime_mode
         if backend is not None:
@@ -1112,15 +1112,15 @@ class MobHandle:
 
     async def attach_session(
         self,
-        profile: str,
-        meerkat_id: str,
+        role: str,
+        agent_identity: str,
         session_id: str,
     ) -> RichMemberSnapshot:
         """Attach a member to an existing session (resume mode)."""
         from .types import RichMemberSnapshot
         params: dict[str, Any] = {
-            "profile": profile,
-            "meerkat_id": meerkat_id,
+            "role": role,
+            "agent_identity": agent_identity,
             "session_id": session_id,
         }
         raw = await self._runtime._rpc("mobkit/attach_existing_session", params)

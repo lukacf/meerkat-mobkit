@@ -12,7 +12,11 @@ use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerSpec;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::MeerkatId;
-use meerkat_mob::{PeerTarget, ProfileName, SpawnMemberSpec};
+use meerkat_mob::launch::MemberLaunchMode;
+use meerkat_mob::runtime::reconcile::MemberFilter;
+use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
+
+use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob};
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,7 +28,7 @@ use crate::console_contracts::{
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
-use crate::mob_handle_runtime::{MEMBER_STATE_RETIRING, MobRuntime};
+use crate::mob_handle_runtime::{MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobRuntime};
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
 use crate::runtime::{
@@ -588,15 +592,15 @@ fn parse_console_helper_options(
     crate::rpc::mob_methods::parse_helper_options(options_val)
 }
 
-fn member_is_addressable(member: &crate::mob_handle_runtime::MobMemberSnapshot) -> bool {
+fn member_is_addressable(member: &meerkat_mob::runtime::MobMemberListEntry) -> bool {
     member
         .labels
         .get("addressable")
-        .map(|value| !value.eq_ignore_ascii_case("false"))
+        .map(|value: &String| !value.eq_ignore_ascii_case("false"))
         .unwrap_or(true)
 }
 
-fn member_addressability(member: &crate::mob_handle_runtime::MobMemberSnapshot) -> &'static str {
+fn member_addressability(member: &meerkat_mob::runtime::MobMemberListEntry) -> &'static str {
     if member_is_addressable(member) {
         "addressable"
     } else {
@@ -605,18 +609,19 @@ fn member_addressability(member: &crate::mob_handle_runtime::MobMemberSnapshot) 
 }
 
 fn console_identity_status_json(
-    member: &crate::mob_handle_runtime::MobMemberSnapshot,
+    member: &meerkat_mob::runtime::MobMemberListEntry,
+    session_id: Option<String>,
     response_phase: Option<String>,
 ) -> Value {
     json!({
-        "identity": member.meerkat_id,
+        "identity": member.agent_identity.to_string(),
         "state": member.state,
-        "profile": member.profile,
+        "role": member.role.to_string(),
         "addressability": member_addressability(member),
         "display_name": member.labels.get("display_name"),
         "labels": member.labels,
-        "agent_runtime_id": member.meerkat_id,
-        "session_id": member.session_id,
+        "agent_runtime_id": member.agent_runtime_id.to_string(),
+        "session_id": session_id,
         "generation": Value::Null,
         "checkpoint_version": Value::Null,
         "lease_healthy": Value::Null,
@@ -626,13 +631,15 @@ fn console_identity_status_json(
 }
 
 fn console_identity_inspect_json(
-    member: &crate::mob_handle_runtime::MobMemberSnapshot,
+    member: &meerkat_mob::runtime::MobMemberListEntry,
+    session_id: Option<String>,
     response_phase: Option<String>,
 ) -> Value {
+    let peers: Vec<String> = member.wired_to.iter().map(ToString::to_string).collect();
     json!({
-        "identity": member.meerkat_id,
+        "identity": member.agent_identity.to_string(),
         "state": member.state,
-        "profile": member.profile,
+        "role": member.role.to_string(),
         "addressability": member_addressability(member),
         "display_name": member.labels.get("display_name"),
         "labels": member.labels,
@@ -641,13 +648,31 @@ fn console_identity_inspect_json(
         "continuity": {
             "generation": Value::Null,
             "checkpoint_version": Value::Null,
-            "session_id": member.session_id,
-            "agent_runtime_id": member.meerkat_id,
+            "session_id": session_id,
+            "agent_runtime_id": member.agent_runtime_id.to_string(),
         },
-        "topology_peers": member.wired_to,
+        "topology_peers": peers,
         "output_preview": Value::Null,
         "response_phase": response_phase,
     })
+}
+
+/// Resolve a mob member by identity plus its current bridge session id.
+///
+/// Returns `None` if no member with the given identity exists.
+async fn lookup_member_with_session(
+    handle: &MobHandle,
+    identity: &MeerkatId,
+) -> Option<(meerkat_mob::runtime::MobMemberListEntry, Option<String>)> {
+    let entries = handle.list_members_including_retiring().await;
+    let entry = entries
+        .into_iter()
+        .find(|e| &e.agent_identity == identity)?;
+    let session_id = handle
+        .resolve_bridge_session_id(identity)
+        .await
+        .map(|s| s.to_string());
+    Some((entry, session_id))
 }
 
 async fn handle_console_runtime_rpc(
@@ -728,12 +753,12 @@ async fn handle_console_runtime_rpc(
             )
         }
         "mobkit/status" => {
-            let mob_state = runtime.status().await.ok();
+            let mob_state = runtime.handle().status().await.ok();
             response_value(
                 response_id,
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
-                    "running": matches!(mob_state, Some(MobState::Creating) | Some(MobState::Running)),
+                    "running": matches!(mob_state, Some(MobState::Creating | MobState::Running)),
                     // Console routes to MobRuntime directly — no module runtime available.
                     // Return [] to keep StatusResult.loaded_modules schema-consistent.
                     "loaded_modules": serde_json::json!([]),
@@ -742,21 +767,25 @@ async fn handle_console_runtime_rpc(
             )
         }
         "mobkit/list_members" => {
-            let members = runtime.discover().await;
-            response_value(
-                response_id,
-                Some(serde_json::to_value(members).unwrap_or(Value::Null)),
-                None,
-            )
+            let handle = runtime.handle();
+            let entries = handle.list_members_including_retiring().await;
+            let mut members = Vec::with_capacity(entries.len());
+            for entry in &entries {
+                members.push(member_entry_to_json(&handle, entry).await);
+            }
+            response_value(response_id, Some(Value::Array(members)), None)
         }
         "mobkit/get_member" => {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.get_member(member_id).await {
-                Some(snapshot) => response_value(
+            let handle = runtime.handle();
+            let identity = MeerkatId::from(member_id);
+            let entries = handle.list_members_including_retiring().await;
+            match entries.into_iter().find(|e| e.agent_identity == identity) {
+                Some(entry) => response_value(
                     response_id,
-                    Some(serde_json::to_value(snapshot).unwrap_or(Value::Null)),
+                    Some(member_entry_to_json(&handle, &entry).await),
                     None,
                 ),
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
@@ -770,12 +799,21 @@ async fn handle_console_runtime_rpc(
             else {
                 return invalid_params(response_id, "label_value required");
             };
-            let matches = runtime.find_members(label_key, label_value).await;
-            response_value(
-                response_id,
-                Some(serde_json::to_value(matches).unwrap_or(Value::Null)),
-                None,
-            )
+            let handle = runtime.handle();
+            let filter = MemberFilter {
+                labels: std::collections::BTreeMap::from([(
+                    label_key.to_string(),
+                    label_value.to_string(),
+                )]),
+                role: None,
+                state: None,
+            };
+            let entries = handle.list_members_matching(filter).await;
+            let mut matches = Vec::with_capacity(entries.len());
+            for entry in &entries {
+                matches.push(member_entry_to_json(&handle, entry).await);
+            }
+            response_value(response_id, Some(Value::Array(matches)), None)
         }
         "mobkit/send_message" => {
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
@@ -794,7 +832,7 @@ async fn handle_console_runtime_rpc(
                 } else {
                     return invalid_params(response_id, "message or content required");
                 };
-            match runtime.send_message(member_id, content).await {
+            match send_message_on_mob(&runtime.handle(), member_id, content).await {
                 Ok(session_id) => response_value(
                     response_id,
                     Some(serde_json::json!({
@@ -822,7 +860,10 @@ async fn handle_console_runtime_rpc(
                 return invalid_params(response_id, format!("invalid params: {message}"));
             }
             let identity = request_params.identity.trim();
-            let Some(member) = runtime.get_member(identity).await else {
+            let handle = runtime.handle();
+            let mid = MeerkatId::from(identity);
+            let Some((member, _session_id)) = lookup_member_with_session(&handle, &mid).await
+            else {
                 return response_value(
                     response_id,
                     None,
@@ -842,7 +883,7 @@ async fn handle_console_runtime_rpc(
                     }),
                 );
             }
-            if member.state == MEMBER_STATE_RETIRING {
+            if member.state == meerkat_mob::MemberState::Retiring {
                 return response_value(
                     response_id,
                     None,
@@ -858,7 +899,7 @@ async fn handle_console_runtime_rpc(
                 && let Err(message) = store
                     .reserve_interaction(
                         identity,
-                        Some(member.meerkat_id.as_str()),
+                        Some(member.agent_identity.as_str()),
                         &interaction_id,
                         &request_params.origin,
                         &request_params.content,
@@ -881,9 +922,12 @@ async fn handle_console_runtime_rpc(
                 store.accept_interaction(identity, &interaction_id).await;
             }
 
-            match runtime
-                .send_message(identity, ContentInput::Text(request_params.content.clone()))
-                .await
+            match send_message_on_mob(
+                &handle,
+                identity,
+                ContentInput::Text(request_params.content.clone()),
+            )
+            .await
             {
                 Ok(_session_id) => response_value(
                     response_id,
@@ -912,7 +956,9 @@ async fn handle_console_runtime_rpc(
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
-            let Some(member) = runtime.get_member(identity).await else {
+            let handle = runtime.handle();
+            let mid = MeerkatId::from(identity);
+            let Some((member, session_id)) = lookup_member_with_session(&handle, &mid).await else {
                 return invalid_params(response_id, format!("identity not found: {identity}"));
             };
             let phase = if let Some(store) = &console_events {
@@ -922,7 +968,7 @@ async fn handle_console_runtime_rpc(
             };
             response_value(
                 response_id,
-                Some(console_identity_status_json(&member, phase)),
+                Some(console_identity_status_json(&member, session_id, phase)),
                 None,
             )
         }
@@ -930,7 +976,9 @@ async fn handle_console_runtime_rpc(
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
-            let Some(member) = runtime.get_member(identity).await else {
+            let handle = runtime.handle();
+            let mid = MeerkatId::from(identity);
+            let Some((member, session_id)) = lookup_member_with_session(&handle, &mid).await else {
                 return invalid_params(response_id, format!("identity not found: {identity}"));
             };
             let phase = if let Some(store) = &console_events {
@@ -940,7 +988,7 @@ async fn handle_console_runtime_rpc(
             };
             response_value(
                 response_id,
-                Some(console_identity_inspect_json(&member, phase)),
+                Some(console_identity_inspect_json(&member, session_id, phase)),
                 None,
             )
         }
@@ -948,7 +996,7 @@ async fn handle_console_runtime_rpc(
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
-            match runtime.retire_member(identity).await {
+            match runtime.handle().retire(MeerkatId::from(identity)).await {
                 Ok(()) => {
                     if let Some(store) = &console_events {
                         store
@@ -964,23 +1012,22 @@ async fn handle_console_runtime_rpc(
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
-            match runtime.respawn_member(identity).await {
-                Ok(()) => {
+            let handle = runtime.handle();
+            let mid = MeerkatId::from(identity);
+            match handle.respawn(mid.clone(), None).await {
+                Ok(_receipt) => {
                     if let Some(store) = &console_events {
                         store
                             .record_lifecycle(identity, "identity_respawned", json!({}))
                             .await;
                     }
-                    let member = runtime.get_member(identity).await;
-                    response_value(
-                        response_id,
-                        Some(
-                            member
-                                .map(|snapshot| console_identity_status_json(&snapshot, None))
-                                .unwrap_or_else(|| json!({ "identity": identity })),
-                        ),
-                        None,
-                    )
+                    let body = match lookup_member_with_session(&handle, &mid).await {
+                        Some((entry, session_id)) => {
+                            console_identity_status_json(&entry, session_id, None)
+                        }
+                        None => json!({ "identity": identity }),
+                    };
+                    response_value(response_id, Some(body), None)
                 }
                 Err(err) => internal_error(response_id, format!("respawn failed: {err}")),
             }
@@ -989,23 +1036,22 @@ async fn handle_console_runtime_rpc(
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
-            match runtime.respawn_member(identity).await {
-                Ok(()) => {
+            let handle = runtime.handle();
+            let mid = MeerkatId::from(identity);
+            match handle.respawn(mid.clone(), None).await {
+                Ok(_receipt) => {
                     if let Some(store) = &console_events {
                         store
                             .record_lifecycle(identity, "identity_reset", json!({}))
                             .await;
                     }
-                    let member = runtime.get_member(identity).await;
-                    response_value(
-                        response_id,
-                        Some(
-                            member
-                                .map(|snapshot| console_identity_status_json(&snapshot, None))
-                                .unwrap_or_else(|| json!({ "identity": identity })),
-                        ),
-                        None,
-                    )
+                    let body = match lookup_member_with_session(&handle, &mid).await {
+                        Some((entry, session_id)) => {
+                            console_identity_status_json(&entry, session_id, None)
+                        }
+                        None => json!({ "identity": identity }),
+                    };
+                    response_value(response_id, Some(body), None)
                 }
                 Err(err) => internal_error(response_id, format!("reset failed: {err}")),
             }
@@ -1142,11 +1188,12 @@ async fn handle_console_runtime_rpc(
             }
         }
         "mobkit/ensure_member" => {
-            let Some(profile) = request.params.get("profile").and_then(Value::as_str) else {
-                return invalid_params(response_id, "profile required");
+            let Some(role) = request.params.get("role").and_then(Value::as_str) else {
+                return invalid_params(response_id, "role required");
             };
-            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "meerkat_id required");
+            let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "agent_identity required");
             };
             let labels = match request.params.get("labels") {
                 None | Some(Value::Null) => std::collections::BTreeMap::new(),
@@ -1204,7 +1251,7 @@ async fn handle_console_runtime_rpc(
                 }
             };
             let mut spec =
-                SpawnMemberSpec::new(ProfileName::from(profile), MeerkatId::from(meerkat_id));
+                SpawnMemberSpec::new(ProfileName::from(role), MeerkatId::from(agent_identity));
             if !labels.is_empty() {
                 spec = spec.with_labels(labels);
             }
@@ -1217,12 +1264,16 @@ async fn handle_console_runtime_rpc(
             if let Some(instructions) = additional_instructions {
                 spec = spec.with_additional_instructions(instructions);
             }
-            match runtime.ensure_member(spec).await {
-                Ok(snapshot) => response_value(
-                    response_id,
-                    Some(serde_json::to_value(snapshot).unwrap_or(Value::Null)),
-                    None,
-                ),
+            let handle = runtime.handle();
+            let mid = spec.identity.clone();
+            match handle.ensure_member(spec).await {
+                Ok(_outcome) => {
+                    let body = match lookup_member_with_session(&handle, &mid).await {
+                        Some((entry, _sid)) => member_entry_to_json(&handle, &entry).await,
+                        None => Value::Null,
+                    };
+                    response_value(response_id, Some(body), None)
+                }
                 Err(err) => internal_error(response_id, format!("ensure_member failed: {err}")),
             }
         }
@@ -1230,7 +1281,7 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.retire_member(member_id).await {
+            match runtime.handle().retire(MeerkatId::from(member_id)).await {
                 Ok(()) => response_value(
                     response_id,
                     Some(serde_json::json!({ "accepted": true })),
@@ -1243,8 +1294,12 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.respawn_member(member_id).await {
-                Ok(()) => response_value(
+            match runtime
+                .handle()
+                .respawn(MeerkatId::from(member_id), None)
+                .await
+            {
+                Ok(_receipt) => response_value(
                     response_id,
                     Some(serde_json::json!({ "accepted": true })),
                     None,
@@ -1299,7 +1354,11 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.member_status(member_id).await {
+            match runtime
+                .handle()
+                .member_status(&MeerkatId::from(member_id))
+                .await
+            {
                 Ok(snapshot) => response_value(
                     response_id,
                     Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
@@ -1312,7 +1371,11 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.force_cancel_member(member_id).await {
+            match runtime
+                .handle()
+                .force_cancel_member(MeerkatId::from(member_id))
+                .await
+            {
                 Ok(()) => response_value(
                     response_id,
                     Some(serde_json::json!({ "accepted": true })),
@@ -1327,20 +1390,19 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.member_current_session_id(member_id).await {
-                Ok(session_id) => response_value(
-                    response_id,
-                    Some(serde_json::json!({
-                        "member_id": member_id,
-                        "session_id": session_id,
-                    })),
-                    None,
-                ),
-                Err(err) => internal_error(
-                    response_id,
-                    format!("member_current_session_id failed: {err}"),
-                ),
-            }
+            let session_id = runtime
+                .handle()
+                .resolve_bridge_session_id(&MeerkatId::from(member_id))
+                .await
+                .map(|s| s.to_string());
+            response_value(
+                response_id,
+                Some(serde_json::json!({
+                    "member_id": member_id,
+                    "session_id": session_id,
+                })),
+                None,
+            )
         }
         "mobkit/read_session_history" => {
             let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
@@ -1375,28 +1437,23 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            match runtime.member_session_ref(member_id).await {
-                Ok(session_ref) => response_value(
-                    response_id,
-                    Some(
-                        session_ref
-                            .map(|r| serde_json::to_value(&r).unwrap_or(Value::Null))
-                            .unwrap_or(Value::Null),
-                    ),
-                    None,
-                ),
-                Err(err) => {
-                    internal_error(response_id, format!("member_session_ref failed: {err}"))
-                }
-            }
+            let body = match runtime
+                .handle()
+                .resolve_bridge_session_id(&MeerkatId::from(member_id))
+                .await
+            {
+                Some(sid) => serde_json::json!({ "session_id": sid.to_string() }),
+                None => Value::Null,
+            };
+            response_value(response_id, Some(body), None)
         }
         "mobkit/collect_completed" => {
-            let completed = runtime.collect_completed().await;
+            let completed = runtime.handle().collect_completed().await;
             let entries: Vec<Value> = completed
                 .into_iter()
-                .map(|(member_id, snapshot)| {
+                .map(|(mid, snapshot)| {
                     serde_json::json!({
-                        "member_id": member_id,
+                        "member_id": mid.to_string(),
                         "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
                     })
                 })
@@ -1411,7 +1468,11 @@ async fn handle_console_runtime_rpc(
             let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
-            match runtime.cancel_flow(run_id).await {
+            let run_id: meerkat_mob::RunId = match run_id.parse() {
+                Ok(id) => id,
+                Err(_) => return invalid_params(response_id, "invalid run_id format"),
+            };
+            match runtime.handle().cancel_flow(run_id).await {
                 Ok(()) => response_value(
                     response_id,
                     Some(serde_json::json!({ "accepted": true })),
@@ -1424,7 +1485,11 @@ async fn handle_console_runtime_rpc(
             let Some(run_id) = request.params.get("run_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "run_id required");
             };
-            match runtime.flow_status(run_id).await {
+            let run_id: meerkat_mob::RunId = match run_id.parse() {
+                Ok(id) => id,
+                Err(_) => return invalid_params(response_id, "invalid run_id format"),
+            };
+            match runtime.handle().flow_status(run_id).await {
                 Ok(Some(mob_run)) => response_value(
                     response_id,
                     Some(serde_json::to_value(&mob_run).unwrap_or(Value::Null)),
@@ -1435,8 +1500,9 @@ async fn handle_console_runtime_rpc(
             }
         }
         "mobkit/spawn_helper" => {
-            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "meerkat_id required");
+            let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "agent_identity required");
             };
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
@@ -1445,10 +1511,13 @@ async fn handle_console_runtime_rpc(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
-            match runtime.spawn_helper(meerkat_id, task, options).await {
+            let handle = runtime.handle();
+            match handle
+                .spawn_helper(MeerkatId::from(agent_identity), task, options)
+                .await
+            {
                 Ok(result) => {
-                    let session_id = runtime
-                        .handle()
+                    let session_id = handle
                         .resolve_bridge_session_id(&result.agent_identity)
                         .await
                         .map(|s| s.to_string());
@@ -1473,8 +1542,9 @@ async fn handle_console_runtime_rpc(
             else {
                 return invalid_params(response_id, "source_member_id required");
             };
-            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "meerkat_id required");
+            let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "agent_identity required");
             };
             let Some(task) = request.params.get("task").and_then(Value::as_str) else {
                 return invalid_params(response_id, "task required");
@@ -1497,13 +1567,19 @@ async fn handle_console_runtime_rpc(
                 Ok(opts) => opts,
                 Err(msg) => return invalid_params(response_id, msg),
             };
-            match runtime
-                .fork_helper(source, meerkat_id, task, fork_context, options)
+            let handle = runtime.handle();
+            match handle
+                .fork_helper(
+                    &MeerkatId::from(source),
+                    MeerkatId::from(agent_identity),
+                    task,
+                    fork_context,
+                    options,
+                )
                 .await
             {
                 Ok(result) => {
-                    let session_id = runtime
-                        .handle()
+                    let session_id = handle
                         .resolve_bridge_session_id(&result.agent_identity)
                         .await
                         .map(|s| s.to_string());
@@ -1521,24 +1597,37 @@ async fn handle_console_runtime_rpc(
             }
         }
         "mobkit/attach_existing_session" => {
-            let Some(profile) = request.params.get("profile").and_then(Value::as_str) else {
-                return invalid_params(response_id, "profile required");
+            let Some(role) = request.params.get("role").and_then(Value::as_str) else {
+                return invalid_params(response_id, "role required");
             };
-            let Some(meerkat_id) = request.params.get("meerkat_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "meerkat_id required");
+            let Some(agent_identity) = request.params.get("agent_identity").and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "agent_identity required");
             };
-            let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
+            let Some(session_id_str) = request.params.get("session_id").and_then(Value::as_str)
+            else {
                 return invalid_params(response_id, "session_id required");
             };
-            match runtime
-                .attach_existing_session(profile, meerkat_id, session_id)
-                .await
-            {
-                Ok(snapshot) => response_value(
-                    response_id,
-                    Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
-                    None,
-                ),
+            let bridge_session_id = match meerkat_core::types::SessionId::parse(session_id_str) {
+                Ok(s) => s,
+                Err(_) => return invalid_params(response_id, "invalid session_id format"),
+            };
+            let mid = MeerkatId::from(agent_identity);
+            let spec = SpawnMemberSpec::new(ProfileName::from(role), mid.clone())
+                .with_launch_mode(MemberLaunchMode::Resume { bridge_session_id });
+            let handle = runtime.handle();
+            match handle.spawn_spec(spec).await {
+                Ok(_) => match handle.member_status(&mid).await {
+                    Ok(snapshot) => response_value(
+                        response_id,
+                        Some(serde_json::to_value(&snapshot).unwrap_or(Value::Null)),
+                        None,
+                    ),
+                    Err(err) => internal_error(
+                        response_id,
+                        format!("attach_existing_session status lookup failed: {err}"),
+                    ),
+                },
                 Err(err) => internal_error(
                     response_id,
                     format!("attach_existing_session failed: {err}"),
@@ -1724,11 +1813,35 @@ async fn build_live_snapshot(
     config_module_ids: &[String],
     console_events: Option<&ConsoleEventStore>,
 ) -> ConsoleLiveSnapshot {
+    let handle = runtime.handle();
     let running = matches!(
-        runtime.status().await.ok(),
-        Some(MobState::Creating) | Some(MobState::Running)
+        handle.status().await.ok(),
+        Some(MobState::Creating | MobState::Running)
     );
-    let members = runtime.discover().await;
+    let entries = handle.list_members_including_retiring().await;
+
+    // Project each meerkat entry → mobkit's ConsoleMember, resolving the
+    // current bridge session id that console consumers rely on.
+    let mut members: Vec<crate::runtime::ConsoleMember> = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let session_id = handle
+            .resolve_bridge_session_id(&entry.agent_identity)
+            .await
+            .map(|s| s.to_string());
+        members.push(crate::runtime::ConsoleMember {
+            agent_identity: entry.agent_identity.to_string(),
+            role: entry.role.to_string(),
+            state: match entry.state {
+                meerkat_mob::MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
+                meerkat_mob::MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
+            },
+            runtime_mode: Some(entry.runtime_mode.to_string()),
+            session_id,
+            wired_to: entry.wired_to.iter().map(ToString::to_string).collect(),
+            labels: entry.labels.clone(),
+        });
+    }
+
     // Use configured module IDs when available because topology and health
     // surfaces describe loaded modules, not live mob members.
     // Fall back to member IDs only for pure mob runtimes with no module config.
@@ -1736,7 +1849,7 @@ async fn build_live_snapshot(
         let mut mods: Vec<String> = members
             .iter()
             .filter(|member| member.state != MEMBER_STATE_RETIRING)
-            .map(|member| member.meerkat_id.clone())
+            .map(|member| member.agent_identity.clone())
             .collect();
         mods.sort();
         mods
@@ -1745,6 +1858,7 @@ async fn build_live_snapshot(
         mods.sort();
         mods
     };
+
     let agents = members
         .iter()
         .map(|member| async move {
@@ -1752,32 +1866,36 @@ async fn build_live_snapshot(
                 .labels
                 .get("display_name")
                 .cloned()
-                .unwrap_or_else(|| member.meerkat_id.clone());
+                .unwrap_or_else(|| member.agent_identity.clone());
             let watched = member
                 .labels
                 .get("console_watched")
-                .map(|value| value == "true");
+                .map(|value: &String| value == "true");
             let alert_level = member
                 .labels
                 .get("console_alert_level")
-                .filter(|value| matches!(value.as_str(), "elevated" | "critical"))
+                .filter(|value: &&String| matches!(value.as_str(), "elevated" | "critical"))
                 .cloned();
             let degraded = member
                 .labels
                 .get("console_degraded")
-                .map(|value| value == "true");
+                .map(|value: &String| value == "true");
             let degraded_reason = member.labels.get("console_degraded_reason").cloned();
             let response_phase = match console_events {
-                Some(store) => store.response_phase_for_identity(&member.meerkat_id).await,
+                Some(store) => {
+                    store
+                        .response_phase_for_identity(&member.agent_identity)
+                        .await
+                }
                 None => None,
             };
             ConsoleAgentLiveSnapshot {
-                agent_id: member.meerkat_id.clone(),
-                member_id: member.meerkat_id.clone(),
+                agent_id: member.agent_identity.clone(),
+                member_id: member.agent_identity.clone(),
                 label,
                 kind: "meerkat".to_string(),
-                identity: Some(member.meerkat_id.clone()),
-                profile: Some(member.profile.clone()),
+                identity: Some(member.agent_identity.clone()),
+                role: Some(member.role.clone()),
                 state: Some(member.state.clone()),
                 session_id: member.session_id.clone(),
                 response_phase,

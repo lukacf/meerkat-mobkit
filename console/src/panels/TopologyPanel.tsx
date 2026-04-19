@@ -86,7 +86,7 @@ export function TopologyPanel({ nodes, agents }: TopologyPanelProps): React.JSX.
     : agents.map<ConsoleTopologyNode>((a) => ({
         identity: a.identity || a.member_id,
         label: a.label,
-        profile: a.profile,
+        role: a.role,
         state: a.state,
         wired_to: a.wired_to,
       }));
@@ -172,7 +172,7 @@ export function TopologyPanel({ nodes, agents }: TopologyPanelProps): React.JSX.
           const key = normalize(n.identity || n.label || "");
           const pos = positions[key];
           if (!pos) return null;
-          const color = nodeColor(n.state, n.profile);
+          const color = nodeColor(n.state, n.role);
           const isActive = (n.state || "").toLowerCase() === "active" || (n.state || "").toLowerCase() === "running";
           return (
             <g
