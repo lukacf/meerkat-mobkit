@@ -47,6 +47,19 @@ import type {
   ConsoleTopologyNode,
   IdentityStatusRow,
 } from "./types";
+import { TopologyPanel } from "./panels/TopologyPanel";
+import { TimelinePanel } from "./panels/TimelinePanel";
+import { GatingInboxPanel } from "./panels/GatingInboxPanel";
+import { RosterPanel } from "./panels/RosterPanel";
+import { RoutingPanel } from "./panels/RoutingPanel";
+import { GatesPanel } from "./panels/GatesPanel";
+import { LogsPanel } from "./panels/LogsPanel";
+import { Topbar } from "./panels/Topbar";
+import { Tweaks, useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
+import { Sidebar as DesignSidebar } from "./panels/Sidebar";
+import { SignalsRail } from "./panels/SignalsRail";
+import { ChatPane } from "./panels/ChatPane";
+import { MobKitDock } from "./panels/MobKitDock";
 
 interface ConsoleAppProps {
   baseUrl: string;
@@ -138,9 +151,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("all");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
-  const [theme, setTheme] = React.useState<"dark" | "light">(() => {
-    try { return (localStorage.getItem("mobkit-console-theme") as "dark" | "light") || "dark"; } catch { return "dark"; }
+  const [theme, setTheme] = React.useState<ConsoleTheme>(() => {
+    try { return (localStorage.getItem("mobkit-console-theme") as ConsoleTheme) || "light"; } catch { return "light"; }
   });
+  const [variant, setVariant] = useConsoleVariant();
 
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
@@ -420,9 +434,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
 
   React.useEffect(() => {
-    // Seed activity with recent history (only on mount)
-    void queryEvents(baseUrl, {}, 80)
-      .then((frames) => { activityRef.current = dedupeFrames(frames).slice(-80).reverse(); forceRender(); })
+    // Seed activity with recent history (only on mount) — apply same filter as SSE
+    void queryEvents(baseUrl, {}, 200)
+      .then((frames) => {
+        const filtered = dedupeFrames(frames).filter((f) => !ACTIVITY_SKIP_EVENTS.has(f.event));
+        activityRef.current = filtered.slice(-200).reverse();
+        forceRender();
+      })
       .catch(() => {});
 
     const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
@@ -670,39 +688,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     ];
 
     return (
-      <div className="console-panel console-panel--chat" data-panel-id={panel.id} data-panel-key={panelKey} data-testid={`chat-panel:${identity}:${panel.id}`}>
-        <ConversationPane
-          viewState={conversation}
-          Icon={Icon}
-          onApplySuggestion={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
-          footer={
-            <ConsoleComposer
-              Icon={Icon}
-              inputId={`composer-input:${panel.id}`}
-              shellId={`composer-shell:${panel.id}`}
-              submitButtonId={`composer-submit:${panel.id}`}
-              viewState={{
-                value: draft, disabled: isSending,
-                placeholder: `Message ${target.title}...`,
-                submitDisabled: !draft.trim() || isSending,
-                submitLabel: `Send to ${target.title}`,
-                mainRowItems: quickPrompts, footerLeftItems, footerRightItems,
-              }}
-              getToolbarButtonProps={({ zone, item }) => {
-                const props: Record<string, unknown> = { "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}` };
-                if (zone === "main") {
-                  const s = buildQuickPromptSuggestions(agent).find((c) => c.id === item.id);
-                  if (s) props.onClick = () => setDraftByKey((c) => ({ ...c, [panelKey]: s.value }));
-                }
-                return props;
-              }}
-              onChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
-              onSubmit={() => void onSendMessage(panel.id, target)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onSendMessage(panel.id, target); } }}
-            />
-          }
-        />
-      </div>
+      <ChatPane
+        agent={agent}
+        agentLabel={target.title || agent?.label || identity}
+        identity={identity}
+        entries={entries}
+        phase={phase}
+        draft={draft}
+        sending={isSending}
+        onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
+        onSend={() => void onSendMessage(panel.id, target)}
+        onInspect={() => { if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab"); }}
+        onRespawn={() => void onLifecycleAction(identity, "mobkit/respawn")}
+        onRetire={() => void onLifecycleAction(identity, "mobkit/retire")}
+      />
     );
   }
 
@@ -740,72 +739,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
   }
 
-  function renderRoutingPanel() {
-    return (
-      <div className="console-panel" data-testid="routing-panel">
-        <div className="console-panel__section"><h3>Routes</h3>
-          <ul className="console-panel__list">
-            {routingData.routes.map((r) => <li data-testid={`routing-route:${r.route_key}`} key={r.route_key}><strong>{r.route_key}</strong> → {r.recipient} via {r.sink}</li>)}
-          </ul>
-        </div>
-        <div className="console-panel__section"><h3>Deliveries</h3>
-          <ul className="console-panel__list">
-            {routingData.deliveries.map((d) => <li data-testid={`routing-delivery:${d.delivery_id}`} key={d.delivery_id}><strong>{d.delivery_id}</strong> · {d.status} · {d.recipient}</li>)}
-          </ul>
-        </div>
-      </div>
-    );
-  }
-
-  function renderGatingPanel() {
-    return (
-      <div className="console-panel" data-testid="gating-panel">
-        <div className="console-panel__section"><h3>Pending</h3>
-          <ul className="console-panel__list">
-            {gatingData.pending.map((entry, index) => {
-              const r = entry as Record<string, unknown>;
-              const pid = String(r.pending_id || `pending-${index}`);
-              return (
-                <li data-testid={`gating-pending:${pid}`} key={pid}>
-                  <div><strong>{String(r.action_id || pid)}</strong> · {String(r.risk_tier || "unknown")}</div>
-                  <div className="console-panel__actions">
-                    <button data-testid={`gating-action:${pid}:escalate`} type="button" onClick={() => void onGatingDecision(pid, "escalate")}>Escalate</button>
-                    <button data-testid={`gating-action:${pid}:approve`} type="button" onClick={() => void onGatingDecision(pid, "approve")}>Approve</button>
-                    <button data-testid={`gating-action:${pid}:reject`} type="button" onClick={() => void onGatingDecision(pid, "reject")}>Reject</button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-        <div className="console-panel__section"><h3>Audit</h3>
-          <ul className="console-panel__list">
-            {gatingData.audit.map((entry, index) => {
-              const r = entry as Record<string, unknown>;
-              return <li data-testid={`gating-audit:${String(r.audit_id || index)}`} key={String(r.audit_id || index)}><strong>{String(r.event_type || "event")}</strong> · {String(r.action_id || "unknown")}</li>;
-            })}
-          </ul>
-        </div>
-      </div>
-    );
-  }
-
-  function renderTopologyPanel(nodes: ConsoleTopologyNode[]) {
-    return (
-      <div className="console-panel" data-testid="topology-panel">
-        <ul className="console-panel__list">
-          {nodes.map((n) => (
-            <li data-testid={`topology-node:${n.identity || n.label}`} key={n.identity || n.label}>
-              <strong>{n.label || n.identity}</strong>
-              <div>{n.profile || "unknown"} · {n.state || "unknown"}</div>
-              <div>Peers: {n.wired_to?.join(", ") || "none"}</div>
-            </li>
-          ))}
-        </ul>
-      </div>
-    );
-  }
-
   function renderHealthPanel(identities: IdentityStatusRow[]) {
     return (
       <div className="console-panel" data-testid="health-panel">
@@ -820,88 +753,109 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
   }
 
+  function handleInspectAgent(agent: ConsoleAgent) {
+    dock.openTarget(buildInspectTarget(agent), "new_tab");
+  }
+
   // =========================================================================
   // MAIN RENDER
   // =========================================================================
 
+  const mobName = experience?.agent_sidebar?.title || "mob";
+  const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
+
+  function toggleTheme() {
+    const next: ConsoleTheme = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    try { localStorage.setItem("mobkit-console-theme", next); } catch { /* ignore */ }
+  }
+
+  function renderPanelBody(panel: { id: string; target?: MobKitDockTarget | null }) {
+    const target = panel.target as MobKitDockTarget | null;
+    if (!target) return <div className="console-panel">No panel target</div>;
+    if (target.kind === "agent-chat") return renderChatPanel(panel);
+    if (target.kind === "identity-inspect") return renderInspectPanel(target);
+    if (target.kind === "routing") return <RoutingPanel data={routingData} />;
+    if (target.kind === "gating") return (
+      <GatingInboxPanel
+        pending={gatingData.pending}
+        audit={gatingData.audit}
+        onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
+      />
+    );
+    if (target.kind === "topology") return (
+      <TopologyPanel
+        nodes={experience?.topology?.live_snapshot?.nodes || []}
+        agents={agents}
+      />
+    );
+    if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
+    if (target.kind === "timeline") return <TimelinePanel frames={activityRef.current} />;
+    if (target.kind === "roster") return (
+      <RosterPanel
+        agents={agents}
+        onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
+        onInspect={handleInspectAgent}
+        onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
+      />
+    );
+    if (target.kind === "gates") return <GatesPanel audit={gatingData.audit} />;
+    if (target.kind === "logs") return <LogsPanel frames={activityRef.current} />;
+    return <div className="console-panel">Unsupported panel</div>;
+  }
+
   return (
-    <div className="cc-theme-scope" data-cc-theme={theme} data-testid="meerkat-console">
+    <div
+      className="cc-theme-scope mobkit-shell"
+      data-cc-theme={theme}
+      data-cc-variant={variant}
+      data-testid="meerkat-console"
+    >
       <SpriteSheet />
-      <ConsoleWorkbench
-        launcherResizeHandle={<div className="pane-resizer" aria-hidden="true" data-testid="resize:sidebar" onPointerDown={handleSidebarResize} />}
-        launcherHeader={
-          <button className="console-theme-toggle" data-testid="theme-toggle" type="button"
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            onClick={() => { const next = theme === "dark" ? "light" : "dark"; setTheme(next); try { localStorage.setItem("mobkit-console-theme", next); } catch {} }}>
-            {theme === "dark" ? "☀" : "☾"}
-          </button>
-        }
-        launcher={(
-          <ConsoleSidebar
-            viewState={sidebarVS} Icon={Icon}
-            getActionButtonProps={(scope) => {
-              if (scope.kind === "block") return { "data-testid": `sidebar-action:${scope.action.id}` };
-              if (scope.kind === "item") return { "data-testid": `sidebar-item-action:${scope.item.id}:${scope.action.id}` };
-              return {};
-            }}
-            onBlockAction={(_b, action) => {
-              switch (action.id) {
-                case "open_routing": dock.openTarget(buildControlTarget("routing"), "new_tab"); break;
-                case "open_gating": dock.openTarget(buildControlTarget("gating"), "new_tab"); break;
-                case "open_topology": dock.openTarget(buildControlTarget("topology"), "new_tab"); break;
-                case "open_health": dock.openTarget(buildControlTarget("health"), "new_tab"); break;
-              }
-            }}
-            onSelectItem={onSelectAgent}
-            onItemAction={(_b, _s, item, action) => {
-              const agent = agents.find((c) => c.member_id === item.id);
-              if (!agent) return;
-              if (action.id === "inspect_identity") { dock.openTarget(buildInspectTarget(agent), "new_tab"); return; }
-              if (action.id === "toggle_pin") { setPinnedAgentIds((c) => { const n = new Set(c); if (n.has(item.id)) n.delete(item.id); else n.add(item.id); return n; }); }
-            }}
-            onItemContextMenu={(_b, _s, item, event) => {
-              event.preventDefault();
-              const agent = agents.find((c) => c.member_id === item.id);
-              if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab");
-            }}
-          />
-        )}
-        main={(
-          <ConsoleDock
-            viewState={dock.viewState} Icon={Icon}
-            onSelectTab={(tab) => dock.selectTab(tab.id)}
-            onCloseTab={(tab) => dock.closeTab(tab.id)}
-            onFocusPanel={(panel) => dock.focusPanel(panel.id)}
-            onSplitPanel={(panel, dir) => dock.splitPanel(panel.id, dir)}
-            onClosePanel={(panel) => dock.closePanel(panel.id)}
-            onResizeSplit={(id, ratio) => dock.resizeSplit(id, ratio)}
+      <Topbar
+        mobName={mobName}
+        mobStatus={mobStatus}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+      <div className="shell">
+        <DesignSidebar
+          agents={agents}
+          selectedMemberId={focusedMemberId}
+          recentActivity={activityRef.current}
+          onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
+          onInspect={(a) => dock.openTarget(buildInspectTarget(a), "replace_focused")}
+          onOpenControl={(kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")}
+        />
+        <div className="pane-resizer" aria-hidden="true" data-testid="resize:sidebar" onPointerDown={handleSidebarResize} />
+        <div className="main">
+          <MobKitDock
+            viewState={dock.viewState}
+            agents={agents}
+            renderPanelBody={renderPanelBody}
+            onSelectTab={(id) => dock.selectTab(id)}
+            onCloseTab={(id) => dock.closeTab(id)}
             onCreateTab={() => dock.createTab()}
-            renderPanelBody={(panel) => {
-              const target = panel.target as MobKitDockTarget | null;
-              if (!target) return <div className="console-panel">No panel target</div>;
-              if (target.kind === "agent-chat") return renderChatPanel(panel);
-              if (target.kind === "identity-inspect") return renderInspectPanel(target);
-              if (target.kind === "routing") return renderRoutingPanel();
-              if (target.kind === "gating") return renderGatingPanel();
-              if (target.kind === "topology") return renderTopologyPanel(experience?.topology?.live_snapshot?.nodes || []);
-              if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
-              return <div className="console-panel">Unsupported panel</div>;
+            onFocusPanel={(id) => dock.focusPanel(id)}
+            onSplitPanel={(id, dir) => dock.splitPanel(id, dir)}
+            onClosePanel={(id) => dock.closePanel(id)}
+            onResizeSplit={(id, ratio) => dock.resizeSplit(id, ratio)}
+            onOpenTargetInPanel={(panelId, target) => {
+              dock.focusPanel(panelId);
+              dock.openTarget(target, "replace_focused");
             }}
           />
-        )}
-        activityRailResizeHandle={<div className="pane-resizer pane-resizer--activity" aria-hidden="true" data-testid="resize:activity" onPointerDown={handleActivityResize} />}
-        activityRail={(
-          <ConsoleActivityRail
-            viewState={activityVS} Icon={Icon}
-            onTogglePicker={() => {}} onCollapse={() => {}}
-            onPanelAction={(_pid, actionId) => setActiveActivityPresetId(actionId)}
-            renderSlotPreview={() => null}
-            onSelectItem={(focusId) => {
-              const agent = agents.find((c) => c.member_id === focusId);
-              if (agent) dock.openTarget(buildDockTarget(agent), "replace_focused");
-            }}
-          />
-        )}
+        </div>
+        <div className="pane-resizer pane-resizer--activity" aria-hidden="true" data-testid="resize:activity" onPointerDown={handleActivityResize} />
+        <SignalsRail
+          frames={activityRef.current}
+        />
+      </div>
+      <Tweaks
+        variant={variant}
+        theme={theme}
+        onVariant={setVariant}
+        onTheme={(t) => { setTheme(t); try { localStorage.setItem("mobkit-console-theme", t); } catch { /* ignore */ } }}
       />
     </div>
   );
