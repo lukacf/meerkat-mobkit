@@ -28,7 +28,11 @@ export type MobKitDockTarget =
   | RoutingPanelTarget
   | GatingPanelTarget
   | TopologyPanelTarget
-  | HealthPanelTarget;
+  | HealthPanelTarget
+  | TimelinePanelTarget
+  | RosterPanelTarget
+  | GatesPanelTarget
+  | LogsPanelTarget;
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
@@ -57,6 +61,22 @@ export interface TopologyPanelTarget extends ConsoleDockTarget {
 
 export interface HealthPanelTarget extends ConsoleDockTarget {
   kind: "health";
+}
+
+export interface TimelinePanelTarget extends ConsoleDockTarget {
+  kind: "timeline";
+}
+
+export interface RosterPanelTarget extends ConsoleDockTarget {
+  kind: "roster";
+}
+
+export interface GatesPanelTarget extends ConsoleDockTarget {
+  kind: "gates";
+}
+
+export interface LogsPanelTarget extends ConsoleDockTarget {
+  kind: "logs";
 }
 
 export function buildPanelConversationKey(
@@ -105,7 +125,11 @@ export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
   };
 }
 
-export function buildControlTarget(kind: "routing" | "gating" | "topology" | "health"): MobKitDockTarget {
+export type ControlTargetKind =
+  | "routing" | "gating" | "topology" | "health"
+  | "timeline" | "roster" | "gates" | "logs";
+
+export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
   switch (kind) {
     case "routing":
       return { id: "routing", kind, title: "Routing", subtitle: "Routes and delivery history", iconName: "i-swap" };
@@ -115,8 +139,16 @@ export function buildControlTarget(kind: "routing" | "gating" | "topology" | "he
       return { id: "topology", kind, title: "Topology", subtitle: "Identity connectivity", iconName: "i-team" };
     case "health":
       return { id: "health", kind, title: "Health", subtitle: "Runtime and identity health", iconName: "i-gear" };
+    case "timeline":
+      return { id: "timeline", kind, title: "Today", subtitle: "Chronological events", iconName: "i-clock" };
+    case "roster":
+      return { id: "roster", kind, title: "Roster", subtitle: "All agents", iconName: "i-team" };
+    case "gates":
+      return { id: "gates", kind, title: "Gates", subtitle: "Approval policies", iconName: "i-bolt" };
+    case "logs":
+      return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
     default:
-      return { id: kind, kind: "health", title: "Health" };
+      return { id: "health", kind: "health", title: "Health" };
   }
 }
 

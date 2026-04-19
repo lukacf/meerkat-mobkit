@@ -37,484 +37,13 @@ module.exports = __toCommonJS(index_exports);
 var import_client = require("react-dom/client");
 
 // src/ConsoleApp.tsx
-var import_react7 = __toESM(require("react"));
-
-// node_modules/clsx/dist/clsx.mjs
-function r(e) {
-  var t, f, n = "";
-  if ("string" == typeof e || "number" == typeof e) n += e;
-  else if ("object" == typeof e) if (Array.isArray(e)) {
-    var o = e.length;
-    for (t = 0; t < o; t++) e[t] && (f = r(e[t])) && (n && (n += " "), n += f);
-  } else for (f in e) e[f] && (n && (n += " "), n += f);
-  return n;
-}
-function clsx() {
-  for (var e, t, f = 0, n = "", o = arguments.length; f < o; f++) (e = arguments[f]) && (t = r(e)) && (n && (n += " "), n += t);
-  return n;
-}
-var clsx_default = clsx;
-
-// ../packages/console-components/src/shared.ts
-function toneStyle(tone) {
-  if (!tone?.variables) {
-    return void 0;
-  }
-  return tone.variables;
-}
-function fallbackCopyTextToClipboard(text) {
-  if (typeof document === "undefined" || !document.body || typeof document.execCommand !== "function") {
-    return false;
-  }
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.top = "0";
-  textarea.style.left = "0";
-  textarea.style.opacity = "0";
-  textarea.style.pointerEvents = "none";
-  document.body.appendChild(textarea);
-  const selection = typeof document.getSelection === "function" ? document.getSelection() : null;
-  const existingRanges = selection ? Array.from({ length: selection.rangeCount }, (_value, index) => selection.getRangeAt(index)) : [];
-  textarea.focus();
-  textarea.select();
-  textarea.setSelectionRange(0, textarea.value.length);
-  let copied = false;
-  try {
-    copied = document.execCommand("copy");
-  } catch {
-    copied = false;
-  }
-  document.body.removeChild(textarea);
-  if (selection) {
-    selection.removeAllRanges();
-    existingRanges.forEach((range) => selection.addRange(range));
-  }
-  return copied;
-}
-async function copyTextToClipboard(text) {
-  if (!text.trim()) {
-    return false;
-  }
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-    }
-  }
-  return fallbackCopyTextToClipboard(text);
-}
+var import_react19 = __toESM(require("react"));
 
 // ../packages/console-components/src/activity/console-activity-rail.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
-function PinButton({
-  Icon: Icon2,
-  item,
-  onTogglePin
-}) {
-  if (!item.pinId || !onTogglePin) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-    "button",
-    {
-      type: "button",
-      className: clsx_default("cc-activity-rail__pin", item.pinned && "is-active"),
-      title: item.pinned ? `Unpin ${item.title}` : `Pin ${item.title}`,
-      "aria-label": item.pinned ? `Unpin ${item.title}` : `Pin ${item.title}`,
-      onClick: (event) => {
-        event.stopPropagation();
-        onTogglePin(item.pinId, Boolean(item.pinned));
-      },
-      children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon2, { name: "i-pin" })
-    }
-  );
-}
-function RosterPanel({
-  Icon: Icon2,
-  panel,
-  onRemovePanel,
-  onSelectItem,
-  onTogglePin
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cc-activity-rail__section", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: panel.title }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-actions", children: [
-        panel.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__section-meta", children: panel.meta }) : null,
-        panel.actions?.map((action) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "button",
-          {
-            type: "button",
-            className: clsx_default("cc-activity-rail__section-action", action.active && "is-active"),
-            "data-testid": `activity-action:${panel.id}:${action.id}`,
-            onClick: () => onPanelAction?.(panel.id, action.id),
-            children: action.label
-          },
-          action.id
-        )),
-        onRemovePanel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "button",
-          {
-            type: "button",
-            className: "cc-activity-rail__section-action",
-            onClick: () => onRemovePanel(panel.id),
-            children: "Hide"
-          }
-        ) : null
-      ] })
-    ] }),
-    panel.groups.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__roster-groups", children: panel.groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: clsx_default("cc-activity-rail__roster-group", group.inactive && "is-inactive"), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__roster-group-header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__roster-group-title", children: group.title }),
-        group.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__roster-group-meta", children: group.meta }) : null
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__roster-grid", children: group.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-        "div",
-        {
-          className: clsx_default("cc-activity-rail__roster-item", item.selected && "is-selected"),
-          style: toneStyle(item.tone),
-          children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-              "button",
-              {
-                type: "button",
-                className: "cc-activity-rail__roster-main",
-                title: item.tooltip || item.subtitle || item.title,
-                onClick: () => item.focusId && onSelectItem?.(item.focusId),
-                children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__roster-status" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "cc-activity-rail__roster-copy", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__roster-label", children: item.title }),
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__roster-meta", children: item.subtitle || item.meta })
-                  ] })
-                ]
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PinButton, { Icon: Icon2, item, onTogglePin })
-          ]
-        },
-        item.id
-      )) })
-    ] }, group.id)) }) : panel.emptyText ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__empty", children: panel.emptyText }) : null
-  ] }, panel.id);
-}
-function PulsePanel({
-  Icon: Icon2,
-  panel,
-  onRemovePanel,
-  onPanelAction: onPanelAction2,
-  onSelectItem,
-  onTogglePin
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cc-activity-rail__section", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: panel.title }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-actions", children: [
-        panel.meta ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__section-meta", children: panel.meta }) : null,
-        panel.actions?.map((action) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "button",
-          {
-            type: "button",
-            className: clsx_default("cc-activity-rail__section-action", action.active && "is-active"),
-            "data-testid": `activity-action:${panel.id}:${action.id}`,
-            onClick: () => onPanelAction2?.(panel.id, action.id),
-            children: action.label
-          },
-          action.id
-        )),
-        onRemovePanel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "button",
-          {
-            type: "button",
-            className: "cc-activity-rail__section-action",
-            onClick: () => onRemovePanel(panel.id),
-            children: "Hide"
-          }
-        ) : null
-      ] })
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__pulse-list", children: panel.items.length ? panel.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-      "div",
-      {
-        className: clsx_default("cc-activity-rail__pulse-row", item.selected && "is-selected"),
-        style: toneStyle(item.tone),
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-            "button",
-            {
-              type: "button",
-              className: "cc-activity-rail__pulse-main",
-              "data-testid": `activity-item:${panel.id}:${item.id}`,
-              title: item.tooltip || `${item.title} \xB7 ${item.line}`,
-              onClick: () => item.focusId && onSelectItem?.(item.focusId),
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__pulse-status" }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "cc-activity-rail__pulse-copy", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "cc-activity-rail__pulse-head", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__pulse-label", children: item.title }),
-                    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__pulse-time", children: item.meta })
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__pulse-line", children: item.line })
-                ] })
-              ]
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(PinButton, { Icon: Icon2, item, onTogglePin })
-        ]
-      },
-      item.id
-    )) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__empty", children: panel.emptyText }) })
-  ] }, panel.id);
-}
-function FeedPanel({
-  Icon: Icon2,
-  panel,
-  onRemovePanel,
-  onSelectItem,
-  onTogglePin,
-  onPanelAction: onPanelAction2,
-  renderSlotPreview
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "cc-activity-rail__section cc-activity-rail__section--feed", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: panel.title }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__section-actions", children: [
-        panel.actions?.map((action) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "button",
-          {
-            type: "button",
-            className: clsx_default("cc-activity-rail__section-action", action.active && "is-active"),
-            onClick: () => onPanelAction2?.(panel.id, action.id),
-            children: action.label
-          },
-          action.id
-        )),
-        onRemovePanel ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-          "button",
-          {
-            type: "button",
-            className: "cc-activity-rail__section-action",
-            onClick: () => onRemovePanel(panel.id),
-            children: "Hide"
-          }
-        ) : null
-      ] })
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__feed-slots", children: panel.slots.map((slot) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      "section",
-      {
-        className: clsx_default("cc-activity-rail__feed-item", slot.selected && "is-selected", slot.focusId && "has-item"),
-        style: toneStyle(slot.tone),
-        children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__feed-frame", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-            "button",
-            {
-              type: "button",
-              className: "cc-activity-rail__feed-button",
-              title: slot.subtitle || slot.title,
-              onClick: () => slot.focusId && onSelectItem?.(slot.focusId),
-              disabled: !slot.focusId,
-              children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__feed-canvas", children: [
-                renderSlotPreview(slot),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__feed-overlay", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__feed-overlay-top", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__feed-eyebrow", children: slot.eyebrow }),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__feed-title", children: slot.title }),
-                  /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__feed-meta", children: slot.meta })
-                ] }) })
-              ] })
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__feed-actions", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-            PinButton,
-            {
-              Icon: Icon2,
-              item: {
-                pinId: slot.pinId,
-                pinned: slot.pinned,
-                title: slot.title
-              },
-              onTogglePin
-            }
-          ) })
-        ] })
-      },
-      slot.id
-    )) })
-  ] }, panel.id);
-}
-function renderPanel({
-  Icon: Icon2,
-  panel,
-  onRemovePanel,
-  onSelectItem,
-  onTogglePin,
-  onPanelAction: onPanelAction2,
-  renderSlotPreview
-}) {
-  if (panel.kind === "roster") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      RosterPanel,
-      {
-        Icon: Icon2,
-        onRemovePanel,
-        onSelectItem,
-        onTogglePin,
-        panel
-      },
-      panel.id
-    );
-  }
-  if (panel.kind === "pulse") {
-    return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-      PulsePanel,
-      {
-        Icon: Icon2,
-        onRemovePanel,
-        onPanelAction: onPanelAction2,
-        onSelectItem,
-        onTogglePin,
-        panel
-      },
-      panel.id
-    );
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-    FeedPanel,
-    {
-      Icon: Icon2,
-      onPanelAction: onPanelAction2,
-      onRemovePanel,
-      onSelectItem,
-      onTogglePin,
-      panel,
-      renderSlotPreview
-    },
-    panel.id
-  );
-}
-function ConsoleActivityRail({
-  Icon: Icon2,
-  viewState,
-  addPanelButtonRef,
-  onTogglePicker,
-  onCollapse,
-  onEmptyAction,
-  onFooterAction,
-  onIngressSelect,
-  onRemovePanel,
-  onSelectItem,
-  onTogglePin,
-  onPanelAction: onPanelAction2,
-  renderSlotPreview
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-theme-scope cc-activity-rail", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__controls", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "button",
-        {
-          ref: addPanelButtonRef,
-          className: "cc-activity-rail__control",
-          type: "button",
-          title: "Add panel",
-          "aria-label": "Add panel",
-          onClick: onTogglePicker,
-          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon2, { name: "i-plus" })
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-        "button",
-        {
-          className: "cc-activity-rail__control",
-          type: "button",
-          title: "Collapse live panels",
-          "aria-label": "Collapse live panels",
-          onClick: onCollapse,
-          children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon2, { name: "i-sidebar-toggle" })
-        }
-      )
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("aside", { className: "cc-activity-rail__rail", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__scroll", children: [
-        viewState.ingress ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__ingress", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(
-          "button",
-          {
-            type: "button",
-            className: clsx_default(
-              "cc-activity-rail__ingress-button",
-              viewState.ingress.active && "is-active",
-              viewState.ingress.prominent && "is-prominent"
-            ),
-            onClick: onIngressSelect,
-            children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__ingress-status", "aria-hidden": "true" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("span", { className: "cc-activity-rail__ingress-copy", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__ingress-title", children: viewState.ingress.label }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "cc-activity-rail__ingress-meta", children: viewState.ingress.meta })
-              ] })
-            ]
-          }
-        ) }) : null,
-        viewState.panels.length ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__content", children: viewState.panels.map((panel) => renderPanel({
-          Icon: Icon2,
-          panel,
-          onRemovePanel,
-          onSelectItem,
-          onTogglePin,
-          onPanelAction: onPanelAction2,
-          renderSlotPreview
-        })) }) : viewState.emptyState ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "cc-activity-rail__empty-shell", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__empty-title", children: viewState.emptyState.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__empty-copy", children: viewState.emptyState.description }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-            "button",
-            {
-              type: "button",
-              className: "cc-activity-rail__empty-action",
-              onClick: onEmptyAction || onTogglePicker,
-              children: viewState.emptyState.actionLabel
-            }
-          )
-        ] }) : null
-      ] }),
-      viewState.footerActionLabel && onFooterAction ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "cc-activity-rail__footer", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { className: "cc-activity-rail__footer-button", type: "button", onClick: onFooterAction, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Icon2, { name: "i-team" }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: viewState.footerActionLabel })
-      ] }) }) : null
-    ] })
-  ] });
-}
 
 // ../packages/console-components/src/conversation/conversation-empty-state.tsx
 var import_jsx_runtime2 = require("react/jsx-runtime");
-function ConversationEmptyState({
-  state,
-  Icon: Icon2,
-  className,
-  onApplySuggestion
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)("section", { className: clsx_default("cc-empty-state", className), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "cc-empty-state__mark", "aria-hidden": "true", children: Icon2 && state.iconName ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon2, { name: state.iconName }) : null }),
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("h2", { className: "cc-empty-state__title", children: state.title }),
-    state.projectLabel ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "cc-empty-state__project", children: state.projectLabel }) : null,
-    /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("p", { className: "cc-empty-state__subtitle", children: state.subtitle }),
-    state.suggestions?.length ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("div", { className: "cc-empty-state__actions", children: state.suggestions.map((suggestion) => /* @__PURE__ */ (0, import_jsx_runtime2.jsxs)(
-      "button",
-      {
-        type: "button",
-        className: "cc-empty-state__card",
-        onClick: () => onApplySuggestion?.(suggestion.value),
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "cc-empty-state__card-icon", "aria-hidden": "true", children: Icon2 && suggestion.iconName ? /* @__PURE__ */ (0, import_jsx_runtime2.jsx)(Icon2, { name: suggestion.iconName }) : null }),
-          /* @__PURE__ */ (0, import_jsx_runtime2.jsx)("span", { className: "cc-empty-state__card-text", children: suggestion.label })
-        ]
-      },
-      suggestion.id
-    )) }) : null
-  ] });
-}
 
 // ../packages/console-core/src/control-plane.ts
 function trimString(value) {
@@ -723,20 +252,6 @@ function normalizeConsoleInteractionRejectedError(value) {
 var FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
 var TERMINAL_DURATION_RE = /^Worked for\s+.+$/i;
 var TERMINAL_STATUS_RE = /^(Success|Running|Failed|Cancelled)$/i;
-function escapeHtml(value) {
-  return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-function renderConversationInlineMarkdown(text) {
-  const codeTokens = [];
-  const escaped = escapeHtml(text || "").replace(/`([^`]+)`/g, (_match, code) => {
-    const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
-    return `@@CODE_${index}@@`;
-  }).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>').replace(/\n/g, "<br />");
-  return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");
-}
-function conversationRichBlockHasCopyAction(block) {
-  return block.type === "code" || block.type === "command" || block.type === "file-change";
-}
 function conversationRichBlockCopyText(block) {
   switch (block.type) {
     case "code":
@@ -1040,12 +555,6 @@ function conversationEntryText(entry) {
     return [entry.title, fileLines].filter(Boolean).join("\n");
   }
   return String(entry.copyText || entry.text || conversationRichBlocksToText(entry.blocks)).trim();
-}
-function conversationMessageHasIntrinsicCopyAction(entry) {
-  if (entry.kind !== "message" || entry.variant !== "rich") {
-    return false;
-  }
-  return Boolean(entry.blocks?.some((block) => conversationRichBlockHasCopyAction(block)));
 }
 function groupConversationTimelineEntries(entries) {
   const groups = [];
@@ -1773,81 +1282,6 @@ function buildConsoleDockViewState(state, options = {}) {
     })
   };
 }
-function normalizeConsoleDockViewState(viewState) {
-  const panels = (viewState?.panels || []).filter((panel) => Boolean(panel?.id && panel?.title)).map((panel) => ({
-    ...panel,
-    target: normalizeTarget(panel.target),
-    mode: panel.mode === "terminal" ? "terminal" : "console"
-  }));
-  const validPanelIds = new Set(panels.map((panel) => panel.id));
-  const tabs = (viewState?.tabs || []).filter((tab) => Boolean(tab?.id && tab?.title)).map((tab) => ({
-    ...tab,
-    layout: normalizeNode(tab.layout, validPanelIds)
-  })).filter((tab) => Boolean(tab.layout));
-  const activeTabId = tabs.some((tab) => tab.id === viewState?.activeTabId) ? viewState?.activeTabId || null : tabs[0]?.id || null;
-  const activeTab = tabs.find((tab) => tab.id === activeTabId) || null;
-  const activePanelIds = activeTab ? collectConsoleDockPanelIds(activeTab.layout) : [];
-  const focusedPanelId = viewState?.focusedPanelId && activePanelIds.includes(viewState.focusedPanelId) ? viewState.focusedPanelId : activePanelIds[0] || null;
-  return {
-    tabs,
-    panels,
-    activeTabId,
-    focusedPanelId
-  };
-}
-
-// ../packages/console-core/src/sidebar.ts
-function normalizeMeta(meta) {
-  return (meta || []).filter((item) => Boolean(item?.label));
-}
-function normalizeActions(actions) {
-  return (actions || []).filter((action) => Boolean(action?.id && action?.label));
-}
-function normalizeItems(items) {
-  return (items || []).filter((item) => Boolean(item?.id && item?.title)).map((item) => ({
-    ...item,
-    ...normalizeSidebarWatchFields(item),
-    meta: normalizeMeta(item.meta),
-    actions: normalizeActions(item.actions)
-  }));
-}
-function normalizeSections(sections) {
-  return (sections || []).filter((section) => Boolean(section?.id && typeof section?.title === "string")).map((section) => ({
-    ...section,
-    meta: normalizeMeta(section.meta),
-    actions: normalizeActions(section.actions),
-    items: normalizeItems(section.items)
-  })).filter((section) => {
-    if (section.items.length > 0) {
-      return true;
-    }
-    return Boolean(
-      section.title || section.subtitle || section.iconName || section.actions.length || section.meta.length
-    );
-  });
-}
-function normalizeConsoleSidebarViewState(viewState) {
-  const blocks = (viewState?.blocks || []).filter((block) => Boolean(block?.id && block?.kind)).map((block) => ({
-    ...block,
-    meta: normalizeMeta(block.meta),
-    actions: normalizeActions(block.actions),
-    sections: normalizeSections(block.sections)
-  })).filter((block) => {
-    if (block.kind === "action_strip") {
-      return block.actions.length > 0;
-    }
-    if (block.sections.length > 0) {
-      return true;
-    }
-    return Boolean(block.title || block.meta.length || block.actions.length);
-  });
-  return { blocks };
-}
-
-// ../packages/console-core/src/format.ts
-function formatCount(value) {
-  return new Intl.NumberFormat("en-US").format(Number(value) || 0);
-}
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_react3 = require("react");
@@ -1857,1042 +1291,35 @@ var import_react2 = require("react");
 
 // ../packages/console-components/src/conversation/change-stat-pair.tsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
-function ChangeStatPair({
-  plus,
-  minus,
-  className
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: clsx_default("cc-change-stat", className), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "cc-change-stat__value is-plus", children: [
-      "+",
-      formatCount(plus)
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "cc-change-stat__value is-minus", children: [
-      "-",
-      formatCount(minus)
-    ] })
-  ] });
-}
 
 // ../packages/console-components/src/copy-button.tsx
 var import_react = require("react");
 var import_jsx_runtime4 = require("react/jsx-runtime");
-function CopyButton({
-  text,
-  label,
-  copiedLabel = "Copied",
-  className,
-  Icon: Icon2
-}) {
-  const [copied, setCopied] = (0, import_react.useState)(false);
-  const resetTimerRef = (0, import_react.useRef)(null);
-  const disabled = !text.trim();
-  (0, import_react.useEffect)(() => () => {
-    if (resetTimerRef.current != null) {
-      window.clearTimeout(resetTimerRef.current);
-    }
-  }, []);
-  async function handleClick() {
-    if (disabled) {
-      return;
-    }
-    const wasCopied = await copyTextToClipboard(text);
-    if (!wasCopied) {
-      return;
-    }
-    setCopied(true);
-    if (resetTimerRef.current != null) {
-      window.clearTimeout(resetTimerRef.current);
-    }
-    resetTimerRef.current = window.setTimeout(() => {
-      setCopied(false);
-      resetTimerRef.current = null;
-    }, 1600);
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
-    "button",
-    {
-      className: clsx_default("cc-copy-btn", className),
-      type: "button",
-      "aria-label": copied ? copiedLabel : label,
-      title: copied ? copiedLabel : label,
-      "data-copied": copied ? "true" : void 0,
-      disabled,
-      onClick: () => {
-        void handleClick();
-      },
-      children: Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Icon2, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
-    }
-  );
-}
 
 // ../packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_jsx_runtime5 = require("react/jsx-runtime");
-function markdownHtml(text) {
-  return { __html: renderConversationInlineMarkdown(text) };
-}
-function commandCopyText(block) {
-  return [block.title, block.body, block.output || "", block.footer || ""].filter(Boolean).join("\n").trim();
-}
-function fileChangeCopyText(block) {
-  return [
-    block.verb,
-    block.before || "",
-    block.name,
-    block.after || "",
-    `+${block.plus}`,
-    `-${block.minus}`
-  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
-}
-function alignmentAttr(alignment) {
-  return alignment || "left";
-}
-function renderThinkingBlock(block) {
-  if (!block.label?.trim() && !block.text?.trim()) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
-    "div",
-    {
-      className: clsx_default(
-        "cc-rich-thinking",
-        block.final && "cc-rich-thinking--final",
-        block.persisted && "cc-rich-thinking--persisted"
-      ),
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-thinking__label", children: block.label }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text) })
-      ]
-    }
-  );
-}
-function renderBlock(block, index, Icon2) {
-  if (block.type === "paragraph") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text) }, `paragraph-${index}`);
-  }
-  if (block.type === "heading") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-      "h3",
-      {
-        className: `cc-rich-heading cc-rich-heading--${Number(block.level) || 2}`,
-        dangerouslySetInnerHTML: markdownHtml(block.text)
-      },
-      `heading-${index}`
-    );
-  }
-  if (block.type === "code") {
-    const codeBlock = block;
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "cc-rich-code-card", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-code-card__header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-code-language", children: codeBlock.language || "text" }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-          CopyButton,
-          {
-            copiedLabel: "Copied code",
-            Icon: Icon2,
-            label: "Copy code",
-            text: codeBlock.body
-          }
-        )
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-rich-code-body", children: codeBlock.highlightedHtml ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-        "code",
-        {
-          className: `cc-rich-code-content language-${codeBlock.language || "text"}`,
-          dangerouslySetInnerHTML: { __html: codeBlock.highlightedHtml }
-        }
-      ) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("code", { className: `cc-rich-code-content language-${codeBlock.language || "text"}`, children: codeBlock.body }) })
-    ] }, `code-${index}`);
-  }
-  if (block.type === "table") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("table", { className: "cc-rich-table", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tr", { children: block.headers.map((header, cellIndex) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-        "th",
-        {
-          "data-align": alignmentAttr(block.alignments[cellIndex]),
-          dangerouslySetInnerHTML: markdownHtml(header)
-        },
-        `header-${cellIndex}`
-      )) }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tbody", { children: block.rows.map((row, rowIndex) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tr", { children: block.headers.map((_header, cellIndex) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-        "td",
-        {
-          "data-align": alignmentAttr(block.alignments[cellIndex]),
-          dangerouslySetInnerHTML: markdownHtml(row[cellIndex] || "")
-        },
-        `cell-${rowIndex}-${cellIndex}`
-      )) }, `row-${rowIndex}`)) })
-    ] }) }, `table-${index}`);
-  }
-  if (block.type === "command") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-command-stack", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-command-caption", children: block.caption }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-command-card", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-command-card__header", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-command-card__title", children: block.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-            CopyButton,
-            {
-              copiedLabel: "Copied command output",
-              Icon: Icon2,
-              label: "Copy command output",
-              text: commandCopyText(block)
-            }
-          )
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-rich-command-card__body", children: block.body }),
-        block.output ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-rich-command-card__output", children: block.output }) : null,
-        block.footer ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-command-card__footer", children: block.footer }) : null
-      ] })
-    ] }, `command-${index}`);
-  }
-  if (block.type === "file-change") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "cc-rich-file-change", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-file-change__main", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__verb", children: block.verb }),
-        block.before ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__context", dangerouslySetInnerHTML: markdownHtml(block.before) }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { className: "cc-rich-file-change__link", type: "button", children: block.name }),
-        block.after ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__context", dangerouslySetInnerHTML: markdownHtml(block.after) }) : null
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-file-change__stats", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ChangeStatPair, { minus: block.minus, plus: block.plus }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__dot" }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-          CopyButton,
-          {
-            copiedLabel: "Copied file change",
-            Icon: Icon2,
-            label: "Copy file change",
-            text: fileChangeCopyText(block)
-          }
-        )
-      ] })
-    ] }, `file-change-${index}`);
-  }
-  if (block.type === "divider") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-divider", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__line" }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__label", children: block.text }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__line" })
-    ] }, `divider-${index}`);
-  }
-  if (block.type === "tool-call") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolCallBlock, { block }, `tool-call-${index}`);
-  }
-  const thinking = renderThinkingBlock(block);
-  if (!thinking) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { children: thinking }, `thinking-${index}`);
-}
-var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
-function copyText(text) {
-  navigator.clipboard?.writeText(text).catch(() => {
-  });
-}
-function toolBlockCopyText(block) {
-  if (block.peerTarget) {
-    const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
-    return [
-      `${dir} ${block.peerTarget}`,
-      block.peerIntent,
-      block.peerBody,
-      block.result
-    ].filter(Boolean).join(": ").trim();
-  }
-  const parts = [`$ ${block.name}`];
-  if (block.arguments) parts.push(`Input: ${block.arguments}`);
-  if (block.result) parts.push(`Result: ${block.result}`);
-  return parts.join("\n").trim();
-}
-function CopyBtn({ text, label = "Copy" }) {
-  const [copied, setCopied] = (0, import_react2.useState)(false);
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
-    "button",
-    {
-      className: "cc-tool-call__copy",
-      type: "button",
-      title: label,
-      onClick: (e) => {
-        e.stopPropagation();
-        copyText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      },
-      children: copied ? "\u2713" : "\u2398"
-    }
-  );
-}
-function ToolCallBlock({ block }) {
-  const [expanded, setExpanded] = (0, import_react2.useState)(false);
-  const isPeer = PEER_TOOL_NAMES.has(block.name);
-  const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
-  const statusClass = `cc-tool-call--${block.status}`;
-  if (isPeer || block.peerIncoming) {
-    const target = block.peerTarget || "peer";
-    const content = block.peerBody || block.peerIntent || "";
-    const arrow = block.peerIncoming ? "\u2199" : "\u2197";
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass), children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
-        "button",
-        {
-          className: "cc-tool-call__header",
-          type: "button",
-          onClick: () => setExpanded((prev) => !prev),
-          "aria-expanded": expanded,
-          children: [
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.peerIncoming ? `Received from ${target}` : target }),
-            content && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: content }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
-            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
-          ]
-        }
-      ),
-      expanded && block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result }) })
-    ] });
-  }
-  let argsPreview = block.arguments || "";
-  try {
-    const parsed = JSON.parse(argsPreview);
-    if (typeof parsed === "object" && parsed !== null) {
-      argsPreview = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(", ");
-    }
-  } catch {
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call", statusClass), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
-      "button",
-      {
-        className: "cc-tool-call__header",
-        type: "button",
-        onClick: () => setExpanded((prev) => !prev),
-        "aria-expanded": expanded,
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: "\u2699" }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.name }),
-          argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: argsPreview }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__status", children: [
-            statusIcon,
-            " ",
-            block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
-        ]
-      }
-    ),
-    expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__body", children: [
-      argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Input" }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: argsPreview })
-      ] }),
-      block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Result" }),
-        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result })
-      ] })
-    ] })
-  ] });
-}
-function PeerToolGroup({ blocks }) {
-  const [expanded, setExpanded] = (0, import_react2.useState)(false);
-  const targets = blocks.map((b) => b.peerTarget || "peer");
-  const allSuccess = blocks.every((b) => b.status === "success");
-  const anyError = blocks.some((b) => b.status === "error");
-  const statusIcon = anyError ? "\u2717" : allSuccess ? "\u2713" : "\u22EF";
-  const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
-  const isIncoming = blocks[0]?.peerIncoming;
-  const arrow = isIncoming ? "\u2199" : "\u2197";
-  const label = isIncoming ? `Received from ${targets.join(", ")}` : `Sent to ${targets.join(", ")}`;
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
-      "button",
-      {
-        className: "cc-tool-call__header",
-        type: "button",
-        onClick: () => setExpanded((prev) => !prev),
-        "aria-expanded": expanded,
-        children: [
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: label }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
-          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: blocks.map((b) => toolBlockCopyText(b)).join("\n") })
-        ]
-      }
-    ),
-    expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: blocks.map((block, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__peer-row", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__peer-target", children: [
-        isIncoming ? "\u2190" : "\u2192",
-        " ",
-        block.peerTarget || "peer"
-      ] }),
-      block.peerIntent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-intent", children: block.peerIntent }),
-      block.peerBody && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-body", children: block.peerBody }),
-      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: `cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`, children: block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF" })
-    ] }, block.toolCallId || i)) })
-  ] });
-}
-function ConversationRichContent({
-  blocks,
-  richStyle = "default",
-  Icon: Icon2
-}) {
-  const allPeerTools = blocks.length > 1 && blocks.every((b) => {
-    if (b.type !== "tool-call") return false;
-    const tc = b;
-    return PEER_TOOL_NAMES.has(tc.name) || tc.peerIncoming;
-  });
-  if (allPeerTools) {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(PeerToolGroup, { blocks });
-  }
-  const body = blocks.map((block, index) => renderBlock(block, index, Icon2)).filter(Boolean);
-  if (body.length === 0) {
-    return null;
-  }
-  if (richStyle === "streaming") {
-    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-streaming", children: body });
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_jsx_runtime5.Fragment, { children: body });
-}
 
 // ../packages/console-components/src/conversation/summary-card.tsx
 var import_jsx_runtime6 = require("react/jsx-runtime");
-function SummaryCard({ entry, onAction }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("section", { className: "cc-summary-card", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "cc-summary-card__header", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("span", { className: "cc-summary-card__title", children: [
-        entry.title,
-        " ",
-        /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(ChangeStatPair, { minus: entry.minus, plus: entry.plus })
-      ] }),
-      entry.actionLabel && onAction ? /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("button", { className: "cc-summary-card__action", type: "button", onClick: () => onAction(entry), children: entry.actionLabel }) : null
-    ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("div", { className: "cc-summary-card__files", children: entry.files.map((file) => /* @__PURE__ */ (0, import_jsx_runtime6.jsxs)("div", { className: "cc-summary-card__file", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)("span", { className: "cc-summary-card__file-name", children: file.name }),
-      /* @__PURE__ */ (0, import_jsx_runtime6.jsx)(ChangeStatPair, { className: "cc-summary-card__file-stats", minus: file.minus, plus: file.plus })
-    ] }, file.name)) })
-  ] });
-}
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_jsx_runtime7 = require("react/jsx-runtime");
-function renderMultilineText(text) {
-  return text.split("\n").map((line, index) => /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)(import_react3.Fragment, { children: [
-    index > 0 ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("br", {}) : null,
-    line
-  ] }, `${line}-${index}`));
-}
-function ConversationMessageView({
-  entry,
-  compact = false,
-  Icon: Icon2
-}) {
-  const presentation = conversationIdentityPresentation(entry.identity);
-  const assistantClassName = [
-    "cc-message",
-    "cc-message--assistant",
-    presentation === "participant" ? "cc-message--participant" : "",
-    presentation === "system" ? "cc-message--system" : ""
-  ].filter(Boolean).join(" ");
-  if (entry.kind === "summary") {
-    return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(SummaryCard, { entry });
-  }
-  if (entry.variant === "meta") {
-    return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("article", { className: `${assistantClassName} cc-message--meta`, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: entry.text }) });
-  }
-  if (presentation === "user") {
-    const copyText2 = entry.copyText || entry.text || "";
-    return /* @__PURE__ */ (0, import_jsx_runtime7.jsxs)("article", { className: "cc-message cc-message--user", children: [
-      !compact ? /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(
-        CopyButton,
-        {
-          className: "cc-message__copy",
-          copiedLabel: "Copied message",
-          Icon: Icon2,
-          label: "Copy message",
-          text: copyText2
-        }
-      ) : null,
-      /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: renderMultilineText(entry.text || "") })
-    ] });
-  }
-  const visibleRichBlocks = entry.variant === "rich" && entry.blocks?.length ? entry.blocks.filter((block) => conversationRichBlockCopyText(block).trim().length > 0) : [];
-  if (entry.variant === "rich" && visibleRichBlocks.length) {
-    return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("article", { className: `${assistantClassName} cc-message--rich`, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)(ConversationRichContent, { blocks: visibleRichBlocks, Icon: Icon2, richStyle: entry.richStyle }) });
-  }
-  if (entry.variant === "rich") {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("article", { className: assistantClassName, children: /* @__PURE__ */ (0, import_jsx_runtime7.jsx)("p", { children: entry.text || "" }) });
-}
 
 // ../packages/console-components/src/conversation/conversation-message-group.tsx
 var import_jsx_runtime8 = require("react/jsx-runtime");
-function initialsForIdentity(group) {
-  const explicit = group.identity.avatarLabel?.trim();
-  if (explicit) {
-    return explicit.slice(0, 3).toUpperCase();
-  }
-  const tokens = group.identity.label.split(/\s+/u).map((token) => token.trim()).filter(Boolean);
-  if (!tokens.length) {
-    return "?";
-  }
-  return tokens.slice(0, 2).map((token) => token[0] || "").join("").toUpperCase();
-}
-function groupHasNestedCopyButton(group) {
-  return group.entries.some((entry) => conversationMessageHasIntrinsicCopyAction(entry));
-}
-function ConversationMessageGroup({
-  group,
-  compact = false,
-  Icon: Icon2
-}) {
-  const presentation = conversationIdentityPresentation(group.identity);
-  const isUserGroup = presentation === "user";
-  if (isUserGroup) {
-    return /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(import_jsx_runtime8.Fragment, { children: group.entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ConversationMessageView, { compact, entry, Icon: Icon2 }, entry.id)) });
-  }
-  const copyText2 = group.copyText || group.entries.map((entry) => conversationEntryText(entry)).filter(Boolean).join("\n\n");
-  const showGroupCopy = !compact && !groupHasNestedCopyButton(group);
-  const showIdentity = conversationIdentityShowsLabel(group.identity);
-  return /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)(
-    "section",
-    {
-      className: clsx_default(
-        "cc-message-group",
-        compact && "is-compact",
-        `is-${presentation}`,
-        showIdentity && "has-identity"
-      ),
-      style: toneStyle(group.identity.tone),
-      children: [
-        showIdentity ? /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("div", { className: "cc-message-group__identity", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-message-group__identity-mark", "aria-hidden": "true", children: initialsForIdentity(group) }),
-          /* @__PURE__ */ (0, import_jsx_runtime8.jsxs)("span", { className: "cc-message-group__identity-copy", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-message-group__identity-label", children: group.identity.label }),
-            group.identity.meta ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("span", { className: "cc-message-group__identity-meta", children: group.identity.meta }) : null
-          ] })
-        ] }) : null,
-        showGroupCopy ? /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(
-          CopyButton,
-          {
-            className: "cc-message-group__copy",
-            copiedLabel: "Copied response",
-            Icon: Icon2,
-            label: "Copy response",
-            text: copyText2
-          }
-        ) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime8.jsx)("div", { className: "cc-message-group__body", children: group.entries.map((entry) => /* @__PURE__ */ (0, import_jsx_runtime8.jsx)(ConversationMessageView, { compact, entry, Icon: Icon2 }, entry.id)) })
-      ]
-    }
-  );
-}
 
 // ../packages/console-components/src/conversation/turn-diff-card.tsx
 var import_jsx_runtime9 = require("react/jsx-runtime");
-function TurnDiffLineView({ line }) {
-  const marker = line.type === "add" ? "+" : line.type === "remove" ? "-" : " ";
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: `cc-turn-diff-card__line is-${line.type}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-turn-diff-card__line-no", children: line.oldLine != null ? String(line.oldLine) : "" }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-turn-diff-card__line-no", children: line.newLine != null ? String(line.newLine) : "" }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-turn-diff-card__line-mark", children: marker }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-turn-diff-card__line-text", children: line.text })
-  ] }, `${line.oldLine ?? "x"}-${line.newLine ?? "y"}-${line.text}`);
-}
-function TurnDiffFileView({
-  expanded,
-  file,
-  onToggle
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: `cc-turn-diff-card__file${expanded ? " is-expanded" : ""}`, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("button", { className: "cc-turn-diff-card__file-row", type: "button", onClick: onToggle, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "cc-turn-diff-card__file-left", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-turn-diff-card__file-name", children: file.path }),
-        /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ChangeStatPair, { className: "cc-turn-diff-card__file-stats", minus: file.minus, plus: file.plus })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("span", { className: "cc-turn-diff-card__file-caret", children: expanded ? "\u2303" : "\u2304" })
-    ] }),
-    expanded ? /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-turn-diff-card__file-body", children: file.hunks.map((hunk, index) => /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "cc-turn-diff-card__hunk", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("div", { className: "cc-turn-diff-card__hunk-header", children: [
-        "@@ -",
-        hunk.oldStart,
-        ",",
-        hunk.oldLines,
-        " +",
-        hunk.newStart,
-        ",",
-        hunk.newLines,
-        " @@"
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-turn-diff-card__lines", children: hunk.lines.map((line) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(TurnDiffLineView, { line }, `${line.oldLine ?? "x"}-${line.newLine ?? "y"}-${line.text}`)) })
-    ] }, `${file.path}-${index}`)) }) : null
-  ] });
-}
-function TurnDiffCard({
-  turnDiff,
-  expandedFile,
-  onToggleFile
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("section", { className: "cc-summary-card cc-turn-diff-card", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-summary-card__header", children: /* @__PURE__ */ (0, import_jsx_runtime9.jsxs)("span", { className: "cc-summary-card__title", children: [
-      `${formatCount(turnDiff.fileCount)} ${turnDiff.fileCount === 1 ? "file" : "files"} changed`,
-      " ",
-      /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(ChangeStatPair, { minus: turnDiff.minus, plus: turnDiff.plus })
-    ] }) }),
-    /* @__PURE__ */ (0, import_jsx_runtime9.jsx)("div", { className: "cc-turn-diff-card__files", children: turnDiff.files.map((file) => /* @__PURE__ */ (0, import_jsx_runtime9.jsx)(
-      TurnDiffFileView,
-      {
-        expanded: expandedFile === file.path,
-        file,
-        onToggle: () => onToggleFile(file.path)
-      },
-      file.path
-    )) })
-  ] });
-}
 
 // ../packages/console-components/src/conversation/conversation-transcript.tsx
 var import_jsx_runtime10 = require("react/jsx-runtime");
-function ConversationTranscript({
-  viewState,
-  compact = false,
-  maxGroups = null,
-  showTurnDiff = true,
-  expandedDiffFile = null,
-  onToggleDiffFile = null,
-  Icon: Icon2,
-  className
-}) {
-  const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
-  const renderableTurnDiff = canRenderTurnDiff ? viewState.turnDiff : null;
-  const groups = typeof maxGroups === "number" && maxGroups > 0 ? viewState.groups.slice(-maxGroups) : viewState.groups;
-  if (!groups.length && !renderableTurnDiff) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime10.jsxs)("div", { className: clsx_default("cc-theme-scope", "cc-conversation-transcript", compact && "is-compact", className), children: [
-    groups.map((group) => /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(ConversationMessageGroup, { compact, group, Icon: Icon2 }, group.id)),
-    renderableTurnDiff && onToggleDiffFile ? /* @__PURE__ */ (0, import_jsx_runtime10.jsx)(
-      TurnDiffCard,
-      {
-        expandedFile: expandedDiffFile,
-        onToggleFile: onToggleDiffFile,
-        turnDiff: renderableTurnDiff
-      }
-    ) : null
-  ] });
-}
 
 // ../packages/console-components/src/conversation/conversation-pane.tsx
 var import_jsx_runtime11 = require("react/jsx-runtime");
-function ConversationPane({
-  viewState,
-  Icon: Icon2,
-  footer = null,
-  className,
-  scrollClassName,
-  bodyClassName,
-  compact = false,
-  maxGroups = null,
-  showTurnDiff = true,
-  expandedDiffFile = null,
-  onApplySuggestion,
-  onToggleDiffFile = null
-}) {
-  const canRenderTurnDiff = Boolean(showTurnDiff && viewState.turnDiff && onToggleDiffFile);
-  const showEmptyState = Boolean(viewState.emptyState && viewState.entries.length === 0 && !canRenderTurnDiff);
-  return /* @__PURE__ */ (0, import_jsx_runtime11.jsxs)("div", { className: clsx_default("cc-theme-scope", "cc-conversation-pane", className), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("section", { className: clsx_default("cc-conversation-pane__scroll", scrollClassName), children: /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: clsx_default("cc-conversation-pane__body", bodyClassName), children: showEmptyState && viewState.emptyState ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(ConversationEmptyState, { Icon: Icon2, onApplySuggestion, state: viewState.emptyState }) : /* @__PURE__ */ (0, import_jsx_runtime11.jsx)(
-      ConversationTranscript,
-      {
-        Icon: Icon2,
-        compact,
-        expandedDiffFile,
-        maxGroups,
-        onToggleDiffFile,
-        showTurnDiff,
-        viewState
-      }
-    ) }) }),
-    footer ? /* @__PURE__ */ (0, import_jsx_runtime11.jsx)("div", { className: "cc-conversation-pane__footer", children: footer }) : null
-  ] });
-}
 
 // ../packages/console-components/src/dock/console-dock.tsx
 var import_react4 = require("react");
-
-// ../packages/console-components/src/dock/resize-lock.ts
-var RESIZE_LOCK_DATA_KEY = "ccResizeLockCount";
-var RESIZE_STATE_DATA_KEY = "ccResizing";
-function resizeLockRoot() {
-  if (typeof document === "undefined") {
-    return null;
-  }
-  return document.documentElement;
-}
-function readResizeLockCount() {
-  const root = resizeLockRoot();
-  if (!root) {
-    return 0;
-  }
-  const raw = root.dataset[RESIZE_LOCK_DATA_KEY];
-  const count = Number(raw);
-  return Number.isFinite(count) && count > 0 ? count : 0;
-}
-function acquireResizeLock() {
-  const root = resizeLockRoot();
-  if (!root) {
-    return;
-  }
-  const nextCount = readResizeLockCount() + 1;
-  root.dataset[RESIZE_LOCK_DATA_KEY] = String(nextCount);
-  root.dataset[RESIZE_STATE_DATA_KEY] = "true";
-}
-function releaseResizeLock() {
-  const root = resizeLockRoot();
-  if (!root) {
-    return;
-  }
-  const nextCount = Math.max(0, readResizeLockCount() - 1);
-  if (nextCount === 0) {
-    delete root.dataset[RESIZE_LOCK_DATA_KEY];
-    delete root.dataset[RESIZE_STATE_DATA_KEY];
-    return;
-  }
-  root.dataset[RESIZE_LOCK_DATA_KEY] = String(nextCount);
-}
-
-// ../packages/console-components/src/dock/console-dock.tsx
 var import_jsx_runtime12 = require("react/jsx-runtime");
-function splitGlyph(direction) {
-  switch (direction) {
-    case "left":
-      return "\u2190";
-    case "right":
-      return "\u2192";
-    case "up":
-      return "\u2191";
-    case "down":
-      return "\u2193";
-    default:
-      return "+";
-  }
-}
-function PanelActionButton({
-  direction,
-  panelId,
-  onClick
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-    "button",
-    {
-      "aria-label": `Split ${direction}`,
-      className: "cc-dock-panel__icon-action",
-      "data-testid": `dock-split:${panelId}:${direction}`,
-      type: "button",
-      onClick,
-      children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { "aria-hidden": "true", children: splitGlyph(direction) })
-    }
-  );
-}
-function PanelNodeView({
-  node,
-  panelsById,
-  focusedPanelId,
-  isSinglePanelLayout,
-  Icon: Icon2,
-  onClosePanel,
-  onFocusPanel,
-  onResizeSplit,
-  onSplitPanel,
-  renderPanelBody,
-  renderPanelFooter
-}) {
-  if (node.kind === "panel") {
-    const panel = panelsById.get(node.panelId);
-    if (!panel) {
-      return null;
-    }
-    const panelActions = /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(import_jsx_runtime12.Fragment, { children: [
-      ["left", "right", "up", "down"].map((direction) => /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        PanelActionButton,
-        {
-          direction,
-          panelId: panel.id,
-          onClick: () => onSplitPanel?.(panel, direction)
-        },
-        direction
-      )),
-      panel.closable !== false ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-        "button",
-        {
-          "aria-label": "Close panel",
-          className: "cc-dock-panel__icon-action is-close",
-          "data-testid": `dock-close:${panel.id}`,
-          type: "button",
-          onClick: () => onClosePanel?.(panel),
-          children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { "aria-hidden": "true", children: "\xD7" })
-        }
-      ) : null
-    ] });
-    return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
-      "section",
-      {
-        className: clsx_default(
-          "cc-dock-panel",
-          isSinglePanelLayout && "is-solitary",
-          focusedPanelId === panel.id && "is-focused",
-          panel.mode === "terminal" && "is-terminal"
-        ),
-        "data-testid": `dock-panel:${panel.id}`,
-        "data-panel-id": panel.id,
-        onMouseDown: () => onFocusPanel?.(panel),
-        children: [
-          isSinglePanelLayout ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-panel__floating-actions", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-panel__actions", children: panelActions }) }) : /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("header", { className: "cc-dock-panel__header", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "cc-dock-panel__copy", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "cc-dock-panel__title-row", children: [
-                panel.iconName && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-panel__icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Icon2, { name: panel.iconName }) }) : null,
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-panel__title", children: panel.title }),
-                panel.badgeLabel ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-panel__badge", children: panel.badgeLabel }) : null
-              ] }),
-              panel.subtitle || panel.statusLabel ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "cc-dock-panel__meta", children: [
-                panel.subtitle ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { children: panel.subtitle }) : null,
-                panel.statusLabel ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { children: panel.statusLabel }) : null
-              ] }) : null
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-panel__actions", children: panelActions })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-panel__body", children: renderPanelBody(panel) }),
-          renderPanelFooter ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-panel__footer", children: renderPanelFooter(panel) }) : null
-        ]
-      }
-    );
-  }
-  const splitNode = node;
-  const splitRef = (0, import_react4.useRef)(null);
-  const resizeCleanupRef = (0, import_react4.useRef)(null);
-  const firstFlex = typeof splitNode.ratio === "number" && splitNode.ratio > 0 && splitNode.ratio < 1 ? splitNode.ratio : 0.5;
-  const secondFlex = 1 - firstFlex;
-  (0, import_react4.useEffect)(() => () => {
-    resizeCleanupRef.current?.();
-    resizeCleanupRef.current = null;
-  }, []);
-  function handleResizeStart(event) {
-    if (!onResizeSplit || !splitRef.current) {
-      return;
-    }
-    resizeCleanupRef.current?.();
-    resizeCleanupRef.current = null;
-    event.preventDefault();
-    event.stopPropagation();
-    acquireResizeLock();
-    const divider = event.currentTarget;
-    const pointerId = event.pointerId;
-    let isActive = true;
-    const updateRatio = (pointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId) {
-        return;
-      }
-      const splitElement = splitRef.current;
-      if (!splitElement || !isActive) {
-        return;
-      }
-      const rect = splitElement.getBoundingClientRect();
-      const size = splitNode.direction === "horizontal" ? rect.width : rect.height;
-      if (size <= 0) {
-        return;
-      }
-      const offset = splitNode.direction === "horizontal" ? pointerEvent.clientX - rect.left : pointerEvent.clientY - rect.top;
-      const ratio = offset / size;
-      onResizeSplit(splitNode.id, Math.min(0.88, Math.max(0.12, ratio)));
-    };
-    const handlePointerMove = (pointerEvent) => {
-      updateRatio(pointerEvent);
-    };
-    const cleanup = () => {
-      if (!isActive) {
-        return;
-      }
-      isActive = false;
-      releaseResizeLock();
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", handlePointerUp);
-      window.removeEventListener("pointercancel", handlePointerCancel);
-      divider.removeEventListener("lostpointercapture", handleLostPointerCapture);
-      if ("hasPointerCapture" in divider && divider.hasPointerCapture(event.pointerId)) {
-        divider.releasePointerCapture(event.pointerId);
-      }
-      resizeCleanupRef.current = null;
-    };
-    const handlePointerUp = (pointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId) {
-        return;
-      }
-      cleanup();
-    };
-    const handlePointerCancel = (pointerEvent) => {
-      if (pointerEvent.pointerId !== pointerId) {
-        return;
-      }
-      cleanup();
-    };
-    const handleLostPointerCapture = () => {
-      cleanup();
-    };
-    updateRatio(event.nativeEvent);
-    if ("setPointerCapture" in divider) {
-      divider.setPointerCapture(event.pointerId);
-    }
-    resizeCleanupRef.current = cleanup;
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", handlePointerUp);
-    window.addEventListener("pointercancel", handlePointerCancel);
-    divider.addEventListener("lostpointercapture", handleLostPointerCapture);
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: clsx_default("cc-dock-split", `is-${splitNode.direction}`), ref: splitRef, children: [
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-split__slot", style: { flex: `${firstFlex} 1 0%` }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-      PanelNodeView,
-      {
-        focusedPanelId,
-        Icon: Icon2,
-        isSinglePanelLayout,
-        node: node.first,
-        onClosePanel,
-        onFocusPanel,
-        onResizeSplit,
-        onSplitPanel,
-        panelsById,
-        renderPanelBody,
-        renderPanelFooter
-      }
-    ) }),
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-      "button",
-      {
-        "aria-label": `Resize ${splitNode.direction} split`,
-        className: "cc-dock-split__divider",
-        "data-testid": `dock-divider:${splitNode.id}`,
-        type: "button",
-        onPointerDown: handleResizeStart,
-        children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-split__divider-line", "aria-hidden": "true" })
-      }
-    ),
-    /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock-split__slot", style: { flex: `${secondFlex} 1 0%` }, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-      PanelNodeView,
-      {
-        focusedPanelId,
-        Icon: Icon2,
-        isSinglePanelLayout,
-        node: node.second,
-        onClosePanel,
-        onFocusPanel,
-        onResizeSplit,
-        onSplitPanel,
-        panelsById,
-        renderPanelBody,
-        renderPanelFooter
-      }
-    ) })
-  ] });
-}
-function ConsoleDock({
-  viewState,
-  Icon: Icon2,
-  className,
-  tabActions = null,
-  renderEmptyState,
-  renderPanelBody,
-  renderPanelFooter,
-  onCreateTab,
-  onClosePanel,
-  onCloseTab,
-  onFocusPanel,
-  onResizeSplit,
-  onSelectTab,
-  onSplitPanel
-}) {
-  const normalized = normalizeConsoleDockViewState(viewState);
-  const activeTab = normalized.tabs.find((tab) => tab.id === normalized.activeTabId) || null;
-  const activePanelCount = activeTab ? collectConsoleDockPanelIds(activeTab.layout).length : 0;
-  const hasMultipleTabs = normalized.tabs.length > 1;
-  const hasTabToolbar = Boolean(tabActions) || Boolean(onCreateTab);
-  const panelsById = new Map(
-    normalized.panels.map((panel) => [panel.id, panel])
-  );
-  return /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
-    "section",
-    {
-      className: clsx_default(
-        "cc-theme-scope",
-        "cc-dock",
-        className,
-        !hasMultipleTabs && "is-single-tab",
-        activePanelCount <= 1 && "is-single-panel"
-      ),
-      children: [
-        hasMultipleTabs || hasTabToolbar ? /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("header", { className: clsx_default("cc-dock__tab-strip", !hasMultipleTabs && normalized.tabs.length === 0 && "is-toolbar-only"), children: [
-          normalized.tabs.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock__tabs", role: "tablist", "aria-label": "Dock tabs", children: normalized.tabs.map((tab) => /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
-            "div",
-            {
-              className: clsx_default("cc-dock-tab", tab.id === normalized.activeTabId && "is-active"),
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)(
-                  "button",
-                  {
-                    "aria-selected": tab.id === normalized.activeTabId,
-                    className: "cc-dock-tab__button",
-                    role: "tab",
-                    title: tab.subtitle ? `${tab.title} - ${tab.subtitle}` : tab.title,
-                    type: "button",
-                    onClick: () => onSelectTab?.(tab),
-                    children: [
-                      Icon2 && tab.iconName ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-tab__icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(Icon2, { name: tab.iconName }) }) : null,
-                      /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-tab__copy", children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-tab__title", children: tab.title }) }),
-                      tab.badgeLabel ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { className: "cc-dock-tab__badge", children: tab.badgeLabel }) : null
-                    ]
-                  }
-                ),
-                tab.closable !== false ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-                  "button",
-                  {
-                    "aria-label": `Close ${tab.title}`,
-                    className: "cc-dock-tab__close",
-                    type: "button",
-                    onClick: () => onCloseTab?.(tab),
-                    children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { "aria-hidden": "true", children: "\xD7" })
-                  }
-                ) : null
-              ]
-            },
-            tab.id
-          )) }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime12.jsxs)("div", { className: "cc-dock__tab-actions", children: [
-            tabActions,
-            onCreateTab ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("button", { "aria-label": "New tab", className: "cc-dock__new-tab", type: "button", onClick: onCreateTab, children: /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("span", { "aria-hidden": "true", children: "+" }) }) : null
-          ] })
-        ] }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock__body", children: activeTab ? /* @__PURE__ */ (0, import_jsx_runtime12.jsx)(
-          PanelNodeView,
-          {
-            focusedPanelId: normalized.focusedPanelId,
-            Icon: Icon2,
-            isSinglePanelLayout: activePanelCount <= 1,
-            node: activeTab.layout,
-            onClosePanel,
-            onFocusPanel,
-            onResizeSplit,
-            onSplitPanel,
-            panelsById,
-            renderPanelBody,
-            renderPanelFooter
-          }
-        ) : renderEmptyState ? renderEmptyState() : /* @__PURE__ */ (0, import_jsx_runtime12.jsx)("div", { className: "cc-dock__empty", children: "Open a tab to start arranging panels." }) })
-      ]
-    }
-  );
-}
 
 // ../packages/console-components/src/dock/use-console-dock-controller.ts
 var import_react5 = require("react");
@@ -2978,496 +1405,12 @@ function useConsoleDockController({
 // ../packages/console-components/src/sidebar/console-sidebar.tsx
 var import_react6 = require("react");
 var import_jsx_runtime13 = require("react/jsx-runtime");
-function SectionIconButton({
-  action,
-  Icon: Icon2,
-  buttonProps,
-  className,
-  onClick
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-    "button",
-    {
-      ...buttonProps,
-      "aria-label": action.label,
-      className: clsx_default("cc-sidebar-icon-action", action.active && "is-active", className, buttonProps?.className),
-      disabled: action.disabled || buttonProps?.disabled,
-      title: action.label,
-      type: "button",
-      onClick: (event) => {
-        event.stopPropagation();
-        buttonProps?.onClick?.(event);
-        if (!event.defaultPrevented) {
-          onClick?.();
-        }
-      },
-      children: Icon2 && action.iconName ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { name: action.iconName }) : null
-    }
-  );
-}
-function ActionStrip({
-  block,
-  Icon: Icon2,
-  getActionButtonProps,
-  onBlockAction
-}) {
-  if (!block.actions?.length) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("section", { className: "cc-sidebar-block cc-sidebar-block--action-strip", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-action-strip", children: block.actions.map((action, actionIndex) => {
-    const buttonProps = getActionButtonProps?.({ kind: "block", block, action });
-    return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(import_react6.Fragment, { children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
-      "button",
-      {
-        ...buttonProps,
-        className: clsx_default("cc-sidebar-action-strip__button", action.active && "is-active", buttonProps?.className),
-        disabled: action.disabled || buttonProps?.disabled,
-        type: "button",
-        onClick: (event) => {
-          buttonProps?.onClick?.(event);
-          if (!event.defaultPrevented) {
-            onBlockAction?.(block, action);
-          }
-        },
-        children: [
-          Icon2 && action.iconName ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-action-strip__icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { name: action.iconName }) }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: action.label })
-        ]
-      }
-    ) }, `${block.id}:${action.id}:${actionIndex}`);
-  }) }) });
-}
-function BlockHeader({
-  block,
-  Icon: Icon2,
-  getActionButtonProps,
-  onBlockAction
-}) {
-  if (!block.title && !block.meta?.length && !block.actions?.length) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "cc-sidebar-block__header", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: "cc-sidebar-block__copy", children: [
-      block.title ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("h2", { className: "cc-sidebar-block__title", children: block.title }) : null,
-      block.meta?.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-block__meta", children: block.meta.map((meta) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: clsx_default("cc-sidebar-meta", meta.tone && `is-${meta.tone}`), children: [
-        Icon2 && meta.iconName ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { className: "cc-sidebar-meta__icon", name: meta.iconName }) : null,
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: meta.label })
-      ] }, meta.id || meta.label)) }) : null
-    ] }),
-    block.actions?.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-block__actions", children: block.actions.map((action, actionIndex) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-      SectionIconButton,
-      {
-        action,
-        buttonProps: getActionButtonProps?.({ kind: "block", block, action }),
-        Icon: Icon2,
-        onClick: () => onBlockAction?.(block, action)
-      },
-      `${block.id}:${action.id}:${actionIndex}`
-    )) }) : null
-  ] });
-}
-function hasVisibleSectionHeader(section) {
-  return Boolean(
-    section.title || section.subtitle || section.iconName || section.meta?.length || section.actions?.length
-  );
-}
-function DefaultSectionHeader({
-  block,
-  section,
-  Icon: Icon2,
-  getActionButtonProps,
-  onSelectSection,
-  onSectionAction
-}) {
-  if (!hasVisibleSectionHeader(section)) {
-    return null;
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("div", { className: clsx_default("cc-sidebar-section__header", section.selected && "is-selected"), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
-      "button",
-      {
-        className: "cc-sidebar-section__header-main",
-        type: "button",
-        onClick: () => onSelectSection?.(block, section),
-        children: [
-          section.iconName && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-section__header-icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { name: section.iconName }) }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "cc-sidebar-section__header-copy", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "cc-sidebar-section__header-title-row", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-section__header-title", children: section.title }),
-              section.meta?.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-section__header-meta", children: section.meta.map((meta) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: clsx_default("cc-sidebar-meta", meta.tone && `is-${meta.tone}`), children: [
-                Icon2 && meta.iconName ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { className: "cc-sidebar-meta__icon", name: meta.iconName }) : null,
-                /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: meta.label })
-              ] }, meta.id || meta.label)) }) : null
-            ] }),
-            section.subtitle ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-section__header-subtitle", children: section.subtitle }) : null
-          ] })
-        ]
-      }
-    ),
-    section.actions?.length ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-section__header-actions", children: section.actions.map((action, actionIndex) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-      SectionIconButton,
-      {
-        action,
-        className: "cc-sidebar-section__action",
-        Icon: Icon2,
-        buttonProps: getActionButtonProps?.({ kind: "section", block, section, action }),
-        onClick: () => onSectionAction?.(block, section, action)
-      },
-      `${section.id}:${action.id}:${actionIndex}`
-    )) }) : null
-  ] });
-}
-function SidebarRow({
-  block,
-  section,
-  item,
-  Icon: Icon2,
-  getActionButtonProps,
-  trailingContent,
-  onSelectItem,
-  onItemAction,
-  onItemContextMenu
-}) {
-  function handleKeyDown(event) {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (!item.disabled) {
-        onSelectItem?.(block, section, item);
-      }
-    }
-  }
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)(
-    "div",
-    {
-      className: clsx_default(
-        "cc-sidebar-row",
-        item.selected && "is-selected",
-        item.unread && "is-unread",
-        item.disabled && "is-disabled"
-      ),
-      "data-console-sidebar-part": "row",
-      "data-selected": item.selected ? "true" : "false",
-      "data-unread": item.unread ? "true" : "false",
-      "data-disabled": item.disabled ? "true" : "false",
-      role: "button",
-      tabIndex: item.disabled ? -1 : 0,
-      onClick: () => {
-        if (!item.disabled) {
-          onSelectItem?.(block, section, item);
-        }
-      },
-      onContextMenu: (event) => onItemContextMenu?.(block, section, item, event),
-      onKeyDown: handleKeyDown,
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__main", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "cc-sidebar-row__copy", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "cc-sidebar-row__title-row", children: [
-            item.iconName && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__icon", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { name: item.iconName }) }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__title", children: item.title })
-          ] }),
-          item.subtitle ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__subtitle", children: item.subtitle }) : null
-        ] }) }),
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "cc-sidebar-row__meta", children: [
-          item.badgeIconName && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__badge", "aria-hidden": "true", children: /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { name: item.badgeIconName }) }) : null,
-          item.badgeLabel ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__badge-label", children: item.badgeLabel }) : null,
-          item.meta?.map((meta) => /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: clsx_default("cc-sidebar-row__meta-item", meta.tone && `is-${meta.tone}`), children: [
-            Icon2 && meta.iconName ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(Icon2, { className: "cc-sidebar-row__meta-icon", name: meta.iconName }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { children: meta.label })
-          ] }, meta.id || meta.label))
-        ] }),
-        trailingContent || item.actions?.length && onItemAction ? /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("span", { className: "cc-sidebar-row__trailing", children: [
-          trailingContent ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__trailing-content", children: trailingContent }) : null,
-          item.actions?.length && onItemAction ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("span", { className: "cc-sidebar-row__actions", children: item.actions.map((action, actionIndex) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-            SectionIconButton,
-            {
-              action,
-              className: "cc-sidebar-row__action",
-              Icon: Icon2,
-              buttonProps: getActionButtonProps?.({ kind: "item", block, section, item, action }),
-              onClick: () => onItemAction(block, section, item, action)
-            },
-            `${item.id}:${action.id}:${actionIndex}`
-          )) }) : null
-        ] }) : null
-      ]
-    }
-  );
-}
-function ListBlock({
-  block,
-  Icon: Icon2,
-  getActionButtonProps,
-  renderSectionHeader,
-  renderSectionContainer,
-  renderItemTrailing,
-  onBlockAction,
-  onSelectSection,
-  onSectionAction,
-  onSelectItem,
-  onItemAction,
-  onItemContextMenu
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: "cc-sidebar-block cc-sidebar-block--list", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-      BlockHeader,
-      {
-        Icon: Icon2,
-        block,
-        getActionButtonProps,
-        onBlockAction
-      }
-    ),
-    /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-list", children: (block.sections || []).map((section) => {
-      const defaultHeader = /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-        DefaultSectionHeader,
-        {
-          Icon: Icon2,
-          block,
-          getActionButtonProps,
-          onSectionAction,
-          onSelectSection,
-          section
-        }
-      );
-      const header = renderSectionHeader ? renderSectionHeader({ block, section, defaultHeader }) : defaultHeader;
-      const defaultSection = /* @__PURE__ */ (0, import_jsx_runtime13.jsxs)("section", { className: clsx_default("cc-sidebar-section", hasVisibleSectionHeader(section) && "has-header"), children: [
-        header,
-        /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: "cc-sidebar-section__rows", children: section.items.map((item) => /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-          SidebarRow,
-          {
-            Icon: Icon2,
-            block,
-            getActionButtonProps,
-            item,
-            onItemAction,
-            onItemContextMenu,
-            onSelectItem,
-            section,
-            trailingContent: renderItemTrailing?.({ block, section, item })
-          },
-          item.id
-        )) })
-      ] }, section.id);
-      return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(import_react6.Fragment, { children: renderSectionContainer ? renderSectionContainer({ block, section, defaultSection }) : defaultSection }, section.id);
-    }) })
-  ] });
-}
-function ConsoleSidebar({
-  viewState,
-  Icon: Icon2,
-  className,
-  getActionButtonProps,
-  renderSectionHeader,
-  renderSectionContainer,
-  renderItemTrailing,
-  onBlockAction,
-  onSelectSection,
-  onSectionAction,
-  onSelectItem,
-  onItemAction,
-  onItemContextMenu
-}) {
-  const normalizedViewState = normalizeConsoleSidebarViewState(viewState);
-  return /* @__PURE__ */ (0, import_jsx_runtime13.jsx)("div", { className: clsx_default("cc-theme-scope", "cc-console-sidebar", className), children: normalizedViewState.blocks.map((block) => block.kind === "action_strip" ? /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-    ActionStrip,
-    {
-      Icon: Icon2,
-      block,
-      getActionButtonProps,
-      onBlockAction
-    },
-    block.id
-  ) : /* @__PURE__ */ (0, import_jsx_runtime13.jsx)(
-    ListBlock,
-    {
-      Icon: Icon2,
-      block,
-      getActionButtonProps,
-      onBlockAction,
-      onItemAction,
-      onItemContextMenu,
-      onSelectItem,
-      onSectionAction,
-      onSelectSection,
-      renderItemTrailing,
-      renderSectionHeader,
-      renderSectionContainer
-    },
-    block.id
-  )) });
-}
 
 // ../packages/console-components/src/workbench/console-workbench.tsx
 var import_jsx_runtime14 = require("react/jsx-runtime");
-function ConsoleWorkbench({
-  launcher,
-  main,
-  activityRail = null,
-  launcherResizeHandle = null,
-  launcherHeader = null,
-  launcherFooter = null,
-  activityRailResizeHandle = null,
-  activityRailHeader = null,
-  activityRailFooter = null,
-  mainHeader = null,
-  mainFooter = null,
-  id,
-  className
-}) {
-  return /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(
-    "div",
-    {
-      className: clsx_default("cc-theme-scope", "cc-workbench", activityRail && "has-activity-rail", className),
-      "data-console-workbench": "root",
-      id,
-      children: [
-        /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("aside", { className: "cc-workbench__launcher", "data-console-workbench-part": "launcher", children: [
-          launcherHeader ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__launcher-header", "data-console-workbench-part": "launcher-header", children: launcherHeader }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__launcher-body", "data-console-workbench-part": "launcher-body", children: launcher }),
-          launcherFooter ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__launcher-footer", "data-console-workbench-part": "launcher-footer", children: launcherFooter }) : null
-        ] }),
-        launcherResizeHandle,
-        /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("section", { className: "cc-workbench__main", "data-console-workbench-part": "main", children: [
-          mainHeader ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__main-header", "data-console-workbench-part": "main-header", children: mainHeader }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__main-body", "data-console-workbench-part": "main-body", children: main }),
-          mainFooter ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__main-footer", "data-console-workbench-part": "main-footer", children: mainFooter }) : null
-        ] }),
-        activityRail ? /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)(import_jsx_runtime14.Fragment, { children: [
-          activityRailResizeHandle,
-          /* @__PURE__ */ (0, import_jsx_runtime14.jsxs)("aside", { className: "cc-workbench__activity", "data-console-workbench-part": "activity", children: [
-            activityRailHeader ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__activity-header", "data-console-workbench-part": "activity-header", children: activityRailHeader }) : null,
-            /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__activity-body", "data-console-workbench-part": "activity-body", children: activityRail }),
-            activityRailFooter ? /* @__PURE__ */ (0, import_jsx_runtime14.jsx)("div", { className: "cc-workbench__activity-footer", "data-console-workbench-part": "activity-footer", children: activityRailFooter }) : null
-          ] })
-        ] }) : null
-      ]
-    }
-  );
-}
 
 // ../packages/console-components/src/composer/console-composer.tsx
 var import_jsx_runtime15 = require("react/jsx-runtime");
-function kindToClassName(kind, zone) {
-  switch (kind) {
-    case "pill":
-      return "cc-composer__pill";
-    case "pill-icon":
-      return "cc-composer__pill-icon";
-    case "sub-pill":
-      return "cc-composer__sub-pill";
-    case "icon":
-      return zone === "main" ? "cc-composer__icon-ghost" : "cc-composer__footer-icon";
-    default:
-      return "cc-composer__pill";
-  }
-}
-function visible(items) {
-  return items.filter((item) => !item.hidden);
-}
-function ConsoleComposer({
-  viewState,
-  Icon: Icon2,
-  className,
-  shellClassName,
-  footerClassName,
-  inputId,
-  inputRef,
-  shellId,
-  submitButtonId,
-  getToolbarButtonProps,
-  renderMainRow,
-  renderFooter,
-  onChange,
-  onFocus,
-  onKeyDown,
-  onSubmit
-}) {
-  const {
-    value,
-    disabled = false,
-    placeholder,
-    submitDisabled = false,
-    submitLabel = "Send prompt",
-    mainRowItems,
-    footerLeftItems,
-    footerRightItems
-  } = viewState;
-  const visibleMain = visible(mainRowItems);
-  const visibleFooterLeft = visible(footerLeftItems);
-  const visibleFooterRight = visible(footerRightItems);
-  const hasFooter = visibleFooterLeft.length > 0 || visibleFooterRight.length > 0;
-  function renderToolbarButton(item, zone) {
-    const baseClass = kindToClassName(item.kind, zone);
-    const extra = getToolbarButtonProps?.({ zone, item });
-    const { ref, className: extraClass, ...restExtra } = extra ?? {};
-    return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(
-      "button",
-      {
-        className: clsx_default(baseClass, item.hasMenu && "has-menu", extraClass),
-        disabled: item.disabled,
-        type: "button",
-        ref,
-        ...restExtra,
-        children: [
-          item.iconName && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(import_jsx_runtime15.Fragment, { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(Icon2, { name: item.iconName }),
-            " "
-          ] }) : null,
-          item.label ?? null,
-          item.hasMenu && Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)(import_jsx_runtime15.Fragment, { children: [
-            " ",
-            /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(Icon2, { className: "chev", name: "i-chevron" })
-          ] }) : null
-        ]
-      },
-      item.id
-    );
-  }
-  const defaultMainRow = /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: "cc-composer__main-row", children: [
-    visibleMain.map((item) => renderToolbarButton(item, "main")),
-    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(
-      "button",
-      {
-        className: "cc-composer__send-btn",
-        disabled: submitDisabled,
-        id: submitButtonId,
-        title: submitLabel,
-        type: "button",
-        onClick: onSubmit,
-        children: "\u2191"
-      }
-    )
-  ] });
-  const mainRow = renderMainRow ? renderMainRow({ items: visibleMain, defaultMainRow }) : defaultMainRow;
-  const defaultFooter = hasFooter ? /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: clsx_default("cc-composer__footer", footerClassName), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-composer__footer-left", children: visibleFooterLeft.map((item) => renderToolbarButton(item, "footer-left")) }),
-    /* @__PURE__ */ (0, import_jsx_runtime15.jsx)("div", { className: "cc-composer__footer-right", children: visibleFooterRight.map((item) => renderToolbarButton(item, "footer-right")) })
-  ] }) : null;
-  const footer = renderFooter ? renderFooter({
-    leftItems: visibleFooterLeft,
-    rightItems: visibleFooterRight,
-    defaultFooter
-  }) : defaultFooter;
-  return /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("section", { className: clsx_default("cc-composer", className), children: [
-    /* @__PURE__ */ (0, import_jsx_runtime15.jsxs)("div", { className: clsx_default("cc-composer__shell", shellClassName), id: shellId, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime15.jsx)(
-        "textarea",
-        {
-          ref: inputRef,
-          className: "cc-composer__textarea",
-          disabled,
-          id: inputId,
-          placeholder,
-          value,
-          onChange: (event) => onChange(event.currentTarget.value),
-          onFocus,
-          onKeyDown
-        }
-      ),
-      mainRow
-    ] }),
-    footer
-  ] });
-}
 
 // src/lib/agents.ts
 function normalizeAgents(experience, modules) {
@@ -3588,8 +1531,16 @@ function buildControlTarget(kind) {
       return { id: "topology", kind, title: "Topology", subtitle: "Identity connectivity", iconName: "i-team" };
     case "health":
       return { id: "health", kind, title: "Health", subtitle: "Runtime and identity health", iconName: "i-gear" };
+    case "timeline":
+      return { id: "timeline", kind, title: "Today", subtitle: "Chronological events", iconName: "i-clock" };
+    case "roster":
+      return { id: "roster", kind, title: "Roster", subtitle: "All agents", iconName: "i-team" };
+    case "gates":
+      return { id: "gates", kind, title: "Gates", subtitle: "Approval policies", iconName: "i-bolt" };
+    case "logs":
+      return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
     default:
-      return { id: kind, kind: "health", title: "Health" };
+      return { id: "health", kind: "health", title: "Health" };
   }
 }
 function agentGroupKey(agent) {
@@ -3883,19 +1834,19 @@ function parsePeerSummary(text) {
   const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);
   if (!match) return null;
   const [, verb, body] = match;
-  let summary = body.trim();
+  let summary2 = body.trim();
   try {
-    const parsed = JSON.parse(summary);
+    const parsed = JSON.parse(summary2);
     if (typeof parsed === "object" && parsed !== null) {
-      if (typeof parsed.summary === "string") summary = parsed.summary;
-      else if (typeof parsed.text === "string") summary = parsed.text;
-      else if (typeof parsed.body === "string") summary = parsed.body;
-      else if (typeof parsed.message === "string") summary = parsed.message;
+      if (typeof parsed.summary === "string") summary2 = parsed.summary;
+      else if (typeof parsed.text === "string") summary2 = parsed.text;
+      else if (typeof parsed.body === "string") summary2 = parsed.body;
+      else if (typeof parsed.message === "string") summary2 = parsed.message;
     }
   } catch {
-    summary = summary.replace(/^["']|["']$/g, "");
+    summary2 = summary2.replace(/^["']|["']$/g, "");
   }
-  return { verb, summary };
+  return { verb, summary: summary2 };
 }
 function renderPeerEntry(frame, entryId) {
   const rawText = summarizeFrameData(frame.data);
@@ -4068,19 +2019,19 @@ function summarizeCommsTransport(text) {
         resultLines.push(line);
       }
       const resultText = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
-      let summary = resultText;
+      let summary2 = resultText;
       try {
         const parsed = JSON.parse(resultText);
         if (typeof parsed === "string") {
-          summary = parsed;
+          summary2 = parsed;
         } else if (typeof parsed === "object" && parsed !== null) {
           const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
-          if (typeof val === "string") summary = val;
+          if (typeof val === "string") summary2 = val;
         }
       } catch {
       }
       const label = status ? `\u21A9 response (${status})` : "\u21A9 response";
-      return `${label}: ${summary}`;
+      return `${label}: ${summary2}`;
     }
     return status ? `\u21A9 response (${status})` : "\u21A9 response received";
   }
@@ -4858,12 +2809,1920 @@ function SpriteSheet() {
     /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-star", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.2 6.4 20.2l1.1-6.2L3 9.6l6.2-.9L12 3z" }) })
   ] });
 }
-function Icon({ name, className }) {
-  return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("svg", { className, "aria-label": name, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("use", { href: `#${name}` }) });
+
+// src/panels/TopologyPanel.tsx
+var import_react7 = __toESM(require("react"));
+var import_jsx_runtime17 = require("react/jsx-runtime");
+function normalize(id) {
+  return (id || "").trim();
+}
+function nodeColor(state, profile) {
+  if (state === "degraded") return "var(--warn)";
+  if (state === "retired" || state === "stopped") return "var(--ink-faint)";
+  const p = (profile || "").toLowerCase();
+  if (p.includes("coordinat") || p.includes("triage") || p.includes("router")) return "var(--accent)";
+  if (p.includes("personal") || p.includes("lead") || p.includes("user")) return "var(--focus)";
+  return "var(--ink-muted)";
+}
+function layOutNodes(keys, width, height) {
+  const out = {};
+  if (keys.length === 0) return out;
+  const cx = width / 2;
+  const cy = height / 2;
+  const maxR = Math.min(width, height) / 2 - 80;
+  const n = keys.length;
+  if (n === 1) {
+    out[keys[0]] = { x: cx, y: cy, r: 26 };
+    return out;
+  }
+  const useRings = n > 6;
+  if (!useRings) {
+    keys.forEach((key, i) => {
+      const theta = i / n * Math.PI * 2 - Math.PI / 2;
+      out[key] = {
+        x: cx + maxR * Math.cos(theta),
+        y: cy + maxR * Math.sin(theta),
+        r: 22
+      };
+    });
+    return out;
+  }
+  const innerCount = Math.min(3, Math.ceil(n / 3));
+  const inner = keys.slice(0, innerCount);
+  const outer = keys.slice(innerCount);
+  const innerR = Math.min(maxR * 0.4, 90);
+  const outerR = maxR;
+  inner.forEach((key, i) => {
+    const theta = i / Math.max(inner.length, 1) * Math.PI * 2 - Math.PI / 2;
+    out[key] = {
+      x: cx + innerR * Math.cos(theta),
+      y: cy + innerR * Math.sin(theta),
+      r: 24
+    };
+  });
+  outer.forEach((key, i) => {
+    const theta = i / Math.max(outer.length, 1) * Math.PI * 2 - Math.PI / 2 + Math.PI / outer.length;
+    out[key] = {
+      x: cx + outerR * Math.cos(theta),
+      y: cy + outerR * Math.sin(theta),
+      r: 20
+    };
+  });
+  return out;
+}
+function TopologyPanel({ nodes, agents }) {
+  const width = 880;
+  const height = 520;
+  const nodeList = nodes.length > 0 ? nodes : agents.map((a) => ({
+    identity: a.identity || a.member_id,
+    label: a.label,
+    profile: a.profile,
+    state: a.state,
+    wired_to: a.wired_to
+  }));
+  const keys = nodeList.map((n) => normalize(n.identity || n.label || "")).filter(Boolean);
+  const positions = import_react7.default.useMemo(() => layOutNodes(keys, width, height), [keys.join("|")]);
+  const edges = [];
+  nodeList.forEach((n) => {
+    const fromKey = normalize(n.identity || n.label || "");
+    (n.wired_to || []).forEach((t) => {
+      const toKey = normalize(t);
+      if (positions[fromKey] && positions[toKey]) {
+        edges.push({ from: fromKey, to: toKey });
+      }
+    });
+  });
+  const flows = [];
+  const maxFlows = Math.min(edges.length, 4);
+  const colors = ["var(--accent)", "var(--warn)", "var(--focus)", "var(--crit)"];
+  for (let i = 0; i < maxFlows; i++) {
+    const step = Math.max(1, Math.floor(edges.length / maxFlows));
+    const e = edges[i * step] || edges[i];
+    if (!e) continue;
+    flows.push({
+      from: e.from,
+      to: e.to,
+      color: colors[i % colors.length],
+      dur: 1.8 + i * 0.3,
+      delay: i * 0.5
+    });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo", "data-testid": "topology-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h2", { children: "Topology" }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("p", { children: [
+        nodeList.length,
+        " nodes \xB7 ",
+        edges.length,
+        " edges \xB7 live"
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)(
+      "svg",
+      {
+        className: "topo__svg",
+        viewBox: `0 0 ${width} ${height}`,
+        preserveAspectRatio: "xMidYMid meet",
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("defs", { children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("marker", { id: "topo-arr", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "6", markerHeight: "6", orient: "auto", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("path", { d: "M 0 0 L 10 5 L 0 10 Z", fill: "currentColor", opacity: "0.5" }) }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("g", { fill: "none", strokeWidth: "1", style: { color: "var(--ink-dim)" }, children: edges.map((e, i) => {
+            const a = positions[e.from];
+            const b = positions[e.to];
+            if (!a || !b) return null;
+            return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
+              "line",
+              {
+                x1: a.x,
+                y1: a.y,
+                x2: b.x,
+                y2: b.y,
+                stroke: "var(--line-strong)",
+                markerEnd: "url(#topo-arr)"
+              },
+              `edge-${i}`
+            );
+          }) }),
+          flows.map((f, i) => {
+            const a = positions[f.from];
+            const b = positions[f.to];
+            if (!a || !b) return null;
+            return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("circle", { r: "3.5", fill: f.color, children: [
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("animate", { attributeName: "cx", values: `${a.x};${b.x}`, dur: `${f.dur}s`, begin: `${f.delay}s`, repeatCount: "indefinite" }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("animate", { attributeName: "cy", values: `${a.y};${b.y}`, dur: `${f.dur}s`, begin: `${f.delay}s`, repeatCount: "indefinite" }),
+              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("animate", { attributeName: "opacity", values: "0;1;1;0", dur: `${f.dur}s`, begin: `${f.delay}s`, repeatCount: "indefinite" })
+            ] }, `flow-${i}`);
+          }),
+          nodeList.map((n) => {
+            const key = normalize(n.identity || n.label || "");
+            const pos = positions[key];
+            if (!pos) return null;
+            const color = nodeColor(n.state, n.profile);
+            const isActive = (n.state || "").toLowerCase() === "active" || (n.state || "").toLowerCase() === "running";
+            return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)(
+              "g",
+              {
+                transform: `translate(${pos.x},${pos.y})`,
+                "data-testid": `topology-node:${key}`,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("circle", { r: pos.r, fill: "var(--bg-elev-2)", stroke: color, strokeWidth: "1.5" }),
+                  isActive && /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("circle", { r: pos.r, fill: "none", stroke: color, strokeWidth: "1", opacity: "0.3", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("animate", { attributeName: "r", values: `${pos.r};${pos.r + 8}`, dur: "2.4s", repeatCount: "indefinite" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("animate", { attributeName: "opacity", values: "0.3;0", dur: "2.4s", repeatCount: "indefinite" })
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("text", { y: -pos.r - 8, textAnchor: "middle", fontSize: "11", fontWeight: "500", fill: "var(--ink)", fontFamily: "var(--disp)", children: n.label || n.identity || "unknown" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("text", { y: pos.r + 14, textAnchor: "middle", fontSize: "9.5", fill: "var(--ink-dim)", fontFamily: "var(--mono)", children: n.identity || "" })
+                ]
+              },
+              key
+            );
+          })
+        ]
+      }
+    ),
+    /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__legend", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__legend-item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "topo__legend-dot", style: { background: "var(--focus)" } }),
+        " Personal"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__legend-item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "topo__legend-dot", style: { background: "var(--accent)" } }),
+        " Coordinator"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__legend-item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "topo__legend-dot", style: { background: "var(--ink-muted)" } }),
+        " Domain / internal"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__legend-item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "topo__legend-dot", style: { background: "var(--warn)" } }),
+        " Degraded"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "topo__legend-item", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("span", { className: "topo__legend-dot", style: { background: "var(--ink-faint)" } }),
+        " Retired"
+      ] })
+    ] })
+  ] });
+}
+
+// src/panels/TimelinePanel.tsx
+var import_react8 = __toESM(require("react"));
+var import_jsx_runtime18 = require("react/jsx-runtime");
+function classifyFrame(frame) {
+  const ev = frame.event;
+  if (ev === "gating_decision" || ev.startsWith("gate_")) return "gate";
+  if (ev === "run_failed" || ev === "interaction_failed") return "warn";
+  if (ev === "route_changed" || ev === "topology_updated") return "topology";
+  if (ev === "member_ready" || ev === "member_retired" || ev === "state_changed") return "lifecycle";
+  if (ev === "interaction_complete" || ev === "interaction_started") return "interaction";
+  return "dispatch";
+}
+function formatTime(tsMs) {
+  if (!tsMs) return "\u2014";
+  const d = new Date(tsMs);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+function summarizeFrame(frame) {
+  const ev = frame.event;
+  const data = frame.data || {};
+  switch (ev) {
+    case "interaction_complete":
+      return `Completed interaction ${String(frame.interactionId || "").slice(0, 8)}`;
+    case "interaction_failed":
+      return `Failed: ${String(data.error || data.reason || "error")}`;
+    case "interaction_started":
+      return `Started interaction ${String(frame.interactionId || "").slice(0, 8)}`;
+    case "gating_decision":
+      return `Gate ${String(data.decision || "")}: ${String(data.action_id || data.pending_id || "")}`;
+    case "member_ready":
+      return `Member ready`;
+    case "member_retired":
+      return `Member retired`;
+    case "state_changed":
+      return `State \u2192 ${String(data.state || data.new_state || "")}`;
+    case "route_changed":
+      return `Route updated`;
+    default:
+      return ev.replace(/_/g, " ");
+  }
+}
+function TimelinePanel({ frames }) {
+  const entries = import_react8.default.useMemo(() => {
+    const todayMs = (() => {
+      const d = /* @__PURE__ */ new Date();
+      d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    })();
+    return frames.filter((f) => (f.timestampMs || 0) >= todayMs).slice(0, 80).map((f) => ({
+      time: formatTime(f.timestampMs),
+      type: classifyFrame(f),
+      text: summarizeFrame(f),
+      who: f.identity || "_system"
+    }));
+  }, [frames]);
+  const today = /* @__PURE__ */ new Date();
+  const dateLabel = today.toLocaleDateString(void 0, { month: "short", day: "numeric", year: "numeric" });
+  return /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "tl", "data-testid": "timeline-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "tl__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("h2", { children: "Today" }),
+      /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("p", { children: [
+        "\xB7 ",
+        entries.length,
+        " events \xB7 ",
+        dateLabel
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "tl__body", children: [
+      entries.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { style: { gridColumn: "1 / -1", padding: "40px 0", color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12, textAlign: "center" }, children: "No events yet today." }),
+      entries.map((e, i) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "tl__row", "data-type": e.type, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "tl__time", children: e.time }),
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "tl__rail", children: /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { className: "tl__dot" }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "tl__card", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { className: "tl__type", children: e.type }),
+            /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("span", { children: e.text })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "tl__who", children: e.who })
+        ] })
+      ] }, i))
+    ] })
+  ] });
+}
+
+// src/panels/GatingInboxPanel.tsx
+var import_react9 = __toESM(require("react"));
+var import_jsx_runtime19 = require("react/jsx-runtime");
+function getRisk(entry) {
+  const tier = String(entry.risk_tier || entry.risk || "").toLowerCase();
+  if (tier === "high" || tier === "crit" || tier === "critical") return "high";
+  if (tier === "medium" || tier === "med" || tier === "warn") return "medium";
+  return "low";
+}
+function formatWaited(entry) {
+  const waited = entry.waited_ms || entry.waited || entry.age_ms;
+  if (typeof waited !== "number") return "\u2014";
+  const seconds = Math.floor(waited / 1e3);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
+}
+function payloadSummary(entry) {
+  const payload = entry.payload;
+  if (typeof payload === "string") return payload;
+  if (payload && typeof payload === "object") {
+    try {
+      const parts = [];
+      for (const [k, v] of Object.entries(payload).slice(0, 3)) {
+        parts.push(`${k}=${String(v).slice(0, 20)}`);
+      }
+      return parts.join(" ");
+    } catch {
+      return "";
+    }
+  }
+  return String(entry.summary || entry.reason || "");
+}
+function GatingInboxPanel({ pending, audit, onDecide }) {
+  const [tab, setTab] = import_react9.default.useState("pending");
+  const [selectedId, setSelectedId] = import_react9.default.useState(null);
+  const autoApproved = audit.filter((e) => {
+    const r = e;
+    return String(r.decision || "").toLowerCase() === "auto_approve" || String(r.event_type || "").includes("auto");
+  });
+  const currentList = tab === "pending" ? pending : tab === "auto" ? autoApproved : audit;
+  return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "gating", "data-testid": "gating-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "gating__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("h2", { children: "Gating inbox" }),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("p", { children: [
+        "\xB7 ",
+        pending.length,
+        " pending \xB7 ",
+        autoApproved.length,
+        " auto-approved today"
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "gating__tabs", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(
+        "button",
+        {
+          className: `gating__tab ${tab === "pending" ? "is-active" : ""}`,
+          onClick: () => setTab("pending"),
+          "data-testid": "gating-tab:pending",
+          children: [
+            "Pending ",
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "n", children: pending.length })
+          ]
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(
+        "button",
+        {
+          className: `gating__tab ${tab === "auto" ? "is-active" : ""}`,
+          onClick: () => setTab("auto"),
+          "data-testid": "gating-tab:auto",
+          children: [
+            "Auto ",
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "n", children: autoApproved.length })
+          ]
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(
+        "button",
+        {
+          className: `gating__tab ${tab === "audit" ? "is-active" : ""}`,
+          onClick: () => setTab("audit"),
+          "data-testid": "gating-tab:audit",
+          children: [
+            "Audit ",
+            /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "n", children: audit.length })
+          ]
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "gating__list", children: [
+      currentList.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "gating__empty", children: [
+        "No ",
+        tab,
+        " items."
+      ] }),
+      currentList.map((entry, index) => {
+        const r = entry;
+        const pid = String(r.pending_id || r.audit_id || `item-${index}`);
+        const action = String(r.action_id || r.event_type || "unknown action");
+        const agent = String(r.agent || r.identity || r.actor || "");
+        const waited = formatWaited(r);
+        const risk = getRisk(r);
+        const payload = payloadSummary(r);
+        const selected = selectedId === pid;
+        const showActions = tab === "pending";
+        return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(
+          "div",
+          {
+            className: `gitem ${selected ? "is-selected" : ""}`,
+            "data-risk": risk,
+            "data-testid": `gating-pending:${pid}`,
+            onClick: () => setSelectedId(pid),
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "gitem__risk" }),
+              /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "gitem__id", children: pid.slice(0, 8) }),
+              /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "gitem__action", children: action }),
+                payload && /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "gitem__payload", children: payload }),
+                agent && /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("div", { className: "gitem__agent", children: agent })
+              ] }),
+              showActions ? /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { className: "gitem__actions", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+                  "button",
+                  {
+                    className: "approve",
+                    "data-testid": `gating-action:${pid}:approve`,
+                    onClick: (e) => {
+                      e.stopPropagation();
+                      onDecide(pid, "approve");
+                    },
+                    children: "Approve"
+                  }
+                ),
+                /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+                  "button",
+                  {
+                    className: "reject",
+                    "data-testid": `gating-action:${pid}:reject`,
+                    onClick: (e) => {
+                      e.stopPropagation();
+                      onDecide(pid, "reject");
+                    },
+                    children: "Reject"
+                  }
+                ),
+                /* @__PURE__ */ (0, import_jsx_runtime19.jsx)(
+                  "button",
+                  {
+                    "data-testid": `gating-action:${pid}:escalate`,
+                    onClick: (e) => {
+                      e.stopPropagation();
+                      onDecide(pid, "escalate");
+                    },
+                    children: "Escalate"
+                  }
+                )
+              ] }) : /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("span", { className: "gitem__actions" }),
+              /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("span", { className: "gitem__waited", children: [
+                "waited",
+                /* @__PURE__ */ (0, import_jsx_runtime19.jsx)("br", {}),
+                waited
+              ] })
+            ]
+          },
+          pid
+        );
+      })
+    ] })
+  ] });
+}
+
+// src/panels/RosterPanel.tsx
+var import_react10 = __toESM(require("react"));
+var import_jsx_runtime20 = require("react/jsx-runtime");
+var ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"];
+function roleOf(a) {
+  const p = (a.profile || a.kind || "").toLowerCase();
+  const g = (a.group || "").toLowerCase();
+  if (p.includes("personal") || g.includes("personal")) return "personal";
+  if (p.includes("coord") || p.includes("triage") || p.includes("router")) return "coordinator";
+  if (p.includes("monitor") || p.includes("scribe") || p.includes("gate")) return "internal";
+  return "domain";
+}
+function stateLabel(state) {
+  return (state || "unknown").toLowerCase();
+}
+function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
+  const [q, setQ] = import_react10.default.useState("");
+  const [role, setRole] = import_react10.default.useState("all");
+  const [sel, setSel] = import_react10.default.useState(agents[0]?.member_id || "");
+  const rows = import_react10.default.useMemo(() => {
+    return agents.filter((a) => {
+      if (role !== "all" && roleOf(a) !== role) return false;
+      if (!q) return true;
+      const hay = `${a.label} ${a.member_id} ${a.identity || ""} ${a.profile || ""} ${a.kind || ""}`.toLowerCase();
+      return hay.includes(q.toLowerCase());
+    });
+  }, [agents, q, role]);
+  const active = rows.find((r) => r.member_id === sel) || rows[0];
+  const activeIdentity = active?.identity || active?.member_id || "";
+  return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "view roster", "data-testid": "roster-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("h2", { children: "Roster" }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { className: "view__sub", children: [
+        rows.length,
+        " of ",
+        agents.length,
+        " agents"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
+        "input",
+        {
+          className: "view__search",
+          placeholder: "Filter agents, profiles, ids\u2026",
+          value: q,
+          onChange: (e) => setQ(e.target.value)
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "view__segs", children: ROLE_BUCKETS.map((r) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("button", { className: role === r ? "is-active" : "", onClick: () => setRole(r), children: r }, r)) })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "roster__body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "roster__table", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "roster__row roster__row--head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Name" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Role" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "State" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Profile" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Gen" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Chk" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Lease" })
+        ] }),
+        rows.map((r) => {
+          const isSel = active && r.member_id === active.member_id;
+          return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
+            "div",
+            {
+              className: `roster__row ${isSel ? "is-selected" : ""}`,
+              "data-state": stateLabel(r.state),
+              onClick: () => {
+                setSel(r.member_id);
+                onSelect(r);
+              },
+              "data-testid": `roster-row:${r.member_id}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { className: "roster__name", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__dot" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { children: r.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "roster__id", children: r.identity || r.member_id })
+                  ] })
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: roleOf(r) }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__state", children: stateLabel(r.state) }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.profile || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r.generation ?? "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r.checkpoint_version ?? "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.lease_healthy === false ? "unhealthy" : "ok" })
+              ]
+            },
+            r.member_id
+          );
+        })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("aside", { className: "roster__detail", children: active && /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(import_jsx_runtime20.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rd__head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__title", children: active.label }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__id", children: active.identity || active.member_id }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "rd__tags", children: [active.profile, active.kind, roleOf(active)].filter(Boolean).map((t) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "chip", children: String(t) }, String(t))) })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dl", { className: "rd__grid", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Profile" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: active.profile || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Kind" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: active.kind || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Role" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: roleOf(active) }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "State" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { children: /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__state", children: stateLabel(active.state) }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Member" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { className: "mono", children: active.member_id }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Identity" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { className: "mono", children: active.identity || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Session" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { className: "mono", children: active.session_id || "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Generation" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { className: "mono", children: active.generation ?? "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Checkpoint" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { className: "mono", children: active.checkpoint_version ?? "\u2014" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Lease" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dd", { className: "mono", children: active.lease_healthy === false ? "unhealthy" : "ok" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("dt", { children: "Wired" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("dd", { className: "mono", children: [
+            (active.wired_to || []).length,
+            " peers"
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "rd__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("button", { onClick: () => onInspect(active), children: "Inspect" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
+            "button",
+            {
+              disabled: !active.affordances?.can_respawn,
+              onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"),
+              children: "Respawn"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: "Reset" }),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)(
+            "button",
+            {
+              className: "danger",
+              disabled: !active.affordances?.can_retire,
+              onClick: () => onLifecycle(activeIdentity, "mobkit/retire"),
+              children: "Retire"
+            }
+          )
+        ] })
+      ] }) })
+    ] })
+  ] });
+}
+
+// src/panels/RoutingPanel.tsx
+var import_react11 = __toESM(require("react"));
+var import_jsx_runtime21 = require("react/jsx-runtime");
+function RoutingPanel({ data }) {
+  const routes = data.routes || [];
+  const deliveries = data.deliveries || [];
+  const [q, setQ] = import_react11.default.useState("");
+  const [sel, setSel] = import_react11.default.useState(routes[0]?.route_key || "");
+  const rows = import_react11.default.useMemo(() => {
+    if (!q) return routes;
+    const needle = q.toLowerCase();
+    return routes.filter(
+      (r) => r.route_key.toLowerCase().includes(needle) || r.recipient.toLowerCase().includes(needle) || r.sink.toLowerCase().includes(needle) || r.target_module.toLowerCase().includes(needle)
+    );
+  }, [routes, q]);
+  const active = rows.find((r) => r.route_key === sel) || rows[0];
+  const recentDeliveries = deliveries.slice(0, 40);
+  const trafficForRoute = (routeKey) => deliveries.filter((d) => d.route_id === routeKey).length;
+  return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "view routing", "data-testid": "routing-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("h2", { children: "Routing" }),
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "view__sub", children: [
+        rows.length,
+        " routes \xB7 ",
+        deliveries.length,
+        " deliveries (recent)"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)(
+        "input",
+        {
+          className: "view__search",
+          placeholder: "Filter route, recipient, sink\u2026",
+          value: q,
+          onChange: (e) => setQ(e.target.value)
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "routing__body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "routing__table", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "routing__row routing__row--head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "Route" }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "Channel" }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "Recipient" }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "Sink" }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "Module" }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "24h" })
+        ] }),
+        rows.map((r) => {
+          const isSel = active && r.route_key === active.route_key;
+          return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
+            "div",
+            {
+              className: `routing__row ${isSel ? "is-selected" : ""}`,
+              onClick: () => setSel(r.route_key),
+              "data-testid": `routing-route:${r.route_key}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "routing__intent mono", children: r.route_key }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono dim", children: r.channel || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono", children: r.recipient }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "dim", children: r.sink }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono dim", children: r.target_module }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono", children: trafficForRoute(r.route_key) })
+              ]
+            },
+            r.route_key
+          );
+        }),
+        rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No routes configured." })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("aside", { className: "routing__flow", children: active && /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(import_jsx_runtime21.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__title", children: "Flow" }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rf__diagram", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rf__node rf__node--intent", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__lbl", children: "Route" }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__val mono", children: active.route_key })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("svg", { className: "rf__arrow", viewBox: "0 0 40 12", children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("path", { d: "M0 6 H 34 M 28 2 L 34 6 L 28 10", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rf__node rf__node--handler", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rf__lbl", children: [
+              "via ",
+              active.sink
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__val mono", children: active.recipient })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("svg", { className: "rf__arrow rf__arrow--drop", viewBox: "0 0 12 40", children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("path", { d: "M6 0 V 34 M 2 28 L 6 34 L 10 28", stroke: "currentColor", fill: "none", strokeWidth: "1" }) }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rf__node rf__node--gate", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__lbl", children: "Module" }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__val mono", children: active.target_module })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "rf__stats", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: "Retry max" }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dd", { children: active.retry_max ?? "\u2014" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: "Backoff" }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dd", { children: active.backoff_ms ? `${active.backoff_ms} ms` : "\u2014" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dt", { children: "Rate limit" }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("dd", { children: active.rate_limit_per_minute ? `${active.rate_limit_per_minute}/m` : "\u2014" })
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "rf__title", style: { marginTop: 12 }, children: "Recent deliveries" }),
+        /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { style: { display: "flex", flexDirection: "column", gap: 4, fontFamily: "var(--mono)", fontSize: 11, color: "var(--ink-muted)" }, children: [
+          recentDeliveries.filter((d) => d.route_id === active.route_key).slice(0, 8).map((d) => /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { style: { color: d.status === "delivered" ? "var(--ok)" : d.status === "failed" ? "var(--crit)" : "var(--warn)" }, children: d.status }),
+            " ",
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { className: "dim", children: [
+              "\xB7 ",
+              d.delivery_id.slice(0, 8)
+            ] }),
+            " ",
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("span", { children: [
+              "\u2192 ",
+              d.recipient
+            ] })
+          ] }, d.delivery_id)),
+          recentDeliveries.filter((d) => d.route_id === active.route_key).length === 0 && /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "dim", children: "No recent deliveries." })
+        ] })
+      ] }) })
+    ] })
+  ] });
+}
+
+// src/panels/GatesPanel.tsx
+var import_react12 = __toESM(require("react"));
+var import_jsx_runtime22 = require("react/jsx-runtime");
+function derivePolicies(audit) {
+  const byAction = /* @__PURE__ */ new Map();
+  for (const entry of audit) {
+    const r = entry;
+    const action = String(r.action_id || r.event_type || "unknown");
+    const decision = String(r.decision || "").toLowerCase();
+    const approver = String(r.approver_id || r.actor || "");
+    const cur = byAction.get(action) || { approved: 0, rejected: 0, escalated: 0, approvers: /* @__PURE__ */ new Set() };
+    if (decision === "approve" || decision === "auto_approve") cur.approved++;
+    else if (decision === "reject") cur.rejected++;
+    else if (decision === "escalate") cur.escalated++;
+    if (approver) cur.approvers.add(approver);
+    byAction.set(action, cur);
+  }
+  return Array.from(byAction.entries()).map(([action, s], i) => ({
+    id: `pol-${i + 1}`,
+    action,
+    scope: "*",
+    state: s.approved + s.rejected > 0 ? "active" : "paused",
+    thresh: s.rejected > s.approved ? "High rejection rate" : "Auto on low risk",
+    approvers: Array.from(s.approvers),
+    sla: "\u2014 \xB7 p95 n/a",
+    approved: s.approved,
+    rejected: s.rejected,
+    escalated: s.escalated
+  }));
+}
+function GatesPanel({ audit }) {
+  const policies = import_react12.default.useMemo(() => derivePolicies(audit), [audit]);
+  const [sel, setSel] = import_react12.default.useState(policies[0]?.id || "");
+  const active = policies.find((p) => p.id === sel) || policies[0];
+  return /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "view gates", "data-testid": "gates-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("h2", { children: "Gates" }),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { className: "view__sub", children: [
+        policies.length,
+        " policies \xB7 ",
+        audit.length,
+        " decisions (recent)"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "view__spacer" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gates__body", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gates__list", children: [
+        policies.map((g) => /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(
+          "div",
+          {
+            className: `gate ${g.id === sel ? "is-selected" : ""}`,
+            "data-state": g.state,
+            onClick: () => setSel(g.id),
+            "data-testid": `gate-policy:${g.id}`,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gate__head", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "gate__action mono", children: g.action }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: `gate__state gate__state--${g.state}`, children: g.state })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gate__scope", children: [
+                "scope: ",
+                g.scope
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gate__thresh", children: g.thresh }),
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gate__stats", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("b", { children: g.approved }),
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "dim", children: " approved" })
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("b", { children: g.rejected }),
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "dim", children: " rejected" })
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("b", { children: g.escalated }),
+                  /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "dim", children: " escalated" })
+                ] })
+              ] })
+            ]
+          },
+          g.id
+        )),
+        policies.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No gate policies inferred from recent audit." })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("aside", { className: "gates__detail", children: active && /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)(import_jsx_runtime22.Fragment, { children: [
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__title", children: active.action }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__scope dim", children: [
+          "scope: ",
+          active.scope
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__label", children: "Policy" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__body", children: active.thresh })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__label", children: "Approvers" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__approvers", children: [
+            active.approvers.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "chip", children: "none recorded" }),
+            active.approvers.map((a) => /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "chip", children: a }, a))
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__label", children: "SLA" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__body mono", children: active.sla })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__chart", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("div", { className: "gd__chart-label", children: "Decisions (recent audit)" }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__bar", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "gd__bar-ok", style: { flex: active.approved || 1e-3 } }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "gd__bar-no", style: { flex: active.rejected || 1e-3 } }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("span", { className: "gd__bar-up", style: { flex: active.escalated || 1e-3 } })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("div", { className: "gd__legend", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("i", { className: "dot ok" }),
+              " ",
+              active.approved,
+              " approved"
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("i", { className: "dot no" }),
+              " ",
+              active.rejected,
+              " rejected"
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime22.jsxs)("span", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime22.jsx)("i", { className: "dot up" }),
+              " ",
+              active.escalated,
+              " escalated"
+            ] })
+          ] })
+        ] })
+      ] }) })
+    ] })
+  ] });
+}
+
+// src/panels/LogsPanel.tsx
+var import_react13 = __toESM(require("react"));
+var import_jsx_runtime23 = require("react/jsx-runtime");
+function levelFor(frame) {
+  const ev = frame.event;
+  if (ev.includes("failed") || ev.includes("error") || ev.includes("crash")) return "error";
+  if (ev.includes("warn") || ev.includes("degraded") || ev.includes("gating_decision")) return "warn";
+  return "info";
+}
+function formatTime2(tsMs) {
+  if (!tsMs) return "\u2014";
+  const d = new Date(tsMs);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+function summary(frame) {
+  const d = frame.data || {};
+  const bits = [];
+  for (const [k, v] of Object.entries(d).slice(0, 4)) {
+    if (v === null || v === void 0) continue;
+    let str;
+    if (typeof v === "object") {
+      try {
+        str = JSON.stringify(v).slice(0, 40);
+      } catch {
+        str = "[obj]";
+      }
+    } else str = String(v).slice(0, 60);
+    bits.push(`${k}=${str}`);
+  }
+  return bits.join(" ");
+}
+function LogsPanel({ frames }) {
+  const [q, setQ] = import_react13.default.useState("");
+  const [lvl, setLvl] = import_react13.default.useState("all");
+  const rows = import_react13.default.useMemo(() => {
+    return frames.map((f) => ({ f, level: levelFor(f) })).filter(({ f, level }) => {
+      if (lvl !== "all" && level !== lvl) return false;
+      if (!q) return true;
+      const needle = q.toLowerCase();
+      return f.event.toLowerCase().includes(needle) || (f.identity || "").toLowerCase().includes(needle);
+    });
+  }, [frames, q, lvl]);
+  const counts = import_react13.default.useMemo(() => {
+    const c = { info: 0, warn: 0, error: 0 };
+    frames.forEach((f) => {
+      c[levelFor(f)]++;
+    });
+    return c;
+  }, [frames]);
+  return /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "view logs", "data-testid": "logs-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "view__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("h2", { children: "Logs" }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("span", { className: "view__sub", children: [
+        rows.length,
+        " of ",
+        frames.length,
+        " events \xB7 live"
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "view__spacer" }),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
+        "input",
+        {
+          className: "view__search",
+          placeholder: "Filter event, identity\u2026",
+          value: q,
+          onChange: (e) => setQ(e.target.value)
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "view__segs", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { className: lvl === "all" ? "is-active" : "", onClick: () => setLvl("all"), children: [
+          "all ",
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "n", children: frames.length })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { className: lvl === "info" ? "is-active" : "", onClick: () => setLvl("info"), children: [
+          "info ",
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "n", children: counts.info })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { className: `warn ${lvl === "warn" ? "is-active" : ""}`, onClick: () => setLvl("warn"), children: [
+          "warn ",
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "n", children: counts.warn })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("button", { className: `bad ${lvl === "error" ? "is-active" : ""}`, onClick: () => setLvl("error"), children: [
+          "err ",
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "n", children: counts.error })
+        ] })
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { className: "logs__body", children: /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("pre", { className: "logs__stream", children: [
+      rows.map(({ f, level }, i) => /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: `logline logline--${level}`, "data-testid": `log-line:${f.id || i}`, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "logline__t", children: formatTime2(f.timestampMs) }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: `logline__lvl logline__lvl--${level}`, children: level.toUpperCase() }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "logline__src", children: f.identity || "_system" }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "logline__evt", children: f.event }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "logline__ctx dim", children: f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : "" }),
+        /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "logline__msg", children: summary(f) })
+      ] }, f.id || i)),
+      rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No matching events." })
+    ] }) })
+  ] });
+}
+
+// src/panels/Topbar.tsx
+var import_jsx_runtime24 = require("react/jsx-runtime");
+function Topbar({ mobName, mobStatus = "idle", environment = "dev", theme, onToggleTheme }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "mobkit-topbar", "data-testid": "mobkit-topbar", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "mobkit-topbar__brand", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: "MobKit" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "mobkit-topbar__mob", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { className: "mobkit-topbar__mob-status", title: mobStatus }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: mobName }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("span", { className: "dim", children: [
+        "\xB7 ",
+        mobStatus
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsxs)("div", { className: "mobkit-topbar__mob", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: "env:" }),
+      /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("span", { children: environment })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "mobkit-topbar__spacer" }),
+    /* @__PURE__ */ (0, import_jsx_runtime24.jsx)("div", { className: "mobkit-topbar__util", children: /* @__PURE__ */ (0, import_jsx_runtime24.jsx)(
+      "button",
+      {
+        type: "button",
+        onClick: onToggleTheme,
+        "data-testid": "theme-toggle",
+        title: `Switch to ${theme === "dark" ? "light" : "dark"} mode`,
+        children: theme === "dark" ? "\u2600 light" : "\u263E dark"
+      }
+    ) })
+  ] });
+}
+
+// src/panels/Tweaks.tsx
+var import_react14 = __toESM(require("react"));
+var import_jsx_runtime25 = require("react/jsx-runtime");
+var VARIANT_STORAGE = "mobkit-console-variant";
+function useConsoleVariant() {
+  const [v, setV] = import_react14.default.useState(() => {
+    try {
+      const stored = localStorage.getItem(VARIANT_STORAGE);
+      if (stored === "rams" || stored === "terminal" || stored === "graphite") return stored;
+    } catch {
+    }
+    return "rams";
+  });
+  const set = import_react14.default.useCallback((next) => {
+    setV(next);
+    try {
+      localStorage.setItem(VARIANT_STORAGE, next);
+    } catch {
+    }
+  }, []);
+  return [v, set];
+}
+function Tweaks({ variant, theme, onVariant, onTheme }) {
+  const [collapsed, setCollapsed] = import_react14.default.useState(() => {
+    try {
+      return localStorage.getItem("mobkit-console-tweaks-collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = () => {
+    setCollapsed((c) => {
+      const next = !c;
+      try {
+        localStorage.setItem("mobkit-console-tweaks-collapsed", next ? "1" : "0");
+      } catch {
+      }
+      return next;
+    });
+  };
+  return /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: `tweaks ${collapsed ? "tweaks--collapsed" : ""}`, "data-testid": "tweaks-panel", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: "tweaks__title", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { children: "Appearance" }),
+      /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("button", { className: "tweaks__toggle", onClick: toggle, "data-testid": "tweaks-toggle", children: collapsed ? "expand \u2191" : "collapse \u2193" })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: "tweaks__row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("label", { children: "Variant" }),
+      /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("div", { className: "tweaks__segs", children: ["rams", "terminal", "graphite"].map((v) => /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
+        "button",
+        {
+          className: variant === v ? "is-active" : "",
+          onClick: () => onVariant(v),
+          "data-testid": `tweak-variant:${v}`,
+          children: v
+        },
+        v
+      )) })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: "tweaks__row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("label", { children: "Theme" }),
+      /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("div", { className: "tweaks__segs", children: ["light", "dark"].map((t) => /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
+        "button",
+        {
+          className: theme === t ? "is-active" : "",
+          onClick: () => onTheme(t),
+          "data-testid": `tweak-theme:${t}`,
+          children: t
+        },
+        t
+      )) })
+    ] })
+  ] });
+}
+
+// src/panels/Sidebar.tsx
+var import_react15 = __toESM(require("react"));
+var import_jsx_runtime26 = require("react/jsx-runtime");
+function bucketOf(a) {
+  const g = (a.group || "").toLowerCase();
+  const p = (a.profile || a.kind || "").toLowerCase();
+  if (g.includes("coordinator") || p.includes("coord") || p.includes("triage") || p.includes("router") || p.includes("commander")) return "Coordinators";
+  if (g.includes("personal") || p.includes("personal") || p.includes("identity") || p.includes("lead")) return "Personal";
+  if (g.includes("internal") || p.includes("gate") || p.includes("monitor") || p.includes("scribe")) return "Internal";
+  if (g.includes("domain") || g.includes("responder") || g.includes("communication") || g.includes("specialist")) return "Domains";
+  return "Domains";
+}
+var SECTION_ORDER = ["Personal", "Coordinators", "Domains", "Internal", "Other"];
+function deriveStateAttr(agent) {
+  const state = (agent.state || "").toLowerCase();
+  if (state === "retired" || state === "stopped") return "retired";
+  const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || agent.lease_healthy === false;
+  if (degraded) return "degraded";
+  return "active";
+}
+function pulseSamples(activity, identity) {
+  const bucket = new Array(10).fill(0);
+  const now = Date.now();
+  const window2 = 15 * 60 * 1e3;
+  for (const f of activity) {
+    if (!f.timestampMs || (f.identity || "") !== identity) continue;
+    const age = now - f.timestampMs;
+    if (age < 0 || age > window2) continue;
+    const idx = 9 - Math.floor(age / window2 * 10);
+    if (idx >= 0 && idx < 10) bucket[idx]++;
+  }
+  return bucket;
+}
+function inboxCount(agent) {
+  const n = Number(agent.labels?.console_inbox_count ?? 0);
+  return Number.isFinite(n) ? n : 0;
+}
+function Sidebar({ agents, selectedMemberId, recentActivity, onSelect, onInspect, onOpenControl }) {
+  const [q, setQ] = import_react15.default.useState("");
+  const filtered = import_react15.default.useMemo(() => {
+    if (!q) return agents;
+    const needle = q.toLowerCase();
+    return agents.filter(
+      (a) => a.label.toLowerCase().includes(needle) || (a.identity || "").toLowerCase().includes(needle) || (a.member_id || "").toLowerCase().includes(needle) || (a.profile || "").toLowerCase().includes(needle)
+    );
+  }, [agents, q]);
+  const grouped = import_react15.default.useMemo(() => {
+    const g = /* @__PURE__ */ new Map();
+    for (const a of filtered) {
+      const key = bucketOf(a);
+      if (!g.has(key)) g.set(key, []);
+      g.get(key).push(a);
+    }
+    return g;
+  }, [filtered]);
+  return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__search", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+      "input",
+      {
+        placeholder: "Search agents, profiles, ids\u2026",
+        value: q,
+        onChange: (e) => setQ(e.target.value),
+        "data-testid": "sidebar-search"
+      }
+    ) }),
+    /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__sec-head", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: "Views" }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("topology"), "data-testid": "nav:topology", children: "Topology" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("timeline"), "data-testid": "nav:timeline", children: "Today" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("gating"), "data-testid": "nav:gating", children: "Gating" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("roster"), "data-testid": "nav:roster", children: "Roster" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("routing"), "data-testid": "nav:routing", children: "Routing" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("gates"), "data-testid": "nav:gates", children: "Gates" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("button", { className: "sidebar__navitem", onClick: () => onOpenControl("logs"), "data-testid": "nav:logs", children: "Logs" })
+    ] }),
+    SECTION_ORDER.map((bucket) => {
+      const list = grouped.get(bucket);
+      if (!list || list.length === 0) return null;
+      return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__sec-head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: bucket }),
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: list.length })
+        ] }),
+        list.map((agent) => {
+          const stateAttr = deriveStateAttr(agent);
+          const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
+          const inbox = inboxCount(agent);
+          return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+            "div",
+            {
+              className: `agent ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
+              "data-state": stateAttr,
+              "data-testid": `sidebar-agent:${agent.member_id}`,
+              onClick: () => onSelect(agent),
+              onContextMenu: (e) => {
+                e.preventDefault();
+                onInspect(agent);
+              },
+              role: "button",
+              tabIndex: 0,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__dot" }),
+                /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__body", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__name", children: agent.label }),
+                  /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id })
+                ] }),
+                /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__meta", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
+                  inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__inbox", children: inbox })
+                ] })
+              ]
+            },
+            agent.member_id
+          );
+        })
+      ] }, bucket);
+    })
+  ] });
+}
+
+// src/panels/SignalsRail.tsx
+var import_react16 = __toESM(require("react"));
+var import_jsx_runtime27 = require("react/jsx-runtime");
+function severityOf(frame) {
+  const ev = frame.event;
+  if (ev.includes("fail") || ev.includes("error") || ev.includes("crash")) return "critical";
+  if (ev === "gating_decision" || ev.includes("warn") || ev.includes("degraded") || ev.includes("retired")) return "warning";
+  return "info";
+}
+function labelFor(frame) {
+  const ev = frame.event;
+  const d = frame.data || {};
+  switch (ev) {
+    case "interaction_complete":
+      return "Interaction complete";
+    case "interaction_failed":
+      return "Interaction failed";
+    case "interaction_started":
+      return "Interaction started";
+    case "gating_decision":
+      return `Gate ${String(d.decision || "")}`;
+    case "member_ready":
+      return "Member ready";
+    case "member_retired":
+      return "Member retired";
+    case "state_changed":
+      return `State \u2192 ${String(d.state || d.new_state || "")}`;
+    case "route_changed":
+      return "Route changed";
+    case "run_failed":
+      return "Run failed";
+    default:
+      return ev.replace(/_/g, " ");
+  }
+}
+function detailFor(frame) {
+  const d = frame.data || {};
+  const bits = [];
+  if (d.action_id) bits.push(`action=${String(d.action_id)}`);
+  if (d.reason) bits.push(String(d.reason));
+  if (d.error) bits.push(String(d.error));
+  if (frame.interactionId) bits.push(`int=${frame.interactionId.slice(0, 8)}`);
+  return bits.join(" \xB7 ") || "\u2014";
+}
+function timeFor(tsMs) {
+  if (!tsMs) return "\u2014";
+  const diff = Date.now() - tsMs;
+  if (diff < 6e4) return `${Math.max(1, Math.floor(diff / 1e3))}s`;
+  if (diff < 36e5) return `${Math.floor(diff / 6e4)}m`;
+  return `${Math.floor(diff / 36e5)}h`;
+}
+function SignalsRail({ frames, onSelect }) {
+  const [filter, setFilter] = import_react16.default.useState("all");
+  const signals = import_react16.default.useMemo(() => {
+    return frames.slice(0, 200).map((f, i) => ({
+      id: f.id || `${f.event}-${i}`,
+      severity: severityOf(f),
+      label: labelFor(f),
+      detail: detailFor(f),
+      agent: f.identity || "_system",
+      at: timeFor(f.timestampMs),
+      raw: f
+    }));
+  }, [frames]);
+  const counts = import_react16.default.useMemo(() => ({
+    all: signals.length,
+    critical: signals.filter((s) => s.severity === "critical").length,
+    warning: signals.filter((s) => s.severity === "warning").length
+  }), [signals]);
+  const shown = signals.filter(
+    (s) => filter === "all" ? true : filter === "critical" ? s.severity === "critical" : s.severity !== "info"
+  );
+  const recent15m = signals.filter((s) => Date.now() - (s.raw.timestampMs || 0) < 15 * 60 * 1e3).length;
+  return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("aside", { className: "rail", "data-testid": "signals-rail", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "rail__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "rail__title", children: "Signals" }),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "rail__sub", children: [
+        recent15m,
+        " in 15m"
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "rail__filters", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+        "button",
+        {
+          className: `rail__filter ${filter === "all" ? "is-active" : ""}`,
+          onClick: () => setFilter("all"),
+          "data-testid": "signals-filter:all",
+          children: [
+            "All ",
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "rail__filter-count", children: counts.all })
+          ]
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+        "button",
+        {
+          className: `rail__filter ${filter === "warning" ? "is-active" : ""}`,
+          onClick: () => setFilter("warning"),
+          "data-testid": "signals-filter:warning",
+          children: [
+            "Attn ",
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "rail__filter-count", children: counts.warning + counts.critical })
+          ]
+        }
+      ),
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+        "button",
+        {
+          className: `rail__filter ${filter === "critical" ? "is-active" : ""}`,
+          onClick: () => setFilter("critical"),
+          "data-testid": "signals-filter:critical",
+          children: [
+            "Crit ",
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "rail__filter-count", children: counts.critical })
+          ]
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "rail__list", children: [
+      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { style: { padding: "20px 14px", color: "var(--ink-dim)", fontSize: 12, fontFamily: "var(--mono)" }, children: "No signals." }),
+      shown.map((s) => /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+        "div",
+        {
+          className: "signal",
+          "data-sev": s.severity,
+          "data-testid": `signal:${s.id}`,
+          onClick: () => onSelect?.(s.raw),
+          role: onSelect ? "button" : void 0,
+          tabIndex: onSelect ? 0 : void 0,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "signal__bar" }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "signal__body", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "signal__label", children: s.label }),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "signal__detail", children: s.detail }),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "signal__agent", children: s.agent })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "signal__meta", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "signal__time", children: s.at }) })
+          ]
+        },
+        s.id
+      ))
+    ] })
+  ] });
+}
+
+// src/panels/ChatPane.tsx
+var import_react17 = __toESM(require("react"));
+var import_jsx_runtime28 = require("react/jsx-runtime");
+function formatTime3(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+function summariseRichBlock(block) {
+  switch (block.type) {
+    case "paragraph":
+      return block.text;
+    case "heading":
+      return block.text;
+    case "code":
+      return block.code;
+    case "command":
+      return block.command;
+    case "divider":
+      return block.text;
+    case "file-change":
+      return `${block.verb} ${block.name} (+${block.plus}/-${block.minus})`;
+    case "table":
+      return block.rows.map((r) => r.join(" \xB7 ")).join("\n");
+    case "tool-call": {
+      const parts = [block.name];
+      if (block.peerTarget) parts.push(`\u2192 ${block.peerTarget}`);
+      if (block.peerIntent) parts.push(`(${block.peerIntent})`);
+      if (block.peerBody) parts.push(block.peerBody.slice(0, 160));
+      else if (block.arguments) parts.push(block.arguments.slice(0, 160));
+      return parts.join(" ");
+    }
+    case "thinking":
+      return block.text;
+    default:
+      return "";
+  }
+}
+function flattenEntry(entry) {
+  if (entry.kind === "summary") {
+    return [{
+      id: entry.id,
+      kind: "origin",
+      time: formatTime3(entry.createdAt),
+      text: `${entry.title} (+${entry.plus}/-${entry.minus})`
+    }];
+  }
+  if (entry.variant === "meta") {
+    return [{
+      id: entry.id,
+      kind: "origin",
+      time: formatTime3(entry.createdAt),
+      text: entry.text || ""
+    }];
+  }
+  const role = entry.identity.role;
+  const isUser = role === "user";
+  const label = entry.identity.label;
+  if (entry.variant === "rich" && Array.isArray(entry.blocks) && entry.blocks.length > 0) {
+    const msgs = [];
+    for (let i = 0; i < entry.blocks.length; i++) {
+      const block = entry.blocks[i];
+      const text = summariseRichBlock(block);
+      if (!text) continue;
+      if (block.type === "tool-call") {
+        msgs.push({
+          id: `${entry.id}:${i}`,
+          kind: "tool",
+          time: formatTime3(entry.createdAt),
+          text
+        });
+      } else if (block.type === "thinking") {
+        msgs.push({
+          id: `${entry.id}:${i}`,
+          kind: "thought",
+          time: formatTime3(entry.createdAt),
+          text
+        });
+      } else {
+        msgs.push({
+          id: `${entry.id}:${i}`,
+          kind: isUser ? "user" : "agent",
+          time: formatTime3(entry.createdAt),
+          who: isUser ? void 0 : label,
+          text
+        });
+      }
+    }
+    return msgs.length ? msgs : [{
+      id: entry.id,
+      kind: isUser ? "user" : "agent",
+      time: formatTime3(entry.createdAt),
+      who: isUser ? void 0 : label,
+      text: ""
+    }];
+  }
+  return [{
+    id: entry.id,
+    kind: isUser ? "user" : "agent",
+    time: formatTime3(entry.createdAt),
+    who: isUser ? void 0 : label,
+    text: entry.text || ""
+  }];
+}
+function ChatPane({
+  agent,
+  agentLabel,
+  identity,
+  entries,
+  phase,
+  draft,
+  sending,
+  onDraftChange,
+  onSend,
+  onInspect,
+  onRespawn,
+  onRetire
+}) {
+  const bodyRef = import_react17.default.useRef(null);
+  import_react17.default.useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [entries.length, phase]);
+  const messages = import_react17.default.useMemo(() => entries.flatMap(flattenEntry), [entries]);
+  const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
+  const state = (agent?.state || "unknown").toLowerCase();
+  return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv__head", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "conv__avatar", children: initial }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { style: { minWidth: 0 }, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "conv__title", children: agentLabel }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv__identity", children: [
+          identity,
+          agent?.profile ? ` \xB7 ${agent.profile}` : ""
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv__actions", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:inspect", children: "Inspect" }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", disabled: !agent?.affordances?.can_respawn, children: "Respawn" }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", disabled: !agent?.affordances?.can_retire, children: "Retire" })
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv__body", ref: bodyRef, children: [
+      messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg msg--origin", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "msg__time" }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "msg__text", children: [
+          "No messages yet. Say hello to ",
+          agentLabel,
+          "."
+        ] }) })
+      ] }),
+      messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "msg__time", children: m.time }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg__bubble", children: [
+          m.kind === "user" && m.who && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("b", { children: m.who }) }),
+          m.kind === "agent" && m.who && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("b", { children: m.who }) }),
+          m.text && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__text", children: m.text })
+        ] })
+      ] }, m.id)),
+      phase && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg msg--origin", "data-testid": `chat-phase:${phase}`, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "msg__time" }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "msg__text", children: [
+          agentLabel,
+          " is ",
+          phase.replace("-", " "),
+          "\u2026"
+        ] }) })
+      ] })
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "composer", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "composer__shell", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+          "textarea",
+          {
+            placeholder: `Message ${agentLabel}\u2026    @ to mention, / for commands`,
+            value: draft,
+            onChange: (e) => onDraftChange(e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                onSend();
+              }
+            },
+            disabled: sending,
+            rows: 2,
+            "data-testid": `chat-composer:${identity}`
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "composer__row", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "composer__chip", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "k", children: "/" }),
+            " commands"
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { className: "composer__chip", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "k", children: "@" }),
+            " mention"
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "composer__chip mono", children: agent?.profile || "agent" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "composer__spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+            "button",
+            {
+              className: "composer__send",
+              disabled: !draft.trim() || sending,
+              onClick: onSend,
+              "data-testid": `chat-send:${identity}`,
+              children: "Send  \u23CE"
+            }
+          )
+        ] })
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "composer__footer", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("span", { children: [
+          "To: ",
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("b", { style: { color: "var(--ink-muted)" }, children: agentLabel })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "mono", children: identity }),
+        agent?.profile && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: agent.profile })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "dot", style: {
+          background: state === "active" || state === "running" ? "var(--ok)" : state.includes("degrade") ? "var(--warn)" : state === "retired" ? "var(--ink-faint)" : "var(--ink-dim)"
+        } }),
+        /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: state }),
+        phase && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(import_jsx_runtime28.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
+        ] })
+      ] })
+    ] })
+  ] });
+}
+
+// src/panels/MobKitDock.tsx
+var import_react18 = __toESM(require("react"));
+var import_jsx_runtime29 = require("react/jsx-runtime");
+function tabPanelCount(node) {
+  if (!node) return 0;
+  if (node.kind === "panel") return 1;
+  return tabPanelCount(node.first) + tabPanelCount(node.second);
+}
+function MobKitDock({
+  viewState,
+  agents,
+  renderPanelBody,
+  onSelectTab,
+  onCloseTab,
+  onCreateTab,
+  onFocusPanel,
+  onSplitPanel,
+  onClosePanel,
+  onResizeSplit,
+  onOpenTargetInPanel
+}) {
+  const activeTab = viewState.tabs.find((t) => t.id === viewState.activeTabId) || viewState.tabs[0];
+  import_react18.default.useEffect(() => {
+    function onKey(e) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      const focusedId = viewState.focusedPanelId;
+      if (e.key === "d" && !e.shiftKey) {
+        if (!focusedId) return;
+        e.preventDefault();
+        onSplitPanel(focusedId, "right");
+      } else if (e.key === "D" && e.shiftKey) {
+        if (!focusedId) return;
+        e.preventDefault();
+        onSplitPanel(focusedId, "down");
+      } else if (e.key === "w" && !e.shiftKey) {
+        if (!focusedId) return;
+        e.preventDefault();
+        onClosePanel(focusedId);
+      } else if (e.key === "t" && !e.shiftKey) {
+        e.preventDefault();
+        onCreateTab();
+      } else if (e.key === "]" && e.shiftKey) {
+        e.preventDefault();
+        const idx = viewState.tabs.findIndex((t) => t.id === viewState.activeTabId);
+        const next = viewState.tabs[(idx + 1) % viewState.tabs.length];
+        if (next) onSelectTab(next.id);
+      } else if (e.key === "[" && e.shiftKey) {
+        e.preventDefault();
+        const idx = viewState.tabs.findIndex((t) => t.id === viewState.activeTabId);
+        const prev = viewState.tabs[(idx - 1 + viewState.tabs.length) % viewState.tabs.length];
+        if (prev) onSelectTab(prev.id);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [viewState, onSplitPanel, onClosePanel, onCreateTab, onSelectTab]);
+  return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "mkdock", "data-testid": "mkdock", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "wstabs", children: [
+      viewState.tabs.map((t) => {
+        const isActive = t.id === activeTab?.id;
+        const count = tabPanelCount(t.layout);
+        return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+          "div",
+          {
+            className: `wstab ${isActive ? "is-active" : ""}`,
+            onClick: () => onSelectTab(t.id),
+            "data-testid": `wstab:${t.id}`,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "wstab__mark" }),
+              /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "wstab__name", children: t.title || "untitled" }),
+              count > 1 && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "wstab__count", children: count }),
+              viewState.tabs.length > 1 && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+                "button",
+                {
+                  className: "wstab__close",
+                  onClick: (e) => {
+                    e.stopPropagation();
+                    onCloseTab(t.id);
+                  },
+                  "data-testid": `wstab-close:${t.id}`,
+                  "aria-label": "Close workspace",
+                  children: "\xD7"
+                }
+              )
+            ]
+          },
+          t.id
+        );
+      }),
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+        "button",
+        {
+          className: "wstab__add",
+          onClick: onCreateTab,
+          "data-testid": "wstab-add",
+          title: "New workspace (\u2318T)",
+          "aria-label": "New workspace",
+          children: "+"
+        }
+      )
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "dock", children: activeTab && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+      DockLayout,
+      {
+        node: activeTab.layout,
+        viewState,
+        agents,
+        renderPanelBody,
+        onFocusPanel,
+        onSplitPanel,
+        onClosePanel,
+        onResizeSplit,
+        onOpenTargetInPanel
+      }
+    ) })
+  ] });
+}
+function DockLayout(props) {
+  const { node } = props;
+  if (node.kind === "panel") {
+    return /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(PaneView, { panelId: node.panelId, ...props });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(SplitView, { node, ...props });
+}
+function SplitView(props) {
+  const { node } = props;
+  if (node.kind !== "split") return null;
+  const ratio = typeof node.ratio === "number" ? Math.max(0.1, Math.min(0.9, node.ratio)) : 0.5;
+  const direction = node.direction;
+  const style = direction === "horizontal" ? { gridTemplateColumns: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` } : { gridTemplateRows: `${ratio * 100}% 6px ${(1 - ratio) * 100}%` };
+  const hostRef = import_react18.default.useRef(null);
+  function startDrag(e) {
+    e.preventDefault();
+    const host = hostRef.current;
+    if (!host) return;
+    const rect = host.getBoundingClientRect();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    function move(ev) {
+      const r = direction === "horizontal" ? (ev.clientX - rect.left) / rect.width : (ev.clientY - rect.top) / rect.height;
+      props.onResizeSplit(node.id, Math.max(0.1, Math.min(0.9, r)));
+    }
+    function end() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+    }
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+    "div",
+    {
+      ref: hostRef,
+      className: `split split--${direction === "horizontal" ? "h" : "v"}`,
+      style,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(DockLayout, { ...props, node: node.first }),
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+          "div",
+          {
+            className: `split__handle split__handle--${direction === "horizontal" ? "h" : "v"}`,
+            onPointerDown: startDrag,
+            "data-testid": `split-handle:${node.id}`
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(DockLayout, { ...props, node: node.second })
+      ]
+    }
+  );
+}
+function PaneView({
+  panelId,
+  viewState,
+  agents,
+  renderPanelBody,
+  onFocusPanel,
+  onSplitPanel,
+  onClosePanel,
+  onOpenTargetInPanel
+}) {
+  const panel = viewState.panels.find((p) => p.id === panelId);
+  if (!panel) return null;
+  const isFocused = viewState.focusedPanelId === panelId;
+  const title = panel.title || panel.target?.title || "untitled";
+  const target = panel.target;
+  const subId = target?.kind === "agent-chat" ? target.identity || target.memberId : target?.kind === "identity-inspect" ? target.identity : void 0;
+  const [menuOpen, setMenuOpen] = import_react18.default.useState(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+    "div",
+    {
+      className: `pane ${isFocused ? "is-focused" : ""}`,
+      onMouseDown: () => onFocusPanel(panelId),
+      "data-testid": `pane:${panelId}`,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "pane__bar", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+            "button",
+            {
+              className: "pane__title",
+              onClick: (e) => {
+                e.stopPropagation();
+                onFocusPanel(panelId);
+                setMenuOpen((v) => !v);
+              },
+              "data-testid": `pane-title:${panelId}`,
+              title: "Retarget pane",
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "pane__title-text", children: title }),
+                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "pane__caret", children: "\u25BE" })
+              ]
+            }
+          ),
+          subId && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "pane__id", children: subId }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "pane__spacer" }),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+            "button",
+            {
+              className: "pane__btn",
+              onClick: (e) => {
+                e.stopPropagation();
+                onSplitPanel(panelId, "right");
+              },
+              title: "Split right (\u2318D)",
+              "data-testid": `pane-split-right:${panelId}`,
+              children: "\u25E8"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+            "button",
+            {
+              className: "pane__btn",
+              onClick: (e) => {
+                e.stopPropagation();
+                onSplitPanel(panelId, "down");
+              },
+              title: "Split down (\u2318\u21E7D)",
+              "data-testid": `pane-split-down:${panelId}`,
+              children: "\u2B13"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+            "button",
+            {
+              className: "pane__btn pane__close",
+              onClick: (e) => {
+                e.stopPropagation();
+                onClosePanel(panelId);
+              },
+              title: "Close pane (\u2318W)",
+              "data-testid": `pane-close:${panelId}`,
+              children: "\xD7"
+            }
+          ),
+          menuOpen && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+            PaneMenu,
+            {
+              agents,
+              onClose: () => setMenuOpen(false),
+              onPick: (target2) => {
+                setMenuOpen(false);
+                onOpenTargetInPanel(panelId, target2);
+              }
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "pane__body", children: renderPanelBody({ id: panelId, target }) })
+      ]
+    }
+  );
+}
+function PaneMenu({ agents, onClose, onPick }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(import_jsx_runtime29.Fragment, { children: [
+    /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
+    /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "pane-menu__label", children: "Views" }),
+      [
+        ["topology", "Topology"],
+        ["timeline", "Today"],
+        ["gating", "Gating"],
+        ["roster", "Roster"],
+        ["routing", "Routing"],
+        ["gates", "Gates"],
+        ["logs", "Logs"],
+        ["health", "Health"]
+      ].map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+        "button",
+        {
+          className: "pane-menu__item",
+          onClick: () => onPick(buildControlTarget(kind)),
+          "data-testid": `pane-menu-view:${kind}`,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: label }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "pane-menu__id", children: "view" })
+          ]
+        },
+        kind
+      )),
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "pane-menu__sep" }),
+      /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("div", { className: "pane-menu__label", children: "Agents" }),
+      agents.slice(0, 14).map((a) => /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
+        "button",
+        {
+          className: "pane-menu__item",
+          "data-state": (a.state || "").toLowerCase(),
+          onClick: () => onPick(buildDockTarget(a)),
+          "data-testid": `pane-menu-agent:${a.member_id}`,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "agent__dot" }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { children: a.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "pane-menu__id", children: a.identity || a.member_id })
+          ]
+        },
+        a.member_id
+      ))
+    ] })
+  ] });
 }
 
 // src/ConsoleApp.tsx
-var import_jsx_runtime17 = require("react/jsx-runtime");
+var import_jsx_runtime30 = require("react/jsx-runtime");
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
   const record = block;
@@ -4950,41 +4809,42 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed"
 ]);
 function ConsoleApp({ baseUrl }) {
-  const [experience, setExperience] = import_react7.default.useState(null);
-  const [agents, setAgents] = import_react7.default.useState([]);
-  const [draftByKey, setDraftByKey] = import_react7.default.useState({});
-  const [sendingPanels, setSendingPanels] = import_react7.default.useState(/* @__PURE__ */ new Set());
-  const [pinnedAgentIds, setPinnedAgentIds] = import_react7.default.useState(/* @__PURE__ */ new Set());
-  const [inspectByIdentity, setInspectByIdentity] = import_react7.default.useState({});
-  const [routingData, setRoutingData] = import_react7.default.useState({ routes: [], deliveries: [] });
-  const [gatingData, setGatingData] = import_react7.default.useState({ pending: [], audit: [] });
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react7.default.useState("all");
-  const [loading, setLoading] = import_react7.default.useState(true);
-  const [error, setError] = import_react7.default.useState("");
-  const [theme, setTheme] = import_react7.default.useState(() => {
+  const [experience, setExperience] = import_react19.default.useState(null);
+  const [agents, setAgents] = import_react19.default.useState([]);
+  const [draftByKey, setDraftByKey] = import_react19.default.useState({});
+  const [sendingPanels, setSendingPanels] = import_react19.default.useState(/* @__PURE__ */ new Set());
+  const [pinnedAgentIds, setPinnedAgentIds] = import_react19.default.useState(/* @__PURE__ */ new Set());
+  const [inspectByIdentity, setInspectByIdentity] = import_react19.default.useState({});
+  const [routingData, setRoutingData] = import_react19.default.useState({ routes: [], deliveries: [] });
+  const [gatingData, setGatingData] = import_react19.default.useState({ pending: [], audit: [] });
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react19.default.useState("all");
+  const [loading, setLoading] = import_react19.default.useState(true);
+  const [error, setError] = import_react19.default.useState("");
+  const [theme, setTheme] = import_react19.default.useState(() => {
     try {
-      return localStorage.getItem("mobkit-console-theme") || "dark";
+      return localStorage.getItem("mobkit-console-theme") || "light";
     } catch {
-      return "dark";
+      return "light";
     }
   });
-  const [, setRenderTick] = import_react7.default.useState(0);
-  const forceRender = import_react7.default.useCallback(() => setRenderTick((n) => n + 1), []);
-  const serverHistoryRef = import_react7.default.useRef({});
-  const liveOverlayRef = import_react7.default.useRef({});
-  const optimisticUserRef = import_react7.default.useRef({});
-  const activityRef = import_react7.default.useRef([]);
-  const phaseRef = import_react7.default.useRef({});
-  const phaseValueByKey = import_react7.default.useRef({});
-  const phaseSinceByKey = import_react7.default.useRef({});
-  const phaseTimerByKey = import_react7.default.useRef({});
-  const refreshTimersRef = import_react7.default.useRef({});
-  const experienceTimerRef = import_react7.default.useRef(null);
-  const agentsRef = import_react7.default.useRef([]);
-  import_react7.default.useEffect(() => {
+  const [variant, setVariant] = useConsoleVariant();
+  const [, setRenderTick] = import_react19.default.useState(0);
+  const forceRender = import_react19.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const serverHistoryRef = import_react19.default.useRef({});
+  const liveOverlayRef = import_react19.default.useRef({});
+  const optimisticUserRef = import_react19.default.useRef({});
+  const activityRef = import_react19.default.useRef([]);
+  const phaseRef = import_react19.default.useRef({});
+  const phaseValueByKey = import_react19.default.useRef({});
+  const phaseSinceByKey = import_react19.default.useRef({});
+  const phaseTimerByKey = import_react19.default.useRef({});
+  const refreshTimersRef = import_react19.default.useRef({});
+  const experienceTimerRef = import_react19.default.useRef(null);
+  const agentsRef = import_react19.default.useRef([]);
+  import_react19.default.useEffect(() => {
     agentsRef.current = agents;
   }, [agents]);
-  const initialTargetOpened = import_react7.default.useRef(false);
+  const initialTargetOpened = import_react19.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
       id: `panel-${crypto.randomUUID()}`,
@@ -5046,9 +4906,9 @@ function ConsoleApp({ baseUrl }) {
         break;
       case "text_delta": {
         if (currentPhase === "tool-executing") {
-          const r2 = Math.max(0, 300 - elapsedMs);
-          if (r2 > 0) {
-            schedulePanelPhase(panelKey, "generating", r2);
+          const r = Math.max(0, 300 - elapsedMs);
+          if (r > 0) {
+            schedulePanelPhase(panelKey, "generating", r);
             break;
           }
         }
@@ -5085,7 +4945,7 @@ function ConsoleApp({ baseUrl }) {
       commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
     }
   }
-  const loadExperience = import_react7.default.useCallback(async () => {
+  const loadExperience = import_react19.default.useCallback(async () => {
     const [experienceJson, modulesJson] = await Promise.all([
       fetchJson(baseUrl, "/console/experience"),
       fetchJson(baseUrl, "/console/modules")
@@ -5095,7 +4955,7 @@ function ConsoleApp({ baseUrl }) {
     setAgents(normalizeAgents(experienceJson, loadedModules));
     setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
   }, [baseUrl]);
-  import_react7.default.useEffect(() => {
+  import_react19.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
     setError("");
@@ -5108,20 +4968,20 @@ function ConsoleApp({ baseUrl }) {
       mounted = false;
     };
   }, [loadExperience]);
-  import_react7.default.useEffect(() => {
+  import_react19.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
     const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
     if (!first) return;
     initialTargetOpened.current = true;
     dock.openTarget(buildDockTarget(first), "replace_focused");
   }, [agents, dock]);
-  const refreshPanelData = import_react7.default.useCallback(async () => {
+  const refreshPanelData = import_react19.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter((t) => t.kind === "identity-inspect");
     if (inspects.length) {
       const entries = await Promise.all(inspects.map(async (t) => {
-        const r2 = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
-        return [t.identity, r2];
+        const r = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
+        return [t.identity, r];
       }));
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
@@ -5140,11 +5000,11 @@ function ConsoleApp({ baseUrl }) {
       setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
     }
   }, [baseUrl, dock.viewState.panels]);
-  import_react7.default.useEffect(() => {
+  import_react19.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
   }, [dock.viewState.panels, refreshPanelData]);
-  const scheduleExperienceRefresh = import_react7.default.useCallback(() => {
+  const scheduleExperienceRefresh = import_react19.default.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
     experienceTimerRef.current = window.setTimeout(async () => {
       experienceTimerRef.current = null;
@@ -5154,7 +5014,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }, 500);
   }, [loadExperience, refreshPanelData]);
-  const scheduleHistoryRefresh = import_react7.default.useCallback((identity) => {
+  const scheduleHistoryRefresh = import_react19.default.useCallback((identity) => {
     clearTimeout(refreshTimersRef.current[identity]);
     refreshTimersRef.current[identity] = window.setTimeout(async () => {
       try {
@@ -5174,7 +5034,7 @@ function ConsoleApp({ baseUrl }) {
       }
     }, 200);
   }, [baseUrl, forceRender]);
-  import_react7.default.useEffect(() => {
+  import_react19.default.useEffect(() => {
     for (const panel of dock.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
@@ -5194,13 +5054,14 @@ function ConsoleApp({ baseUrl }) {
       })();
     }
   }, [baseUrl, dock.viewState.panels, forceRender]);
-  const scheduleHistoryRefreshRef = import_react7.default.useRef(scheduleHistoryRefresh);
+  const scheduleHistoryRefreshRef = import_react19.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
-  const scheduleExperienceRefreshRef = import_react7.default.useRef(scheduleExperienceRefresh);
+  const scheduleExperienceRefreshRef = import_react19.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
-  import_react7.default.useEffect(() => {
-    void queryEvents(baseUrl, {}, 80).then((frames) => {
-      activityRef.current = dedupeFrames(frames).slice(-80).reverse();
+  import_react19.default.useEffect(() => {
+    void queryEvents(baseUrl, {}, 200).then((frames) => {
+      const filtered = dedupeFrames(frames).filter((f) => !ACTIVITY_SKIP_EVENTS.has(f.event));
+      activityRef.current = filtered.slice(-200).reverse();
       forceRender();
     }).catch(() => {
     });
@@ -5228,7 +5089,7 @@ function ConsoleApp({ baseUrl }) {
       unsubscribe();
     };
   }, [baseUrl]);
-  import_react7.default.useEffect(() => {
+  import_react19.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current)) window.clearTimeout(timer);
       for (const timer of Object.values(refreshTimersRef.current)) window.clearTimeout(timer);
@@ -5343,8 +5204,8 @@ function ConsoleApp({ baseUrl }) {
     window.addEventListener("pointerup", cleanup);
     window.addEventListener("pointercancel", cleanup);
   }
-  if (loading) return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
-  if (error) return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { "data-testid": "console-error", children: error });
+  if (loading) return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { "data-testid": "console-loading", children: "Loading console..." });
+  if (error) return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { "data-testid": "console-error", children: error });
   const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : "";
   const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
   const activityVS = buildActivityRailViewState({
@@ -5411,297 +5272,206 @@ function ConsoleApp({ baseUrl }) {
       ...phase ? [{ id: "phase", kind: "sub-pill", label: phase, iconName: "i-bolt" }] : [],
       { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
     ];
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel console-panel--chat", "data-panel-id": panel.id, "data-panel-key": panelKey, "data-testid": `chat-panel:${identity}:${panel.id}`, children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-      ConversationPane,
+    return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+      ChatPane,
       {
-        viewState: conversation,
-        Icon,
-        onApplySuggestion: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
-        footer: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          ConsoleComposer,
-          {
-            Icon,
-            inputId: `composer-input:${panel.id}`,
-            shellId: `composer-shell:${panel.id}`,
-            submitButtonId: `composer-submit:${panel.id}`,
-            viewState: {
-              value: draft,
-              disabled: isSending,
-              placeholder: `Message ${target.title}...`,
-              submitDisabled: !draft.trim() || isSending,
-              submitLabel: `Send to ${target.title}`,
-              mainRowItems: quickPrompts,
-              footerLeftItems,
-              footerRightItems
-            },
-            getToolbarButtonProps: ({ zone, item }) => {
-              const props = { "data-testid": `composer-toolbar:${panel.id}:${zone}:${item.id}` };
-              if (zone === "main") {
-                const s = buildQuickPromptSuggestions(agent).find((c) => c.id === item.id);
-                if (s) props.onClick = () => setDraftByKey((c) => ({ ...c, [panelKey]: s.value }));
-              }
-              return props;
-            },
-            onChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
-            onSubmit: () => void onSendMessage(panel.id, target),
-            onKeyDown: (e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void onSendMessage(panel.id, target);
-              }
-            }
-          }
-        )
+        agent,
+        agentLabel: target.title || agent?.label || identity,
+        identity,
+        entries,
+        phase,
+        draft,
+        sending: isSending,
+        onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
+        onSend: () => void onSendMessage(panel.id, target),
+        onInspect: () => {
+          if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab");
+        },
+        onRespawn: () => void onLifecycleAction(identity, "mobkit/respawn"),
+        onRetire: () => void onLifecycleAction(identity, "mobkit/retire")
       }
-    ) });
+    );
   }
   function renderInspectPanel(target) {
     const inspect = inspectByIdentity[target.identity];
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": `inspect-panel:${target.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__header", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: target.identity }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: "Respawn" }),
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: "Reset" }),
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: "Retire" })
+    return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "console-panel", "data-testid": `inspect-panel:${target.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "console-panel__header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("h3", { children: target.identity }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "console-panel__actions", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: "Respawn" }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: "Reset" }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: "Retire" })
         ] })
       ] }),
-      !inspect ? /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("dl", { className: "console-panel__grid", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "State" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.state }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Profile" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.profile || "n/a" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Addressability" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.addressability }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Generation" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Checkpoint" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Session" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Runtime" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Lease Healthy" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Peers" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dt", { children: "Output Preview" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("dd", { children: inspect.output_preview || "n/a" })
+      !inspect ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("dl", { className: "console-panel__grid", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "State" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.state }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Profile" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.profile || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Addressability" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.addressability }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Generation" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.continuity?.generation ?? "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Checkpoint" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.continuity?.checkpoint_version ?? "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Session" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.continuity?.session_id || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Runtime" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.continuity?.agent_runtime_id || "n/a" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Lease Healthy" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false) }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Peers" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.topology_peers?.join(", ") || "none" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dt", { children: "Output Preview" }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("dd", { children: inspect.output_preview || "n/a" })
       ] })
     ] });
-  }
-  function renderRoutingPanel() {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": "routing-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Routes" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.routes.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-route:${r2.route_key}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: r2.route_key }),
-          " \u2192 ",
-          r2.recipient,
-          " via ",
-          r2.sink
-        ] }, r2.route_key)) })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Deliveries" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: routingData.deliveries.map((d) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `routing-delivery:${d.delivery_id}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: d.delivery_id }),
-          " \xB7 ",
-          d.status,
-          " \xB7 ",
-          d.recipient
-        ] }, d.delivery_id)) })
-      ] })
-    ] });
-  }
-  function renderGatingPanel() {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel", "data-testid": "gating-panel", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Pending" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: gatingData.pending.map((entry, index) => {
-          const r2 = entry;
-          const pid = String(r2.pending_id || `pending-${index}`);
-          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-pending:${pid}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(r2.action_id || pid) }),
-              " \xB7 ",
-              String(r2.risk_tier || "unknown")
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__actions", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pid}:escalate`, type: "button", onClick: () => void onGatingDecision(pid, "escalate"), children: "Escalate" }),
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pid}:approve`, type: "button", onClick: () => void onGatingDecision(pid, "approve"), children: "Approve" }),
-              /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("button", { "data-testid": `gating-action:${pid}:reject`, type: "button", onClick: () => void onGatingDecision(pid, "reject"), children: "Reject" })
-            ] })
-          ] }, pid);
-        }) })
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "console-panel__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("h3", { children: "Audit" }),
-        /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: gatingData.audit.map((entry, index) => {
-          const r2 = entry;
-          return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `gating-audit:${String(r2.audit_id || index)}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: String(r2.event_type || "event") }),
-            " \xB7 ",
-            String(r2.action_id || "unknown")
-          ] }, String(r2.audit_id || index));
-        }) })
-      ] })
-    ] });
-  }
-  function renderTopologyPanel(nodes) {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "topology-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: nodes.map((n) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `topology-node:${n.identity || n.label}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: n.label || n.identity }),
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
-        n.profile || "unknown",
-        " \xB7 ",
-        n.state || "unknown"
-      ] }),
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { children: [
-        "Peers: ",
-        n.wired_to?.join(", ") || "none"
-      ] })
-    ] }, n.identity || n.label)) }) });
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("strong", { children: r2.display_name || r2.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("ul", { className: "console-panel__list", children: identities.map((r) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("li", { "data-testid": `health-identity:${r.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("strong", { children: r.display_name || r.identity }),
       " \xB7 ",
-      r2.state,
+      r.state,
       " \xB7 ",
-      r2.addressability
-    ] }, r2.identity)) }) });
+      r.addressability
+    ] }, r.identity)) }) });
   }
-  return /* @__PURE__ */ (0, import_jsx_runtime17.jsxs)("div", { className: "cc-theme-scope", "data-cc-theme": theme, "data-testid": "meerkat-console", children: [
-    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(SpriteSheet, {}),
-    /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-      ConsoleWorkbench,
+  function handleInspectAgent(agent) {
+    dock.openTarget(buildInspectTarget(agent), "new_tab");
+  }
+  const mobName = experience?.agent_sidebar?.title || "mob";
+  const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
+  function toggleTheme() {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    try {
+      localStorage.setItem("mobkit-console-theme", next);
+    } catch {
+    }
+  }
+  function renderPanelBody(panel) {
+    const target = panel.target;
+    if (!target) return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "console-panel", children: "No panel target" });
+    if (target.kind === "agent-chat") return renderChatPanel(panel);
+    if (target.kind === "identity-inspect") return renderInspectPanel(target);
+    if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(RoutingPanel, { data: routingData });
+    if (target.kind === "gating") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+      GatingInboxPanel,
       {
-        launcherResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "pane-resizer", "aria-hidden": "true", "data-testid": "resize:sidebar", onPointerDown: handleSidebarResize }),
-        launcherHeader: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          "button",
+        pending: gatingData.pending,
+        audit: gatingData.audit,
+        onDecide: (pid, decision) => void onGatingDecision(pid, decision)
+      }
+    );
+    if (target.kind === "topology") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+      TopologyPanel,
+      {
+        nodes: experience?.topology?.live_snapshot?.nodes || [],
+        agents
+      }
+    );
+    if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
+    if (target.kind === "timeline") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(TimelinePanel, { frames: activityRef.current });
+    if (target.kind === "roster") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+      RosterPanel,
+      {
+        agents,
+        onSelect: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
+        onInspect: handleInspectAgent,
+        onLifecycle: (identity, method) => void onLifecycleAction(identity, method)
+      }
+    );
+    if (target.kind === "gates") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(GatesPanel, { audit: gatingData.audit });
+    if (target.kind === "logs") return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(LogsPanel, { frames: activityRef.current });
+    return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+    "div",
+    {
+      className: "cc-theme-scope mobkit-shell",
+      "data-cc-theme": theme,
+      "data-cc-variant": variant,
+      "data-testid": "meerkat-console",
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(SpriteSheet, {}),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+          Topbar,
           {
-            className: "console-theme-toggle",
-            "data-testid": "theme-toggle",
-            type: "button",
-            title: `Switch to ${theme === "dark" ? "light" : "dark"} mode`,
-            onClick: () => {
-              const next = theme === "dark" ? "light" : "dark";
-              setTheme(next);
+            mobName,
+            mobStatus,
+            theme,
+            onToggleTheme: toggleTheme
+          }
+        ),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "shell", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+            Sidebar,
+            {
+              agents,
+              selectedMemberId: focusedMemberId,
+              recentActivity: activityRef.current,
+              onSelect: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
+              onInspect: (a) => dock.openTarget(buildInspectTarget(a), "replace_focused"),
+              onOpenControl: (kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "pane-resizer", "aria-hidden": "true", "data-testid": "resize:sidebar", onPointerDown: handleSidebarResize }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "main", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+            MobKitDock,
+            {
+              viewState: dock.viewState,
+              agents,
+              renderPanelBody,
+              onSelectTab: (id) => dock.selectTab(id),
+              onCloseTab: (id) => dock.closeTab(id),
+              onCreateTab: () => dock.createTab(),
+              onFocusPanel: (id) => dock.focusPanel(id),
+              onSplitPanel: (id, dir) => dock.splitPanel(id, dir),
+              onClosePanel: (id) => dock.closePanel(id),
+              onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
+              onOpenTargetInPanel: (panelId, target) => {
+                dock.focusPanel(panelId);
+                dock.openTarget(target, "replace_focused");
+              }
+            }
+          ) }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "pane-resizer pane-resizer--activity", "aria-hidden": "true", "data-testid": "resize:activity", onPointerDown: handleActivityResize }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+            SignalsRail,
+            {
+              frames: activityRef.current
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+          Tweaks,
+          {
+            variant,
+            theme,
+            onVariant: setVariant,
+            onTheme: (t) => {
+              setTheme(t);
               try {
-                localStorage.setItem("mobkit-console-theme", next);
+                localStorage.setItem("mobkit-console-theme", t);
               } catch {
               }
-            },
-            children: theme === "dark" ? "\u2600" : "\u263E"
-          }
-        ),
-        launcher: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          ConsoleSidebar,
-          {
-            viewState: sidebarVS,
-            Icon,
-            getActionButtonProps: (scope) => {
-              if (scope.kind === "block") return { "data-testid": `sidebar-action:${scope.action.id}` };
-              if (scope.kind === "item") return { "data-testid": `sidebar-item-action:${scope.item.id}:${scope.action.id}` };
-              return {};
-            },
-            onBlockAction: (_b, action) => {
-              switch (action.id) {
-                case "open_routing":
-                  dock.openTarget(buildControlTarget("routing"), "new_tab");
-                  break;
-                case "open_gating":
-                  dock.openTarget(buildControlTarget("gating"), "new_tab");
-                  break;
-                case "open_topology":
-                  dock.openTarget(buildControlTarget("topology"), "new_tab");
-                  break;
-                case "open_health":
-                  dock.openTarget(buildControlTarget("health"), "new_tab");
-                  break;
-              }
-            },
-            onSelectItem: onSelectAgent,
-            onItemAction: (_b, _s, item, action) => {
-              const agent = agents.find((c) => c.member_id === item.id);
-              if (!agent) return;
-              if (action.id === "inspect_identity") {
-                dock.openTarget(buildInspectTarget(agent), "new_tab");
-                return;
-              }
-              if (action.id === "toggle_pin") {
-                setPinnedAgentIds((c) => {
-                  const n = new Set(c);
-                  if (n.has(item.id)) n.delete(item.id);
-                  else n.add(item.id);
-                  return n;
-                });
-              }
-            },
-            onItemContextMenu: (_b, _s, item, event) => {
-              event.preventDefault();
-              const agent = agents.find((c) => c.member_id === item.id);
-              if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab");
-            }
-          }
-        ),
-        main: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          ConsoleDock,
-          {
-            viewState: dock.viewState,
-            Icon,
-            onSelectTab: (tab) => dock.selectTab(tab.id),
-            onCloseTab: (tab) => dock.closeTab(tab.id),
-            onFocusPanel: (panel) => dock.focusPanel(panel.id),
-            onSplitPanel: (panel, dir) => dock.splitPanel(panel.id, dir),
-            onClosePanel: (panel) => dock.closePanel(panel.id),
-            onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
-            onCreateTab: () => dock.createTab(),
-            renderPanelBody: (panel) => {
-              const target = panel.target;
-              if (!target) return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", children: "No panel target" });
-              if (target.kind === "agent-chat") return renderChatPanel(panel);
-              if (target.kind === "identity-inspect") return renderInspectPanel(target);
-              if (target.kind === "routing") return renderRoutingPanel();
-              if (target.kind === "gating") return renderGatingPanel();
-              if (target.kind === "topology") return renderTopologyPanel(experience?.topology?.live_snapshot?.nodes || []);
-              if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
-              return /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "console-panel", children: "Unsupported panel" });
-            }
-          }
-        ),
-        activityRailResizeHandle: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)("div", { className: "pane-resizer pane-resizer--activity", "aria-hidden": "true", "data-testid": "resize:activity", onPointerDown: handleActivityResize }),
-        activityRail: /* @__PURE__ */ (0, import_jsx_runtime17.jsx)(
-          ConsoleActivityRail,
-          {
-            viewState: activityVS,
-            Icon,
-            onTogglePicker: () => {
-            },
-            onCollapse: () => {
-            },
-            onPanelAction: (_pid, actionId) => setActiveActivityPresetId(actionId),
-            renderSlotPreview: () => null,
-            onSelectItem: (focusId) => {
-              const agent = agents.find((c) => c.member_id === focusId);
-              if (agent) dock.openTarget(buildDockTarget(agent), "replace_focused");
             }
           }
         )
-      }
-    )
-  ] });
+      ]
+    }
+  );
 }
 
 // src/index.tsx
-var import_jsx_runtime18 = require("react/jsx-runtime");
+var import_jsx_runtime31 = require("react/jsx-runtime");
 function createConsoleApp(target, options = {}) {
   if (!target) {
     throw new Error("target element is required");
   }
   const baseUrl = options.baseUrl || "";
   const root = (0, import_client.createRoot)(target);
-  root.render(/* @__PURE__ */ (0, import_jsx_runtime18.jsx)(ConsoleApp, { baseUrl }));
+  root.render(/* @__PURE__ */ (0, import_jsx_runtime31.jsx)(ConsoleApp, { baseUrl }));
   return {
     unmount() {
       root.unmount();
