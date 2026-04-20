@@ -636,9 +636,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const liveFrames = liveOverlayRef.current[identity] || [];
     const serverIds = new Set(serverFrames.map((f) => f.id));
     const newLiveFrames = liveFrames.filter((f) => !serverIds.has(f.id));
+    // Render text deltas on the live path so the assistant message grows
+    // token-by-token while the interaction is in flight. Server history keeps
+    // `renderTextDeltas: false` because `interaction_complete.data.result`
+    // already carries the final text and repeating the deltas would be noise.
+    // Duplicate suppression when the interaction finally completes is handled
+    // by the `streamedText === terminalText` check in `renderTerminalEntry`.
     const liveEntries = mapFramesToTimelineEntries(agent, newLiveFrames, {
       renderInteractionStartsAsUser: false,
-      renderTextDeltas: false,
       suppressEmbeddedRunStartedPrompt: true,
     });
 

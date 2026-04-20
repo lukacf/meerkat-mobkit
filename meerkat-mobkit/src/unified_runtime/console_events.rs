@@ -519,8 +519,8 @@ fn current_time_ms() -> u64 {
 /// Strip a runtime-generation suffix from a runtime id, returning the
 /// durable identity. Handles both serialization formats:
 ///
-/// - `{identity}:{N}`    — real agent events from meerkat-mob 0.6
-///                         (`AgentRuntimeId`'s Display uses this form)
+/// - `{identity}:{N}` — real agent events from meerkat-mob 0.6
+///   (`AgentRuntimeId`'s Display uses this form)
 /// - `{identity}:gen{N}` — legacy / test-fixture form
 ///
 /// Identities themselves often contain colons (e.g. `personal:alice@x.com`),

@@ -5230,7 +5230,6 @@ function ConsoleApp({ baseUrl }) {
     const newLiveFrames = liveFrames.filter((f) => !serverIds.has(f.id));
     const liveEntries = mapFramesToTimelineEntries(agent, newLiveFrames, {
       renderInteractionStartsAsUser: false,
-      renderTextDeltas: false,
       suppressEmbeddedRunStartedPrompt: true
     });
     const optimistic = optimisticUserRef.current[identity];
