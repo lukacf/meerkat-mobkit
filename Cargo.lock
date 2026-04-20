@@ -2312,6 +2312,7 @@ dependencies = [
 name = "meerkat-contracts"
 version = "0.6.0"
 dependencies = [
+ "base64",
  "chrono",
  "inventory",
  "meerkat-core",

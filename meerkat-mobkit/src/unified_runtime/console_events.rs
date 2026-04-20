@@ -516,9 +516,23 @@ fn current_time_ms() -> u64 {
 /// Runtime IDs currently follow `{identity}:gen{digits}` in the identity runtime.
 /// If that format changes, this projection returns `None` and the caller must
 /// fall back to explicit runtime-to-identity registration instead of guessing.
+/// Strip a runtime-generation suffix from a runtime id, returning the
+/// durable identity. Handles both serialization formats:
+///
+/// - `{identity}:{N}`    — real agent events from meerkat-mob 0.6
+///                         (`AgentRuntimeId`'s Display uses this form)
+/// - `{identity}:gen{N}` — legacy / test-fixture form
+///
+/// Identities themselves often contain colons (e.g. `personal:alice@x.com`),
+/// so we only strip the LAST colon-delimited segment and only when that
+/// segment parses as a generation suffix.
 fn derive_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
-    let (identity, generation_suffix) = runtime_id.rsplit_once(":gen")?;
-    if generation_suffix.is_empty() || !generation_suffix.chars().all(|ch| ch.is_ascii_digit()) {
+    let (identity, suffix) = runtime_id.rsplit_once(':')?;
+    if identity.is_empty() {
+        return None;
+    }
+    let digits = suffix.strip_prefix("gen").unwrap_or(suffix);
+    if digits.is_empty() || !digits.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
     Some(identity.to_string())

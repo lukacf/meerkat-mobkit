@@ -126,6 +126,34 @@ impl UnifiedRuntime {
         }
     }
 
+    /// Spawn a detached task that periodically drains mob agent events and
+    /// projects them onto the ConsoleEventStore. Returns a [`JoinHandle`] —
+    /// callers that manage graceful shutdown should abort it before stopping
+    /// the runtime.
+    ///
+    /// Use this when embedding [`UnifiedRuntime`] inside a host-owned axum
+    /// server (so [`Self::serve`]'s built-in drain loop isn't running).
+    /// Without this task the mob event router fills up, agent turns never
+    /// reach the console SSE stream, and event-log consumers miss events.
+    pub fn spawn_event_drain_task(self: std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Err(err) = self.drain_mob_agent_events().await {
+                    if matches!(err, UnifiedRuntimeError::RuntimeShuttingDown) {
+                        break;
+                    }
+                    // Transient drain failures are logged but don't stop the
+                    // task — the next tick will try again.
+                    tracing::warn!(error = %err, "mob agent event drain tick failed");
+                }
+            }
+        })
+    }
+
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
 
@@ -173,7 +201,13 @@ impl UnifiedRuntime {
         }
     }
 
-    pub(super) async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
+    /// Drain pending agent/module events from the mob event router and
+    /// project them onto the ConsoleEventStore + event log. Callers that
+    /// embed `UnifiedRuntime` inside their own axum server (rather than
+    /// using `.serve()`) must poll this periodically — typically via
+    /// [`UnifiedRuntime::spawn_event_drain_task`] — or console/event-log
+    /// consumers will never see agent responses.
+    pub async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
         let mut disconnected = false;
         let mut ingress_guard = self
             .mob_event_ingress
