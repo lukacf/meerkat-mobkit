@@ -114,7 +114,7 @@ struct AgentSseState {
 
 pub fn agent_events_sse_router(subscribe_fn: AgentEventSubscribeFn) -> Router {
     Router::new()
-        .route("/agents/:agent_id/events", get(agent_events_sse_handler))
+        .route("/agents/{agent_id}/events", get(agent_events_sse_handler))
         .with_state(AgentSseState { subscribe_fn })
 }
 
