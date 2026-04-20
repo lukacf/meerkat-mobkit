@@ -1517,16 +1517,15 @@ async fn handle_console_runtime_rpc(
                 .await
             {
                 Ok(result) => {
-                    let session_id = handle
-                        .resolve_bridge_session_id(&result.agent_identity)
-                        .await
-                        .map(|s| s.to_string());
+                    // Meerkat 0.6 retires the helper before `spawn_helper`
+                    // returns, so a post-hoc `resolve_bridge_session_id`
+                    // call would come back `None`. We drop `session_id`
+                    // from the response rather than emit a misleading null.
                     response_value(
                         response_id,
                         Some(serde_json::json!({
                             "output": result.output,
                             "tokens_used": result.tokens_used,
-                            "session_id": session_id,
                         })),
                         None,
                     )
@@ -1579,16 +1578,14 @@ async fn handle_console_runtime_rpc(
                 .await
             {
                 Ok(result) => {
-                    let session_id = handle
-                        .resolve_bridge_session_id(&result.agent_identity)
-                        .await
-                        .map(|s| s.to_string());
+                    // See `spawn_helper`: meerkat 0.6 retires the forked
+                    // helper before returning, so session_id is omitted
+                    // rather than silently null.
                     response_value(
                         response_id,
                         Some(serde_json::json!({
                             "output": result.output,
                             "tokens_used": result.tokens_used,
-                            "session_id": session_id,
                         })),
                         None,
                     )

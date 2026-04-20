@@ -35,6 +35,21 @@ Rename in your code:
   meerkat's native `MemberState` enum) where 0.5 emitted `"active"` /
   `"retiring"`. Update any string-comparison code.
 
+- `mobkit/spawn_helper` and `mobkit/fork_helper` no longer emit
+  `session_id` on the response. Meerkat 0.6 retires the helper before
+  the call returns, so mobkit cannot recover the bridge session id
+  post-hoc. If your code correlated helper history via this id, you need
+  an alternative route (subscribe to the helper's events during the
+  call, or wait for an upstream `HelperResult.bridge_session_id` field).
+
+### Reconcile error semantics
+
+- Reconcile responses may now include a `failures` array when meerkat's
+  native `MobHandle::reconcile` records per-identity failures. On the
+  Rust side, mobkit re-lifts a non-empty `failures` list into an `Err`
+  so callers using `?` see pre-0.6 propagation behaviour; the TS SDK
+  surfaces the full array on the JSON response.
+
 ### Unchanged
 
 - The `DurableAgentSpec` identity-first surface keeps its `profile` field (it

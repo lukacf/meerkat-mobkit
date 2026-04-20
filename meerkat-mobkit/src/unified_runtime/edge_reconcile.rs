@@ -56,6 +56,16 @@ impl UnifiedRuntime {
         if let Some(hook) = &self.post_reconcile_hook {
             hook(report.clone()).await;
         }
+        // Meerkat 0.6's `MobHandle::reconcile` returns Ok even on per-identity
+        // failures (they're collected into `report.mob.failures`). Re-lift any
+        // non-empty failures list into an `Err` so callers using `?` see the
+        // same propagation behavior they had pre-cleanup, while still carrying
+        // the full report for inspection via `PartialFailure`.
+        if !report.mob.failures.is_empty() {
+            return Err(UnifiedRuntimeReconcileError::PartialFailure(Box::new(
+                report,
+            )));
+        }
         Ok(report)
     }
 

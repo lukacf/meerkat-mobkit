@@ -201,6 +201,18 @@ pub struct UnifiedRuntimeReconcileRoutingReport {
     pub removed_route_keys: Vec<String>,
 }
 
+/// One per-identity failure observed during a reconcile pass.
+///
+/// Wire projection of meerkat's `ReconcileFailure` (which isn't `Serialize`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MobReconcileFailure {
+    pub agent_identity: String,
+    /// One of `"spawn"` or `"retire"` — which reconcile stage failed.
+    pub stage: String,
+    /// Human-readable error message.
+    pub error: String,
+}
+
 /// Roster half of a reconcile pass — mobkit's wire projection of meerkat's
 /// `ReconcileReport` (which isn't `Serialize`). Field names preserve the
 /// `/mobkit/reconcile` HTTP JSON shape.
@@ -211,6 +223,12 @@ pub struct MobReconcileReport {
     pub spawned: Vec<String>,
     #[serde(default)]
     pub retired: Vec<String>,
+    /// Per-identity failures encountered during the pass. Empty on full success.
+    /// `UnifiedRuntime::reconcile` surfaces a non-empty `failures` list as an
+    /// `Err` so Rust callers relying on `?` see the same propagation behavior
+    /// they had before meerkat 0.6 switched reconcile to partial-success.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failures: Vec<MobReconcileFailure>,
 }
 
 impl MobReconcileReport {
@@ -237,6 +255,18 @@ impl MobReconcileReport {
                 .into_iter()
                 .map(|id| id.to_string())
                 .collect(),
+            failures: report
+                .failures
+                .into_iter()
+                .map(|failure| MobReconcileFailure {
+                    agent_identity: failure.agent_identity.to_string(),
+                    stage: match failure.stage {
+                        meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => "spawn".into(),
+                        meerkat_mob::runtime::reconcile::ReconcileStage::Retire => "retire".into(),
+                    },
+                    error: failure.error.to_string(),
+                })
+                .collect(),
         }
     }
 }
@@ -252,6 +282,12 @@ pub struct UnifiedRuntimeReconcileReport {
 pub enum UnifiedRuntimeReconcileError {
     Mob(MobRuntimeError),
     RouteMutation(RuntimeRouteMutationError),
+    /// Meerkat 0.6's `MobHandle::reconcile` collects per-identity failures
+    /// into the returned report rather than returning `Err` on first failure.
+    /// `UnifiedRuntime::reconcile` re-lifts that into an error variant so
+    /// Rust callers using `?` still see failure propagation, while keeping
+    /// the full report available for inspection.
+    PartialFailure(Box<UnifiedRuntimeReconcileReport>),
 }
 
 impl Display for UnifiedRuntimeReconcileError {
@@ -260,6 +296,14 @@ impl Display for UnifiedRuntimeReconcileError {
             Self::Mob(err) => write!(f, "failed to reconcile mob roster: {err}"),
             Self::RouteMutation(err) => {
                 write!(f, "failed to reconcile routing wiring: {err:?}")
+            }
+            Self::PartialFailure(report) => {
+                write!(
+                    f,
+                    "reconcile completed with {} per-identity failure(s): {:?}",
+                    report.mob.failures.len(),
+                    report.mob.failures
+                )
             }
         }
     }

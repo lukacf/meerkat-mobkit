@@ -868,17 +868,18 @@ pub(super) async fn handle_spawn_helper(
                 .await
             {
                 Ok(result) => {
-                    let session_id = handle
-                        .resolve_bridge_session_id(&result.agent_identity)
-                        .await
-                        .map(|s| s.to_string());
+                    // Note: meerkat 0.6's `spawn_helper` retires the helper
+                    // before returning, so `resolve_bridge_session_id` would
+                    // come back `None` here. We drop `session_id` from the
+                    // response rather than silently emit `null`. If meerkat
+                    // grows `HelperResult.bridge_session_id` in a future
+                    // release, we'll re-add it.
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: Some(serde_json::json!({
                             "output": result.output,
                             "tokens_used": result.tokens_used,
-                            "session_id": session_id,
                         })),
                         error: None,
                     }
@@ -963,17 +964,15 @@ pub(super) async fn handle_fork_helper(
                 .await
             {
                 Ok(result) => {
-                    let session_id = handle
-                        .resolve_bridge_session_id(&result.agent_identity)
-                        .await
-                        .map(|s| s.to_string());
+                    // See `handle_spawn_helper`: meerkat 0.6 retires the
+                    // forked helper before returning, so session_id is
+                    // omitted rather than silently null.
                     JsonRpcResponse {
                         jsonrpc: JSONRPC_VERSION.to_string(),
                         id: response_id,
                         result: Some(serde_json::json!({
                             "output": result.output,
                             "tokens_used": result.tokens_used,
-                            "session_id": session_id,
                         })),
                         error: None,
                     }

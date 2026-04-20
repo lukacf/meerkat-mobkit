@@ -40,6 +40,25 @@ Rename in your code:
   meerkat's native `MemberState` enum) where 0.5 emitted `"active"` /
   `"retiring"`. If you pattern-match on these strings, update the cases.
 
+- `HelperResult.session_id` is now always `None`. Meerkat 0.6's
+  `MobHandle::spawn_helper` / `fork_helper` retire the helper before the
+  call returns, so mobkit cannot recover the bridge session id post-hoc;
+  the field is preserved on the Python dataclass (so `data.get("session_id")`
+  returns `None` cleanly) but mobkit no longer emits the key on the wire.
+  If your code correlated helper history via this id, you need an
+  alternative route (subscribe to the helper's events during the call, or
+  wait for an upstream `HelperResult.bridge_session_id` field).
+
+### Reconcile error semantics
+
+- `mob_handle.reconcile(...)` may now return a report with a non-empty
+  `failures` list (meerkat 0.6 collects per-identity failures rather than
+  returning `Err` on the first failure). `UnifiedRuntime::reconcile()` in
+  the Rust layer re-lifts this into an `Err` so callers using `?` see the
+  same propagation behaviour they had pre-0.6; the Python SDK surfaces
+  the full `failures` array in the response JSON when present. Watch for
+  it and handle degraded-roster scenarios explicitly.
+
 ### Unchanged
 
 - The `DurableAgentSpec` identity-first surface keeps its `profile` field (it
