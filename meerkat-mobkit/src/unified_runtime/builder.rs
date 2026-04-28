@@ -564,7 +564,7 @@ mod tests {
 id = "builder-ephemeral"
 
 [profiles.worker]
-model = "gpt-4.1-mini"
+model = "gpt-5.5"
 runtime_mode = "autonomous_host"
 
 [profiles.worker.tools]

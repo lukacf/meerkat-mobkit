@@ -9,7 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::future::join_all;
 use meerkat_core::ContentInput;
-use meerkat_core::comms::TrustedPeerSpec;
+use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
@@ -620,7 +620,7 @@ fn console_identity_status_json(
         "addressability": member_addressability(member),
         "display_name": member.labels.get("display_name"),
         "labels": member.labels,
-        "agent_runtime_id": member.agent_runtime_id.to_string(),
+        "agent_runtime_id": member.binding_atoms().0.to_string(),
         "session_id": session_id,
         "generation": Value::Null,
         "checkpoint_version": Value::Null,
@@ -649,7 +649,7 @@ fn console_identity_inspect_json(
             "generation": Value::Null,
             "checkpoint_version": Value::Null,
             "session_id": session_id,
-            "agent_runtime_id": member.agent_runtime_id.to_string(),
+            "agent_runtime_id": member.binding_atoms().0.to_string(),
         },
         "topology_peers": peers,
         "output_preview": Value::Null,
@@ -1649,7 +1649,7 @@ async fn handle_console_runtime_rpc(
                         && !pid.is_empty()
                         && !address.is_empty() =>
                 {
-                    match TrustedPeerSpec::new(cname, pid, address) {
+                    match TrustedPeerDescriptor::test_only_unsigned(cname, pid, address) {
                         Err(err) => {
                             invalid_params(response_id, format!("invalid peer spec: {err}"))
                         }
@@ -1700,7 +1700,7 @@ async fn handle_console_runtime_rpc(
                         && !pid.is_empty()
                         && !address.is_empty() =>
                 {
-                    match TrustedPeerSpec::new(cname, pid, address) {
+                    match TrustedPeerDescriptor::test_only_unsigned(cname, pid, address) {
                         Err(err) => {
                             invalid_params(response_id, format!("invalid peer spec: {err}"))
                         }

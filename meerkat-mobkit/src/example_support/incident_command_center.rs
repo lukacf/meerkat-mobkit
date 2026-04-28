@@ -323,7 +323,7 @@ fn default_delivery_target_module() -> String {
 }
 
 pub fn incident_model() -> String {
-    std::env::var("RKAT_INCIDENT_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string())
+    std::env::var("RKAT_INCIDENT_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string())
 }
 
 fn incident_definition() -> Result<MobDefinition> {
@@ -1237,24 +1237,28 @@ mod tests {
             .expect("scribe comms runtime")
             .expect("scribe comms runtime present");
 
-        let scribe_peer_name = commander_comms
+        let scribe_peer_route = commander_comms
             .peers()
             .await
             .into_iter()
             .find(|entry| entry.name.as_str().contains("/scribe/"))
-            .map(|entry| entry.name)
+            .map(|entry| {
+                meerkat_core::comms::PeerRoute::with_display_name(entry.peer_id, entry.name)
+            })
             .expect("scribe peer visible to commander");
-        let commander_peer_name = scribe_comms
+        let commander_peer_route = scribe_comms
             .peers()
             .await
             .into_iter()
             .find(|entry| entry.name.as_str().contains("/commander/"))
-            .map(|entry| entry.name)
+            .map(|entry| {
+                meerkat_core::comms::PeerRoute::with_display_name(entry.peer_id, entry.name)
+            })
             .expect("commander peer visible to scribe");
 
         let request_receipt = commander_comms
             .send(CommsCommand::PeerRequest {
-                to: scribe_peer_name,
+                to: scribe_peer_route,
                 intent: "request_summary".to_string(),
                 params: json!({ "body": "Summarize the incident." }),
                 handling_mode: meerkat_core::types::HandlingMode::Queue,
@@ -1269,7 +1273,7 @@ mod tests {
 
         let response_receipt = scribe_comms
             .send(CommsCommand::PeerResponse {
-                to: commander_peer_name,
+                to: commander_peer_route,
                 in_reply_to: request_id,
                 status: meerkat_core::ResponseStatus::Completed,
                 result: json!({

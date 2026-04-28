@@ -1442,7 +1442,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
-            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-4.1-mini\"\nruntime_mode = \"autonomous_host\"\n[profiles.worker.tools]\ncomms = true\n",
+            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\nruntime_mode = \"autonomous_host\"\n[profiles.worker.tools]\ncomms = true\n",
         ) else {
             panic!("failed to parse definition");
         };
@@ -1477,13 +1477,12 @@ mod tests {
             event_tx: None,
             skill_references: None,
             flow_tool_overlay: None,
-            additional_instructions: Some(vec!["notice".to_string()]),
+            turn_metadata: None,
             execution_kind: None,
         };
 
         let expected_prompt = req.prompt.clone();
         let expected_system_prompt = req.system_prompt.clone();
-        let expected_additional_instructions = req.additional_instructions.clone();
 
         let normalized = normalize_runtime_turn_request(req);
 
@@ -1498,10 +1497,6 @@ mod tests {
         );
         assert_eq!(normalized.prompt, expected_prompt);
         assert_eq!(normalized.system_prompt, expected_system_prompt);
-        assert_eq!(
-            normalized.additional_instructions,
-            expected_additional_instructions
-        );
     }
 
     /// SessionCreatedContext must carry model, labels, and optional system_prompt.

@@ -1,6 +1,6 @@
 //! Cross-mob communication — peering and messaging between members in different mobs.
 
-use meerkat_core::comms::TrustedPeerSpec;
+use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_core::types::HandlingMode;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobHandle, PeerTarget};
@@ -291,8 +291,12 @@ impl UnifiedRuntime {
         remote_peer_id: &str,
         remote_address: &str,
     ) -> Result<(), CrossMobError> {
-        let spec = TrustedPeerSpec::new(remote_comms_name, remote_peer_id, remote_address)
-            .map_err(CrossMobError::PeerSpec)?;
+        let spec = TrustedPeerDescriptor::test_only_unsigned(
+            remote_comms_name,
+            remote_peer_id,
+            remote_address,
+        )
+        .map_err(CrossMobError::PeerSpec)?;
         let local_mid = MeerkatId::from(local_member_id);
         self.mob_runtime
             .handle()
@@ -310,8 +314,12 @@ impl UnifiedRuntime {
         remote_peer_id: &str,
         remote_address: &str,
     ) -> Result<(), CrossMobError> {
-        let spec = TrustedPeerSpec::new(remote_comms_name, remote_peer_id, remote_address)
-            .map_err(CrossMobError::PeerSpec)?;
+        let spec = TrustedPeerDescriptor::test_only_unsigned(
+            remote_comms_name,
+            remote_peer_id,
+            remote_address,
+        )
+        .map_err(CrossMobError::PeerSpec)?;
         let local_mid = MeerkatId::from(local_member_id);
         self.mob_runtime
             .handle()
@@ -388,7 +396,12 @@ impl UnifiedRuntime {
 fn build_inproc_peer_spec(
     comms_name: &str,
     peer_id: &str,
-) -> Result<TrustedPeerSpec, CrossMobError> {
-    TrustedPeerSpec::new(comms_name, peer_id, format!("inproc://{comms_name}"))
+) -> Result<TrustedPeerDescriptor, CrossMobError> {
+    // Cross-mob mobkit is inproc-only (phase 1), so the unsigned descriptor
+    // is the right shape: the in-process router authorizes via its identity
+    // map and signature verification is moot. When mobkit grows
+    // out-of-process cross-mob transport, callers must construct a
+    // descriptor with a real Ed25519 pubkey instead.
+    TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, format!("inproc://{comms_name}"))
         .map_err(CrossMobError::PeerSpec)
 }
