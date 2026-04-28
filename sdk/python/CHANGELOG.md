@@ -49,7 +49,7 @@ Rename in your code:
   alternative route (subscribe to the helper's events during the call, or
   wait for an upstream `HelperResult.bridge_session_id` field).
 
-### Reconcile error semantics
+### Reconcile error semantics + report shape
 
 - `mob_handle.reconcile(...)` may now return a report with a non-empty
   `failures` list (meerkat 0.6 collects per-identity failures rather than
@@ -58,6 +58,40 @@ Rename in your code:
   same propagation behaviour they had pre-0.6; the Python SDK surfaces
   the full `failures` array in the response JSON when present. Watch for
   it and handle degraded-roster scenarios explicitly.
+
+- The `spawned` field of the reconcile report is now an array of
+  `{ "agent_identity": str, "member_ref": str }` objects (the canonical
+  `MobSpawnReceiptWire` shape from meerkat-contracts) rather than a list
+  of identity strings. `member_ref` is a server-resolved opaque handle
+  for subsequent member-targeted control calls. Iterate with
+  `[r["agent_identity"] for r in report["spawned"]]` to recover the
+  prior projection.
+
+### Lightweight roster
+
+- `mobkit/list_members`, `mobkit/get_member`, `mobkit/find_members` no
+  longer inject a `session_id` field per entry. Aligns with meerkat's
+  lightweight-roster design. Use `mobkit/member_status` to bridge a
+  member to a realtime session — its `MobMemberSnapshot` carries
+  `current_session_id` natively.
+
+### Removed RPCs
+
+- `mobkit/member_current_session_id` and `mobkit/member_session_ref`
+  are gone. Both were one-liners over an internal session-id lookup
+  and are subsumed by `mobkit/member_status`. The corresponding Python
+  SDK methods (`MobHandle.member_session_id`,
+  `MobHandle.member_session_ref`) and the `MemberSessionRef` dataclass
+  have been removed.
+
+### New: server-side readiness
+
+- `MobHandle.wait_ready(timeout=...)` — blocks until all current mob
+  members are startup-ready for orchestration, then returns
+  `{"ready": [...], "timeout": False}`. On deadline expiry returns
+  `{"ready": [], "timeout": True}` instead of raising. Relays meerkat
+  0.6's `MobHandle::wait_for_ready`. Replaces ad-hoc client-side
+  polling loops on `member_status`.
 
 ### Unchanged
 

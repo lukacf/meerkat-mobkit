@@ -42,13 +42,42 @@ Rename in your code:
   an alternative route (subscribe to the helper's events during the
   call, or wait for an upstream `HelperResult.bridge_session_id` field).
 
-### Reconcile error semantics
+### Reconcile error semantics + report shape
 
 - Reconcile responses may now include a `failures` array when meerkat's
   native `MobHandle::reconcile` records per-identity failures. On the
   Rust side, mobkit re-lifts a non-empty `failures` list into an `Err`
   so callers using `?` see pre-0.6 propagation behaviour; the TS SDK
   surfaces the full array on the JSON response.
+
+- The `spawned` field of the reconcile report is now an array of
+  `{ agent_identity: string, member_ref: string }` objects (the canonical
+  `MobSpawnReceiptWire` shape from meerkat-contracts) rather than a list
+  of identity strings. `member_ref` is a server-resolved opaque handle
+  for subsequent member-targeted control calls.
+
+### Lightweight roster
+
+- `mobkit/list_members`, `mobkit/get_member`, `mobkit/find_members` no
+  longer inject a `session_id` field per entry. Aligns with meerkat's
+  lightweight-roster design. Use `mobkit/member_status` to bridge a
+  member to a realtime session — its `MobMemberSnapshot` carries
+  `current_session_id` natively.
+
+### Removed RPCs
+
+- `mobkit/member_current_session_id` and `mobkit/member_session_ref`
+  are gone. Both were one-liners over an internal session-id lookup
+  and are subsumed by `mobkit/member_status`.
+
+### New: server-side readiness
+
+- `MobHandle.waitReady(timeoutSeconds?)` — blocks until all current mob
+  members are startup-ready for orchestration, then returns
+  `{ ready: [...], timeout: false }`. On deadline expiry returns
+  `{ ready: [], timeout: true }` instead of throwing. Relays meerkat
+  0.6's `MobHandle::wait_for_ready`. Replaces ad-hoc client-side
+  polling loops on `member_status`.
 
 ### Unchanged
 
