@@ -1161,25 +1161,33 @@ class MobHandle:
         return results
 
     # -----------------------------------------------------------------
-    # Session introspection
+    # Server-side readiness
     # -----------------------------------------------------------------
 
-    async def member_session_id(self, member_id: str) -> str | None:
-        """Return the current session ID for a member, or None."""
-        raw = await self._runtime._rpc("mobkit/member_current_session_id", {"member_id": member_id})
-        if isinstance(raw, dict):
-            return raw.get("session_id")
-        return None
+    async def wait_ready(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Wait until all current mob members are startup-ready for orchestration.
 
-    async def member_session_ref(self, member_id: str) -> MemberSessionRef | None:
-        """Return the session reference for a member, or None."""
-        from .types import MemberSessionRef
-        raw = await self._runtime._rpc("mobkit/member_session_ref", {"member_id": member_id})
-        if raw is None:
-            return None
-        if isinstance(raw, dict) and raw.get("session_id") is None:
-            return None
-        return MemberSessionRef.from_dict(raw)
+        Relays meerkat 0.6's ``MobHandle::wait_for_ready``. Returns a dict
+        ``{"ready": [{"agent_identity", "snapshot"}], "timeout": bool}``.
+        ``timeout=True`` means partial readiness within the deadline; the
+        ``ready`` list will be empty in that case.
+
+        :param timeout: optional seconds to wait. ``None`` blocks indefinitely.
+        """
+        params: dict[str, Any] = {}
+        if timeout is not None:
+            params["timeout_ms"] = int(timeout * 1000)
+        raw = await self._runtime._rpc("mobkit/wait_ready", params)
+        if not isinstance(raw, dict):
+            return {"ready": [], "timeout": False}
+        return {
+            "ready": list(raw.get("ready", [])),
+            "timeout": bool(raw.get("timeout", False)),
+        }
 
     # -----------------------------------------------------------------
     # Polling helpers (client-side)

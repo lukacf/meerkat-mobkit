@@ -45,17 +45,6 @@ async def test_attach_session_rpc_name():
 
 
 @pytest.mark.asyncio
-async def test_member_session_id_rpc_name():
-    """P1 regression: member_session_id must call mobkit/member_current_session_id."""
-    handle, calls = make_mock_mob_handle({
-        "mobkit/member_current_session_id": {"member_id": "w1", "session_id": "sid_abc"}
-    })
-    result = await handle.member_session_id("w1")
-    assert calls[0][0] == "mobkit/member_current_session_id"
-    assert result == "sid_abc"
-
-
-@pytest.mark.asyncio
 async def test_collect_completed_parses_wrapped_response():
     """P2 regression: collect_completed response is {"completed": [...]}, not bare list."""
     handle, calls = make_mock_mob_handle({
@@ -167,10 +156,14 @@ async def test_flow_status_rpc_name():
 
 
 @pytest.mark.asyncio
-async def test_member_session_ref_rpc_name():
+async def test_wait_ready_rpc_name():
+    """wait_ready must call mobkit/wait_ready and forward timeout in ms."""
     handle, calls = make_mock_mob_handle({
-        "mobkit/member_session_ref": {"member_id": "w1", "session_id": "sid_abc"}
+        "mobkit/wait_ready": {"ready": [], "timeout": False}
     })
-    result = await handle.member_session_ref("w1")
-    assert calls[0][0] == "mobkit/member_session_ref"
-    assert result.session_id == "sid_abc"
+    result = await handle.wait_ready(timeout=2.5)
+    assert calls[0][0] == "mobkit/wait_ready"
+    assert calls[0][1] == {"timeout_ms": 2500}
+    assert result == {"ready": [], "timeout": False}
+
+

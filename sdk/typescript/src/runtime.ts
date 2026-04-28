@@ -555,6 +555,32 @@ export class MobHandle {
     });
   }
 
+  /**
+   * Wait until all current mob members are startup-ready for orchestration.
+   *
+   * Relays meerkat 0.6's `MobHandle::wait_for_ready`. Returns
+   * `{ ready: [...], timeout: false }` on full convergence; on timeout
+   * returns `{ ready: [], timeout: true }`. Pass `timeoutSeconds` to bound
+   * the wait, or omit it to block indefinitely.
+   */
+  async waitReady(
+    timeoutSeconds?: number,
+  ): Promise<{ ready: unknown[]; timeout: boolean }> {
+    const params: Record<string, unknown> = {};
+    if (timeoutSeconds !== undefined) {
+      params.timeout_ms = Math.round(timeoutSeconds * 1000);
+    }
+    const raw = await this._runtime._rpc("mobkit/wait_ready", params);
+    if (typeof raw !== "object" || raw === null) {
+      return { ready: [], timeout: false };
+    }
+    const r = raw as Record<string, unknown>;
+    return {
+      ready: Array.isArray(r.ready) ? r.ready : [],
+      timeout: Boolean(r.timeout),
+    };
+  }
+
   // -- Routing ------------------------------------------------------------
 
   async resolveRouting(

@@ -8,7 +8,7 @@ use meerkat_mob::runtime::MobMemberListEntry;
 use meerkat_mob::runtime::reconcile::ReconcileOptions;
 
 use crate::runtime::RuntimeRoute;
-use crate::unified_runtime::types::MobReconcileReport;
+use crate::unified_runtime::types::meerkat_reconcile_report_to_wire;
 
 use super::edge_types::{DesiredPeerEdge, EdgeMemberView, EdgeReconcileFailure};
 use super::types::{
@@ -26,12 +26,13 @@ impl UnifiedRuntime {
         desired_specs: Vec<SpawnMemberSpec>,
     ) -> Result<UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileError> {
         // 1. Member reconcile (meerkat 0.6 native path)
+        let mob_id = self.mob_handle().mob_id().to_string();
         let meerkat_report = self
             .mob_handle()
             .reconcile(desired_specs, ReconcileOptions { retire_stale: true })
             .await
             .map_err(|err| UnifiedRuntimeReconcileError::Mob(err.into()))?;
-        let mob = MobReconcileReport::from_meerkat(meerkat_report);
+        let mob = meerkat_reconcile_report_to_wire(&mob_id, meerkat_report);
         // 2. Refresh active members
         let active_snapshots = self.mob_handle().list_members_including_retiring().await;
         for member in &active_snapshots {

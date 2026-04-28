@@ -1186,27 +1186,14 @@ impl MobRuntime {
     }
 }
 
-/// Project a meerkat `MobMemberListEntry` into mobkit's HTTP JSON shape,
-/// adding the bridge session id resolved from the mob handle.
+/// Project a meerkat `MobMemberListEntry` into mobkit's HTTP JSON shape.
 ///
-/// Keeps HTTP responses carrying `session_id` — a field meerkat dropped from
-/// its native roster entry. Everything else serializes from the entry directly.
-pub async fn member_entry_to_json(
-    handle: &MobHandle,
-    entry: &meerkat_mob::runtime::MobMemberListEntry,
-) -> serde_json::Value {
-    let mut v = serde_json::to_value(entry).unwrap_or(serde_json::Value::Null);
-    if let Some(sid) = handle
-        .resolve_bridge_session_id(&entry.agent_identity)
-        .await
-        && let Some(obj) = v.as_object_mut()
-    {
-        obj.insert(
-            "session_id".to_string(),
-            serde_json::Value::String(sid.to_string()),
-        );
-    }
-    v
+/// Aligns with meerkat 0.6's lightweight-roster design: list entries do
+/// not carry a bridge `session_id`. Callers needing the realtime session
+/// for a member must use `mobkit/member_status`, which serializes
+/// `MobMemberSnapshot.current_session_id` natively.
+pub fn member_entry_to_json(entry: &meerkat_mob::runtime::MobMemberListEntry) -> serde_json::Value {
+    serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)
 }
 
 /// Send content to a mob member and return the bridge session id that

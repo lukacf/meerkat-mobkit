@@ -695,10 +695,9 @@ async fn handle_console_runtime_rpc(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
-                "mobkit/member_current_session_id",
                 "mobkit/read_session_history",
-                "mobkit/member_session_ref",
                 "mobkit/collect_completed",
+                "mobkit/wait_ready",
                 "mobkit/flow_status",
                 "mobkit/query_events",
                 "mobkit/cross_mob/peer_info",
@@ -771,7 +770,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
-                members.push(member_entry_to_json(&handle, entry).await);
+                members.push(member_entry_to_json(entry));
             }
             response_value(response_id, Some(Value::Array(members)), None)
         }
@@ -783,11 +782,9 @@ async fn handle_console_runtime_rpc(
             let identity = MeerkatId::from(member_id);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
-                Some(entry) => response_value(
-                    response_id,
-                    Some(member_entry_to_json(&handle, &entry).await),
-                    None,
-                ),
+                Some(entry) => {
+                    response_value(response_id, Some(member_entry_to_json(&entry)), None)
+                }
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
             }
         }
@@ -811,7 +808,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_matching(filter).await;
             let mut matches = Vec::with_capacity(entries.len());
             for entry in &entries {
-                matches.push(member_entry_to_json(&handle, entry).await);
+                matches.push(member_entry_to_json(entry));
             }
             response_value(response_id, Some(Value::Array(matches)), None)
         }
@@ -1269,7 +1266,7 @@ async fn handle_console_runtime_rpc(
             match handle.ensure_member(spec).await {
                 Ok(_outcome) => {
                     let body = match lookup_member_with_session(&handle, &mid).await {
-                        Some((entry, _sid)) => member_entry_to_json(&handle, &entry).await,
+                        Some((entry, _sid)) => member_entry_to_json(&entry),
                         None => Value::Null,
                     };
                     response_value(response_id, Some(body), None)
@@ -1386,24 +1383,6 @@ async fn handle_console_runtime_rpc(
                 }
             }
         }
-        "mobkit/member_current_session_id" => {
-            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "member_id required");
-            };
-            let session_id = runtime
-                .handle()
-                .resolve_bridge_session_id(&MeerkatId::from(member_id))
-                .await
-                .map(|s| s.to_string());
-            response_value(
-                response_id,
-                Some(serde_json::json!({
-                    "member_id": member_id,
-                    "session_id": session_id,
-                })),
-                None,
-            )
-        }
         "mobkit/read_session_history" => {
             let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "session_id required");
@@ -1433,19 +1412,49 @@ async fn handle_console_runtime_rpc(
                 }
             }
         }
-        "mobkit/member_session_ref" => {
-            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "member_id required");
-            };
-            let body = match runtime
-                .handle()
-                .resolve_bridge_session_id(&MeerkatId::from(member_id))
-                .await
-            {
-                Some(sid) => serde_json::json!({ "session_id": sid.to_string() }),
-                None => Value::Null,
-            };
-            response_value(response_id, Some(body), None)
+        "mobkit/wait_ready" => {
+            let timeout = request
+                .params
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .map(std::time::Duration::from_millis);
+            match runtime.handle().wait_for_ready(timeout).await {
+                Ok(ready) => {
+                    let entries: Vec<Value> = ready
+                        .into_iter()
+                        .map(|(identity, snapshot)| {
+                            serde_json::json!({
+                                "agent_identity": identity.to_string(),
+                                "snapshot": serde_json::to_value(&snapshot)
+                                    .unwrap_or(Value::Null),
+                            })
+                        })
+                        .collect();
+                    response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "ready": entries,
+                            "timeout": false,
+                        })),
+                        None,
+                    )
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    if message.to_lowercase().contains("timeout") {
+                        response_value(
+                            response_id,
+                            Some(serde_json::json!({
+                                "ready": Vec::<Value>::new(),
+                                "timeout": true,
+                            })),
+                            None,
+                        )
+                    } else {
+                        internal_error(response_id, format!("wait_for_ready failed: {message}"))
+                    }
+                }
+            }
         }
         "mobkit/collect_completed" => {
             let completed = runtime.handle().collect_completed().await;

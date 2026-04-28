@@ -171,8 +171,14 @@ async fn post_reconcile_hook_receives_reconcile_report() {
         "post-reconcile hook should receive the same report returned by reconcile"
     );
     assert_eq!(captured[0].mob.spawned.len(), 2);
-    assert!(captured[0].mob.spawned.contains(&"reconcile-a".to_string()));
-    assert!(captured[0].mob.spawned.contains(&"reconcile-b".to_string()));
+    let spawned_identities: Vec<&str> = captured[0]
+        .mob
+        .spawned
+        .iter()
+        .map(|receipt| receipt.agent_identity.as_str())
+        .collect();
+    assert!(spawned_identities.contains(&"reconcile-a"));
+    assert!(spawned_identities.contains(&"reconcile-b"));
 
     runtime.shutdown().await;
 }
@@ -236,7 +242,10 @@ async fn no_hook_still_works() {
         .expect("reconcile without hook");
 
     assert_eq!(report.mob.spawned.len(), 1);
-    assert!(report.mob.spawned.contains(&"no-hook-worker-2".to_string()));
+    assert_eq!(
+        report.mob.spawned[0].agent_identity.as_str(),
+        "no-hook-worker-2"
+    );
 
     runtime.shutdown().await;
 }
