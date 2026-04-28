@@ -218,9 +218,10 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
                 client: Arc<dyn meerkat_core::AgentLlmClient>,
                 identity: meerkat_core::session::SessionLlmIdentity,
+                request_policy: meerkat_core::SessionLlmRequestPolicy,
             ) -> Result<(), SessionError> {
                 self.inner
-                    .hot_swap_session_llm_identity(id, client, identity)
+                    .hot_swap_session_llm_identity(id, client, identity, request_policy)
                     .await
             }
             async fn update_session_keep_alive(
@@ -467,9 +468,10 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         id: &meerkat_core::types::SessionId,
         client: Arc<dyn meerkat_core::AgentLlmClient>,
         identity: meerkat_core::session::SessionLlmIdentity,
+        request_policy: meerkat_core::SessionLlmRequestPolicy,
     ) -> Result<(), SessionError> {
         self.inner
-            .hot_swap_session_llm_identity(id, client, identity)
+            .hot_swap_session_llm_identity(id, client, identity, request_policy)
             .await
     }
     async fn update_session_keep_alive(
@@ -1478,7 +1480,6 @@ mod tests {
             skill_references: None,
             flow_tool_overlay: None,
             turn_metadata: None,
-            execution_kind: None,
         };
 
         let expected_prompt = req.prompt.clone();

@@ -1655,6 +1655,7 @@ name = "meerkat-runtime"
 version = "0.6.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "indexmap",
  "meerkat-contracts",
@@ -1772,6 +1773,7 @@ dependencies = [
  "meerkat-comms",
  "meerkat-contracts",
  "meerkat-core",
+ "meerkat-llm-core",
  "meerkat-mcp",
  "meerkat-runtime",
  "meerkat-skills",

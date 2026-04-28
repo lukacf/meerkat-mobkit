@@ -763,14 +763,14 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         vec![
             Arc::new(ToolDef {
-                name: "inspect_service".to_string(),
+                name: "inspect_service".into(),
                 description: "Inspect the current health and saturation of a named service"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<InspectServiceArgs>(),
                 provenance: None,
             }),
             Arc::new(ToolDef {
-                name: "analyze_customer_impact".to_string(),
+                name: "analyze_customer_impact".into(),
                 description: "Estimate customer-facing impact for a named merchant cohort"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<AnalyzeImpactArgs>(),
