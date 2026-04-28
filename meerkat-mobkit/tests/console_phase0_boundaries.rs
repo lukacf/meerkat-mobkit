@@ -36,10 +36,10 @@ use meerkat_mobkit::identity_first::{
 };
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleInteractionAccepted, ConsolePolicy,
-    DiscoverySpec, IdentityFirstContext, JsonRpcResponse, MobBootstrapOptions, MobBootstrapSpec,
-    MobKitConfig, ReplayUnavailableError, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state, console_json_router,
-    console_json_router_with_runtime, handle_unified_rpc_json,
+    DiscoverySpec, EventQuery, IdentityFirstContext, JsonRpcResponse, MobBootstrapOptions,
+    MobBootstrapSpec, MobKitConfig, ReplayUnavailableError, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    console_json_router, console_json_router_with_runtime, handle_unified_rpc_json,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -424,7 +424,7 @@ async fn phase0_contract_001c_mobkit_interact_rejects_internal_only_identity() {
 }
 
 #[tokio::test]
-async fn phase0_contract_001d_mobkit_interact_rejects_when_identity_queue_is_full() {
+async fn phase0_contract_001d_mobkit_interact_self_heals_when_identity_queue_is_full() {
     let fixture = build_unified_runtime().await;
     let identity_ctx = build_identity_context_with_bridge("identity:luka").await;
 
@@ -455,6 +455,13 @@ async fn phase0_contract_001d_mobkit_interact_rejects_when_identity_queue_is_ful
         );
     }
 
+    // At-cap behavior: the per-identity queue evicts its oldest entry to
+    // make room rather than rejecting the new interaction. The evicted
+    // entry surfaces an `interaction_failed { reason: "queue_overflow" }`
+    // event so clients waiting on it stop spinning. This avoids deadlocks
+    // when an orphaned pending entry — e.g. a runtime id whose identity
+    // could not be resolved on projection — would otherwise block all
+    // future interactions for that identity.
     let overflow = parse_json_rpc(
         &handle_unified_rpc_json(
             &fixture.runtime,
@@ -475,10 +482,28 @@ async fn phase0_contract_001d_mobkit_interact_rejects_when_identity_queue_is_ful
         )
         .await,
     );
+    assert!(
+        overflow.error.is_none(),
+        "overflow request should self-heal by evicting oldest, not reject"
+    );
 
-    let error = overflow.error.expect("queue overflow should reject");
-    assert_eq!(error.code, -32003);
-    assert!(error.message.contains("interaction queue at capacity"));
+    let failed_events = fixture
+        .runtime
+        .query_console_events(&EventQuery {
+            identity: Some("identity:luka".to_string()),
+            event_types: vec!["interaction_failed".to_string()],
+            ..EventQuery::default()
+        })
+        .await;
+    let overflow_events: Vec<_> = failed_events
+        .iter()
+        .filter(|event| event.data.get("reason") == Some(&json!("queue_overflow")))
+        .collect();
+    assert_eq!(
+        overflow_events.len(),
+        1,
+        "exactly one queue_overflow event should be emitted"
+    );
 
     let shutdown = fixture.runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
