@@ -4,6 +4,73 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+### Streaming structural events + durable cursors
+
+Mobkit's structural-events surface is now durable end-to-end. Consumers
+can checkpoint a `cursor` from any `MobStructuralEvent` and resume
+across mobkit gateway restarts on SQLite-backed deployments.
+
+- `MobStructuralEvent.cursor` is now the **meerkat ledger cursor** —
+  not a per-process `AtomicU64`. The 500ms poller is gone; mobkit's
+  subscription task streams from `MobEventsView::subscribe_after`
+  directly. Restart-resume is automatic when the runtime is built
+  with `.persistent_state(path)` (a `SqliteMetadataStore` is
+  auto-installed at `<path>/mobkit_metadata.sqlite`).
+- New `MobEventsStaleError(RpcError)` raised by `query_mob_events()`
+  / `subscribe_mob_events()` when `after_seq` is past the current
+  ledger frontier. Carries `after_cursor` and `latest_cursor` so
+  callers can rewind. JSON-RPC code is `-32010`
+  (`MOB_EVENTS_STALE_CURSOR_CODE`).
+- `mobkit/mob_events/subscribe` now returns a `subscribe_url`
+  pointing to `/mobkit/mob_events/stream?after_seq=...&...` — a
+  per-client SSE route that opens its own
+  `MobEventsView::subscribe_after`, eliminating the gap between
+  snapshot and live tail. Original filters are echoed back.
+- `mobkit/mob_events/query` always returns a numeric
+  `next_after_seq` even when the filter matches nothing (was
+  `null`); a polling SDK keeps a valid resume anchor.
+
+### `MobHandle.list_runs(flow_id?)`
+
+New SDK method wrapping `mobkit/list_runs` over `MobHandle::list_runs`.
+Returns `list[MobRun]` carrying the **full meerkat ledger projection**
+— `step_ledger`, `failure_ledger`, `frames` (map keyed by frame id),
+`loops` (map keyed by loop id), `loop_iteration_ledger`, `flow_state`,
+`activation_params`, `schema_version`, `root_step_outputs`,
+`loop_iteration_outputs`. Meerkat-internal sub-shapes (kernel state,
+output blobs) pass through opaquely as `Any`.
+
+New types in `meerkat_mobkit.types`:
+`MobRun`, `MobRunStatus`, `StepRecord`, `FailureRecord`,
+`FrameRecord`, `LoopRecord`, `LoopIterationRecord`. All exported
+from `meerkat_mobkit`.
+
+### Bug-hunt fixes (PR #69)
+
+- `RpcError.data` propagates the JSON-RPC `error.data` payload —
+  used by `MobEventsStaleError` to surface typed cursor info.
+- `AsgiApp.__call__("/rpc", ...)` no longer masks `RpcError` as
+  `-32603 / AttributeError`: the handler used a non-existent
+  `exc.message` attribute and fell through to the generic
+  `except Exception`. Real RPC code/message/data are now returned.
+- `_transport.send_sync` rejects empty / duplicate request ids
+  (`ValueError`) instead of deadlocking concurrent callers on the
+  shared `_pending[""]` slot for the full 60s timeout.
+- `EventEnvelope.from_dict` / `KeepAliveConfig.from_dict` coerce
+  numeric fields (`timestamp_ms`, `interval_ms`) via `_coerce_int`.
+  Pre-fix `None`, `"15"`, or floats survived into `int`-annotated
+  fields and broke arithmetic far from the parse site.
+- `MobEvent.from_sse` / `AgentEvent.from_sse` preserve non-dict
+  payloads as `UnknownEvent(type="non_dict_payload", data={"raw":
+  ...})`. Pre-fix the raw value was silently dropped.
+- `subscribe_mob_events` accepts bare-list responses (not just dict
+  envelopes), matching `query_mob_events`.
+- Memory backend failures (`mobkit/memory/index`,
+  `mobkit/memory/query`) now use distinct JSON-RPC code `-32012`
+  (`MEMORY_BACKEND_UNAVAILABLE_CODE`). Pre-fix they shared `-32010`
+  with the mob_events stale-cursor contract; SDKs branching on the
+  code misclassified.
+
 ### Cross-mob signed-peer surface
 
 - New `MobHandle.peer_pubkey()` → returns the local gateway's Ed25519

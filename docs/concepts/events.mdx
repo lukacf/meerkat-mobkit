@@ -89,6 +89,56 @@ Raw event lines from modules are normalized before entering the merged stream. N
 - Source tags are consistent
 - Malformed events produce `NormalizationError` rather than silent corruption
 
+## Structural mob events (durable)
+
+In addition to the lossy `UnifiedEvent::Agent` projection, mobkit
+exposes the **structural** event surface — typed envelopes
+preserving every meerkat `MobEventKind` (25 variants —
+`flow_started`, `step_dispatched`, `members_wired`,
+`supervisor_escalation`, ...) with their `mob_id`, `run_id`,
+`step_id`, and `agent_identity` context intact.
+
+```
+{
+  "event_id": "mob-evt-1234",
+  "cursor": 1234,
+  "mob_id": "home",
+  "timestamp_ms": 1729700000000,
+  "kind": "step_dispatched",
+  "run_id": "run-9c1...",
+  "step_id": "draft",
+  "agent_identity": "lead",
+  "mob_labels": {...},
+  "run_labels": {...},
+  "data": { /* full MobEventKind payload */ }
+}
+```
+
+### Durable cursors
+
+`cursor` is the **meerkat ledger cursor** — the same monotonic id
+the upstream store uses. Mobkit's subscription task streams events
+from `MobEventsView::subscribe_after(cursor)` and writes the
+last-projected cursor to a `PersistentMetadataStore` after each
+projection. On restart, the runtime resumes from that cursor —
+events written while mobkit was down are replayed, not skipped.
+
+- `.persistent_state(path)` builds auto-install a SQLite metadata
+  store at `<path>/mobkit_metadata.sqlite`. No caller action required.
+- Ephemeral builds use the in-memory store (no durable resume —
+  the ledger isn't persistent either).
+
+### Access surfaces
+
+| Surface | Use for |
+|---------|---------|
+| `mobkit/mob_events/query` JSON-RPC | Snapshot / batched scan |
+| `mobkit/mob_events/subscribe` JSON-RPC | Snapshot + handshake; returns a `subscribe_url` for the SSE route |
+| `GET /mobkit/mob_events/stream` SSE | Per-client live tail with cursor + filter resume |
+
+See [SSE API](/api/sse) for the SSE shape and
+[JSON-RPC API](/api/rpc) for the snapshot RPCs and error codes.
+
 ## Lifecycle events
 
 The runtime emits lifecycle events at key milestones:
