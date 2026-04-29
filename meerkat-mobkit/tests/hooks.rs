@@ -107,7 +107,10 @@ async fn post_spawn_hook_receives_spawned_member_id() {
         .await
         .expect("build unified runtime");
 
-    assert_eq!(runtime.status(), MobState::Running);
+    assert_eq!(
+        runtime.mob_handle().status().await.unwrap(),
+        MobState::Running
+    );
 
     runtime
         .spawn(spawn_spec("worker", "hook-worker-1"))
@@ -168,8 +171,14 @@ async fn post_reconcile_hook_receives_reconcile_report() {
         "post-reconcile hook should receive the same report returned by reconcile"
     );
     assert_eq!(captured[0].mob.spawned.len(), 2);
-    assert!(captured[0].mob.spawned.contains(&"reconcile-a".to_string()));
-    assert!(captured[0].mob.spawned.contains(&"reconcile-b".to_string()));
+    let spawned_identities: Vec<&str> = captured[0]
+        .mob
+        .spawned
+        .iter()
+        .map(|receipt| receipt.agent_identity.as_str())
+        .collect();
+    assert!(spawned_identities.contains(&"reconcile-a"));
+    assert!(spawned_identities.contains(&"reconcile-b"));
 
     runtime.shutdown().await;
 }
@@ -189,7 +198,7 @@ async fn mob_handle_returns_working_handle() {
     let handle: MobHandle = runtime.mob_handle();
 
     // The handle should report running state
-    assert_eq!(handle.status(), MobState::Running);
+    assert_eq!(handle.status().await.unwrap(), MobState::Running);
 
     // Spawn via the handle directly
     handle
@@ -200,7 +209,7 @@ async fn mob_handle_returns_working_handle() {
     // Verify the member is visible through the handle
     let members = handle.list_members().await;
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0].meerkat_id.to_string(), "handle-worker-1");
+    assert_eq!(members[0].agent_identity.to_string(), "handle-worker-1");
 
     runtime.shutdown().await;
 }
@@ -233,7 +242,10 @@ async fn no_hook_still_works() {
         .expect("reconcile without hook");
 
     assert_eq!(report.mob.spawned.len(), 1);
-    assert!(report.mob.spawned.contains(&"no-hook-worker-2".to_string()));
+    assert_eq!(
+        report.mob.spawned[0].agent_identity.as_str(),
+        "no-hook-worker-2"
+    );
 
     runtime.shutdown().await;
 }
@@ -315,15 +327,24 @@ async fn list_members_returns_roster() {
         .await
         .expect("spawn roster-b");
 
-    let members = runtime.list_members().await;
+    let members = runtime.mob_handle().list_members_including_retiring().await;
     assert_eq!(members.len(), 2, "should list both members");
-    let ids: Vec<&str> = members.iter().map(|m| m.meerkat_id.as_str()).collect();
-    assert!(ids.contains(&"roster-a"), "should contain roster-a");
-    assert!(ids.contains(&"roster-b"), "should contain roster-b");
+    let ids: Vec<String> = members
+        .iter()
+        .map(|m| m.agent_identity.to_string())
+        .collect();
+    assert!(
+        ids.iter().any(|id| id == "roster-a"),
+        "should contain roster-a"
+    );
+    assert!(
+        ids.iter().any(|id| id == "roster-b"),
+        "should contain roster-b"
+    );
 
     for m in &members {
-        assert_eq!(m.profile, "worker");
-        assert_eq!(m.state, "active");
+        assert_eq!(m.role.as_str(), "worker");
+        assert_eq!(m.state, meerkat_mob::MemberState::Active);
     }
 
     runtime.shutdown().await;
@@ -346,14 +367,20 @@ async fn get_member_returns_snapshot_or_none() {
         .await
         .expect("spawn get-member-1");
 
-    let found = runtime.get_member("get-member-1").await;
+    let handle = runtime.mob_handle();
+    let entries = handle.list_members_including_retiring().await;
+    let found = entries
+        .iter()
+        .find(|e| e.agent_identity.as_str() == "get-member-1");
     assert!(found.is_some(), "should find spawned member");
     let snapshot = found.unwrap();
-    assert_eq!(snapshot.meerkat_id, "get-member-1");
-    assert_eq!(snapshot.profile, "worker");
-    assert_eq!(snapshot.state, "active");
+    assert_eq!(snapshot.agent_identity.as_str(), "get-member-1");
+    assert_eq!(snapshot.role.as_str(), "worker");
+    assert_eq!(snapshot.state, meerkat_mob::MemberState::Active);
 
-    let not_found = runtime.get_member("nonexistent").await;
+    let not_found = entries
+        .iter()
+        .find(|e| e.agent_identity.as_str() == "nonexistent");
     assert!(not_found.is_none(), "should return None for unknown member");
 
     runtime.shutdown().await;
@@ -377,17 +404,21 @@ async fn retire_member_transitions_state() {
         .expect("spawn retire-me");
 
     runtime
-        .retire_member("retire-me")
+        .mob_handle()
+        .retire(meerkat_mob::ids::MeerkatId::from("retire-me"))
         .await
         .expect("retire should succeed");
 
     // After retire, the member either shows as "retiring" (if it has active
     // work to drain) or is already gone (idle member disposes immediately).
-    let members = runtime.list_members().await;
-    let retired = members.iter().find(|m| m.meerkat_id == "retire-me");
+    let members = runtime.mob_handle().list_members_including_retiring().await;
+    let retired = members
+        .iter()
+        .find(|m| m.agent_identity.as_str() == "retire-me");
     match retired {
         Some(m) => assert_eq!(
-            m.state, "retiring",
+            m.state,
+            meerkat_mob::MemberState::Retiring,
             "if still visible, state should be retiring"
         ),
         None => {} // idle member was immediately disposed — acceptable
@@ -414,12 +445,16 @@ async fn respawn_member_replaces_member() {
         .expect("spawn respawn-me");
 
     runtime
-        .respawn_member("respawn-me")
+        .mob_handle()
+        .respawn(meerkat_mob::ids::MeerkatId::from("respawn-me"), None)
         .await
         .expect("respawn should succeed");
 
     // After respawn, the member should still exist in the roster
-    let found = runtime.get_member("respawn-me").await;
+    let entries = runtime.mob_handle().list_members_including_retiring().await;
+    let found = entries
+        .iter()
+        .find(|e| e.agent_identity.as_str() == "respawn-me");
     assert!(found.is_some(), "member should still exist after respawn");
 
     runtime.shutdown().await;

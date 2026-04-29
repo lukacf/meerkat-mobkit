@@ -53,6 +53,7 @@ import {
   parseRediscoverReport,
   parseReconcileEdgesReport,
   parsePersistedEvent,
+  parseMobStructuralEvent,
   eventQueryToDict,
   parseIdentityStatus,
   dispatchInputToDict,
@@ -78,6 +79,7 @@ import {
   type RediscoverReport,
   type ReconcileEdgesReport,
   type PersistedEvent,
+  type MobStructuralEvent,
   type EventQuery,
   type IdentityStatus,
   type DispatchInput,
@@ -89,6 +91,20 @@ import {
 let requestCounter = 0;
 function nextRequestId(method: string): string {
   return `${method}:${++requestCounter}`;
+}
+
+function extractMobStructuralEvents(raw: unknown): MobStructuralEvent[] {
+  let events: unknown = raw;
+  if (typeof raw === "object" && raw !== null) {
+    const record = raw as Record<string, unknown>;
+    if (Array.isArray(record.events)) {
+      events = record.events;
+    }
+  }
+  if (!Array.isArray(events)) {
+    return [];
+  }
+  return events.map(parseMobStructuralEvent);
 }
 
 /** Serialize a config value for JSON transport.
@@ -386,7 +402,7 @@ export class MobKitRuntime {
  * ```ts
  * const handle = runtime.mobHandle();
  * const members = await handle.listMembers();
- * await handle.send(members[0].meerkatId, "Hello!");
+ * await handle.send(members[0].agentIdentity, "Hello!");
  * ```
  */
 export class MobHandle {
@@ -472,6 +488,34 @@ export class MobHandle {
     return [];
   }
 
+  /**
+   * Query buffered structural mob events. Pass the highest seen
+   * `cursor` as `EventQuery.afterSeq` on the next call to paginate.
+   */
+  async queryMobEvents(query?: EventQuery): Promise<MobStructuralEvent[]> {
+    const params = query ? eventQueryToDict(query) : {};
+    const raw = await this._runtime._rpc("mobkit/mob_events/query", params);
+    return extractMobStructuralEvents(raw);
+  }
+
+  /**
+   * Replay buffered structural mob events. Yields the snapshot frame
+   * returned by `mobkit/mob_events/subscribe` as an async iterator.
+   * Live tailing requires the dedicated SSE bridge.
+   */
+  async *subscribeMobEvents(
+    query?: EventQuery,
+  ): AsyncGenerator<MobStructuralEvent, void, undefined> {
+    const params = query ? eventQueryToDict(query) : {};
+    const raw = await this._runtime._rpc(
+      "mobkit/mob_events/subscribe",
+      params,
+    );
+    for (const event of extractMobStructuralEvents(raw)) {
+      yield event;
+    }
+  }
+
   // -- Messaging ----------------------------------------------------------
 
   async send(memberId: string, message: string): Promise<SendMessageResult> {
@@ -488,7 +532,7 @@ export class MobHandle {
 
   async ensureMember(
     memberId: string,
-    profile: string,
+    role: string,
     options?: {
       labels?: Record<string, string>;
       context?: unknown;
@@ -497,8 +541,8 @@ export class MobHandle {
     },
   ): Promise<MemberSnapshot> {
     const params: Record<string, unknown> = {
-      profile,
-      meerkat_id: memberId,
+      role,
+      agent_identity: memberId,
     };
     if (options?.labels) params.labels = options.labels;
     if (options?.context !== undefined) params.context = options.context;
@@ -553,6 +597,71 @@ export class MobHandle {
     await this._runtime._rpc("mobkit/respawn_member", {
       member_id: memberId,
     });
+  }
+
+  /**
+   * Wait until all current mob members are startup-ready for orchestration.
+   *
+   * Relays meerkat 0.6's `MobHandle::wait_for_ready`. Returns
+   * `{ ready: [...], timeout: false }` on full convergence; on timeout
+   * returns `{ ready: [], timeout: true }`. Pass `timeoutSeconds` to bound
+   * the wait, or omit it to block indefinitely.
+   */
+  async waitReady(
+    timeoutSeconds?: number,
+  ): Promise<{ ready: unknown[]; timeout: boolean }> {
+    const params: Record<string, unknown> = {};
+    if (timeoutSeconds !== undefined) {
+      params.timeout_ms = Math.round(timeoutSeconds * 1000);
+    }
+    const raw = await this._runtime._rpc("mobkit/wait_ready", params);
+    if (typeof raw !== "object" || raw === null) {
+      return { ready: [], timeout: false };
+    }
+    const r = raw as Record<string, unknown>;
+    return {
+      ready: Array.isArray(r.ready) ? r.ready : [],
+      timeout: Boolean(r.timeout),
+    };
+  }
+
+  // -- Flows --------------------------------------------------------------
+
+  /**
+   * List all configured flow IDs in this mob definition. Relays meerkat
+   * 0.6's `MobHandle::list_flows`. Order is unspecified.
+   */
+  async listFlows(): Promise<string[]> {
+    const raw = await this._runtime._rpc("mobkit/list_flows");
+    if (Array.isArray(raw)) {
+      return raw.map((id) => String(id));
+    }
+    if (typeof raw === "object" && raw !== null) {
+      const flows = (raw as Record<string, unknown>).flows;
+      if (Array.isArray(flows)) {
+        return flows.map((id) => String(id));
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Start a flow run and return its run ID. Relays meerkat 0.6's
+   * `MobHandle::run_flow`. `params` is forwarded verbatim as the flow's
+   * activation params (any JSON value).
+   */
+  async runFlow(flowId: string, params: unknown = null): Promise<string> {
+    const raw = await this._runtime._rpc("mobkit/run_flow", {
+      flow_id: flowId,
+      params,
+    });
+    if (typeof raw === "object" && raw !== null) {
+      const runId = (raw as Record<string, unknown>).run_id;
+      if (typeof runId === "string") {
+        return runId;
+      }
+    }
+    throw new Error(`unexpected run_flow response: ${JSON.stringify(raw)}`);
   }
 
   // -- Routing ------------------------------------------------------------
@@ -759,6 +868,70 @@ export class MobHandle {
     return parseReconcileEdgesReport(
       await this._runtime._rpc("mobkit/reconcile_edges"),
     );
+  }
+
+  // -- Mob/run labels — mobkit-side sidecar metadata ----------------------
+
+  /**
+   * Replace the label set associated with this mob.
+   *
+   * Mobkit owns these labels — they are separate from meerkat-mob's
+   * member-level labels. Replacement is wholesale; pass `{}` to clear.
+   */
+  async setMobLabels(labels: Record<string, string>): Promise<void> {
+    await this._runtime._rpc("mobkit/mob_labels/set", { labels });
+  }
+
+  /** Return the label set associated with this mob (or `{}`). */
+  async getMobLabels(): Promise<Record<string, string>> {
+    const raw = await this._runtime._rpc("mobkit/mob_labels/get");
+    if (typeof raw !== "object" || raw === null) return {};
+    const labels = (raw as Record<string, unknown>).labels;
+    if (typeof labels !== "object" || labels === null) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(labels as Record<string, unknown>)) {
+      out[k] = String(v);
+    }
+    return out;
+  }
+
+  /** Remove the label set associated with this mob. */
+  async deleteMobLabels(): Promise<void> {
+    await this._runtime._rpc("mobkit/mob_labels/delete");
+  }
+
+  /**
+   * Replace the label set associated with `runId` under this mob.
+   * Replacement is wholesale (see {@link setMobLabels}).
+   */
+  async setRunLabels(
+    runId: string,
+    labels: Record<string, string>,
+  ): Promise<void> {
+    await this._runtime._rpc("mobkit/run_labels/set", {
+      run_id: runId,
+      labels,
+    });
+  }
+
+  /** Return the label set for `runId` (or `{}`). */
+  async getRunLabels(runId: string): Promise<Record<string, string>> {
+    const raw = await this._runtime._rpc("mobkit/run_labels/get", {
+      run_id: runId,
+    });
+    if (typeof raw !== "object" || raw === null) return {};
+    const labels = (raw as Record<string, unknown>).labels;
+    if (typeof labels !== "object" || labels === null) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(labels as Record<string, unknown>)) {
+      out[k] = String(v);
+    }
+    return out;
+  }
+
+  /** Remove the label set for `runId`. */
+  async deleteRunLabels(runId: string): Promise<void> {
+    await this._runtime._rpc("mobkit/run_labels/delete", { run_id: runId });
   }
 }
 

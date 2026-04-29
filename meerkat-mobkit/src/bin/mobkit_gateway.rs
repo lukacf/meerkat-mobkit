@@ -7,12 +7,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, anyhow};
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, PersistentSessionService};
-use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, MOBKIT_CONTRACT_VERSION,
-    MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, GatewayPeerKeys,
+    MOBKIT_CONTRACT_VERSION, MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata,
+    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
 };
 use meerkat_store::SqliteSessionStore;
 use serde::{Deserialize, Serialize};
@@ -359,7 +360,7 @@ fn build_persistent_session_service(
     context_root: Option<PathBuf>,
 ) -> anyhow::Result<(
     Arc<dyn meerkat_mob::MobSessionService>,
-    Arc<meerkat_runtime::RuntimeSessionAdapter>,
+    Arc<meerkat_runtime::MeerkatMachine>,
 )> {
     let (store_dir, sqlite_path) = resolve_store_dir(store_path);
     fs::create_dir_all(&store_dir)
@@ -396,7 +397,7 @@ fn build_persistent_session_service(
     ));
     let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
         Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-    let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         runtime_store,
         blob_store,
     ));
@@ -636,6 +637,20 @@ async fn run() -> anyhow::Result<()> {
         runtime.set_contact_directory(directory);
     }
 
+    // Load (or mint and persist) the gateway's Ed25519 signing keypair.
+    // Stored under the same state directory the registry lives in, which
+    // already survives across runs. Cross-process peers fetch the
+    // resulting pubkey via `mobkit/peer_pubkey`; inproc-only deployments
+    // never use it but it's cheap to keep one ready.
+    let gateway_state_dir = state_dir().context("resolve gateway state directory")?;
+    let peer_keys = GatewayPeerKeys::load_or_create(&gateway_state_dir).with_context(|| {
+        format!(
+            "failed to load or mint gateway peer key under {}",
+            gateway_state_dir.display()
+        )
+    })?;
+    runtime.set_gateway_peer_keys(peer_keys);
+
     if !used_workspace_config {
         let mut labels = BTreeMap::new();
         labels.insert("surface".to_string(), "tux".to_string());
@@ -644,6 +659,7 @@ async fn run() -> anyhow::Result<()> {
             labels.insert("realm".to_string(), realm.to_string());
         }
         runtime
+            .mob_handle()
             .ensure_member(
                 SpawnMemberSpec::new(ProfileName::from("alpha"), MeerkatId::from("alpha"))
                     .with_labels(labels),

@@ -10,7 +10,7 @@ use serde_json::json;
 use tokio::runtime::RuntimeFlavor;
 use tokio::sync::mpsc::error::TryRecvError;
 
-use crate::mob_handle_runtime::MobRuntimeError;
+use crate::mob_handle_runtime::{MobRuntimeError, send_message_on_mob};
 use crate::runtime::{
     MobkitRuntimeHandle, RuntimeDecisionState, ScheduleDefinition, ScheduleDispatchReport,
     ScheduleValidationError,
@@ -65,16 +65,10 @@ impl UnifiedRuntime {
         let specs = discovery.discover(serde_json::Value::Null).await;
         let spawn_specs: Vec<SpawnMemberSpec> =
             specs.iter().map(discovery_spec_to_spawn_spec).collect();
-        let spawned: Vec<String> = spawn_specs
-            .iter()
-            .map(|s| s.meerkat_id.to_string())
-            .collect();
+        let spawned: Vec<String> = spawn_specs.iter().map(|s| s.identity.to_string()).collect();
 
-        // 3. Spawn discovered members
-        self.mob_runtime.spawn_many(spawn_specs).await?;
-        if let Some(hook) = &self.post_spawn_hook {
-            hook(spawned.clone()).await;
-        }
+        // 3. Spawn discovered members (hook-aware variant fires post_spawn_hook)
+        self.spawn_many(spawn_specs).await?;
 
         // 4. Clear stale managed edges (old topology is gone after reset)
         self.managed_dynamic_edges.write().await.clear();
@@ -132,6 +126,34 @@ impl UnifiedRuntime {
         }
     }
 
+    /// Spawn a detached task that periodically drains mob agent events and
+    /// projects them onto the ConsoleEventStore. Returns a [`JoinHandle`] —
+    /// callers that manage graceful shutdown should abort it before stopping
+    /// the runtime.
+    ///
+    /// Use this when embedding [`UnifiedRuntime`] inside a host-owned axum
+    /// server (so [`Self::serve`]'s built-in drain loop isn't running).
+    /// Without this task the mob event router fills up, agent turns never
+    /// reach the console SSE stream, and event-log consumers miss events.
+    pub fn spawn_event_drain_task(self: std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    break;
+                }
+                if let Err(err) = self.drain_mob_agent_events().await {
+                    if matches!(err, UnifiedRuntimeError::RuntimeShuttingDown) {
+                        break;
+                    }
+                    // Transient drain failures are logged but don't stop the
+                    // task — the next tick will try again.
+                    tracing::warn!(error = %err, "mob agent event drain tick failed");
+                }
+            }
+        })
+    }
+
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
 
@@ -167,7 +189,11 @@ impl UnifiedRuntime {
 
         // Phase 3: Shutdown modules and mob
         let module_shutdown = self.module_runtime.lock().await.shutdown();
-        let mob_stop = self.mob_runtime.stop().await;
+        let mob_stop = self
+            .mob_handle()
+            .stop()
+            .await
+            .map_err(MobRuntimeError::from);
         UnifiedRuntimeShutdownReport {
             drain,
             module_shutdown,
@@ -175,7 +201,13 @@ impl UnifiedRuntime {
         }
     }
 
-    pub(super) async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
+    /// Drain pending agent/module events from the mob event router and
+    /// project them onto the ConsoleEventStore + event log. Callers that
+    /// embed `UnifiedRuntime` inside their own axum server (rather than
+    /// using `.serve()`) must poll this periodically — typically via
+    /// [`UnifiedRuntime::spawn_event_drain_task`] — or console/event-log
+    /// consumers will never see agent responses.
+    pub async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
         let mut disconnected = false;
         let mut ingress_guard = self
             .mob_event_ingress
@@ -243,6 +275,12 @@ impl UnifiedRuntime {
             }
             None => {}
         }
+
+        // Stop the structural mob-events poller task as well.
+        if let Some(task) = self.mob_events_poll_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     fn try_recv_ingress_event(
@@ -274,13 +312,12 @@ impl UnifiedRuntime {
                 continue;
             };
 
-            let injection_result = self
-                .mob_runtime
-                .send_message(
-                    &runtime_injection.member_id,
-                    runtime_injection.message.clone(),
-                )
-                .await;
+            let injection_result = send_message_on_mob(
+                &self.mob_handle(),
+                &runtime_injection.member_id,
+                runtime_injection.message.clone(),
+            )
+            .await;
 
             match injection_result {
                 Ok(session_id) => {

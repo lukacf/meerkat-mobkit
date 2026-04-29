@@ -96,7 +96,7 @@ export function buildPanelConversationKey(
 }
 
 export function buildDockTarget(agent: ConsoleAgent): AgentChatTarget {
-  const subtitle = [agent.profile, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
+  const subtitle = [agent.role, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
   const identity = typeof agent.identity === "string" && agent.identity.trim()
     ? agent.identity.trim()
     : undefined;
@@ -153,7 +153,7 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
 }
 
 function agentGroupKey(agent: ConsoleAgent): string {
-  return agent.group?.trim() || agent.profile?.trim() || agent.kind?.trim() || "Agents";
+  return agent.group?.trim() || agent.role?.trim() || agent.kind?.trim() || "Agents";
 }
 
 function agentStateTone(state: string | undefined): ConsoleSidebarMetaTone {

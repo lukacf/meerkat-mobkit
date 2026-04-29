@@ -59,13 +59,13 @@ class TestSessionBuildOptions:
 class TestDiscoverySpec:
     def test_to_dict(self):
         spec = DiscoverySpec(
-            profile="prof-1",
-            meerkat_id="m-1",
+            role="prof-1",
+            agent_identity="m-1",
             labels={"role": "worker"},
         )
         d = spec.to_dict()
-        assert d["profile"] == "prof-1"
-        assert d["meerkat_id"] == "m-1"
+        assert d["role"] == "prof-1"
+        assert d["agent_identity"] == "m-1"
         assert d["labels"] == {"role": "worker"}
 
 

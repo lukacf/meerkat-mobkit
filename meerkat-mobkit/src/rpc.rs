@@ -927,7 +927,7 @@ pub async fn handle_unified_rpc_json(
 
     let response = match request.method.as_str() {
         "mobkit/status" => {
-            let mob_state = runtime.status();
+            let mob_state = runtime.mob_handle().status().await.ok();
             let is_running = runtime.module_is_running().await;
             let loaded = runtime.loaded_modules().await;
             let mut result = serde_json::json!({
@@ -983,10 +983,13 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/reconcile_edges",
                 "mobkit/rediscover",
                 "mobkit/query_events",
+                "mobkit/mob_events/query",
+                "mobkit/mob_events/subscribe",
                 // Always available: local-only member introspection
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/wire_local",
                 "mobkit/cross_mob/unwire_local",
+                "mobkit/peer_pubkey",
                 "mobkit/member_status",
                 "mobkit/force_cancel_member",
                 "mobkit/spawn_helper",
@@ -994,10 +997,17 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/attach_existing_session",
                 "mobkit/cancel_flow",
                 "mobkit/flow_status",
+                "mobkit/list_flows",
+                "mobkit/run_flow",
                 "mobkit/collect_completed",
-                "mobkit/member_current_session_id",
                 "mobkit/read_session_history",
-                "mobkit/member_session_ref",
+                "mobkit/wait_ready",
+                "mobkit/mob_labels/set",
+                "mobkit/mob_labels/get",
+                "mobkit/mob_labels/delete",
+                "mobkit/run_labels/set",
+                "mobkit/run_labels/get",
+                "mobkit/run_labels/delete",
             ];
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
@@ -1708,6 +1718,12 @@ pub async fn handle_unified_rpc_json(
         "mobkit/query_events" => {
             mob_methods::handle_query_events(runtime, response_id, request.params).await
         }
+        "mobkit/mob_events/query" => {
+            mob_methods::handle_mob_events_query(runtime, response_id, request.params).await
+        }
+        "mobkit/mob_events/subscribe" => {
+            mob_methods::handle_mob_events_subscribe(runtime, response_id, request.params).await
+        }
         "mobkit/cross_mob/wire" => {
             mob_methods::handle_cross_mob_wire(runtime, response_id, &request.params).await
         }
@@ -1729,6 +1745,7 @@ pub async fn handle_unified_rpc_json(
         "mobkit/cross_mob/unwire_local" => {
             mob_methods::handle_cross_mob_unwire_local(runtime, response_id, &request.params).await
         }
+        "mobkit/peer_pubkey" => mob_methods::handle_peer_pubkey(runtime, response_id).await,
         "mobkit/member_status" => {
             mob_methods::handle_member_status(runtime, response_id, &request.params).await
         }
@@ -1750,18 +1767,34 @@ pub async fn handle_unified_rpc_json(
         "mobkit/flow_status" => {
             mob_methods::handle_flow_status(runtime, response_id, &request.params).await
         }
+        "mobkit/list_flows" => mob_methods::handle_list_flows(runtime, response_id).await,
+        "mobkit/run_flow" => {
+            mob_methods::handle_run_flow(runtime, response_id, &request.params).await
+        }
         "mobkit/collect_completed" => {
             mob_methods::handle_collect_completed(runtime, response_id).await
         }
-        "mobkit/member_current_session_id" => {
-            mob_methods::handle_member_current_session_id(runtime, response_id, &request.params)
-                .await
+        "mobkit/wait_ready" => {
+            mob_methods::handle_wait_ready(runtime, response_id, &request.params).await
         }
         "mobkit/read_session_history" => {
             mob_methods::handle_read_session_history(runtime, response_id, &request.params).await
         }
-        "mobkit/member_session_ref" => {
-            mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await
+        "mobkit/mob_labels/set" => {
+            mob_methods::handle_mob_labels_set(runtime, response_id, &request.params).await
+        }
+        "mobkit/mob_labels/get" => mob_methods::handle_mob_labels_get(runtime, response_id).await,
+        "mobkit/mob_labels/delete" => {
+            mob_methods::handle_mob_labels_delete(runtime, response_id).await
+        }
+        "mobkit/run_labels/set" => {
+            mob_methods::handle_run_labels_set(runtime, response_id, &request.params).await
+        }
+        "mobkit/run_labels/get" => {
+            mob_methods::handle_run_labels_get(runtime, response_id, &request.params).await
+        }
+        "mobkit/run_labels/delete" => {
+            mob_methods::handle_run_labels_delete(runtime, response_id, &request.params).await
         }
         // ----- identity-first methods -----
         "mobkit/interact" => {

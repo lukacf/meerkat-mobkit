@@ -45,17 +45,6 @@ async def test_attach_session_rpc_name():
 
 
 @pytest.mark.asyncio
-async def test_member_session_id_rpc_name():
-    """P1 regression: member_session_id must call mobkit/member_current_session_id."""
-    handle, calls = make_mock_mob_handle({
-        "mobkit/member_current_session_id": {"member_id": "w1", "session_id": "sid_abc"}
-    })
-    result = await handle.member_session_id("w1")
-    assert calls[0][0] == "mobkit/member_current_session_id"
-    assert result == "sid_abc"
-
-
-@pytest.mark.asyncio
 async def test_collect_completed_parses_wrapped_response():
     """P2 regression: collect_completed response is {"completed": [...]}, not bare list."""
     handle, calls = make_mock_mob_handle({
@@ -116,11 +105,11 @@ async def test_spawn_helper_rpc_name():
     handle, calls = make_mock_mob_handle({
         "mobkit/spawn_helper": {"output": "done", "tokens_used": 10}
     })
-    result = await handle.spawn_helper("h1", "do stuff", profile="worker")
+    result = await handle.spawn_helper("h1", "do stuff", role="worker")
     assert calls[0][0] == "mobkit/spawn_helper"
-    assert calls[0][1]["meerkat_id"] == "h1"
+    assert calls[0][1]["agent_identity"] == "h1"
     assert calls[0][1]["task"] == "do stuff"
-    assert calls[0][1]["options"]["profile"] == "worker"
+    assert calls[0][1]["options"]["role"] == "worker"
     assert result.output == "done"
 
 
@@ -167,10 +156,80 @@ async def test_flow_status_rpc_name():
 
 
 @pytest.mark.asyncio
-async def test_member_session_ref_rpc_name():
+async def test_list_flows_rpc_name():
+    """list_flows must call mobkit/list_flows and parse the {flows: [...]} envelope."""
     handle, calls = make_mock_mob_handle({
-        "mobkit/member_session_ref": {"member_id": "w1", "session_id": "sid_abc"}
+        "mobkit/list_flows": {"flows": ["demo", "pipeline"]}
     })
-    result = await handle.member_session_ref("w1")
-    assert calls[0][0] == "mobkit/member_session_ref"
-    assert result.session_id == "sid_abc"
+    result = await handle.list_flows()
+    assert calls[0][0] == "mobkit/list_flows"
+    assert calls[0][1] is None
+    assert result == ["demo", "pipeline"]
+
+
+@pytest.mark.asyncio
+async def test_run_flow_rpc_name_and_params():
+    """run_flow must call mobkit/run_flow with flow_id+params and return run_id."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/run_flow": {"run_id": "run_abc123"}
+    })
+    run_id = await handle.run_flow("demo", {"choice": "a"})
+    assert calls[0][0] == "mobkit/run_flow"
+    assert calls[0][1] == {"flow_id": "demo", "params": {"choice": "a"}}
+    assert run_id == "run_abc123"
+
+
+@pytest.mark.asyncio
+async def test_wait_ready_rpc_name():
+    """wait_ready must call mobkit/wait_ready and forward timeout in ms."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/wait_ready": {"ready": [], "timeout": False}
+    })
+    result = await handle.wait_ready(timeout=2.5)
+    assert calls[0][0] == "mobkit/wait_ready"
+    assert calls[0][1] == {"timeout_ms": 2500}
+    assert result == {"ready": [], "timeout": False}
+
+
+
+@pytest.mark.asyncio
+async def test_peer_pubkey_rpc_name():
+    """peer_pubkey must call mobkit/peer_pubkey and unwrap pubkey_b64."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/peer_pubkey": {"pubkey_b64": "AAAA"}
+    })
+    result = await handle.peer_pubkey()
+    assert calls[0][0] == "mobkit/peer_pubkey"
+    assert result == "AAAA"
+
+
+@pytest.mark.asyncio
+async def test_wire_local_forwards_optional_pubkey():
+    """wire_local must forward remote_pubkey_b64 when provided."""
+    handle, calls = make_mock_mob_handle()
+    await handle.wire_local(
+        "alice",
+        "remote-name",
+        "00000000-0000-4000-8000-000000000001",
+        "tcp://10.0.0.2:9001",
+        remote_pubkey_b64="KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=",
+    )
+    assert calls[0][0] == "mobkit/cross_mob/wire_local"
+    params = calls[0][1]
+    assert params["remote_pubkey_b64"] == "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio="
+    assert params["remote_address"] == "tcp://10.0.0.2:9001"
+
+
+@pytest.mark.asyncio
+async def test_wire_local_omits_pubkey_when_absent():
+    """Backward compat: inproc-only callers must not see remote_pubkey_b64
+    leak into the wire-local params dict."""
+    handle, calls = make_mock_mob_handle()
+    await handle.wire_local(
+        "alice",
+        "remote-name",
+        "00000000-0000-4000-8000-000000000001",
+        "inproc://remote-name",
+    )
+    assert calls[0][0] == "mobkit/cross_mob/wire_local"
+    assert "remote_pubkey_b64" not in calls[0][1]

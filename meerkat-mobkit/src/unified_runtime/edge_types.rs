@@ -1,12 +1,11 @@
 //! Edge discovery types and traits for distributed runtime topology.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::future::Future;
 use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
-
-use crate::mob_handle_runtime::MobMemberSnapshot;
 
 /// Error constructing a [`DesiredPeerEdge`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +72,19 @@ impl DesiredPeerEdge {
     }
 }
 
+/// Narrow view of a mob member passed to [`EdgeDiscovery`] implementations.
+///
+/// Projected from meerkat's `MobMemberListEntry` (or from a roster spec in
+/// the legacy topology adapter). Carries only the fields edge-discovery
+/// policies actually use: identity, role, current wiring, labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeMemberView {
+    pub agent_identity: String,
+    pub role: String,
+    pub wired_to: BTreeSet<String>,
+    pub labels: BTreeMap<String, String>,
+}
+
 /// Trait for computing desired peer edges from active mob members.
 ///
 /// The app owns the policy (which agents should be wired). MobKit owns
@@ -80,7 +92,7 @@ impl DesiredPeerEdge {
 pub trait EdgeDiscovery: Send + Sync {
     fn discover_edges(
         &self,
-        active_members: Vec<MobMemberSnapshot>,
+        active_members: Vec<EdgeMemberView>,
     ) -> Pin<Box<dyn Future<Output = Vec<DesiredPeerEdge>> + Send + '_>>;
 }
 

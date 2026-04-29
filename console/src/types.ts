@@ -55,7 +55,7 @@ export interface ConsoleAgent extends SidebarWatchFields {
   session_id?: string;
   label: string;
   kind: string;
-  profile?: string;
+  role?: string;
   state?: string;
   addressability?: IdentityStatusRow["addressability"];
   generation?: number;
@@ -76,7 +76,7 @@ export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatu
   session_id?: string;
   label?: string;
   kind?: string;
-  profile?: string;
+  role?: string;
   state?: string;
   session_id?: string;
   response_phase?: ResponsePhase;
@@ -90,7 +90,7 @@ export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatu
 export interface ConsoleTopologyNode {
   identity?: string;
   label?: string;
-  profile?: string;
+  role?: string;
   state?: string;
   wired_to?: string[];
   addressable?: boolean;

@@ -33,6 +33,7 @@ from .types import (
     MemoryIndexResult,
     MemoryQueryResult,
     MemoryStoreInfo,
+    MobStructuralEvent,
     ModelsCatalogResult,
     ReconcileEdgesReport,
     ReconcileResult,
@@ -597,7 +598,7 @@ class MobHandle:
     # -----------------------------------------------------------------
 
     async def ensure_member(
-        self, member_id: str, profile: str, **kwargs: Any
+        self, member_id: str, role: str, **kwargs: Any
     ) -> MemberSnapshot:
         """Ensure a mob member exists, spawning it if missing.
 
@@ -606,12 +607,12 @@ class MobHandle:
         from an unknown user (e.g. new Slack DM).
 
         Args:
-            member_id: Meerkat ID for the member.
-            profile: Profile name from mob.toml to spawn with.
+            member_id: Agent identity for the member.
+            role: Role (profile name from mob.toml) to spawn with.
             **kwargs: Optional fields (labels, context, resume_session_id,
                       additional_instructions).
         """
-        params: dict[str, Any] = {"profile": profile, "meerkat_id": member_id}
+        params: dict[str, Any] = {"role": role, "agent_identity": member_id}
         if "labels" in kwargs:
             params["labels"] = kwargs["labels"]
         if "context" in kwargs:
@@ -636,7 +637,7 @@ class MobHandle:
             # Find the agent for a specific owner
             agents = await handle.find_members("owner_id", "user-123")
             if agents:
-                meerkat_id = agents[0].meerkat_id
+                agent_identity = agents[0].agent_identity
         """
         raw = await self._runtime._rpc(
             "mobkit/find_members",
@@ -733,6 +734,65 @@ class MobHandle:
         if isinstance(events, list):
             return [PersistedEvent.from_dict(e) for e in events]
         return []
+
+    async def query_mob_events(
+        self,
+        query: "EventQuery | dict[str, Any] | None" = None,
+    ) -> list[MobStructuralEvent]:
+        """Query buffered structural mob events.
+
+        Returns events matching ``query``. Pass the highest seen
+        ``cursor`` as ``EventQuery.after_seq`` to paginate.
+        """
+        from .types import EventQuery, MobStructuralEvent
+        if query is None:
+            params: dict[str, Any] = {}
+        elif isinstance(query, EventQuery):
+            params = query.to_dict()
+        elif isinstance(query, dict):
+            params = dict(query)
+        else:
+            raise TypeError(f"unsupported query type: {type(query).__name__}")
+        raw = await self._runtime._rpc("mobkit/mob_events/query", params)
+        events: list[Any] = []
+        if isinstance(raw, dict):
+            maybe = raw.get("events")
+            if isinstance(maybe, list):
+                events = maybe
+        elif isinstance(raw, list):
+            events = raw
+        return [MobStructuralEvent.from_dict(e) for e in events if isinstance(e, dict)]
+
+    async def subscribe_mob_events(
+        self,
+        query: "EventQuery | dict[str, Any] | None" = None,
+    ) -> AsyncIterator[MobStructuralEvent]:
+        """Replay buffered structural mob events.
+
+        Returns an async iterator over the snapshot frame returned by
+        ``mobkit/mob_events/subscribe``. Live tailing requires the SSE
+        bridge endpoint; this method is the snapshot equivalent of
+        ``query_mob_events`` plus a stream marker for clients that prefer
+        an iterator API.
+        """
+        from .types import EventQuery, MobStructuralEvent
+        if query is None:
+            params: dict[str, Any] = {}
+        elif isinstance(query, EventQuery):
+            params = query.to_dict()
+        elif isinstance(query, dict):
+            params = dict(query)
+        else:
+            raise TypeError(f"unsupported query type: {type(query).__name__}")
+        raw = await self._runtime._rpc("mobkit/mob_events/subscribe", params)
+        events: list[Any] = []
+        if isinstance(raw, dict):
+            maybe = raw.get("events")
+            if isinstance(maybe, list):
+                events = maybe
+        for entry in events:
+            if isinstance(entry, dict):
+                yield MobStructuralEvent.from_dict(entry)
 
     # -----------------------------------------------------------------
     # Roster — member lifecycle
@@ -982,12 +1042,30 @@ class MobHandle:
         )
         return raw if isinstance(raw, dict) else {}
 
+    async def peer_pubkey(self) -> str:
+        """Return the local gateway's Ed25519 signing pubkey, base64.
+
+        Used to bootstrap trust before populating a peer mobkit's
+        contact directory with this gateway's pubkey. Raises
+        :class:`CapabilityUnavailableError` from the underlying
+        transport if the local gateway is inproc-only and never
+        configured a keypair.
+        """
+        raw = await self._runtime._rpc("mobkit/peer_pubkey")
+        if isinstance(raw, dict):
+            value = raw.get("pubkey_b64")
+            if isinstance(value, str):
+                return value
+        return ""
+
     async def wire_local(
         self,
         local_member_id: str,
         remote_comms_name: str,
         remote_peer_id: str,
         remote_address: str,
+        *,
+        remote_pubkey_b64: str | None = None,
     ) -> None:
         """Wire a local member to a remote peer (local side only).
 
@@ -1003,16 +1081,20 @@ class MobHandle:
 
         For cross-process (TCP/UDS), replace the address with the remote
         gateway's transport endpoint — peer_info always returns inproc.
+        Pass ``remote_pubkey_b64`` (base64 of the peer gateway's Ed25519
+        verifying key, fetched via :meth:`peer_pubkey`) to stamp a real
+        signing pubkey on the descriptor; the gateway rejects non-inproc
+        wires without one.
         """
-        await self._runtime._rpc(
-            "mobkit/cross_mob/wire_local",
-            {
-                "local_member_id": local_member_id,
-                "remote_comms_name": remote_comms_name,
-                "remote_peer_id": remote_peer_id,
-                "remote_address": remote_address,
-            },
-        )
+        params: dict[str, str] = {
+            "local_member_id": local_member_id,
+            "remote_comms_name": remote_comms_name,
+            "remote_peer_id": remote_peer_id,
+            "remote_address": remote_address,
+        }
+        if remote_pubkey_b64 is not None:
+            params["remote_pubkey_b64"] = remote_pubkey_b64
+        await self._runtime._rpc("mobkit/cross_mob/wire_local", params)
 
     async def unwire_local(
         self,
@@ -1020,17 +1102,19 @@ class MobHandle:
         remote_comms_name: str,
         remote_peer_id: str,
         remote_address: str,
+        *,
+        remote_pubkey_b64: str | None = None,
     ) -> None:
         """Undo a wire_local — unwire a local member from a previously wired peer (local side only)."""
-        await self._runtime._rpc(
-            "mobkit/cross_mob/unwire_local",
-            {
-                "local_member_id": local_member_id,
-                "remote_comms_name": remote_comms_name,
-                "remote_peer_id": remote_peer_id,
-                "remote_address": remote_address,
-            },
-        )
+        params: dict[str, str] = {
+            "local_member_id": local_member_id,
+            "remote_comms_name": remote_comms_name,
+            "remote_peer_id": remote_peer_id,
+            "remote_address": remote_address,
+        }
+        if remote_pubkey_b64 is not None:
+            params["remote_pubkey_b64"] = remote_pubkey_b64
+        await self._runtime._rpc("mobkit/cross_mob/unwire_local", params)
 
     # -----------------------------------------------------------------
     # Rich member inspection
@@ -1052,19 +1136,19 @@ class MobHandle:
 
     async def spawn_helper(
         self,
-        meerkat_id: str,
+        agent_identity: str,
         task: str,
         *,
-        profile: str | None = None,
+        role: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,
     ) -> HelperResult:
         """Spawn a short-lived helper member and return its result."""
         from .types import HelperResult
-        params: dict[str, Any] = {"meerkat_id": meerkat_id, "task": task}
+        params: dict[str, Any] = {"agent_identity": agent_identity, "task": task}
         options: dict[str, Any] = {}
-        if profile is not None:
-            options["profile"] = profile
+        if role is not None:
+            options["role"] = role
         if runtime_mode is not None:
             options["runtime_mode"] = runtime_mode
         if backend is not None:
@@ -1077,11 +1161,11 @@ class MobHandle:
     async def fork_helper(
         self,
         source_member_id: str,
-        meerkat_id: str,
+        agent_identity: str,
         task: str,
         *,
         fork_context: dict | None = None,
-        profile: str | None = None,
+        role: str | None = None,
         runtime_mode: str | None = None,
         backend: str | None = None,
     ) -> HelperResult:
@@ -1089,14 +1173,14 @@ class MobHandle:
         from .types import HelperResult
         params: dict[str, Any] = {
             "source_member_id": source_member_id,
-            "meerkat_id": meerkat_id,
+            "agent_identity": agent_identity,
             "task": task,
         }
         if fork_context is not None:
             params["fork_context"] = fork_context
         options: dict[str, Any] = {}
-        if profile is not None:
-            options["profile"] = profile
+        if role is not None:
+            options["role"] = role
         if runtime_mode is not None:
             options["runtime_mode"] = runtime_mode
         if backend is not None:
@@ -1112,15 +1196,15 @@ class MobHandle:
 
     async def attach_session(
         self,
-        profile: str,
-        meerkat_id: str,
+        role: str,
+        agent_identity: str,
         session_id: str,
     ) -> RichMemberSnapshot:
         """Attach a member to an existing session (resume mode)."""
         from .types import RichMemberSnapshot
         params: dict[str, Any] = {
-            "profile": profile,
-            "meerkat_id": meerkat_id,
+            "role": role,
+            "agent_identity": agent_identity,
             "session_id": session_id,
         }
         raw = await self._runtime._rpc("mobkit/attach_existing_session", params)
@@ -1144,6 +1228,85 @@ class MobHandle:
             return None
         return MobRunSnapshot.from_dict(raw)
 
+    async def list_flows(self) -> list[str]:
+        """List all configured flow IDs in this mob definition.
+
+        Relays meerkat 0.6's ``MobHandle::list_flows``. Returns the flow IDs
+        declared by the mob's ``[flows.*]`` tables, in unspecified order.
+        """
+        raw = await self._runtime._rpc("mobkit/list_flows")
+        if isinstance(raw, dict):
+            flows = raw.get("flows", [])
+        elif isinstance(raw, list):
+            flows = raw
+        else:
+            flows = []
+        return [str(flow_id) for flow_id in flows]
+
+    async def run_flow(self, flow_id: str, params: Any = None) -> str:
+        """Start a flow run and return its run ID.
+
+        Relays meerkat 0.6's ``MobHandle::run_flow``. ``params`` is forwarded
+        verbatim as the flow's activation params (any JSON value, defaults to
+        ``None``). The returned ``run_id`` can be passed to
+        :meth:`flow_status` and :meth:`cancel_flow`.
+        """
+        rpc_params: dict[str, Any] = {"flow_id": flow_id, "params": params}
+        raw = await self._runtime._rpc("mobkit/run_flow", rpc_params)
+        if isinstance(raw, dict):
+            run_id = raw.get("run_id")
+            if isinstance(run_id, str):
+                return run_id
+        raise RuntimeError(f"unexpected run_flow response: {raw!r}")
+
+    # -----------------------------------------------------------------
+    # Mob/run labels — mobkit-side sidecar metadata
+    # -----------------------------------------------------------------
+
+    async def set_mob_labels(self, labels: dict[str, str]) -> None:
+        """Replace the label set associated with this mob.
+
+        Mobkit owns these labels — they are not part of meerkat-mob.
+        Replacement is wholesale; existing labels not present in
+        ``labels`` are dropped. Pass ``{}`` to clear.
+        """
+        await self._runtime._rpc("mobkit/mob_labels/set", {"labels": dict(labels)})
+
+    async def get_mob_labels(self) -> dict[str, str]:
+        """Return the label set associated with this mob (or ``{}``)."""
+        raw = await self._runtime._rpc("mobkit/mob_labels/get")
+        if isinstance(raw, dict):
+            labels = raw.get("labels", {})
+            if isinstance(labels, dict):
+                return {str(k): str(v) for k, v in labels.items()}
+        return {}
+
+    async def delete_mob_labels(self) -> None:
+        """Remove the label set associated with this mob."""
+        await self._runtime._rpc("mobkit/mob_labels/delete")
+
+    async def set_run_labels(self, run_id: str, labels: dict[str, str]) -> None:
+        """Replace the label set associated with ``run_id`` under this mob.
+
+        Replacement is wholesale (see :meth:`set_mob_labels`).
+        """
+        await self._runtime._rpc(
+            "mobkit/run_labels/set", {"run_id": run_id, "labels": dict(labels)}
+        )
+
+    async def get_run_labels(self, run_id: str) -> dict[str, str]:
+        """Return the label set for ``run_id`` (or ``{}``)."""
+        raw = await self._runtime._rpc("mobkit/run_labels/get", {"run_id": run_id})
+        if isinstance(raw, dict):
+            labels = raw.get("labels", {})
+            if isinstance(labels, dict):
+                return {str(k): str(v) for k, v in labels.items()}
+        return {}
+
+    async def delete_run_labels(self, run_id: str) -> None:
+        """Remove the label set for ``run_id``."""
+        await self._runtime._rpc("mobkit/run_labels/delete", {"run_id": run_id})
+
     # -----------------------------------------------------------------
     # Batch
     # -----------------------------------------------------------------
@@ -1161,25 +1324,33 @@ class MobHandle:
         return results
 
     # -----------------------------------------------------------------
-    # Session introspection
+    # Server-side readiness
     # -----------------------------------------------------------------
 
-    async def member_session_id(self, member_id: str) -> str | None:
-        """Return the current session ID for a member, or None."""
-        raw = await self._runtime._rpc("mobkit/member_current_session_id", {"member_id": member_id})
-        if isinstance(raw, dict):
-            return raw.get("session_id")
-        return None
+    async def wait_ready(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Wait until all current mob members are startup-ready for orchestration.
 
-    async def member_session_ref(self, member_id: str) -> MemberSessionRef | None:
-        """Return the session reference for a member, or None."""
-        from .types import MemberSessionRef
-        raw = await self._runtime._rpc("mobkit/member_session_ref", {"member_id": member_id})
-        if raw is None:
-            return None
-        if isinstance(raw, dict) and raw.get("session_id") is None:
-            return None
-        return MemberSessionRef.from_dict(raw)
+        Relays meerkat 0.6's ``MobHandle::wait_for_ready``. Returns a dict
+        ``{"ready": [{"agent_identity", "snapshot"}], "timeout": bool}``.
+        ``timeout=True`` means partial readiness within the deadline; the
+        ``ready`` list will be empty in that case.
+
+        :param timeout: optional seconds to wait. ``None`` blocks indefinitely.
+        """
+        params: dict[str, Any] = {}
+        if timeout is not None:
+            params["timeout_ms"] = int(timeout * 1000)
+        raw = await self._runtime._rpc("mobkit/wait_ready", params)
+        if not isinstance(raw, dict):
+            return {"ready": [], "timeout": False}
+        return {
+            "ready": list(raw.get("ready", [])),
+            "timeout": bool(raw.get("timeout", False)),
+        }
 
     # -----------------------------------------------------------------
     # Polling helpers (client-side)

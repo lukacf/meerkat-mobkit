@@ -128,25 +128,25 @@ class TestSpawnResult:
         r = SpawnResult.from_dict({"accepted": True, "module_id": "mod-1"})
         assert r.accepted is True
         assert r.module_id == "mod-1"
-        assert r.meerkat_id is None
-        assert r.profile is None
+        assert r.agent_identity is None
+        assert r.role is None
 
     def test_from_dict_discovery_spawn(self):
         r = SpawnResult.from_dict({
             "accepted": True,
             "module_id": "mod-1",
-            "meerkat_id": "mk-123",
-            "profile": "assistant",
+            "agent_identity": "mk-123",
+            "role": "assistant",
         })
-        assert r.meerkat_id == "mk-123"
-        assert r.profile == "assistant"
+        assert r.agent_identity == "mk-123"
+        assert r.role == "assistant"
 
     def test_from_dict_no_module_id(self):
         """Rust discovery-path may not return module_id."""
-        r = SpawnResult.from_dict({"accepted": True, "meerkat_id": "mk-123"})
+        r = SpawnResult.from_dict({"accepted": True, "agent_identity": "mk-123"})
         assert r.accepted is True
         assert r.module_id == ""
-        assert r.meerkat_id == "mk-123"
+        assert r.agent_identity == "mk-123"
 
 
 class TestSpawnMemberResult:
@@ -301,15 +301,15 @@ class TestMemberSnapshot:
     def test_from_dict(self):
         r = MemberSnapshot.from_dict(
             {
-                "meerkat_id": "agent-1",
-                "profile": "worker",
+                "agent_identity": "agent-1",
+                "role": "worker",
                 "state": "active",
                 "wired_to": ["agent-2"],
                 "labels": {"role": "lead"},
             }
         )
-        assert r.meerkat_id == "agent-1"
-        assert r.profile == "worker"
+        assert r.agent_identity == "agent-1"
+        assert r.role == "worker"
         assert r.state == "active"
         assert r.wired_to == ["agent-2"]
         assert r.labels == {"role": "lead"}

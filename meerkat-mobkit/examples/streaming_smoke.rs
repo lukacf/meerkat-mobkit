@@ -21,7 +21,8 @@ use std::time::Duration;
 use futures::StreamExt;
 use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::{MeerkatId, MobBuilder, MobDefinition, MobStorage, ProfileName};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobBuilder, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,21 +67,19 @@ comms = true
         .await?;
 
     handle
-        .spawn(
-            ProfileName::from("lead"),
-            MeerkatId::from("lead-1"),
-            Some(meerkat_core::ContentInput::Text(
-                "You are concise. 1 short paragraph max.".to_string(),
-            )),
+        .spawn_spec(
+            SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("lead-1"))
+                .with_initial_message(meerkat_core::ContentInput::Text(
+                    "You are concise. 1 short paragraph max.".to_string(),
+                )),
         )
         .await?;
     handle
-        .spawn(
-            ProfileName::from("worker"),
-            MeerkatId::from("worker-1"),
-            Some(meerkat_core::ContentInput::Text(
-                "You are a helper worker.".to_string(),
-            )),
+        .spawn_spec(
+            SpawnMemberSpec::new(ProfileName::from("worker"), MeerkatId::from("worker-1"))
+                .with_initial_message(meerkat_core::ContentInput::Text(
+                    "You are a helper worker.".to_string(),
+                )),
         )
         .await?;
     handle
@@ -106,7 +105,7 @@ comms = true
     println!("STREAM_SMOKE: message sent to lead-1");
 
     // 3) Mob-wide merged attributed event stream
-    let mut mob_router = handle.subscribe_mob_events();
+    let mut mob_router = handle.subscribe_mob_events().await;
     println!("STREAM_SMOKE: subscribed to mob event router");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(35);
@@ -140,7 +139,7 @@ comms = true
                     println!(
                         "MOB_ROUTER source={} profile={} payload={:?} seq={}",
                         attr.source,
-                        attr.profile,
+                        attr.role,
                         attr.envelope.payload,
                         attr.envelope.seq,
                     );

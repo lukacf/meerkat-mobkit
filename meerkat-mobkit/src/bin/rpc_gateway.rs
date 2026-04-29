@@ -245,7 +245,7 @@ impl CallbackToolDispatcher {
             .into_iter()
             .map(|name| {
                 Arc::new(ToolDef {
-                    name,
+                    name: name.into(),
                     description: "Python callback tool".to_string(),
                     input_schema: json!({"type": "object"}),
                     provenance: None,
@@ -809,7 +809,7 @@ external_addressable = true
             ));
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
-        let adapter = Arc::new(meerkat_runtime::RuntimeSessionAdapter::persistent(
+        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             runtime_store,
             blob_store,
         ));

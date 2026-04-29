@@ -152,16 +152,16 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
 
             # Ensure personal (addressable) and triage (internal) members
             luka = await handle.ensure_member(
-                "luka", profile="personal", labels={"role": "family"},
+                "luka", role="personal", labels={"role": "family"},
             )
-            assert luka.meerkat_id == "luka"
-            assert luka.profile == "personal"
+            assert luka.agent_identity == "luka"
+            assert luka.role == "personal"
 
             triage = await handle.ensure_member(
-                "triage-main", profile="triage", labels={"role": "triage"},
+                "triage-main", role="triage", labels={"role": "triage"},
             )
-            assert triage.meerkat_id == "triage-main"
-            assert triage.profile == "triage"
+            assert triage.agent_identity == "triage-main"
+            assert triage.role == "triage"
 
             # Send a real message to the personal agent — triggers LLM call
             result = await handle.send("luka", message="Say hello in exactly three words.")
@@ -177,7 +177,7 @@ class TestHC01FamilyBootstrapAndMixedDelivery:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("triage-main", profile="triage")
+            await handle.ensure_member("triage-main", role="triage")
             # Triage profile has external_addressable=false — send should be rejected
             with pytest.raises(RpcError, match="not externally addressable"):
                 await handle.send("triage-main", message="Route this request.")
@@ -225,7 +225,7 @@ class TestHC02SessionContinuity:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("luka", profile="personal")
+            await handle.ensure_member("luka", role="personal")
 
             r1 = await handle.send("luka", message="Remember the number 42.")
             r2 = await handle.send("luka", message="What number did I just mention?")
@@ -241,12 +241,12 @@ class TestHC02SessionContinuity:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            snap1 = await handle.ensure_member("luka", profile="personal")
+            snap1 = await handle.ensure_member("luka", role="personal")
             await handle.send("luka", message="Hello")
             snap2 = await handle.get_member("luka")
 
-            assert snap1.meerkat_id == snap2.meerkat_id == "luka"
-            assert snap1.profile == snap2.profile == "personal"
+            assert snap1.agent_identity == snap2.agent_identity == "luka"
+            assert snap1.role == snap2.role == "personal"
         finally:
             await rt.shutdown()
 
@@ -267,16 +267,16 @@ class TestHC03ReconcileNewMember:
         try:
             handle = rt.mob_handle()
 
-            await handle.ensure_member("luka", profile="personal")
-            await handle.ensure_member("louise", profile="personal")
+            await handle.ensure_member("luka", role="personal")
+            await handle.ensure_member("louise", role="personal")
 
             r1 = await handle.send("luka", message="Remember: my favorite color is blue.")
             session_before = r1.session_id
 
             # Add a third member
-            olivia = await handle.ensure_member("olivia", profile="personal")
-            assert olivia.meerkat_id == "olivia"
-            assert olivia.profile == "personal"
+            olivia = await handle.ensure_member("olivia", role="personal")
+            assert olivia.agent_identity == "olivia"
+            assert olivia.role == "personal"
 
             # Existing member session_id unchanged
             r2 = await handle.send("luka", message="What is my favorite color?")
@@ -295,12 +295,12 @@ class TestHC03ReconcileNewMember:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("luka", profile="personal")
-            await handle.ensure_member("louise", profile="personal")
-            await handle.ensure_member("olivia", profile="personal")
+            await handle.ensure_member("luka", role="personal")
+            await handle.ensure_member("louise", role="personal")
+            await handle.ensure_member("olivia", role="personal")
 
             members = await handle.list_members()
-            ids = {m.meerkat_id for m in members}
+            ids = {m.agent_identity for m in members}
             assert "luka" in ids
             assert "louise" in ids
             assert "olivia" in ids
@@ -325,15 +325,15 @@ class TestHC04HotUpdateMetadata:
             handle = rt.mob_handle()
 
             snap1 = await handle.ensure_member(
-                "luka", profile="personal", labels={"tier": "free"},
+                "luka", role="personal", labels={"tier": "free"},
             )
             assert snap1.labels.get("tier") == "free"
 
             # Re-ensure with SAME labels is idempotent
             snap2 = await handle.ensure_member(
-                "luka", profile="personal", labels={"tier": "free"},
+                "luka", role="personal", labels={"tier": "free"},
             )
-            assert snap2.meerkat_id == "luka"
+            assert snap2.agent_identity == "luka"
             assert snap2.labels.get("tier") == "free"
         finally:
             await rt.shutdown()
@@ -345,17 +345,17 @@ class TestHC04HotUpdateMetadata:
         try:
             handle = rt.mob_handle()
             await handle.ensure_member(
-                "luka", profile="personal", labels={"role": "family"},
+                "luka", role="personal", labels={"role": "family"},
             )
             await handle.ensure_member(
-                "triage-main", profile="triage", labels={"role": "triage"},
+                "triage-main", role="triage", labels={"role": "triage"},
             )
 
             family = await handle.find_members("role", "family")
-            assert any(m.meerkat_id == "luka" for m in family)
+            assert any(m.agent_identity == "luka" for m in family)
 
             triage = await handle.find_members("role", "triage")
-            assert any(m.meerkat_id == "triage-main" for m in triage)
+            assert any(m.agent_identity == "triage-main" for m in triage)
         finally:
             await rt.shutdown()
 
@@ -375,7 +375,7 @@ class TestHC05DurableRespawn:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("respawn-target", profile="personal")
+            await handle.ensure_member("respawn-target", role="personal")
 
             # Respawn the member immediately
             await handle.respawn_member("respawn-target")
@@ -395,12 +395,12 @@ class TestHC05DurableRespawn:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("respawn-target", profile="personal")
+            await handle.ensure_member("respawn-target", role="personal")
             await handle.respawn_member("respawn-target")
 
             snap = await handle.get_member("respawn-target")
-            assert snap.meerkat_id == "respawn-target"
-            assert snap.state == "active"
+            assert snap.agent_identity == "respawn-target"
+            assert snap.state == "Active"
         finally:
             await rt.shutdown()
 
@@ -422,18 +422,18 @@ class TestHC06RetireStopsWork:
             handle = rt.mob_handle()
 
             # Use an addressable profile so we can verify it's active first
-            await handle.ensure_member("retire-target", profile="personal")
+            await handle.ensure_member("retire-target", role="personal")
             snap = await handle.get_member("retire-target")
-            assert snap.state == "active"
+            assert snap.state == "Active"
 
             # Retire the member
             await handle.retire_member("retire-target")
 
             # After retire, the member should be in retiring state or removed
             members = await handle.list_members()
-            target = [m for m in members if m.meerkat_id == "retire-target"]
+            target = [m for m in members if m.agent_identity == "retire-target"]
             if target:
-                assert target[0].state == "retiring"
+                assert target[0].state == "Retiring"
         finally:
             await rt.shutdown()
 
@@ -443,7 +443,7 @@ class TestHC06RetireStopsWork:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("gate-main", profile="gatekeeper")
+            await handle.ensure_member("gate-main", role="gatekeeper")
             # Gatekeeper profile has external_addressable=false
             with pytest.raises(RpcError, match="not externally addressable"):
                 await handle.send("gate-main", message="Hello gatekeeper.")
@@ -466,7 +466,7 @@ class TestHC07ResetVsDelete:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("luka", profile="personal")
+            await handle.ensure_member("luka", role="personal")
             r1 = await handle.send(
                 "luka", message="Remember: the secret word is 'mango'.",
             )
@@ -474,8 +474,8 @@ class TestHC07ResetVsDelete:
 
             # Retire, then re-ensure (simulates delete + reappearance)
             await handle.retire_member("luka")
-            new_snap = await handle.ensure_member("luka", profile="personal")
-            assert new_snap.meerkat_id == "luka"
+            new_snap = await handle.ensure_member("luka", role="personal")
+            assert new_snap.agent_identity == "luka"
 
             # New session should be different (fresh agent, no history)
             r2 = await handle.send("luka", message="Do you know any secret word?")
@@ -490,14 +490,14 @@ class TestHC07ResetVsDelete:
         rt = await _boot_runtime(state_dir, mob_toml)
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("luka", profile="personal")
+            await handle.ensure_member("luka", role="personal")
             await handle.send("luka", message="Hello")
 
             await handle.respawn_member("luka")
             snap = await handle.get_member("luka")
-            assert snap.meerkat_id == "luka"
-            assert snap.profile == "personal"
-            assert snap.state == "active"
+            assert snap.agent_identity == "luka"
+            assert snap.role == "personal"
+            assert snap.state == "Active"
         finally:
             await rt.shutdown()
 
@@ -523,7 +523,7 @@ class TestHC08PersistentStateRestart:
         rt1 = await _boot_runtime(sd, str(mob_toml_path))
         try:
             handle1 = rt1.mob_handle()
-            await handle1.ensure_member("luka", profile="personal")
+            await handle1.ensure_member("luka", role="personal")
             r1 = await handle1.send("luka", message="Remember: the magic number is 7.")
             assert r1.accepted
         finally:
@@ -541,8 +541,8 @@ class TestHC08PersistentStateRestart:
             handle2 = rt2.mob_handle()
 
             # Re-ensure the same member — gateway boots successfully from persistent state
-            snap = await handle2.ensure_member("luka", profile="personal")
-            assert snap.meerkat_id == "luka"
+            snap = await handle2.ensure_member("luka", role="personal")
+            assert snap.agent_identity == "luka"
 
             # Can send a follow-up message (new session at mob level, but gateway boots OK)
             r2 = await handle2.send("luka", message="What was the magic number?")
@@ -562,7 +562,7 @@ class TestHC08PersistentStateRestart:
         rt = await _boot_runtime(sd, str(mob_toml_path))
         try:
             handle = rt.mob_handle()
-            await handle.ensure_member("luka", profile="personal")
+            await handle.ensure_member("luka", role="personal")
             await handle.send("luka", message="Hello")
         finally:
             await rt.shutdown()

@@ -13,7 +13,8 @@ use meerkat_client::LlmClient;
 use meerkat_core::error::ToolError;
 use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
 use meerkat_core::{ToolCallView, ToolDef, ToolDispatchOutcome, ToolResult};
-use meerkat_mob::{MeerkatId, MobDefinition, ProfileName, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, ProfileName, SpawnMemberSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -322,7 +323,7 @@ fn default_delivery_target_module() -> String {
 }
 
 pub fn incident_model() -> String {
-    std::env::var("RKAT_INCIDENT_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string())
+    std::env::var("RKAT_INCIDENT_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string())
 }
 
 fn incident_definition() -> Result<MobDefinition> {
@@ -689,13 +690,13 @@ impl ScenarioEdgeDiscovery {
 impl EdgeDiscovery for ScenarioEdgeDiscovery {
     fn discover_edges(
         &self,
-        active_members: Vec<crate::mob_handle_runtime::MobMemberSnapshot>,
+        active_members: Vec<crate::unified_runtime::edge_types::EdgeMemberView>,
     ) -> Pin<Box<dyn futures::Future<Output = Vec<DesiredPeerEdge>> + Send + '_>> {
         let desired = Arc::clone(&self.desired);
         Box::pin(async move {
             let active = active_members
                 .into_iter()
-                .map(|member| member.meerkat_id)
+                .map(|member| member.agent_identity)
                 .collect::<BTreeSet<_>>();
             desired
                 .iter()
@@ -762,14 +763,14 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
         vec![
             Arc::new(ToolDef {
-                name: "inspect_service".to_string(),
+                name: "inspect_service".into(),
                 description: "Inspect the current health and saturation of a named service"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<InspectServiceArgs>(),
                 provenance: None,
             }),
             Arc::new(ToolDef {
-                name: "analyze_customer_impact".to_string(),
+                name: "analyze_customer_impact".into(),
                 description: "Estimate customer-facing impact for a named merchant cohort"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<AnalyzeImpactArgs>(),
@@ -1038,9 +1039,10 @@ mod tests {
 
         bundle
             .runtime
-            .mob_runtime()
+            .mob_handle()
             .stop()
             .await
+            .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
             .expect("stop runtime");
 
         assert!(
@@ -1069,9 +1071,10 @@ mod tests {
 
             bundle
                 .runtime
-                .mob_runtime()
+                .mob_handle()
                 .stop()
                 .await
+                .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
                 .expect("stop runtime");
             (after_250ms, after_1s, after_5s)
         }
@@ -1119,18 +1122,19 @@ mod tests {
         let calls = client.calls();
         let prompts = client.prompts();
         let traces = take_runtime_turn_traces();
-        let identities_by_session = bundle
-            .runtime
-            .mob_runtime()
-            .discover()
-            .await
-            .into_iter()
-            .filter_map(|member| {
-                member
-                    .session_id
-                    .map(|session_id| (session_id, member.meerkat_id))
-            })
-            .collect::<std::collections::BTreeMap<_, _>>();
+        let runtime_handle = bundle.runtime.mob_handle();
+        let entries = runtime_handle.list_members_including_retiring().await;
+        let mut identities_by_session: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        for entry in entries {
+            if let Some(session_id) = runtime_handle
+                .resolve_bridge_session_id(&entry.agent_identity)
+                .await
+            {
+                identities_by_session
+                    .insert(session_id.to_string(), entry.agent_identity.to_string());
+            }
+        }
 
         eprintln!("incident startup turn count: {}", calls);
         eprintln!("incident startup runtime apply traces: {}", traces.len());
@@ -1155,9 +1159,10 @@ mod tests {
 
         bundle
             .runtime
-            .mob_runtime()
+            .mob_handle()
             .stop()
             .await
+            .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
             .expect("stop runtime");
 
         assert_eq!(
@@ -1181,18 +1186,18 @@ mod tests {
 
         let commander_session_id = bundle
             .runtime
-            .mob_runtime()
-            .member_current_session_id("incident-commander")
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::ids::MeerkatId::from("incident-commander"))
             .await
-            .expect("commander current session id")
-            .expect("commander session");
+            .expect("commander session")
+            .to_string();
         let scribe_session_id = bundle
             .runtime
-            .mob_runtime()
-            .member_current_session_id("scribe")
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::ids::MeerkatId::from("scribe"))
             .await
-            .expect("scribe current session id")
-            .expect("scribe session");
+            .expect("scribe session")
+            .to_string();
 
         let commander_state_before = bundle
             .runtime
@@ -1232,38 +1237,43 @@ mod tests {
             .expect("scribe comms runtime")
             .expect("scribe comms runtime present");
 
-        let scribe_peer_name = commander_comms
+        let scribe_peer_route = commander_comms
             .peers()
             .await
             .into_iter()
             .find(|entry| entry.name.as_str().contains("/scribe/"))
-            .map(|entry| entry.name)
+            .map(|entry| {
+                meerkat_core::comms::PeerRoute::with_display_name(entry.peer_id, entry.name)
+            })
             .expect("scribe peer visible to commander");
-        let commander_peer_name = scribe_comms
+        let commander_peer_route = scribe_comms
             .peers()
             .await
             .into_iter()
             .find(|entry| entry.name.as_str().contains("/commander/"))
-            .map(|entry| entry.name)
+            .map(|entry| {
+                meerkat_core::comms::PeerRoute::with_display_name(entry.peer_id, entry.name)
+            })
             .expect("commander peer visible to scribe");
 
         let request_receipt = commander_comms
             .send(CommsCommand::PeerRequest {
-                to: scribe_peer_name,
+                to: scribe_peer_route,
                 intent: "request_summary".to_string(),
                 params: json!({ "body": "Summarize the incident." }),
                 handling_mode: meerkat_core::types::HandlingMode::Queue,
+                stream: meerkat_core::comms::InputStreamMode::None,
             })
             .await
             .expect("send request to scribe");
         let request_id = match request_receipt {
-            SendReceipt::PeerRequestSent { request_id, .. } => request_id,
+            SendReceipt::PeerRequestSent { interaction_id, .. } => interaction_id,
             other => panic!("expected peer request receipt, got {other:?}"),
         };
 
         let response_receipt = scribe_comms
             .send(CommsCommand::PeerResponse {
-                to: commander_peer_name,
+                to: commander_peer_route,
                 in_reply_to: request_id,
                 status: meerkat_core::ResponseStatus::Completed,
                 result: json!({
@@ -1286,11 +1296,11 @@ mod tests {
 
         let commander_session_id_after = bundle
             .runtime
-            .mob_runtime()
-            .member_current_session_id("incident-commander")
+            .mob_handle()
+            .resolve_bridge_session_id(&meerkat_mob::ids::MeerkatId::from("incident-commander"))
             .await
-            .expect("commander current session id after")
-            .expect("commander session after");
+            .expect("commander session after")
+            .to_string();
         let commander_state_after = bundle
             .runtime
             .mob_runtime()
@@ -1321,9 +1331,10 @@ mod tests {
 
         bundle
             .runtime
-            .mob_runtime()
+            .mob_handle()
             .stop()
             .await
+            .map_err(crate::mob_handle_runtime::MobRuntimeError::from)
             .expect("stop runtime");
 
         assert!(

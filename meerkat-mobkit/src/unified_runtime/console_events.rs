@@ -239,15 +239,23 @@ impl ConsoleEventStore {
         origin: &str,
         content: &str,
     ) -> Result<(), &'static str> {
-        {
+        // If projection later fails to resolve an identity (e.g. runtime id
+        // format changes), stale pending entries can accumulate. Rather than
+        // reject new interactions once the per-identity cap is hit — which
+        // would deadlock legitimate traffic behind orphans — evict the oldest
+        // entry and surface an `interaction_failed` event so the client
+        // stops waiting.
+        let evicted = {
             let mut state = self.state.write().await;
             let queue = state
                 .pending_by_identity
                 .entry(identity.to_string())
                 .or_default();
-            if queue.len() >= PENDING_INTERACTION_CAP {
-                return Err("interaction queue at capacity");
-            }
+            let evicted = if queue.len() >= PENDING_INTERACTION_CAP {
+                queue.pop_front()
+            } else {
+                None
+            };
             queue.push_back(PendingInteraction {
                 interaction_id: interaction_id.to_string(),
                 origin: origin.to_string(),
@@ -263,6 +271,25 @@ impl ConsoleEventStore {
             state
                 .response_phase_by_identity
                 .insert(identity.to_string(), Some("waiting".to_string()));
+            evicted
+        };
+        if let Some(evicted) = evicted {
+            tracing::warn!(
+                identity = %identity,
+                interaction_id = %evicted.interaction_id,
+                "evicting stalled pending interaction: per-identity queue at cap"
+            );
+            self.append(
+                identity,
+                Some(evicted.interaction_id),
+                "interaction_failed",
+                json!({
+                    "reason": "queue_overflow",
+                    "origin": evicted.origin,
+                    "content": evicted.content,
+                }),
+            )
+            .await;
         }
         Ok(())
     }
@@ -387,6 +414,11 @@ impl ConsoleEventStore {
                 .cloned()
                 .or_else(|| derive_identity_from_runtime_id(agent_id));
             let Some(identity) = identity else {
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    event_type = %event_type,
+                    "dropping agent event: runtime id did not resolve to a registered identity"
+                );
                 return;
             };
             state
@@ -513,12 +545,21 @@ fn current_time_ms() -> u64 {
         .unwrap_or_default()
 }
 
-/// Runtime IDs currently follow `{identity}:gen{digits}` in the identity runtime.
-/// If that format changes, this projection returns `None` and the caller must
-/// fall back to explicit runtime-to-identity registration instead of guessing.
+/// Strip a runtime-generation suffix from a runtime id, returning the
+/// durable identity. Real agent events from meerkat-mob 0.6 use
+/// `{identity}:{N}` (`AgentRuntimeId`'s Display form).
+///
+/// Identities themselves often contain colons (e.g. `personal:alice@x.com`),
+/// so we only strip the LAST colon-delimited segment and only when that
+/// segment parses as a generation suffix. If the format changes, this
+/// returns `None` and the caller must fall back to explicit
+/// runtime-to-identity registration instead of guessing.
 fn derive_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
-    let (identity, generation_suffix) = runtime_id.rsplit_once(":gen")?;
-    if generation_suffix.is_empty() || !generation_suffix.chars().all(|ch| ch.is_ascii_digit()) {
+    let (identity, suffix) = runtime_id.rsplit_once(':')?;
+    if identity.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    if !suffix.chars().all(|ch| ch.is_ascii_digit()) {
         return None;
     }
     Some(identity.to_string())
@@ -637,7 +678,7 @@ mod tests {
         store
             .reserve_interaction(
                 "identity:luka",
-                Some("identity:luka:gen0"),
+                Some("identity:luka:0"),
                 "turn-1",
                 "console:panel-1",
                 "hello",
@@ -651,7 +692,7 @@ mod tests {
                 source: "agent".to_string(),
                 timestamp_ms: 10,
                 event: UnifiedEvent::Agent {
-                    agent_id: "identity:luka:gen0".to_string(),
+                    agent_id: "identity:luka:0".to_string(),
                     event_type: "text_delta".to_string(),
                     payload: Some(json!({ "delta": "hi" })),
                 },
@@ -663,7 +704,7 @@ mod tests {
                 source: "agent".to_string(),
                 timestamp_ms: 11,
                 event: UnifiedEvent::Agent {
-                    agent_id: "identity:luka:gen0".to_string(),
+                    agent_id: "identity:luka:0".to_string(),
                     event_type: "run_completed".to_string(),
                     payload: Some(json!({ "text": "done" })),
                 },
@@ -692,7 +733,7 @@ mod tests {
         store
             .reserve_interaction(
                 "identity:luka",
-                Some("identity:luka:gen0"),
+                Some("identity:luka:0"),
                 "turn-1",
                 "console:panel-1",
                 "hello",
@@ -727,7 +768,7 @@ mod tests {
         store
             .reserve_interaction(
                 "identity:luka",
-                Some("identity:luka:gen0"),
+                Some("identity:luka:0"),
                 "turn-early",
                 "console:panel-1",
                 "hello",
@@ -740,7 +781,7 @@ mod tests {
                 source: "agent".to_string(),
                 timestamp_ms: 10,
                 event: UnifiedEvent::Agent {
-                    agent_id: "identity:luka:gen0".to_string(),
+                    agent_id: "identity:luka:0".to_string(),
                     event_type: "text_delta".to_string(),
                     payload: Some(json!({ "delta": "hi" })),
                 },
@@ -771,7 +812,7 @@ mod tests {
                 source: "agent".to_string(),
                 timestamp_ms: 10,
                 event: UnifiedEvent::Agent {
-                    agent_id: "payments-sre:gen0".to_string(),
+                    agent_id: "payments-sre:0".to_string(),
                     event_type: "run_started".to_string(),
                     payload: Some(json!({ "prompt": "peer request" })),
                 },
@@ -783,7 +824,7 @@ mod tests {
                 source: "agent".to_string(),
                 timestamp_ms: 11,
                 event: UnifiedEvent::Agent {
-                    agent_id: "payments-sre:gen0".to_string(),
+                    agent_id: "payments-sre:0".to_string(),
                     event_type: "text_delta".to_string(),
                     payload: Some(json!({ "delta": "ack" })),
                 },
@@ -795,7 +836,7 @@ mod tests {
                 source: "agent".to_string(),
                 timestamp_ms: 12,
                 event: UnifiedEvent::Agent {
-                    agent_id: "payments-sre:gen0".to_string(),
+                    agent_id: "payments-sre:0".to_string(),
                     event_type: "run_completed".to_string(),
                     payload: Some(json!({ "text": "acknowledged" })),
                 },
@@ -847,13 +888,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reserve_interaction_rejects_when_identity_queue_reaches_cap() {
+    async fn reserve_interaction_evicts_oldest_when_identity_queue_reaches_cap() {
         let store = ConsoleEventStore::new();
         for idx in 0..PENDING_INTERACTION_CAP {
             store
                 .reserve_interaction(
                     "identity:luka",
-                    Some("identity:luka:gen0"),
+                    Some("identity:luka:0"),
                     &format!("turn-{idx}"),
                     "console:panel-1",
                     "hello",
@@ -862,17 +903,27 @@ mod tests {
                 .expect("queue should accept within cap");
         }
 
-        let err = store
+        store
             .reserve_interaction(
                 "identity:luka",
-                Some("identity:luka:gen0"),
+                Some("identity:luka:0"),
                 "turn-overflow",
                 "console:panel-1",
                 "hello",
             )
             .await
-            .expect_err("queue should reject beyond cap");
-        assert_eq!(err, "interaction queue at capacity");
+            .expect("queue should self-heal by evicting oldest");
+
+        let events = store
+            .query(&EventQuery {
+                identity: Some("identity:luka".to_string()),
+                event_types: vec!["interaction_failed".to_string()],
+                ..EventQuery::default()
+            })
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].interaction_id.as_deref(), Some("turn-0"));
+        assert_eq!(events[0].data["reason"], json!("queue_overflow"));
     }
 
     #[tokio::test]

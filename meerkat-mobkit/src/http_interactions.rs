@@ -20,7 +20,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use futures::StreamExt;
 use meerkat_core::{AgentEvent, event::agent_event_type};
-use meerkat_mob::MeerkatId;
+use meerkat_mob::ids::MeerkatId;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

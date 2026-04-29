@@ -131,24 +131,24 @@ describe("MobHandle.spawn()", () => {
     setResponse(() => ({
       accepted: true,
       module_id: "mod-x",
-      meerkat_id: "m-1",
-      profile: "assistant",
+      agent_identity: "m-1",
+      role: "assistant",
     }));
 
     const result = await handle.spawn({
-      profile: "assistant",
-      meerkatId: "m-1",
+      role: "assistant",
+      agentIdentity: "m-1",
       labels: { role: "helper" },
     });
 
     assert.equal(calls[0].method, "mobkit/spawn_member");
-    assert.equal(calls[0].params!.profile, "assistant");
-    assert.equal(calls[0].params!.meerkat_id, "m-1");
+    assert.equal(calls[0].params!.role, "assistant");
+    assert.equal(calls[0].params!.agent_identity, "m-1");
     assert.deepEqual(calls[0].params!.labels, { role: "helper" });
     assert.equal(result.accepted, true);
     assert.equal(result.moduleId, "mod-x");
-    assert.equal(result.meerkatId, "m-1");
-    assert.equal(result.profile, "assistant");
+    assert.equal(result.agentIdentity, "m-1");
+    assert.equal(result.role, "assistant");
   });
 });
 
@@ -158,8 +158,8 @@ describe("MobHandle.spawnMember()", () => {
     setResponse(() => ({
       accepted: true,
       module_id: "mod-y",
-      meerkat_id: null,
-      profile: null,
+      agent_identity: null,
+      role: null,
     }));
 
     const result = await handle.spawnMember("mod-y");
@@ -167,8 +167,8 @@ describe("MobHandle.spawnMember()", () => {
     assert.deepEqual(calls[0].params, { module_id: "mod-y" });
     assert.equal(result.accepted, true);
     assert.equal(result.moduleId, "mod-y");
-    assert.equal(result.meerkatId, null);
-    assert.equal(result.profile, null);
+    assert.equal(result.agentIdentity, null);
+    assert.equal(result.role, null);
   });
 });
 
@@ -277,8 +277,8 @@ describe("MobHandle.ensureMember()", () => {
   it("sends mobkit/ensure_member with all options", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      meerkat_id: "m-1",
-      profile: "assistant",
+      agent_identity: "m-1",
+      role: "assistant",
       state: "active",
       wired_to: ["m-2"],
       labels: { role: "helper" },
@@ -292,14 +292,14 @@ describe("MobHandle.ensureMember()", () => {
     });
 
     assert.equal(calls[0].method, "mobkit/ensure_member");
-    assert.equal(calls[0].params!.profile, "assistant");
-    assert.equal(calls[0].params!.meerkat_id, "m-1");
+    assert.equal(calls[0].params!.role, "assistant");
+    assert.equal(calls[0].params!.agent_identity, "m-1");
     assert.deepEqual(calls[0].params!.labels, { role: "helper" });
     assert.deepEqual(calls[0].params!.context, { foo: "bar" });
     assert.equal(calls[0].params!.resume_session_id, "sess-old");
     assert.deepEqual(calls[0].params!.additional_instructions, ["Be nice"]);
-    assert.equal(result.meerkatId, "m-1");
-    assert.equal(result.profile, "assistant");
+    assert.equal(result.agentIdentity, "m-1");
+    assert.equal(result.role, "assistant");
     assert.equal(result.state, "active");
     assert.deepEqual(result.wiredTo, ["m-2"]);
     assert.deepEqual(result.labels, { role: "helper" });
@@ -308,16 +308,16 @@ describe("MobHandle.ensureMember()", () => {
   it("sends without optional options", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      meerkat_id: "m-1",
-      profile: "assistant",
+      agent_identity: "m-1",
+      role: "assistant",
       state: "active",
       wired_to: [],
       labels: {},
     }));
 
     await handle.ensureMember("m-1", "assistant");
-    assert.equal(calls[0].params!.profile, "assistant");
-    assert.equal(calls[0].params!.meerkat_id, "m-1");
+    assert.equal(calls[0].params!.role, "assistant");
+    assert.equal(calls[0].params!.agent_identity, "m-1");
     assert.equal(calls[0].params!.labels, undefined);
     assert.equal(calls[0].params!.context, undefined);
   });
@@ -327,16 +327,16 @@ describe("MobHandle.findMembers()", () => {
   it("sends mobkit/find_members and returns array", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => [
-      { meerkat_id: "m-1", profile: "a", state: "active", wired_to: [], labels: {} },
-      { meerkat_id: "m-2", profile: "b", state: "active", wired_to: [], labels: {} },
+      { agent_identity: "m-1", role: "a", state: "Active", wired_to: [], labels: {} },
+      { agent_identity: "m-2", role: "b", state: "Active", wired_to: [], labels: {} },
     ]);
 
     const result = await handle.findMembers("role", "helper");
     assert.equal(calls[0].method, "mobkit/find_members");
     assert.deepEqual(calls[0].params, { label_key: "role", label_value: "helper" });
     assert.equal(result.length, 2);
-    assert.equal(result[0].meerkatId, "m-1");
-    assert.equal(result[1].meerkatId, "m-2");
+    assert.equal(result[0].agentIdentity, "m-1");
+    assert.equal(result[1].agentIdentity, "m-2");
   });
 
   it("returns empty array when response is not an array", async () => {
@@ -352,13 +352,13 @@ describe("MobHandle.listMembers()", () => {
   it("sends mobkit/list_members and returns array", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => [
-      { meerkat_id: "m-1", profile: "a", state: "active", wired_to: [], labels: {} },
+      { agent_identity: "m-1", role: "a", state: "Active", wired_to: [], labels: {} },
     ]);
 
     const result = await handle.listMembers();
     assert.equal(calls[0].method, "mobkit/list_members");
     assert.equal(result.length, 1);
-    assert.equal(result[0].meerkatId, "m-1");
+    assert.equal(result[0].agentIdentity, "m-1");
   });
 
   it("returns empty array when response is not an array", async () => {
@@ -374,8 +374,8 @@ describe("MobHandle.getMember()", () => {
   it("sends mobkit/get_member and parses snapshot", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      meerkat_id: "m-1",
-      profile: "assistant",
+      agent_identity: "m-1",
+      role: "assistant",
       state: "active",
       wired_to: ["m-2"],
       labels: { team: "alpha" },
@@ -384,8 +384,8 @@ describe("MobHandle.getMember()", () => {
     const result = await handle.getMember("m-1");
     assert.equal(calls[0].method, "mobkit/get_member");
     assert.deepEqual(calls[0].params, { member_id: "m-1" });
-    assert.equal(result.meerkatId, "m-1");
-    assert.equal(result.profile, "assistant");
+    assert.equal(result.agentIdentity, "m-1");
+    assert.equal(result.role, "assistant");
     assert.deepEqual(result.labels, { team: "alpha" });
   });
 });

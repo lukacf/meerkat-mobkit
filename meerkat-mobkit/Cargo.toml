@@ -26,23 +26,31 @@ base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
 ring = "0.17"
+# Ed25519 keypair for cross-process gateway peering. Pulled in transitively
+# via meerkat-comms; declared directly here so mobkit's `auth::peer_keys`
+# can mint and persist gateway signing keys without crossing the meerkat
+# crate seam. Keep features minimal — `std` for `OsRng`, `rand_core` so
+# we can call `SigningKey::generate`.
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "rand_core"] }
+rand_core = { version = "0.6", default-features = false, features = ["std"] }
 chrono = "0.4"
 chrono-tz = "0.10"
 tokio = { version = "1", features = ["sync", "rt-multi-thread", "process", "io-util", "io-std", "signal", "macros", "net"] }
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.8", features = ["json"] }
 async-stream = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 futures = "0.3"
-meerkat-core = "0.5.2"
-meerkat-client = "0.5.2"
-meerkat-mob = "0.5.2"
-meerkat-mcp = "0.5.2"
-meerkat-models = "0.5.2"
-meerkat = { version = "0.5.2", features = ["comms", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }
-meerkat-runtime = "0.5.2"
-meerkat-session = { version = "0.5.2", features = ["session-store"] }
-meerkat-store = { version = "0.5.2", features = ["sqlite"] }
-meerkat-tools = "0.5.2"
+meerkat-core = "0.6.0"
+meerkat-client = "0.6.0"
+meerkat-contracts = "0.6.0"
+meerkat-mob = "0.6.0"
+meerkat-mcp = "0.6.0"
+meerkat-models = "0.6.0"
+meerkat = { version = "0.6.0", features = ["comms", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }
+meerkat-runtime = "0.6.0"
+meerkat-session = { version = "0.6.0", features = ["session-store"] }
+meerkat-store = { version = "0.6.0", features = ["sqlite"] }
+meerkat-tools = "0.6.0"
 tempfile = "3"
 async-trait = "0.1"
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -59,4 +67,4 @@ futures = "0.3"
 tower = "0.5"
 jsonwebtoken = "9"
 async-trait = "0.1"
-meerkat-comms = "0.5.2"
+meerkat-comms = "0.6.0"

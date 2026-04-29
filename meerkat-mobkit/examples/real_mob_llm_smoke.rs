@@ -21,14 +21,15 @@ use std::time::Duration;
 use futures::StreamExt;
 use meerkat::{AgentEvent, AgentFactory, Config, build_ephemeral_service};
 use meerkat_core::types::HandlingMode;
-use meerkat_mob::{MeerkatId, MobBuilder, MobDefinition, MobStorage, ProfileName};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobBuilder, MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "Set OPENAI_API_KEY to run real_mob_llm_smoke")?;
 
-    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string());
+    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
     println!("REAL_SMOKE: using model={model}");
 
     let temp_dir = tempfile::tempdir()?;
@@ -60,28 +61,27 @@ comms = true
         .create()
         .await?;
 
+    let status = handle.status().await?;
     println!(
         "REAL_SMOKE: mob created id={} status={:?}",
         handle.mob_id(),
-        handle.status()
+        status
     );
 
     handle
-        .spawn(
-            ProfileName::from("lead"),
-            MeerkatId::from("lead-1"),
-            Some(meerkat_core::ContentInput::Text(
-                "You are the lead. Keep responses brief and direct.".to_string(),
-            )),
+        .spawn_spec(
+            SpawnMemberSpec::new(ProfileName::from("lead"), MeerkatId::from("lead-1"))
+                .with_initial_message(meerkat_core::ContentInput::Text(
+                    "You are the lead. Keep responses brief and direct.".to_string(),
+                )),
         )
         .await?;
     handle
-        .spawn(
-            ProfileName::from("worker"),
-            MeerkatId::from("worker-1"),
-            Some(meerkat_core::ContentInput::Text(
-                "You are a worker. Help the lead when asked.".to_string(),
-            )),
+        .spawn_spec(
+            SpawnMemberSpec::new(ProfileName::from("worker"), MeerkatId::from("worker-1"))
+                .with_initial_message(meerkat_core::ContentInput::Text(
+                    "You are a worker. Help the lead when asked.".to_string(),
+                )),
         )
         .await?;
     handle
@@ -154,7 +154,7 @@ comms = true
     for member in members {
         println!(
             "  - {} profile={} wired_to={:?}",
-            member.meerkat_id, member.profile, member.wired_to
+            member.agent_identity, member.role, member.wired_to
         );
     }
 

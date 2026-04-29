@@ -24,10 +24,11 @@ pub mod types;
 pub mod unified_runtime;
 
 pub use auth::{
-    Jwk, JwksCache, JwksCacheConfig, JwksCacheError, JwksDocument, JwtHeaderView,
-    JwtValidationConfig, JwtValidationError, OidcContractError, OidcDiscoveryDocument,
-    ValidatedJwt, extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json,
-    parse_oidc_discovery_json, select_jwk_for_token, validate_jwt_locally,
+    GATEWAY_PEER_KEY_FILE, GatewayPeerKeyError, GatewayPeerKeys, Jwk, JwksCache, JwksCacheConfig,
+    JwksCacheError, JwksDocument, JwtHeaderView, JwtValidationConfig, JwtValidationError,
+    OidcContractError, OidcDiscoveryDocument, PubkeyDecodeError, ValidatedJwt, decode_pubkey_b64,
+    extract_hs256_shared_secret, inspect_jwt_header, parse_jwks_json, parse_oidc_discovery_json,
+    select_jwk_for_token, validate_jwt_locally,
 };
 pub use baseline::{
     BaselineVerificationError, BaselineVerificationReport, DEFAULT_MEERKAT_REPO,
@@ -63,9 +64,9 @@ pub use http_sse::{
     mob_events_sse_router,
 };
 pub use mob_handle_runtime::{
-    AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobMemberSnapshot,
-    MobReconcileOptions, MobReconcileReport, MobRuntime, MobRuntimeError, RealMobRuntime,
-    SessionCreatedContext, SessionHook,
+    AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
+    MobRuntimeError, RealMobRuntime, SessionCreatedContext, SessionHook, member_entry_to_json,
+    send_message_on_mob,
 };
 pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
@@ -85,16 +86,16 @@ pub use runtime::{
     JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent, LifecycleStage,
     McpBoundaryError, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
     MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult, MemoryStoreInfo,
-    MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState, ModuleHealthTransition,
-    ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse, NormalizationError, RpcRouteError,
-    RpcRuntimeError, RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState,
-    RuntimeFromConfigError, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
-    RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
-    ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
-    SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
-    SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
-    TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
-    evaluate_schedules_at_tick, handle_console_rest_json_route,
+    MetadataScope, MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState,
+    ModuleHealthTransition, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
+    NormalizationError, RpcRouteError, RpcRuntimeError, RuntimeBoundaryError,
+    RuntimeDecisionInputs, RuntimeDecisionState, RuntimeFromConfigError, RuntimeMetadataTable,
+    RuntimeMutationError, RuntimeOptions, RuntimeRoute, RuntimeRouteMutationError,
+    RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch, ScheduleDispatchReport,
+    ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger, SchedulingSupervisorSignal,
+    SessionPersistenceRow, SessionStoreContract, SessionStoreKind, SubscribeRequest,
+    SubscribeResponse, SubscribeScope, SupervisorReport, TrustedOidcRuntimeConfig, WILDCARD_ROUTE,
+    build_runtime_decision_state, evaluate_schedules_at_tick, handle_console_rest_json_route,
     handle_console_rest_json_route_with_snapshot, materialize_latest_session_rows,
     materialize_live_session_rows, normalize_event_line, route_module_call,
     route_module_call_rpc_json, route_module_call_rpc_subprocess, run_discovered_module_once,
@@ -103,8 +104,8 @@ pub use runtime::{
     start_mobkit_runtime_with_options,
 };
 pub use types::{
-    AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent,
-    PreSpawnData, RestartPolicy, UnifiedEvent,
+    AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope,
+    ModuleConfig, ModuleEvent, PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,

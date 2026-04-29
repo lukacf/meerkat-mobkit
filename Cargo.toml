@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-version = "0.5.2"
+version = "0.6.0"
 authors = ["Luka Crnkovic-Friis"]
 repository = "https://github.com/lukacf/meerkat-mobkit"
 homepage = "https://docs.rkat.ai"
@@ -99,4 +99,19 @@ publish = false
 push = true
 
 [patch.crates-io]
-meerkat-session = { path = "vendor/meerkat-session" }
+# Meerkat 0.6.0 is not yet on crates.io — patch all meerkat-* crates to the
+# local checkout at /Users/luka/src/meerkat (branch `main`). Once 0.6.x
+# publishes, drop this entire section and rely on the version strings in
+# meerkat-mobkit/Cargo.toml.
+meerkat            = { path = "/Users/luka/src/meerkat/meerkat" }
+meerkat-client     = { path = "/Users/luka/src/meerkat/meerkat-client" }
+meerkat-comms      = { path = "/Users/luka/src/meerkat/meerkat-comms" }
+meerkat-contracts  = { path = "/Users/luka/src/meerkat/meerkat-contracts" }
+meerkat-core       = { path = "/Users/luka/src/meerkat/meerkat-core" }
+meerkat-mcp        = { path = "/Users/luka/src/meerkat/meerkat-mcp" }
+meerkat-mob        = { path = "/Users/luka/src/meerkat/meerkat-mob" }
+meerkat-models     = { path = "/Users/luka/src/meerkat/meerkat-models" }
+meerkat-runtime    = { path = "/Users/luka/src/meerkat/meerkat-runtime" }
+meerkat-session    = { path = "/Users/luka/src/meerkat/meerkat-session" }
+meerkat-store      = { path = "/Users/luka/src/meerkat/meerkat-store" }
+meerkat-tools      = { path = "/Users/luka/src/meerkat/meerkat-tools" }

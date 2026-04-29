@@ -151,27 +151,27 @@ describe("parseSpawnResult", () => {
     const result = parseSpawnResult({
       accepted: true,
       module_id: "mod-1",
-      meerkat_id: "mk-42",
-      profile: "assistant",
+      agent_identity: "mk-42",
+      role: "assistant",
     });
     assert.equal(result.accepted, true);
     assert.equal(result.moduleId, "mod-1");
-    assert.equal(result.meerkatId, "mk-42");
-    assert.equal(result.profile, "assistant");
+    assert.equal(result.agentIdentity, "mk-42");
+    assert.equal(result.role, "assistant");
   });
 
   it("nullable fields default to null", () => {
     const result = parseSpawnResult({ accepted: false, module_id: "m" });
-    assert.equal(result.meerkatId, null);
-    assert.equal(result.profile, null);
+    assert.equal(result.agentIdentity, null);
+    assert.equal(result.role, null);
   });
 
   it("defaults missing fields", () => {
     const result = parseSpawnResult({});
     assert.equal(result.accepted, false);
     assert.equal(result.moduleId, "");
-    assert.equal(result.meerkatId, null);
-    assert.equal(result.profile, null);
+    assert.equal(result.agentIdentity, null);
+    assert.equal(result.role, null);
   });
 });
 
@@ -468,23 +468,23 @@ describe("parseCallToolResult", () => {
 describe("parseMemberSnapshot", () => {
   it("parses valid wire-format object", () => {
     const result = parseMemberSnapshot({
-      meerkat_id: "mk-1",
-      profile: "assistant",
-      state: "active",
+      agent_identity: "mk-1",
+      role: "assistant",
+      state: "Active",
       wired_to: ["mk-2", "mk-3"],
       labels: { role: "lead", tier: "gold" },
     });
-    assert.equal(result.meerkatId, "mk-1");
-    assert.equal(result.profile, "assistant");
-    assert.equal(result.state, "active");
+    assert.equal(result.agentIdentity, "mk-1");
+    assert.equal(result.role, "assistant");
+    assert.equal(result.state, "Active");
     assert.deepEqual(result.wiredTo, ["mk-2", "mk-3"]);
     assert.deepEqual(result.labels, { role: "lead", tier: "gold" });
   });
 
   it("defaults missing fields", () => {
     const result = parseMemberSnapshot({});
-    assert.equal(result.meerkatId, "");
-    assert.equal(result.profile, "");
+    assert.equal(result.agentIdentity, "");
+    assert.equal(result.role, "");
     assert.equal(result.state, "");
     assert.deepEqual(result.wiredTo, []);
     assert.deepEqual(result.labels, {});

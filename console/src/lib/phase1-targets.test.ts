@@ -69,7 +69,7 @@ test("CHOKE-003 target: refreshed experience metadata drives host refresh strate
           {
             identity: "identity:luka",
             display_name: "Luka",
-            profile: "lead",
+            role: "lead",
             state: "running",
             addressability: "addressable",
             labels: {},

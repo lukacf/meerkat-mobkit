@@ -22,7 +22,7 @@ test("buildSidebarViewState preserves host-derived watch and degraded fields", (
         member_id: "member-1",
         label: "Luka",
         kind: "operator",
-        profile: "console",
+        role: "console",
         state: "running",
         watched: true,
         alertLevel: "elevated",
@@ -111,6 +111,38 @@ test("buildRoutingSectionView projects runtime routing and delivery results with
       },
     ],
   });
+});
+
+test("mapFramesToTimelineEntries renders a partial assistant message while deltas are still streaming", () => {
+  // Regression: the live-overlay path used to pass `renderTextDeltas: false`,
+  // which dropped text_delta frames on the floor so the conversation pane
+  // stayed visually empty until `interaction_complete` arrived (user-visible
+  // as "waiting… persists while the agent is actually typing").
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      { id: "evt-1", event: "interaction_started", data: {} },
+      { id: "evt-2", event: "text_delta", data: { delta: "Status " } },
+      { id: "evt-3", event: "text_delta", data: { delta: "is " } },
+      { id: "evt-4", event: "text_delta", data: { delta: "stable." } },
+    ],
+  );
+
+  // One partial message entry with all three deltas concatenated.
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "message");
+  const entry = entries[0]!;
+  const text = "text" in entry
+    ? entry.text
+    : "blocks" in entry && Array.isArray(entry.blocks) && entry.blocks[0]?.type === "paragraph"
+      ? entry.blocks[0].text
+      : "";
+  assert.equal(text, "Status is stable.");
 });
 
 test("mapFramesToTimelineEntries suppresses duplicate terminal text after streamed deltas", () => {

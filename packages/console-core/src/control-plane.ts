@@ -37,7 +37,7 @@ export interface ConsoleIdentityEventEnvelope {
 export interface IdentityStatusRow {
   identity: string;
   display_name?: string;
-  profile?: string;
+  role?: string;
   state: string;
   addressability: "addressable" | "internal_only";
   labels: Record<string, string>;
@@ -387,7 +387,7 @@ export function normalizeIdentityStatusRow(value: unknown): IdentityStatusRow | 
     addressability,
     labels: stringRecord(record.labels),
     ...(trimString(record.display_name) ? { display_name: trimString(record.display_name) } : {}),
-    ...(trimString(record.profile) ? { profile: trimString(record.profile) } : {}),
+    ...(trimString(record.role) ? { role: trimString(record.role) } : {}),
     ...(typeof record.generation === "number" && Number.isFinite(record.generation) ? { generation: record.generation } : {}),
     ...(typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version)
       ? { checkpoint_version: record.checkpoint_version }

@@ -38,10 +38,13 @@ use crate::types::{
 
 mod bootstrap;
 mod console_ingress;
+pub mod cross_mob_control;
+pub mod cross_mob_remote;
 mod delivery;
 mod event_transport;
 mod gating;
 mod memory;
+pub mod metadata;
 mod module_boundary;
 mod routing;
 mod rpc;
@@ -51,11 +54,16 @@ mod supervisor;
 
 pub use bootstrap::{start_mobkit_runtime, start_mobkit_runtime_with_options};
 pub use console_ingress::{
-    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, ConsoleRestJsonResponse,
-    extract_bearer_token_from_header, handle_console_rest_json_route,
+    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleRestJsonRequest,
+    ConsoleRestJsonResponse, extract_bearer_token_from_header, handle_console_rest_json_route,
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 pub use event_transport::normalize_event_line;
+pub use metadata::{
+    LabelRpcResult, MetadataScope, RuntimeMetadataTable, dispatch_labels_delete,
+    dispatch_labels_get, dispatch_labels_set, labels_to_json_value, parse_labels_param,
+    parse_run_id_param,
+};
 pub use routing::WILDCARD_ROUTE;
 pub use routing::route_module_call;
 pub use rpc::{

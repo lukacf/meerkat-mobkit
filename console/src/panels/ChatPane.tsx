@@ -166,7 +166,7 @@ export function ChatPane({
         <div style={{ minWidth: 0 }}>
           <div className="conv__title">{agentLabel}</div>
           <div className="conv__identity">
-            {identity}{agent?.profile ? ` · ${agent.profile}` : ""}
+            {identity}{agent?.role ? ` · ${agent.role}` : ""}
           </div>
         </div>
         <div className="conv__actions">
@@ -213,7 +213,7 @@ export function ChatPane({
           <div className="composer__row">
             <span className="composer__chip"><span className="k">/</span> commands</span>
             <span className="composer__chip"><span className="k">@</span> mention</span>
-            <span className="composer__chip mono">{agent?.profile || "agent"}</span>
+            <span className="composer__chip mono">{agent?.role || "agent"}</span>
             <span className="composer__spacer" />
             <button
               className="composer__send"
@@ -229,9 +229,9 @@ export function ChatPane({
           <span>To: <b style={{ color: "var(--ink-muted)" }}>{agentLabel}</b></span>
           <span>·</span>
           <span className="mono">{identity}</span>
-          {agent?.profile && (<>
+          {agent?.role && (<>
             <span>·</span>
-            <span>{agent.profile}</span>
+            <span>{agent.role}</span>
           </>)}
           <span>·</span>
           <span className="dot" style={{

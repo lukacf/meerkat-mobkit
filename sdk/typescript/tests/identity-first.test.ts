@@ -513,7 +513,7 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
         };
       }
       if (method === "mobkit/identity/agent") {
-        return { identity: params?.identity ?? "x:1", meerkat_id: "mk-1", profile: "worker", state: "active", wired_to: [], labels: {} };
+        return { identity: params?.identity ?? "x:1", agent_identity: "mk-1", role: "worker", state: "Active", wired_to: [], labels: {} };
       }
       return { accepted: true };
     };

@@ -25,7 +25,8 @@ use axum::http::{Request, StatusCode};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
-use meerkat_mob::{MeerkatId, MobDefinition, MobStorage, SpawnMemberSpec};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
@@ -578,18 +579,22 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
     );
 
     // Sending to a known agent should succeed via send_message.
-    let session_id = fixture
-        .runtime
-        .send_message(selected_agent_id, "cross-panel hello".to_string())
-        .await
-        .expect("send_message to known agent should succeed");
+    let session_id = meerkat_mobkit::send_message_on_mob(
+        &fixture.runtime.mob_handle(),
+        selected_agent_id,
+        "cross-panel hello".to_string(),
+    )
+    .await
+    .expect("send_message to known agent should succeed");
     SessionId::parse(&session_id).expect("send_message should return a valid session_id");
 
     // Sending to an unknown agent should fail.
-    let unknown_result = fixture
-        .runtime
-        .send_message("unknown-member-id", "should fail".to_string())
-        .await;
+    let unknown_result = meerkat_mobkit::send_message_on_mob(
+        &fixture.runtime.mob_handle(),
+        "unknown-member-id",
+        "should fail".to_string(),
+    )
+    .await;
     assert!(
         unknown_result.is_err(),
         "send_message to unknown agent should fail"

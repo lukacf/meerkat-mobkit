@@ -2,13 +2,15 @@
 
 use std::collections::BTreeSet;
 
-use meerkat_mob::{MeerkatId, SpawnMemberSpec};
+use meerkat_mob::SpawnMemberSpec;
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::runtime::MobMemberListEntry;
+use meerkat_mob::runtime::reconcile::ReconcileOptions;
 
-use crate::mob_handle_runtime::MobMemberSnapshot;
 use crate::runtime::RuntimeRoute;
+use crate::unified_runtime::types::meerkat_reconcile_report_to_wire;
 
-use super::edge_types::DesiredPeerEdge;
-use super::edge_types::EdgeReconcileFailure;
+use super::edge_types::{DesiredPeerEdge, EdgeMemberView, EdgeReconcileFailure};
 use super::types::{
     UnifiedRuntimeReconcileEdgesReport, UnifiedRuntimeReconcileError,
     UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileRoutingReport,
@@ -23,22 +25,25 @@ impl UnifiedRuntime {
         &self,
         desired_specs: Vec<SpawnMemberSpec>,
     ) -> Result<UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileError> {
-        // 1. Member reconcile
-        let mob = self
-            .mob_runtime
-            .reconcile(desired_specs)
+        // 1. Member reconcile (meerkat 0.6 native path)
+        let mob_id = self.mob_handle().mob_id().to_string();
+        let meerkat_report = self
+            .mob_handle()
+            .reconcile(desired_specs, ReconcileOptions { retire_stale: true })
             .await
-            .map_err(UnifiedRuntimeReconcileError::Mob)?;
+            .map_err(|err| UnifiedRuntimeReconcileError::Mob(err.into()))?;
+        let mob = meerkat_reconcile_report_to_wire(&mob_id, meerkat_report);
         // 2. Refresh active members
-        let active_snapshots = self.mob_runtime.discover().await;
+        let active_snapshots = self.mob_handle().list_members_including_retiring().await;
         for member in &active_snapshots {
+            let id = member.agent_identity.to_string();
             self.console_events
-                .register_runtime_identity(member.meerkat_id.clone(), member.meerkat_id.clone())
+                .register_runtime_identity(id.clone(), id)
                 .await;
         }
         let active_member_ids = active_snapshots
             .iter()
-            .map(|m| m.meerkat_id.clone())
+            .map(|m| m.agent_identity.to_string())
             .collect::<Vec<_>>();
         // 3 + 4. Edge discovery + dynamic edge reconcile
         let edges = self.reconcile_edges_from_members(active_snapshots).await;
@@ -52,6 +57,16 @@ impl UnifiedRuntime {
         if let Some(hook) = &self.post_reconcile_hook {
             hook(report.clone()).await;
         }
+        // Meerkat 0.6's `MobHandle::reconcile` returns Ok even on per-identity
+        // failures (they're collected into `report.mob.failures`). Re-lift any
+        // non-empty failures list into an `Err` so callers using `?` see the
+        // same propagation behavior they had pre-cleanup, while still carrying
+        // the full report for inspection via `PartialFailure`.
+        if !report.mob.failures.is_empty() {
+            return Err(UnifiedRuntimeReconcileError::PartialFailure(Box::new(
+                report,
+            )));
+        }
         Ok(report)
     }
 
@@ -60,7 +75,7 @@ impl UnifiedRuntime {
     /// Refreshes the roster, runs edge discovery if configured, diffs
     /// desired vs managed edges, and calls wire/unwire as needed.
     pub async fn reconcile_edges(&self) -> UnifiedRuntimeReconcileEdgesReport {
-        let active_members = self.mob_runtime.discover().await;
+        let active_members = self.mob_handle().list_members_including_retiring().await;
         let report = self.reconcile_edges_from_members(active_members).await;
         if !report.is_complete() {
             self.fire_error(super::types::ErrorEvent::ReconcileIncomplete {
@@ -73,7 +88,7 @@ impl UnifiedRuntime {
 
     pub(super) async fn reconcile_edges_from_members(
         &self,
-        active_members: Vec<MobMemberSnapshot>,
+        active_members: Vec<MobMemberListEntry>,
     ) -> UnifiedRuntimeReconcileEdgesReport {
         let edge_discovery = match &self.edge_discovery {
             Some(d) => d,
@@ -82,15 +97,15 @@ impl UnifiedRuntime {
 
         let active_ids: BTreeSet<String> = active_members
             .iter()
-            .map(|m| m.meerkat_id.clone())
+            .map(|m| m.agent_identity.to_string())
             .collect();
 
         // Build current wiring map from snapshots
         let mut current_edges: BTreeSet<(String, String)> = BTreeSet::new();
         for member in &active_members {
             for peer in &member.wired_to {
-                let mut a = member.meerkat_id.clone();
-                let mut b = peer.clone();
+                let mut a = member.agent_identity.to_string();
+                let mut b = peer.to_string();
                 if a > b {
                     std::mem::swap(&mut a, &mut b);
                 }
@@ -98,8 +113,20 @@ impl UnifiedRuntime {
             }
         }
 
+        // Project to EdgeMemberView for the policy closure — it only needs
+        // identity/role/labels/wired_to, not meerkat's private runtime fields.
+        let member_views: Vec<EdgeMemberView> = active_members
+            .into_iter()
+            .map(|m| EdgeMemberView {
+                agent_identity: m.agent_identity.to_string(),
+                role: m.role.to_string(),
+                wired_to: m.wired_to.iter().map(ToString::to_string).collect(),
+                labels: m.labels,
+            })
+            .collect();
+
         // Run edge discovery
-        let raw_desired = edge_discovery.discover_edges(active_members).await;
+        let raw_desired = edge_discovery.discover_edges(member_views).await;
 
         // Deduplicate and defensively validate (DesiredPeerEdge enforces
         // invariants at construction, but we still canonicalize the key set)
@@ -141,7 +168,7 @@ impl UnifiedRuntime {
                     // Managed edge disappeared from mob graph — heal it
                     let mid_a = MeerkatId::from(a.as_str());
                     let mid_b = MeerkatId::from(b.as_str());
-                    match self.mob_runtime.handle().wire(mid_a, mid_b).await {
+                    match self.mob_handle().wire(mid_a, mid_b).await {
                         Ok(()) => {
                             if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
                                 report.wired_edges.push(edge);
@@ -167,7 +194,7 @@ impl UnifiedRuntime {
                 // New edge — wire it
                 let mid_a = MeerkatId::from(a.as_str());
                 let mid_b = MeerkatId::from(b.as_str());
-                match self.mob_runtime.handle().wire(mid_a, mid_b).await {
+                match self.mob_handle().wire(mid_a, mid_b).await {
                     Ok(()) => {
                         managed_edges.insert(key);
                         if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
@@ -215,7 +242,7 @@ impl UnifiedRuntime {
             }
             let mid_a = MeerkatId::from(a.as_str());
             let mid_b = MeerkatId::from(b.as_str());
-            match self.mob_runtime.handle().unwire(mid_a, mid_b).await {
+            match self.mob_handle().unwire(mid_a, mid_b).await {
                 Ok(()) => {
                     managed_edges.remove(&key);
                     if let Ok(edge) = DesiredPeerEdge::new(a, b) {

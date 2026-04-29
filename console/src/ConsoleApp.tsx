@@ -636,9 +636,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const liveFrames = liveOverlayRef.current[identity] || [];
     const serverIds = new Set(serverFrames.map((f) => f.id));
     const newLiveFrames = liveFrames.filter((f) => !serverIds.has(f.id));
+    // Render text deltas on the live path so the assistant message grows
+    // token-by-token while the interaction is in flight. Server history keeps
+    // `renderTextDeltas: false` because `interaction_complete.data.result`
+    // already carries the final text and repeating the deltas would be noise.
+    // Duplicate suppression when the interaction finally completes is handled
+    // by the `streamedText === terminalText` check in `renderTerminalEntry`.
     const liveEntries = mapFramesToTimelineEntries(agent, newLiveFrames, {
       renderInteractionStartsAsUser: false,
-      renderTextDeltas: false,
       suppressEmbeddedRunStartedPrompt: true,
     });
 
@@ -682,7 +687,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       { id: "identity", kind: "sub-pill", label: target.identity || target.memberId, iconName: "i-terminal" },
     ];
     const footerRightItems: ConsoleComposerToolbarItem[] = [
-      ...(agent?.profile ? [{ id: "profile", kind: "sub-pill" as const, label: agent.profile }] : []),
+      ...(agent?.role ? [{ id: "role", kind: "sub-pill" as const, label: agent.role }] : []),
       ...(phase ? [{ id: "phase", kind: "sub-pill" as const, label: phase, iconName: "i-bolt" }] : []),
       { id: "state", kind: "sub-pill" as const, label: agent?.state || "unknown", iconName: "i-dot" },
     ];
@@ -724,7 +729,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         {!inspect ? <p>Loading identity details…</p> : (
           <dl className="console-panel__grid">
             <dt>State</dt><dd>{inspect.state}</dd>
-            <dt>Profile</dt><dd>{inspect.profile || "n/a"}</dd>
+            <dt>Role</dt><dd>{inspect.role || "n/a"}</dd>
             <dt>Addressability</dt><dd>{inspect.addressability}</dd>
             <dt>Generation</dt><dd>{inspect.continuity?.generation ?? "n/a"}</dd>
             <dt>Checkpoint</dt><dd>{inspect.continuity?.checkpoint_version ?? "n/a"}</dd>

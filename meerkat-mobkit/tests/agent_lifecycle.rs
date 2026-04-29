@@ -300,13 +300,13 @@ async fn e2e_003_failure_path_module_crash_during_active_sse_stream_recovers_and
         .expect("reconcile worker");
 
     // Send a message to create activity while module crash/recovery proceeds.
-    runtime
-        .send_message(
-            "worker-1",
-            "Keep this interaction open briefly while runtime work proceeds.".to_string(),
-        )
-        .await
-        .expect("send_message should succeed");
+    meerkat_mobkit::send_message_on_mob(
+        &runtime.mob_handle(),
+        "worker-1",
+        "Keep this interaction open briefly while runtime work proceeds.".to_string(),
+    )
+    .await
+    .expect("send_message should succeed");
 
     let added = runtime
         .reconcile_modules(vec!["forced-crash".to_string()], Duration::from_secs(1))
@@ -417,7 +417,12 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         .expect("bootstrap unified runtime")
     });
 
-    assert_eq!(runtime.status(), MobState::Running);
+    assert_eq!(
+        tokio_runtime
+            .block_on(runtime.mob_handle().status())
+            .unwrap(),
+        MobState::Running
+    );
     assert!(tokio_runtime.block_on(runtime.module_is_running()));
     assert_eq!(
         tokio_runtime.block_on(runtime.loaded_modules()),
@@ -444,7 +449,12 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
                 "mob.member.worker-1".to_string(),
             ]
         );
-        let mut spawned = reconcile.mob.spawned.clone();
+        let mut spawned: Vec<String> = reconcile
+            .mob
+            .spawned
+            .iter()
+            .map(|receipt| receipt.agent_identity.clone())
+            .collect();
         spawned.sort();
         assert_eq!(spawned, vec!["lead-1".to_string(), "worker-1".to_string()]);
 
@@ -463,10 +473,13 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
         });
 
         // Send a message (fire-and-forget) to drive agent activity.
-        runtime
-            .send_message("worker-1", "phase5 happy path interaction".to_string())
-            .await
-            .expect("send_message should succeed");
+        meerkat_mobkit::send_message_on_mob(
+            &runtime.mob_handle(),
+            "worker-1",
+            "phase5 happy path interaction".to_string(),
+        )
+        .await
+        .expect("send_message should succeed");
 
         let dispatch = runtime
             .dispatch_schedule_tick(

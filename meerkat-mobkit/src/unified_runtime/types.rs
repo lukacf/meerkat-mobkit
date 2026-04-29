@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 
 use serde::{Deserialize, Serialize};
 
-use crate::mob_handle_runtime::{MobReconcileReport, MobRuntimeError};
+use crate::mob_handle_runtime::MobRuntimeError;
 use crate::runtime::{
     NormalizationError, RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleValidationError,
     SubscribeError,
@@ -201,7 +201,72 @@ pub struct UnifiedRuntimeReconcileRoutingReport {
     pub removed_route_keys: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Per-identity reconcile failure — re-export of the canonical
+/// meerkat-contracts wire shape so SDK consumers see the same field
+/// names whether they go through `mob/reconcile` or `mobkit/reconcile`.
+pub use meerkat_contracts::MobReconcileFailureWire as MobReconcileFailure;
+
+/// Roster half of a reconcile pass — re-export of meerkat-contracts'
+/// canonical wire shape. `spawned: Vec<MobSpawnReceiptWire>` carries the
+/// server-resolved `WireMemberRef` per receipt, replacing the
+/// identity-string list mobkit projected before 0.6.
+pub use meerkat_contracts::MobReconcileReportWire as MobReconcileReport;
+
+/// Project meerkat's native `ReconcileReport` into the canonical wire shape.
+///
+/// Mirrors the `mob/reconcile` RPC handler's projection in
+/// `meerkat-rpc/src/handlers/mob.rs` so both surfaces emit byte-identical
+/// JSON for the same reconcile outcome.
+pub fn meerkat_reconcile_report_to_wire(
+    mob_id: &str,
+    report: meerkat_mob::runtime::reconcile::ReconcileReport,
+) -> MobReconcileReport {
+    use meerkat_contracts::{MobSpawnReceiptWire, WireMemberRef};
+    MobReconcileReport {
+        desired: report
+            .desired
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        retained: report
+            .retained
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        spawned: report
+            .spawned
+            .into_iter()
+            .map(|receipt| {
+                let identity_str = receipt.agent_identity.to_string();
+                MobSpawnReceiptWire {
+                    member_ref: WireMemberRef::encode(mob_id, &identity_str),
+                    agent_identity: identity_str,
+                }
+            })
+            .collect(),
+        retired: report
+            .retired
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        failures: report
+            .failures
+            .into_iter()
+            .map(|failure| MobReconcileFailure {
+                agent_identity: failure.agent_identity.to_string(),
+                stage: match failure.stage {
+                    meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => "spawn".into(),
+                    meerkat_mob::runtime::reconcile::ReconcileStage::Retire => "retire".into(),
+                },
+                error: failure.error.to_string(),
+            })
+            .collect(),
+    }
+}
+
+// Eq is dropped because the canonical wire `MobReconcileReportWire` does
+// not implement `Eq` (its nested types are PartialEq only).
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedRuntimeReconcileReport {
     pub mob: MobReconcileReport,
     pub edges: UnifiedRuntimeReconcileEdgesReport,
@@ -212,6 +277,12 @@ pub struct UnifiedRuntimeReconcileReport {
 pub enum UnifiedRuntimeReconcileError {
     Mob(MobRuntimeError),
     RouteMutation(RuntimeRouteMutationError),
+    /// Meerkat 0.6's `MobHandle::reconcile` collects per-identity failures
+    /// into the returned report rather than returning `Err` on first failure.
+    /// `UnifiedRuntime::reconcile` re-lifts that into an error variant so
+    /// Rust callers using `?` still see failure propagation, while keeping
+    /// the full report available for inspection.
+    PartialFailure(Box<UnifiedRuntimeReconcileReport>),
 }
 
 impl Display for UnifiedRuntimeReconcileError {
@@ -220,6 +291,14 @@ impl Display for UnifiedRuntimeReconcileError {
             Self::Mob(err) => write!(f, "failed to reconcile mob roster: {err}"),
             Self::RouteMutation(err) => {
                 write!(f, "failed to reconcile routing wiring: {err:?}")
+            }
+            Self::PartialFailure(report) => {
+                write!(
+                    f,
+                    "reconcile completed with {} per-identity failure(s): {:?}",
+                    report.mob.failures.len(),
+                    report.mob.failures
+                )
             }
         }
     }
