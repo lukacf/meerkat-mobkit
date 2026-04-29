@@ -786,8 +786,7 @@ mod tests {
         );
         assert!(
             matches!(result, Err(CrossMobError::MissingPeerPubkey { .. })),
-            "TCP peer spec without pubkey must fail closed, got {:?}",
-            result
+            "TCP peer spec without pubkey must fail closed, got {result:?}"
         );
     }
 
@@ -802,8 +801,7 @@ mod tests {
         );
         assert!(
             matches!(result, Err(CrossMobError::MissingPeerPubkey { .. })),
-            "UDS peer spec without pubkey must fail closed, got {:?}",
-            result
+            "UDS peer spec without pubkey must fail closed, got {result:?}"
         );
     }
 

@@ -117,18 +117,36 @@ pub type AgentEventSubscribeFn = Arc<dyn Fn(String) -> AgentEventSubscribeFuture
 #[derive(Clone)]
 struct AgentSseState {
     subscribe_fn: AgentEventSubscribeFn,
+    decisions: Option<RuntimeDecisionState>,
 }
 
-pub fn agent_events_sse_router(subscribe_fn: AgentEventSubscribeFn) -> Router {
+pub fn agent_events_sse_router(
+    subscribe_fn: AgentEventSubscribeFn,
+    decisions: Option<RuntimeDecisionState>,
+) -> Router {
     Router::new()
         .route("/agents/{agent_id}/events", get(agent_events_sse_handler))
-        .with_state(AgentSseState { subscribe_fn })
+        .with_state(AgentSseState {
+            subscribe_fn,
+            decisions,
+        })
 }
 
 async fn agent_events_sse_handler(
     State(state): State<AgentSseState>,
+    headers: HeaderMap,
+    uri: Uri,
     Path(agent_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if !sse_request_authorized(state.decisions.as_ref(), &headers, &uri) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "agent events stream requires a valid auth token",
+            })),
+        ));
+    }
     let agent_id = agent_id.trim().to_string();
     if agent_id.is_empty() {
         return Err(http_error(
@@ -176,15 +194,35 @@ pub type MobEventSubscribeFn = Arc<dyn Fn() -> MobEventSubscribeFuture + Send + 
 #[derive(Clone)]
 struct MobSseState {
     subscribe_fn: MobEventSubscribeFn,
+    decisions: Option<RuntimeDecisionState>,
 }
 
-pub fn mob_events_sse_router(subscribe_fn: MobEventSubscribeFn) -> Router {
+pub fn mob_events_sse_router(
+    subscribe_fn: MobEventSubscribeFn,
+    decisions: Option<RuntimeDecisionState>,
+) -> Router {
     Router::new()
         .route("/mob/events", get(mob_events_sse_handler))
-        .with_state(MobSseState { subscribe_fn })
+        .with_state(MobSseState {
+            subscribe_fn,
+            decisions,
+        })
 }
 
-async fn mob_events_sse_handler(State(state): State<MobSseState>) -> impl IntoResponse {
+async fn mob_events_sse_handler(
+    State(state): State<MobSseState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if !sse_request_authorized(state.decisions.as_ref(), &headers, &uri) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "mob events stream requires a valid auth token",
+            })),
+        ));
+    }
     let mut router_handle = (state.subscribe_fn)().await;
 
     let stream = stream! {
@@ -207,11 +245,11 @@ async fn mob_events_sse_handler(State(state): State<MobSseState>) -> impl IntoRe
         }
     };
 
-    Sse::new(stream).keep_alive(
+    Ok(Sse::new(stream).keep_alive(
         KeepAlive::new()
             .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
             .text(KEEP_ALIVE_TEXT),
-    )
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -312,7 +350,13 @@ pub fn mob_structural_events_sse_router(
         })
 }
 
-fn mob_events_request_authorized(
+/// Shared auth gate for every SSE route in mobkit. When `decisions` is
+/// `Some(_)` and `decisions.console.require_app_auth` is on, the
+/// request must carry a valid bearer / `auth_token` token; otherwise
+/// the route is open. Used by `mob_structural_events_sse_router`,
+/// `interaction_stream_router`, and the agent-/mob-event tier 2/3
+/// routers.
+pub(crate) fn sse_request_authorized(
     decisions: Option<&RuntimeDecisionState>,
     headers: &HeaderMap,
     uri: &Uri,
@@ -328,9 +372,14 @@ fn mob_events_request_authorized(
         .and_then(|v| v.to_str().ok())
         .and_then(extract_bearer_token_from_header)
         .map(String::from);
+    // Parse the query string with `form_urlencoded` so percent-encoded
+    // tokens (e.g. base64 padding `=` re-encoded as `%3D`) decode
+    // correctly, and so substring-shadowing values like `xauth_token=`
+    // don't masquerade as `auth_token=`.
     let query_token = uri.query().and_then(|q| {
-        q.split('&')
-            .find_map(|pair| pair.strip_prefix("auth_token=").map(String::from))
+        form_urlencoded::parse(q.as_bytes())
+            .find(|(key, _)| key == "auth_token")
+            .map(|(_, value)| value.into_owned())
     });
     bearer_token
         .or(query_token)
@@ -344,7 +393,7 @@ async fn mob_structural_events_sse_handler(
     Query(params): Query<MobStructuralStreamQuery>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)>
 {
-    if !mob_events_request_authorized(state.decisions.as_ref(), &headers, &uri) {
+    if !sse_request_authorized(state.decisions.as_ref(), &headers, &uri) {
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(json!({
