@@ -73,7 +73,10 @@ pub(super) fn probe_module_mcp_tools(
         let tools_result = list_tools_with_timeout(&module_id, &connection, timeout_duration).await;
         let close_result = close_with_timeout(&module_id, connection, timeout_duration).await;
         let tools = finalize_mcp_operation_with_close(tools_result, close_result)?;
-        let mut tool_names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
+        let mut tool_names = tools
+            .into_iter()
+            .map(|tool| tool.name.into_string())
+            .collect::<Vec<String>>();
         tool_names.sort();
         Ok(tool_names)
     })
@@ -104,8 +107,8 @@ pub(super) fn call_module_mcp_tool_text(
             let tools = list_tools_with_timeout(&module_id, &connection, timeout_duration).await?;
             let available_tools = tools
                 .iter()
-                .map(|tool| tool.name.clone())
-                .collect::<Vec<_>>();
+                .map(|tool| tool.name.as_str().to_string())
+                .collect::<Vec<String>>();
             if !available_tools.iter().any(|name| name == &requested_tool) {
                 return Err(RuntimeBoundaryError::Mcp(McpBoundaryError::ToolNotFound {
                     module_id: module_id.clone(),

@@ -5,7 +5,7 @@ resolver = "2"
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-version = "0.5.2"
+version = "0.6.0"
 authors = ["Luka Crnkovic-Friis"]
 repository = "https://github.com/lukacf/meerkat-mobkit"
 homepage = "https://docs.rkat.ai"
@@ -106,6 +106,7 @@ push = true
 meerkat            = { path = "/Users/luka/src/meerkat/meerkat" }
 meerkat-client     = { path = "/Users/luka/src/meerkat/meerkat-client" }
 meerkat-comms      = { path = "/Users/luka/src/meerkat/meerkat-comms" }
+meerkat-contracts  = { path = "/Users/luka/src/meerkat/meerkat-contracts" }
 meerkat-core       = { path = "/Users/luka/src/meerkat/meerkat-core" }
 meerkat-mcp        = { path = "/Users/luka/src/meerkat/meerkat-mcp" }
 meerkat-mob        = { path = "/Users/luka/src/meerkat/meerkat-mob" }

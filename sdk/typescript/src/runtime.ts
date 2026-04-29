@@ -555,6 +555,71 @@ export class MobHandle {
     });
   }
 
+  /**
+   * Wait until all current mob members are startup-ready for orchestration.
+   *
+   * Relays meerkat 0.6's `MobHandle::wait_for_ready`. Returns
+   * `{ ready: [...], timeout: false }` on full convergence; on timeout
+   * returns `{ ready: [], timeout: true }`. Pass `timeoutSeconds` to bound
+   * the wait, or omit it to block indefinitely.
+   */
+  async waitReady(
+    timeoutSeconds?: number,
+  ): Promise<{ ready: unknown[]; timeout: boolean }> {
+    const params: Record<string, unknown> = {};
+    if (timeoutSeconds !== undefined) {
+      params.timeout_ms = Math.round(timeoutSeconds * 1000);
+    }
+    const raw = await this._runtime._rpc("mobkit/wait_ready", params);
+    if (typeof raw !== "object" || raw === null) {
+      return { ready: [], timeout: false };
+    }
+    const r = raw as Record<string, unknown>;
+    return {
+      ready: Array.isArray(r.ready) ? r.ready : [],
+      timeout: Boolean(r.timeout),
+    };
+  }
+
+  // -- Flows --------------------------------------------------------------
+
+  /**
+   * List all configured flow IDs in this mob definition. Relays meerkat
+   * 0.6's `MobHandle::list_flows`. Order is unspecified.
+   */
+  async listFlows(): Promise<string[]> {
+    const raw = await this._runtime._rpc("mobkit/list_flows");
+    if (Array.isArray(raw)) {
+      return raw.map((id) => String(id));
+    }
+    if (typeof raw === "object" && raw !== null) {
+      const flows = (raw as Record<string, unknown>).flows;
+      if (Array.isArray(flows)) {
+        return flows.map((id) => String(id));
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Start a flow run and return its run ID. Relays meerkat 0.6's
+   * `MobHandle::run_flow`. `params` is forwarded verbatim as the flow's
+   * activation params (any JSON value).
+   */
+  async runFlow(flowId: string, params: unknown = null): Promise<string> {
+    const raw = await this._runtime._rpc("mobkit/run_flow", {
+      flow_id: flowId,
+      params,
+    });
+    if (typeof raw === "object" && raw !== null) {
+      const runId = (raw as Record<string, unknown>).run_id;
+      if (typeof runId === "string") {
+        return runId;
+      }
+    }
+    throw new Error(`unexpected run_flow response: ${JSON.stringify(raw)}`);
+  }
+
   // -- Routing ------------------------------------------------------------
 
   async resolveRouting(

@@ -994,10 +994,11 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/attach_existing_session",
                 "mobkit/cancel_flow",
                 "mobkit/flow_status",
+                "mobkit/list_flows",
+                "mobkit/run_flow",
                 "mobkit/collect_completed",
-                "mobkit/member_current_session_id",
                 "mobkit/read_session_history",
-                "mobkit/member_session_ref",
+                "mobkit/wait_ready",
             ];
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
@@ -1750,18 +1751,18 @@ pub async fn handle_unified_rpc_json(
         "mobkit/flow_status" => {
             mob_methods::handle_flow_status(runtime, response_id, &request.params).await
         }
+        "mobkit/list_flows" => mob_methods::handle_list_flows(runtime, response_id).await,
+        "mobkit/run_flow" => {
+            mob_methods::handle_run_flow(runtime, response_id, &request.params).await
+        }
         "mobkit/collect_completed" => {
             mob_methods::handle_collect_completed(runtime, response_id).await
         }
-        "mobkit/member_current_session_id" => {
-            mob_methods::handle_member_current_session_id(runtime, response_id, &request.params)
-                .await
+        "mobkit/wait_ready" => {
+            mob_methods::handle_wait_ready(runtime, response_id, &request.params).await
         }
         "mobkit/read_session_history" => {
             mob_methods::handle_read_session_history(runtime, response_id, &request.params).await
-        }
-        "mobkit/member_session_ref" => {
-            mob_methods::handle_member_session_ref(runtime, response_id, &request.params).await
         }
         // ----- identity-first methods -----
         "mobkit/interact" => {

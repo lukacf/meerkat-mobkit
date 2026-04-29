@@ -35,6 +35,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 futures = "0.3"
 meerkat-core = "0.6.0"
 meerkat-client = "0.6.0"
+meerkat-contracts = "0.6.0"
 meerkat-mob = "0.6.0"
 meerkat-mcp = "0.6.0"
 meerkat-models = "0.6.0"

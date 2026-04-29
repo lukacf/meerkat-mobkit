@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = std::env::var("OPENAI_API_KEY")
         .map_err(|_| "Set OPENAI_API_KEY to run real_mob_llm_smoke")?;
 
-    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-4.1-mini".to_string());
+    let model = std::env::var("RKAT_SMOKE_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string());
     println!("REAL_SMOKE: using model={model}");
 
     let temp_dir = tempfile::tempdir()?;

@@ -1144,6 +1144,37 @@ class MobHandle:
             return None
         return MobRunSnapshot.from_dict(raw)
 
+    async def list_flows(self) -> list[str]:
+        """List all configured flow IDs in this mob definition.
+
+        Relays meerkat 0.6's ``MobHandle::list_flows``. Returns the flow IDs
+        declared by the mob's ``[flows.*]`` tables, in unspecified order.
+        """
+        raw = await self._runtime._rpc("mobkit/list_flows")
+        if isinstance(raw, dict):
+            flows = raw.get("flows", [])
+        elif isinstance(raw, list):
+            flows = raw
+        else:
+            flows = []
+        return [str(flow_id) for flow_id in flows]
+
+    async def run_flow(self, flow_id: str, params: Any = None) -> str:
+        """Start a flow run and return its run ID.
+
+        Relays meerkat 0.6's ``MobHandle::run_flow``. ``params`` is forwarded
+        verbatim as the flow's activation params (any JSON value, defaults to
+        ``None``). The returned ``run_id`` can be passed to
+        :meth:`flow_status` and :meth:`cancel_flow`.
+        """
+        rpc_params: dict[str, Any] = {"flow_id": flow_id, "params": params}
+        raw = await self._runtime._rpc("mobkit/run_flow", rpc_params)
+        if isinstance(raw, dict):
+            run_id = raw.get("run_id")
+            if isinstance(run_id, str):
+                return run_id
+        raise RuntimeError(f"unexpected run_flow response: {raw!r}")
+
     # -----------------------------------------------------------------
     # Batch
     # -----------------------------------------------------------------
@@ -1161,25 +1192,33 @@ class MobHandle:
         return results
 
     # -----------------------------------------------------------------
-    # Session introspection
+    # Server-side readiness
     # -----------------------------------------------------------------
 
-    async def member_session_id(self, member_id: str) -> str | None:
-        """Return the current session ID for a member, or None."""
-        raw = await self._runtime._rpc("mobkit/member_current_session_id", {"member_id": member_id})
-        if isinstance(raw, dict):
-            return raw.get("session_id")
-        return None
+    async def wait_ready(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Wait until all current mob members are startup-ready for orchestration.
 
-    async def member_session_ref(self, member_id: str) -> MemberSessionRef | None:
-        """Return the session reference for a member, or None."""
-        from .types import MemberSessionRef
-        raw = await self._runtime._rpc("mobkit/member_session_ref", {"member_id": member_id})
-        if raw is None:
-            return None
-        if isinstance(raw, dict) and raw.get("session_id") is None:
-            return None
-        return MemberSessionRef.from_dict(raw)
+        Relays meerkat 0.6's ``MobHandle::wait_for_ready``. Returns a dict
+        ``{"ready": [{"agent_identity", "snapshot"}], "timeout": bool}``.
+        ``timeout=True`` means partial readiness within the deadline; the
+        ``ready`` list will be empty in that case.
+
+        :param timeout: optional seconds to wait. ``None`` blocks indefinitely.
+        """
+        params: dict[str, Any] = {}
+        if timeout is not None:
+            params["timeout_ms"] = int(timeout * 1000)
+        raw = await self._runtime._rpc("mobkit/wait_ready", params)
+        if not isinstance(raw, dict):
+            return {"ready": [], "timeout": False}
+        return {
+            "ready": list(raw.get("ready", [])),
+            "timeout": bool(raw.get("timeout", False)),
+        }
 
     # -----------------------------------------------------------------
     # Polling helpers (client-side)

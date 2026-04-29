@@ -123,7 +123,7 @@ pub(super) async fn handle_find_members(
             let entries = handle.list_members_matching(filter).await;
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
-                members.push(member_entry_to_json(&handle, entry).await);
+                members.push(member_entry_to_json(entry));
             }
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
@@ -272,7 +272,7 @@ pub(super) async fn handle_ensure_member(
                     let entries = handle.list_members_including_retiring().await;
                     let entry = entries.into_iter().find(|e| e.agent_identity == mid);
                     let result = match entry {
-                        Some(e) => member_entry_to_json(&handle, &e).await,
+                        Some(e) => member_entry_to_json(&e),
                         None => Value::Null,
                     };
                     JsonRpcResponse {
@@ -313,7 +313,7 @@ pub(super) async fn handle_list_members(
     let entries = handle.list_members_including_retiring().await;
     let mut members = Vec::with_capacity(entries.len());
     for entry in &entries {
-        members.push(member_entry_to_json(&handle, entry).await);
+        members.push(member_entry_to_json(entry));
     }
     JsonRpcResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -338,7 +338,7 @@ pub(super) async fn handle_get_member(
                 Some(entry) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
-                    result: Some(member_entry_to_json(&handle, &entry).await),
+                    result: Some(member_entry_to_json(&entry)),
                     error: None,
                 },
                 None => JsonRpcResponse {
@@ -1075,6 +1075,65 @@ pub(super) async fn handle_attach_existing_session(
     }
 }
 
+pub(super) async fn handle_list_flows(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let flows: Vec<String> = runtime
+        .mob_handle()
+        .list_flows()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(serde_json::json!({ "flows": flows })),
+        error: None,
+    }
+}
+
+pub(super) async fn handle_run_flow(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let flow_id_str = params.get("flow_id").and_then(Value::as_str);
+    let flow_params = params.get("params").cloned().unwrap_or(Value::Null);
+
+    match flow_id_str {
+        Some(fid) if !fid.is_empty() => {
+            let flow_id = meerkat_mob::FlowId::from(fid);
+            match runtime.mob_handle().run_flow(flow_id, flow_params).await {
+                Ok(run_id) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({ "run_id": run_id.to_string() })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("run_flow failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: flow_id required".to_string(),
+            }),
+        },
+    }
+}
+
 pub(super) async fn handle_cancel_flow(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -1185,6 +1244,70 @@ pub(super) async fn handle_flow_status(
     }
 }
 
+/// Wait until all current mob members are startup-ready for orchestration.
+///
+/// Relays meerkat 0.6's `MobHandle::wait_for_ready`. Returns a map of
+/// `{ ready: [{ agent_identity, snapshot }], timeout: bool }`. The
+/// `timeout` flag distinguishes "all members converged" from "partial
+/// readiness, hit the wall".
+pub(super) async fn handle_wait_ready(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let timeout = params
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .map(std::time::Duration::from_millis);
+    match runtime.mob_handle().wait_for_ready(timeout).await {
+        Ok(ready) => {
+            let entries: Vec<Value> = ready
+                .into_iter()
+                .map(|(identity, snapshot)| {
+                    serde_json::json!({
+                        "agent_identity": identity.to_string(),
+                        "snapshot": serde_json::to_value(&snapshot).unwrap_or(Value::Null),
+                    })
+                })
+                .collect();
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "ready": entries,
+                    "timeout": false,
+                })),
+                error: None,
+            }
+        }
+        Err(err) => {
+            let message = err.to_string();
+            let timed_out = message.to_lowercase().contains("timeout");
+            if timed_out {
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "ready": Vec::<Value>::new(),
+                        "timeout": true,
+                    })),
+                    error: None,
+                }
+            } else {
+                JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32000,
+                        message: format!("wait_for_ready failed: {message}"),
+                    }),
+                }
+            }
+        }
+    }
+}
+
 pub(super) async fn handle_collect_completed(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -1204,41 +1327,6 @@ pub(super) async fn handle_collect_completed(
         id: response_id,
         result: Some(serde_json::json!({ "completed": entries })),
         error: None,
-    }
-}
-
-pub(super) async fn handle_member_current_session_id(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-    params: &Value,
-) -> JsonRpcResponse {
-    let member_id = params.get("member_id").and_then(Value::as_str);
-    match member_id {
-        Some(mid) if !mid.is_empty() => {
-            let session_id = runtime
-                .mob_handle()
-                .resolve_bridge_session_id(&MeerkatId::from(mid))
-                .await
-                .map(|s| s.to_string());
-            JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: Some(serde_json::json!({
-                    "member_id": mid,
-                    "session_id": session_id,
-                })),
-                error: None,
-            }
-        }
-        _ => JsonRpcResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32602,
-                message: "Invalid params: member_id required".to_string(),
-            }),
-        },
     }
 }
 
@@ -1300,41 +1388,6 @@ pub(super) async fn handle_read_session_history(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: session_id required".to_string(),
-            }),
-        },
-    }
-}
-
-pub(super) async fn handle_member_session_ref(
-    runtime: &UnifiedRuntime,
-    response_id: Value,
-    params: &Value,
-) -> JsonRpcResponse {
-    let member_id = params.get("member_id").and_then(Value::as_str);
-    match member_id {
-        Some(mid) if !mid.is_empty() => {
-            let result = match runtime
-                .mob_handle()
-                .resolve_bridge_session_id(&MeerkatId::from(mid))
-                .await
-            {
-                Some(sid) => serde_json::json!({ "session_id": sid.to_string() }),
-                None => Value::Null,
-            };
-            JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
-                id: response_id,
-                result: Some(result),
-                error: None,
-            }
-        }
-        _ => JsonRpcResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id,
-            result: None,
-            error: Some(JsonRpcError {
-                code: -32602,
-                message: "Invalid params: member_id required".to_string(),
             }),
         },
     }

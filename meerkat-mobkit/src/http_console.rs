@@ -9,7 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::future::join_all;
 use meerkat_core::ContentInput;
-use meerkat_core::comms::TrustedPeerSpec;
+use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
@@ -620,7 +620,7 @@ fn console_identity_status_json(
         "addressability": member_addressability(member),
         "display_name": member.labels.get("display_name"),
         "labels": member.labels,
-        "agent_runtime_id": member.agent_runtime_id.to_string(),
+        "agent_runtime_id": member.binding_atoms().0.to_string(),
         "session_id": session_id,
         "generation": Value::Null,
         "checkpoint_version": Value::Null,
@@ -649,7 +649,7 @@ fn console_identity_inspect_json(
             "generation": Value::Null,
             "checkpoint_version": Value::Null,
             "session_id": session_id,
-            "agent_runtime_id": member.agent_runtime_id.to_string(),
+            "agent_runtime_id": member.binding_atoms().0.to_string(),
         },
         "topology_peers": peers,
         "output_preview": Value::Null,
@@ -695,11 +695,11 @@ async fn handle_console_runtime_rpc(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
-                "mobkit/member_current_session_id",
                 "mobkit/read_session_history",
-                "mobkit/member_session_ref",
                 "mobkit/collect_completed",
+                "mobkit/wait_ready",
                 "mobkit/flow_status",
+                "mobkit/list_flows",
                 "mobkit/query_events",
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/directory",
@@ -727,6 +727,7 @@ async fn handle_console_runtime_rpc(
                     "mobkit/respawn_member",
                     "mobkit/force_cancel_member",
                     "mobkit/cancel_flow",
+                    "mobkit/run_flow",
                     "mobkit/spawn_helper",
                     "mobkit/fork_helper",
                     "mobkit/attach_existing_session",
@@ -771,7 +772,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
-                members.push(member_entry_to_json(&handle, entry).await);
+                members.push(member_entry_to_json(entry));
             }
             response_value(response_id, Some(Value::Array(members)), None)
         }
@@ -783,11 +784,9 @@ async fn handle_console_runtime_rpc(
             let identity = MeerkatId::from(member_id);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
-                Some(entry) => response_value(
-                    response_id,
-                    Some(member_entry_to_json(&handle, &entry).await),
-                    None,
-                ),
+                Some(entry) => {
+                    response_value(response_id, Some(member_entry_to_json(&entry)), None)
+                }
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
             }
         }
@@ -811,7 +810,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_matching(filter).await;
             let mut matches = Vec::with_capacity(entries.len());
             for entry in &entries {
-                matches.push(member_entry_to_json(&handle, entry).await);
+                matches.push(member_entry_to_json(entry));
             }
             response_value(response_id, Some(Value::Array(matches)), None)
         }
@@ -1269,7 +1268,7 @@ async fn handle_console_runtime_rpc(
             match handle.ensure_member(spec).await {
                 Ok(_outcome) => {
                     let body = match lookup_member_with_session(&handle, &mid).await {
-                        Some((entry, _sid)) => member_entry_to_json(&handle, &entry).await,
+                        Some((entry, _sid)) => member_entry_to_json(&entry),
                         None => Value::Null,
                     };
                     response_value(response_id, Some(body), None)
@@ -1386,24 +1385,6 @@ async fn handle_console_runtime_rpc(
                 }
             }
         }
-        "mobkit/member_current_session_id" => {
-            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "member_id required");
-            };
-            let session_id = runtime
-                .handle()
-                .resolve_bridge_session_id(&MeerkatId::from(member_id))
-                .await
-                .map(|s| s.to_string());
-            response_value(
-                response_id,
-                Some(serde_json::json!({
-                    "member_id": member_id,
-                    "session_id": session_id,
-                })),
-                None,
-            )
-        }
         "mobkit/read_session_history" => {
             let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "session_id required");
@@ -1433,19 +1414,49 @@ async fn handle_console_runtime_rpc(
                 }
             }
         }
-        "mobkit/member_session_ref" => {
-            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "member_id required");
-            };
-            let body = match runtime
-                .handle()
-                .resolve_bridge_session_id(&MeerkatId::from(member_id))
-                .await
-            {
-                Some(sid) => serde_json::json!({ "session_id": sid.to_string() }),
-                None => Value::Null,
-            };
-            response_value(response_id, Some(body), None)
+        "mobkit/wait_ready" => {
+            let timeout = request
+                .params
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .map(std::time::Duration::from_millis);
+            match runtime.handle().wait_for_ready(timeout).await {
+                Ok(ready) => {
+                    let entries: Vec<Value> = ready
+                        .into_iter()
+                        .map(|(identity, snapshot)| {
+                            serde_json::json!({
+                                "agent_identity": identity.to_string(),
+                                "snapshot": serde_json::to_value(&snapshot)
+                                    .unwrap_or(Value::Null),
+                            })
+                        })
+                        .collect();
+                    response_value(
+                        response_id,
+                        Some(serde_json::json!({
+                            "ready": entries,
+                            "timeout": false,
+                        })),
+                        None,
+                    )
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    if message.to_lowercase().contains("timeout") {
+                        response_value(
+                            response_id,
+                            Some(serde_json::json!({
+                                "ready": Vec::<Value>::new(),
+                                "timeout": true,
+                            })),
+                            None,
+                        )
+                    } else {
+                        internal_error(response_id, format!("wait_for_ready failed: {message}"))
+                    }
+                }
+            }
         }
         "mobkit/collect_completed" => {
             let completed = runtime.handle().collect_completed().await;
@@ -1497,6 +1508,37 @@ async fn handle_console_runtime_rpc(
                 ),
                 Ok(None) => response_value(response_id, Some(Value::Null), None),
                 Err(err) => internal_error(response_id, format!("flow_status failed: {err}")),
+            }
+        }
+        "mobkit/list_flows" => {
+            let flows: Vec<String> = runtime
+                .handle()
+                .list_flows()
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect();
+            response_value(
+                response_id,
+                Some(serde_json::json!({ "flows": flows })),
+                None,
+            )
+        }
+        "mobkit/run_flow" => {
+            let Some(flow_id_str) = request.params.get("flow_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "flow_id required");
+            };
+            if flow_id_str.is_empty() {
+                return invalid_params(response_id, "flow_id required");
+            }
+            let flow_id = meerkat_mob::FlowId::from(flow_id_str);
+            let flow_params = request.params.get("params").cloned().unwrap_or(Value::Null);
+            match runtime.handle().run_flow(flow_id, flow_params).await {
+                Ok(run_id) => response_value(
+                    response_id,
+                    Some(serde_json::json!({ "run_id": run_id.to_string() })),
+                    None,
+                ),
+                Err(err) => invalid_params(response_id, format!("run_flow failed: {err}")),
             }
         }
         "mobkit/spawn_helper" => {
@@ -1649,7 +1691,7 @@ async fn handle_console_runtime_rpc(
                         && !pid.is_empty()
                         && !address.is_empty() =>
                 {
-                    match TrustedPeerSpec::new(cname, pid, address) {
+                    match TrustedPeerDescriptor::test_only_unsigned(cname, pid, address) {
                         Err(err) => {
                             invalid_params(response_id, format!("invalid peer spec: {err}"))
                         }
@@ -1700,7 +1742,7 @@ async fn handle_console_runtime_rpc(
                         && !pid.is_empty()
                         && !address.is_empty() =>
                 {
-                    match TrustedPeerSpec::new(cname, pid, address) {
+                    match TrustedPeerDescriptor::test_only_unsigned(cname, pid, address) {
                         Err(err) => {
                             invalid_params(response_id, format!("invalid peer spec: {err}"))
                         }

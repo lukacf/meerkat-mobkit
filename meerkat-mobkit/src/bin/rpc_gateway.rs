@@ -245,7 +245,7 @@ impl CallbackToolDispatcher {
             .into_iter()
             .map(|name| {
                 Arc::new(ToolDef {
-                    name,
+                    name: name.into(),
                     description: "Python callback tool".to_string(),
                     input_schema: json!({"type": "object"}),
                     provenance: None,

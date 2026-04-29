@@ -449,7 +449,12 @@ fn e2e_004_happy_path_full_lifecycle_startup_reconcile_dispatch_route_delivery_s
                 "mob.member.worker-1".to_string(),
             ]
         );
-        let mut spawned = reconcile.mob.spawned.clone();
+        let mut spawned: Vec<String> = reconcile
+            .mob
+            .spawned
+            .iter()
+            .map(|receipt| receipt.agent_identity.clone())
+            .collect();
         spawned.sort();
         assert_eq!(spawned, vec!["lead-1".to_string(), "worker-1".to_string()]);
 

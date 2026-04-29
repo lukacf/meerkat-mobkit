@@ -702,19 +702,6 @@ class HelperResult:
         )
 
 
-@dataclass(frozen=True)
-class MemberSessionRef:
-    """Session reference for a mob member."""
-    member_id: str
-    session_id: str
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> MemberSessionRef:
-        return cls(
-            member_id=data.get("member_id", ""),
-            session_id=data.get("session_id", ""),
-        )
-
 
 @dataclass(frozen=True)
 class MobRunSnapshot:

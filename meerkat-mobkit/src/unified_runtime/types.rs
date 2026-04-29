@@ -201,77 +201,72 @@ pub struct UnifiedRuntimeReconcileRoutingReport {
     pub removed_route_keys: Vec<String>,
 }
 
-/// One per-identity failure observed during a reconcile pass.
+/// Per-identity reconcile failure — re-export of the canonical
+/// meerkat-contracts wire shape so SDK consumers see the same field
+/// names whether they go through `mob/reconcile` or `mobkit/reconcile`.
+pub use meerkat_contracts::MobReconcileFailureWire as MobReconcileFailure;
+
+/// Roster half of a reconcile pass — re-export of meerkat-contracts'
+/// canonical wire shape. `spawned: Vec<MobSpawnReceiptWire>` carries the
+/// server-resolved `WireMemberRef` per receipt, replacing the
+/// identity-string list mobkit projected before 0.6.
+pub use meerkat_contracts::MobReconcileReportWire as MobReconcileReport;
+
+/// Project meerkat's native `ReconcileReport` into the canonical wire shape.
 ///
-/// Wire projection of meerkat's `ReconcileFailure` (which isn't `Serialize`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MobReconcileFailure {
-    pub agent_identity: String,
-    /// One of `"spawn"` or `"retire"` — which reconcile stage failed.
-    pub stage: String,
-    /// Human-readable error message.
-    pub error: String,
-}
-
-/// Roster half of a reconcile pass — mobkit's wire projection of meerkat's
-/// `ReconcileReport` (which isn't `Serialize`). Field names preserve the
-/// `/mobkit/reconcile` HTTP JSON shape.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct MobReconcileReport {
-    pub desired: Vec<String>,
-    pub retained: Vec<String>,
-    pub spawned: Vec<String>,
-    #[serde(default)]
-    pub retired: Vec<String>,
-    /// Per-identity failures encountered during the pass. Empty on full success.
-    /// `UnifiedRuntime::reconcile` surfaces a non-empty `failures` list as an
-    /// `Err` so Rust callers relying on `?` see the same propagation behavior
-    /// they had before meerkat 0.6 switched reconcile to partial-success.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub failures: Vec<MobReconcileFailure>,
-}
-
-impl MobReconcileReport {
-    /// Project meerkat's native `ReconcileReport` into mobkit's wire shape.
-    pub fn from_meerkat(report: meerkat_mob::runtime::reconcile::ReconcileReport) -> Self {
-        Self {
-            desired: report
-                .desired
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect(),
-            retained: report
-                .retained
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect(),
-            spawned: report
-                .spawned
-                .into_iter()
-                .map(|receipt| receipt.agent_identity.to_string())
-                .collect(),
-            retired: report
-                .retired
-                .into_iter()
-                .map(|id| id.to_string())
-                .collect(),
-            failures: report
-                .failures
-                .into_iter()
-                .map(|failure| MobReconcileFailure {
-                    agent_identity: failure.agent_identity.to_string(),
-                    stage: match failure.stage {
-                        meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => "spawn".into(),
-                        meerkat_mob::runtime::reconcile::ReconcileStage::Retire => "retire".into(),
-                    },
-                    error: failure.error.to_string(),
-                })
-                .collect(),
-        }
+/// Mirrors the `mob/reconcile` RPC handler's projection in
+/// `meerkat-rpc/src/handlers/mob.rs` so both surfaces emit byte-identical
+/// JSON for the same reconcile outcome.
+pub fn meerkat_reconcile_report_to_wire(
+    mob_id: &str,
+    report: meerkat_mob::runtime::reconcile::ReconcileReport,
+) -> MobReconcileReport {
+    use meerkat_contracts::{MobSpawnReceiptWire, WireMemberRef};
+    MobReconcileReport {
+        desired: report
+            .desired
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        retained: report
+            .retained
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        spawned: report
+            .spawned
+            .into_iter()
+            .map(|receipt| {
+                let identity_str = receipt.agent_identity.to_string();
+                MobSpawnReceiptWire {
+                    member_ref: WireMemberRef::encode(mob_id, &identity_str),
+                    agent_identity: identity_str,
+                }
+            })
+            .collect(),
+        retired: report
+            .retired
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        failures: report
+            .failures
+            .into_iter()
+            .map(|failure| MobReconcileFailure {
+                agent_identity: failure.agent_identity.to_string(),
+                stage: match failure.stage {
+                    meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => "spawn".into(),
+                    meerkat_mob::runtime::reconcile::ReconcileStage::Retire => "retire".into(),
+                },
+                error: failure.error.to_string(),
+            })
+            .collect(),
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Eq is dropped because the canonical wire `MobReconcileReportWire` does
+// not implement `Eq` (its nested types are PartialEq only).
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnifiedRuntimeReconcileReport {
     pub mob: MobReconcileReport,
     pub edges: UnifiedRuntimeReconcileEdgesReport,
