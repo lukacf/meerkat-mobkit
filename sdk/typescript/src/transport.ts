@@ -56,7 +56,15 @@ export type FetchLikeResponse = {
 
 export type FetchLike = (
   url: string,
-  init: { method: "POST"; headers: Record<string, string>; body: string },
+  init: {
+    method: "POST";
+    headers: Record<string, string>;
+    body: string;
+    /** Optional AbortSignal — surfaced so the http transport can cancel
+     * a hung server request after `timeoutMs`. Implementations that
+     * don't support it can ignore the field. */
+    signal?: AbortSignal;
+  },
 ) => Promise<FetchLikeResponse>;
 
 // -- Helpers --------------------------------------------------------------
@@ -333,6 +341,13 @@ export function createGatewayAsyncTransport(
 }
 
 /**
+ * Default request timeout for {@link createJsonRpcHttpTransport}. A
+ * server that accepts the connection but never replies would otherwise
+ * leak the fetch task forever; pre-fix there was no timeout at all.
+ */
+export const DEFAULT_HTTP_TRANSPORT_TIMEOUT_MS = 60_000;
+
+/**
  * Create an async HTTP POST transport.
  */
 export function createJsonRpcHttpTransport(
@@ -340,6 +355,9 @@ export function createJsonRpcHttpTransport(
   options: {
     headers?: Record<string, string>;
     fetchImpl?: FetchLike;
+    /** Maximum time (ms) a single request may stay pending before being
+     * aborted. Defaults to 60s. Set to 0 to disable (not recommended). */
+    timeoutMs?: number;
   } = {},
 ): JsonRpcTransport {
   const globalFetch = (globalThis as unknown as { fetch?: FetchLike }).fetch;
@@ -347,29 +365,59 @@ export function createJsonRpcHttpTransport(
   if (!fetchImpl) {
     throw new Error("fetch implementation not available");
   }
+  const timeoutMs =
+    options.timeoutMs === undefined
+      ? DEFAULT_HTTP_TRANSPORT_TIMEOUT_MS
+      : options.timeoutMs;
 
   return async (request: JsonRpcRequest): Promise<unknown> => {
-    const response = await fetchImpl(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        ...(options.headers ?? {}),
-      },
-      body: JSON.stringify(request),
-    });
-
-    const body = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `http transport failed (status=${response.status}): ${body}`,
-      );
-    }
+    const controller =
+      timeoutMs > 0 ? new AbortController() : undefined;
+    const timer =
+      controller !== undefined && timeoutMs > 0
+        ? setTimeout(() => controller.abort(), timeoutMs)
+        : undefined;
 
     try {
-      return JSON.parse(body) as unknown;
-    } catch {
-      throw new Error("http transport returned non-JSON response");
+      const response = await fetchImpl(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(options.headers ?? {}),
+        },
+        body: JSON.stringify(request),
+        signal: controller?.signal,
+      });
+
+      const body = await response.text();
+      if (!response.ok) {
+        throw new Error(
+          `http transport failed (status=${response.status}): ${body}`,
+        );
+      }
+
+      try {
+        return JSON.parse(body) as unknown;
+      } catch {
+        throw new Error("http transport returned non-JSON response");
+      }
+    } catch (err) {
+      if (
+        err !== null &&
+        typeof err === "object" &&
+        "name" in err &&
+        (err as { name: unknown }).name === "AbortError"
+      ) {
+        throw new Error(
+          `http transport timed out after ${timeoutMs}ms; server unresponsive`,
+        );
+      }
+      throw err;
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
     }
   };
 }

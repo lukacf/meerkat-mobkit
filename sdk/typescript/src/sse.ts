@@ -73,14 +73,19 @@ export async function* parseSseStream(
       } else if (line.startsWith(":")) {
         // Comment — skip
         continue;
-      } else if (line.startsWith("id: ")) {
-        currentId = line.slice(4);
-      } else if (line.startsWith("event: ")) {
-        currentEvent = line.slice(7);
-      } else if (line.startsWith("data: ")) {
-        currentData.push(line.slice(6));
+      } else if (line.startsWith("id:")) {
+        // Pre-fix only matched `id: ` with the optional space, so SSE-
+        // spec-legal `id:42` (no space) was dropped, breaking resume
+        // cursors. Strip a single optional leading space, mirroring
+        // the existing `data:` fallback below.
+        const v = line.slice(3);
+        currentId = v.startsWith(" ") ? v.slice(1) : v;
+      } else if (line.startsWith("event:")) {
+        const v = line.slice(6);
+        currentEvent = v.startsWith(" ") ? v.slice(1) : v;
       } else if (line.startsWith("data:")) {
-        currentData.push(line.slice(5));
+        const v = line.slice(5);
+        currentData.push(v.startsWith(" ") ? v.slice(1) : v);
       }
     }
   }

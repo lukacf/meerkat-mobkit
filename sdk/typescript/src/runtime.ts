@@ -25,6 +25,7 @@ import {
   NotConnectedError,
   RpcError,
   TransportError,
+  isRpcError,
 } from "./errors.js";
 import { PersistentTransport, buildJsonRpcRequest } from "./transport.js";
 import { parseSseStream, type SseEvent } from "./sse.js";
@@ -219,12 +220,21 @@ export class MobKitRuntime {
             (initResult as Record<string, unknown>).http_base_url ?? "",
           ) || null;
         }
-      } catch {
+      } catch (err) {
+        // Pre-fix every error path here was rewritten to a generic
+        // `TransportError`, destroying the original RPC code/message
+        // (e.g. config errors like `bad mob.toml: line 7`). The fix:
+        // only synthesize TransportError when the subprocess actually
+        // died; otherwise re-throw the structured RpcError so operators
+        // can diagnose config errors without spelunking gateway logs.
         if (this._transport !== null && !this._transport.isRunning()) {
           throw new TransportError("gateway process died during bootstrap");
         }
+        if (isRpcError(err)) {
+          throw err;
+        }
         throw new TransportError(
-          "mobkit/init failed — runtime could not be initialized",
+          `mobkit/init failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     } else if (this._config.sessionBuilder) {
@@ -513,7 +523,7 @@ export class MobHandle {
       const raw = await this._runtime._rpc("mobkit/mob_events/query", params);
       return extractMobStructuralEvents(raw);
     } catch (err) {
-      if (err instanceof RpcError && err.code === MOB_EVENTS_STALE_CURSOR_CODE) {
+      if (isRpcError(err) && err.code === MOB_EVENTS_STALE_CURSOR_CODE) {
         throw MobEventsStaleError.fromRpcError(err);
       }
       throw err;
@@ -537,7 +547,7 @@ export class MobHandle {
     try {
       raw = await this._runtime._rpc("mobkit/mob_events/subscribe", params);
     } catch (err) {
-      if (err instanceof RpcError && err.code === MOB_EVENTS_STALE_CURSOR_CODE) {
+      if (isRpcError(err) && err.code === MOB_EVENTS_STALE_CURSOR_CODE) {
         throw MobEventsStaleError.fromRpcError(err);
       }
       throw err;
@@ -1060,11 +1070,22 @@ export class SseBridge {
   private async *_streamSse(
     url: string,
   ): AsyncGenerator<SseEvent, void, undefined> {
-    const body = await this._fetchSseStream(url);
-    yield* parseSseStream(body);
+    // Pre-fix, breaking out of the consumer iterator left the
+    // underlying http.ClientRequest open — sockets and Node refs
+    // accumulated. Now: tie the request lifetime to the generator via
+    // try/finally so consumer `break`/`throw`/`return` always destroys
+    // the request.
+    const { body, destroy } = await this._fetchSseStream(url);
+    try {
+      yield* parseSseStream(body);
+    } finally {
+      destroy();
+    }
   }
 
-  private _fetchSseStream(url: string): Promise<AsyncIterable<Uint8Array>> {
+  private _fetchSseStream(
+    url: string,
+  ): Promise<{ body: AsyncIterable<Uint8Array>; destroy: () => void }> {
     const parsed = new URL(url);
     const requester = parsed.protocol === "https:" ? httpsRequest : httpRequest;
 
@@ -1092,7 +1113,13 @@ export class SseBridge {
             }
           })();
 
-          resolve(stream);
+          resolve({
+            body: stream,
+            destroy: () => {
+              req.destroy();
+              res.destroy();
+            },
+          });
         },
       );
 
