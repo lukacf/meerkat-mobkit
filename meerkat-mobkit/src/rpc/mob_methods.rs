@@ -575,11 +575,7 @@ fn parse_mob_events_query(
     })
 }
 
-/// JSON-RPC error code reported when the caller passes an `after_seq`
-/// past the current ledger frontier. The error `data` field carries
-/// `{ after_cursor, latest_cursor }` so SDKs can surface a typed
-/// exception.
-pub(super) const MOB_EVENTS_STALE_CURSOR_CODE: i64 = -32010;
+use super::MOB_EVENTS_STALE_CURSOR_CODE;
 
 fn stale_cursor_response(
     response_id: Value,
@@ -656,9 +652,24 @@ pub(super) async fn handle_mob_events_subscribe(
         Ok(q) => q,
         Err(response) => return *response,
     };
+    // Capture latest_cursor at handshake so the continuation URL
+    // covers the empty-snapshot case (no events matched yet, no caller
+    // after_seq supplied) without dropping a window between snapshot
+    // and SSE connect.
+    let latest_at_handshake = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .unwrap_or(0);
     match runtime.query_mob_events(&query).await {
         Ok(events) => {
             let last_cursor = events.last().map(|event| event.cursor);
+            let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
+                &query,
+                last_cursor,
+                latest_at_handshake,
+            );
             JsonRpcResponse {
                 jsonrpc: JSONRPC_VERSION.to_string(),
                 id: response_id,
@@ -666,7 +677,7 @@ pub(super) async fn handle_mob_events_subscribe(
                     "stream": "mob_events",
                     "events": serde_json::to_value(&events).unwrap_or(Value::Null),
                     "next_after_seq": last_cursor,
-                    "subscribe_url": "/mobkit/mob_events/stream",
+                    "subscribe_url": subscribe_url,
                     "keep_alive": {
                         "interval_ms": 15_000_u64,
                         "event": "keep_alive",

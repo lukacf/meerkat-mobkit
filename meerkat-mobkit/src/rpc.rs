@@ -101,6 +101,14 @@ pub fn parse_rpc_capabilities(line: &str) -> Result<RpcCapabilities, RpcCapabili
     serde_json::from_value(raw).map_err(|_| RpcCapabilitiesError::InvalidSchema)
 }
 
+/// JSON-RPC error code returned by `mobkit/mob_events/{query,subscribe}`
+/// when the caller's `after_seq` is past the current ledger frontier.
+/// The error `data` field carries `{ after_cursor, latest_cursor }` so
+/// SDKs can surface a typed exception. Single source of truth — keep
+/// this in sync with `MobEventsStaleError` in the Python and TypeScript
+/// SDKs.
+pub const MOB_EVENTS_STALE_CURSOR_CODE: i64 = -32010;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,

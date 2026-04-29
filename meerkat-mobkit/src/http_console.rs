@@ -621,7 +621,7 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
         id,
         None,
         Some(JsonRpcError {
-            code: -32010,
+            code: crate::rpc::MOB_EVENTS_STALE_CURSOR_CODE,
             message: format!(
                 "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
             ),
@@ -1446,6 +1446,10 @@ async fn handle_console_runtime_rpc(
                 );
             };
             let events_view = runtime.handle().events();
+            // Capture latest_cursor at handshake so the SSE continuation
+            // URL still covers the empty-snapshot case without losing
+            // events between the JSON-RPC response and the SSE connect.
+            let latest_at_handshake = events_view.latest_cursor().await.unwrap_or(0);
             let result = crate::unified_runtime::mob_events::query_ledger_with_filter(
                 &events_view,
                 store,
@@ -1456,11 +1460,16 @@ async fn handle_console_runtime_rpc(
                 Ok(events) => {
                     let last_cursor = events.last().map(|event| event.cursor);
                     let body = if request.method == "mobkit/mob_events/subscribe" {
+                        let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
+                            &query,
+                            last_cursor,
+                            latest_at_handshake,
+                        );
                         serde_json::json!({
                             "stream": "mob_events",
                             "events": events,
                             "next_after_seq": last_cursor,
-                            "subscribe_url": "/mobkit/mob_events/stream",
+                            "subscribe_url": subscribe_url,
                             "keep_alive": {
                                 "interval_ms": 15_000_u64,
                                 "event": "keep_alive",

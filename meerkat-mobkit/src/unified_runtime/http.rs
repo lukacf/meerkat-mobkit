@@ -38,6 +38,9 @@ impl UnifiedRuntime {
     pub fn build_reference_app_router(&self, decisions: RuntimeDecisionState) -> Router {
         let agent_runtime = self.mob_runtime.clone();
         let mob_runtime = self.mob_runtime.clone();
+        // Auth-gate the structural-events SSE route with the same
+        // RuntimeDecisionState the console RPC route uses.
+        let sse_decisions = decisions.clone();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
@@ -59,6 +62,7 @@ impl UnifiedRuntime {
             .merge(mob_structural_events_sse_router(
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
+                Some(sse_decisions),
             ))
             .merge(interaction_stream_router(self.mob_runtime.clone()))
     }

@@ -167,6 +167,55 @@ impl MobEventsStore {
     }
 }
 
+/// Path of the per-client structural-events SSE route.
+pub const MOB_EVENTS_STREAM_PATH: &str = "/mobkit/mob_events/stream";
+
+/// Build the continuation URL returned by `mobkit/mob_events/subscribe`.
+///
+/// `after_seq` (the cursor the SSE handler will resume from) is set to
+/// `next_after_seq` if the snapshot returned events, else the
+/// caller-supplied `after_seq`, else `latest_cursor` captured at
+/// handshake time. This closes the gap between the JSON-RPC snapshot
+/// response and the SSE handshake where new events would otherwise be
+/// missed. The original filters are echoed back so the SSE client
+/// applies the same predicate without restating them.
+pub(crate) fn build_subscribe_url(
+    query: &EventQuery,
+    next_after_seq: Option<u64>,
+    fallback_cursor: u64,
+) -> String {
+    let after_seq = next_after_seq
+        .or(query.after_seq)
+        .unwrap_or(fallback_cursor);
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("after_seq", &after_seq.to_string());
+    if let Some(value) = query.mob_id.as_deref() {
+        serializer.append_pair("mob_id", value);
+    }
+    if let Some(value) = query.run_id.as_deref() {
+        serializer.append_pair("run_id", value);
+    }
+    if let Some(value) = query.step_id.as_deref() {
+        serializer.append_pair("step_id", value);
+    }
+    if let Some(value) = query.identity.as_deref() {
+        serializer.append_pair("identity", value);
+    }
+    if let Some(value) = query.member_id.as_deref() {
+        serializer.append_pair("member_id", value);
+    }
+    if let Some(value) = query.since_ms {
+        serializer.append_pair("since_ms", &value.to_string());
+    }
+    if let Some(value) = query.until_ms {
+        serializer.append_pair("until_ms", &value.to_string());
+    }
+    if !query.event_types.is_empty() {
+        serializer.append_pair("event_types", &query.event_types.join(","));
+    }
+    format!("{MOB_EVENTS_STREAM_PATH}?{}", serializer.finish())
+}
+
 /// Errors raised when scanning the meerkat ledger to satisfy a
 /// structural-events query. `Stale` is the typed variant the JSON-RPC
 /// layer maps to `-32010` with `data: { after_cursor, latest_cursor }`.
@@ -299,7 +348,7 @@ async fn scan_forward(
         if batch.is_empty() {
             break;
         }
-        let last_cursor_in_batch = batch.last().map(|event| event.cursor).unwrap_or(cursor);
+        let cursor_before_batch = cursor;
         for event in batch {
             cursor = cursor.max(event.cursor);
             let envelope = store.project_event_for_query(&event).await;
@@ -310,14 +359,12 @@ async fn scan_forward(
                 }
             }
         }
-        if last_cursor_in_batch
-            <= cursor
-                .saturating_sub(QUERY_BATCH_SIZE as u64)
-                .max(after_seq)
-        {
-            // Defensive: poll_strict didn't advance; bail to avoid an
-            // infinite loop. In practice meerkat's ledger always advances
-            // when batch is non-empty.
+        // Defensive non-progress guard. `poll_strict` is contracted to
+        // return events strictly after `cursor_before_batch` when the
+        // batch is non-empty, so this branch is unreachable — but
+        // bailing instead of looping forever keeps the failure mode
+        // bounded if the contract ever changes.
+        if cursor <= cursor_before_batch {
             break;
         }
     }

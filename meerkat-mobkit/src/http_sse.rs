@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_stream::stream;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::get;
@@ -21,8 +21,11 @@ use meerkat_mob::{MobEventRouterHandle, MobHandle};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::runtime::{
+    RuntimeDecisionState, extract_bearer_token_from_header, validate_console_token,
+};
 use crate::unified_runtime::EventQuery;
-use crate::unified_runtime::mob_events::MobEventsStore;
+use crate::unified_runtime::mob_events::{MOB_EVENTS_STREAM_PATH, MobEventsStore};
 
 use crate::mob_handle_runtime::MobRuntimeError;
 use meerkat_core::comms::SendError;
@@ -271,6 +274,11 @@ impl MobStructuralStreamQuery {
 struct MobStructuralSseState {
     handle: MobHandle,
     store: MobEventsStore,
+    /// Optional auth context. When `Some`, requests are gated by the
+    /// same `require_app_auth` toggle the console RPC route uses; when
+    /// `None`, the route is unauthenticated (in-process or trusted
+    /// embedding).
+    decisions: Option<RuntimeDecisionState>,
 }
 
 /// Per-client SSE subscription to the meerkat structural-event ledger.
@@ -282,20 +290,69 @@ struct MobStructuralSseState {
 /// Filtering matches the `mobkit/mob_events/query` predicate; the
 /// per-client `MobEventsSubscription` is dropped when the client
 /// disconnects, which cancels the upstream forwarder automatically.
-pub fn mob_structural_events_sse_router(handle: MobHandle, store: MobEventsStore) -> Router {
+///
+/// When `decisions` is `Some` and `decisions.console.require_app_auth`
+/// is on, every request must carry a valid bearer token (Authorization
+/// header or `auth_token` query param) — same gate the console RPC
+/// route uses. `None` opts out of auth (e.g. trusted local embedding).
+pub fn mob_structural_events_sse_router(
+    handle: MobHandle,
+    store: MobEventsStore,
+    decisions: Option<RuntimeDecisionState>,
+) -> Router {
     Router::new()
         .route(
-            "/mobkit/mob_events/stream",
+            MOB_EVENTS_STREAM_PATH,
             get(mob_structural_events_sse_handler),
         )
-        .with_state(MobStructuralSseState { handle, store })
+        .with_state(MobStructuralSseState {
+            handle,
+            store,
+            decisions,
+        })
+}
+
+fn mob_events_request_authorized(
+    decisions: Option<&RuntimeDecisionState>,
+    headers: &HeaderMap,
+    uri: &Uri,
+) -> bool {
+    let Some(decisions) = decisions else {
+        return true;
+    };
+    if !decisions.console.require_app_auth {
+        return true;
+    }
+    let bearer_token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(extract_bearer_token_from_header)
+        .map(String::from);
+    let query_token = uri.query().and_then(|q| {
+        q.split('&')
+            .find_map(|pair| pair.strip_prefix("auth_token=").map(String::from))
+    });
+    bearer_token
+        .or(query_token)
+        .is_some_and(|token| validate_console_token(decisions, &token))
 }
 
 async fn mob_structural_events_sse_handler(
     State(state): State<MobStructuralSseState>,
+    headers: HeaderMap,
+    uri: Uri,
     Query(params): Query<MobStructuralStreamQuery>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)>
 {
+    if !mob_events_request_authorized(state.decisions.as_ref(), &headers, &uri) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "mob_events stream requires a valid auth token",
+            })),
+        ));
+    }
     let query = params.into_event_query();
     let events_view = state.handle.events();
 

@@ -243,6 +243,68 @@ async fn query_without_after_seq_returns_latest_events_in_ascending_order() {
 }
 
 #[tokio::test]
+async fn subscribe_url_carries_continuation_cursor_and_filters() {
+    // mobkit/mob_events/subscribe must return a subscribe_url that
+    // includes after_seq + the original filters so the SSE handler
+    // resumes from the snapshot frontier — closing the gap between
+    // the JSON-RPC response and the SSE handshake.
+    let fixture = build_fixture().await;
+    drive_a_flow(&fixture.runtime).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let response = parse_json_rpc(
+        &handle_unified_rpc_json(
+            &fixture.runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "subscribe-1",
+                "method": "mobkit/mob_events/subscribe",
+                "params": {
+                    "mob_id": "query-ledger-mob",
+                    "event_types": ["flow_started", "flow_completed"],
+                    "limit": 8
+                }
+            })
+            .to_string(),
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .await,
+    );
+    assert!(
+        response.error.is_none(),
+        "subscribe must succeed: {:?}",
+        response.error
+    );
+    let result = response.result.expect("subscribe result");
+    let url = result
+        .get("subscribe_url")
+        .and_then(Value::as_str)
+        .expect("subscribe_url string")
+        .to_string();
+    assert!(
+        url.starts_with("/mobkit/mob_events/stream?"),
+        "subscribe_url should anchor to the SSE route, got {url}"
+    );
+    assert!(
+        url.contains("after_seq="),
+        "subscribe_url must carry after_seq, got {url}"
+    );
+    assert!(
+        url.contains("mob_id=query-ledger-mob"),
+        "subscribe_url must carry mob_id filter, got {url}"
+    );
+    assert!(
+        url.contains("event_types=flow_started%2Cflow_completed"),
+        "subscribe_url must carry event_types filter (URL-encoded), got {url}"
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
 async fn query_after_seq_zero_paginates_forward_from_start() {
     let fixture = build_fixture().await;
     drive_a_flow(&fixture.runtime).await;

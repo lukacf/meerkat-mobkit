@@ -1636,6 +1636,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "ed25519-dalek",
+ "form_urlencoded",
  "futures",
  "hmac",
  "jsonwebtoken",

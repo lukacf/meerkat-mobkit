@@ -11,7 +11,9 @@ use crate::contact_directory::ContactDirectory;
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
 };
-use crate::runtime::{InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions};
+use crate::runtime::{
+    InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions, SqliteMetadataStore,
+};
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -368,10 +370,28 @@ impl UnifiedRuntimeBuilder {
         });
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
-        let persistent_metadata = self
-            .persistent_metadata
-            .clone()
-            .unwrap_or_else(|| Arc::new(InMemoryMetadataStore::new()));
+        // The structural-events subscription cursor lives in the
+        // persistent metadata adapter. For ephemeral builds this can be
+        // in-memory (the ledger itself isn't durable, so there's nothing
+        // to resume from). For persistent_state builds we MUST default
+        // to SQLite — otherwise after a gateway restart the subscriber
+        // resumes from `latest_cursor` and silently skips every event
+        // that was written to the durable mob ledger while MobKit was
+        // down. Callers can still override via `.persistent_metadata()`.
+        let persistent_metadata: Arc<dyn PersistentMetadataStore> =
+            if let Some(store) = self.persistent_metadata.clone() {
+                store
+            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
+                let metadata_path = state_path.join("mobkit_metadata.sqlite");
+                Arc::new(SqliteMetadataStore::open(&metadata_path).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to open mobkit_metadata.sqlite at {}: {e}",
+                        metadata_path.display()
+                    ))
+                })?)
+            } else {
+                Arc::new(InMemoryMetadataStore::new())
+            };
 
         let runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
