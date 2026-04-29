@@ -595,6 +595,7 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
         Some(JsonRpcError {
             code: -32602,
             message: message.into(),
+            data: None,
         }),
     )
 }
@@ -606,6 +607,7 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
         Some(JsonRpcError {
             code: -32000,
             message: message.into(),
+            data: None,
         }),
     )
 }
@@ -617,16 +619,17 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
 fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64) -> Value {
     response_value(
         id,
-        Some(serde_json::json!({
-            "error": "event_query_stale",
-            "after_cursor": after_cursor,
-            "latest_cursor": latest_cursor,
-        })),
+        None,
         Some(JsonRpcError {
             code: -32010,
             message: format!(
                 "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
             ),
+            data: Some(serde_json::json!({
+                "error": "event_query_stale",
+                "after_cursor": after_cursor,
+                "latest_cursor": latest_cursor,
+            })),
         }),
     )
 }
@@ -933,6 +936,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32001,
                         message: format!("unknown identity: {identity}"),
+                        data: None,
                     }),
                 );
             };
@@ -943,6 +947,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32002,
                         message: format!("not addressable: {identity}"),
+                        data: None,
                     }),
                 );
             }
@@ -953,6 +958,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32004,
                         message: format!("identity retiring: {identity}"),
+                        data: None,
                     }),
                 );
             }
@@ -975,6 +981,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32003,
                         message: message.to_string(),
+                        data: None,
                     }),
                 );
             }
@@ -1127,6 +1134,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1141,6 +1149,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1171,6 +1180,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1185,6 +1195,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1204,6 +1215,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1830,6 +1842,7 @@ async fn handle_console_runtime_rpc(
                 Some(JsonRpcError {
                     code: -32004,
                     message: "gateway has no signing keypair configured".to_string(),
+                    data: None,
                 }),
             ),
         },
@@ -1863,6 +1876,7 @@ async fn handle_console_runtime_rpc(
                                 Some(JsonRpcError {
                                     code: -32000,
                                     message: format!("member {mid:?} has no comms runtime"),
+                                    data: None,
                                 }),
                             ),
                         },
@@ -1872,6 +1886,7 @@ async fn handle_console_runtime_rpc(
                             Some(JsonRpcError {
                                 code: -32000,
                                 message: format!("member {mid:?} not found"),
+                                data: None,
                             }),
                         ),
                     }
@@ -1920,6 +1935,7 @@ async fn handle_console_runtime_rpc(
             Some(JsonRpcError {
                 code: -32601,
                 message: "Method not found".to_string(),
+                data: None,
             }),
         ),
     }
