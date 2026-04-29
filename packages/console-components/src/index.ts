@@ -1,6 +1,7 @@
 export { ConsoleActivityRail } from "./activity/console-activity-rail";
 export { ConversationEmptyState } from "./conversation/conversation-empty-state";
 export { ConversationPane } from "./conversation/conversation-pane";
+export { ConversationRichContent } from "./conversation/conversation-rich-content";
 export { ConversationTranscript } from "./conversation/conversation-transcript";
 export { ConsoleDock } from "./dock/console-dock";
 export { useConsoleDockController } from "./dock/use-console-dock-controller";

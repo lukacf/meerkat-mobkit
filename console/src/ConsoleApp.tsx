@@ -8,7 +8,6 @@ import {
   ConsoleDock,
   ConsoleSidebar,
   ConsoleWorkbench,
-  ConversationPane,
   useConsoleDockController,
 } from "@console-components";
 import type { ConsoleComposerToolbarItem, ConversationTimelineEntry, IdentityInspectViewState } from "@console-core";
