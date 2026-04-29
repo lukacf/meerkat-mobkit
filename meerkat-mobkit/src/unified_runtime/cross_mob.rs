@@ -6,9 +6,23 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobHandle, PeerTarget};
 
 use crate::auth::peer_keys::GatewayPeerKeys;
-use crate::contact_directory::{ContactDirectory, ContactEntry};
+use crate::contact_directory::{ContactDirectory, ContactEntry, MobTransport};
+use crate::runtime::cross_mob_remote::{RemoteMobError, RemoteMobProxy};
 
 use super::UnifiedRuntime;
+
+/// Dispatch a cross-mob operation to either an in-process `MobHandle`
+/// (registered via `register_peer_mob`) or a [`RemoteMobProxy`] for
+/// peers reachable over TCP/UDS.
+///
+/// Phase 1 wires the structural seam — see `runtime/cross_mob_remote.rs`
+/// for the Phase 2 plan that fills in real cross-process control RPC.
+enum LocalOrRemote {
+    /// Same-process peer with an `Arc<MobHandle>` for direct dispatch.
+    Local(MobHandle),
+    /// Cross-process peer reachable via TCP/UDS.
+    Remote(RemoteMobProxy),
+}
 
 /// Errors from cross-mob operations.
 #[derive(Debug)]
@@ -19,9 +33,6 @@ pub enum CrossMobError {
     UnknownMob(String),
     /// No peer mob handle registered for this mob (required for inproc).
     NoPeerHandle(String),
-    /// The contact entry uses TCP or UDS transport, which is not yet supported.
-    /// Phase 1 only supports inproc (same-process) cross-mob communication.
-    TransportNotSupported { mob_id: String, transport: String },
     /// Caller asked to wire a non-inproc peer but did not supply (or
     /// could not derive) a 32-byte Ed25519 pubkey. Mobkit refuses to
     /// build an unsigned descriptor on real transports — meerkat-comms
@@ -35,6 +46,11 @@ pub enum CrossMobError {
     Mob(meerkat_mob::MobError),
     /// Failed to build a trusted peer spec.
     PeerSpec(String),
+    /// A cross-process control-channel call failed. Phase 1 returns this
+    /// for any TCP/UDS contact entry that does not also have an
+    /// in-process `MobHandle` registered — the seam is laid out, the
+    /// real client lands in Phase 2.
+    Remote(RemoteMobError),
 }
 
 impl std::fmt::Display for CrossMobError {
@@ -43,13 +59,7 @@ impl std::fmt::Display for CrossMobError {
             Self::NoContactDirectory => write!(f, "no contact directory configured"),
             Self::UnknownMob(id) => write!(f, "unknown mob: {id}"),
             Self::NoPeerHandle(id) => write!(f, "no peer mob handle registered for: {id}"),
-            Self::TransportNotSupported { mob_id, transport } => {
-                write!(
-                    f,
-                    "cross-mob transport '{transport}' for mob '{mob_id}' is not yet supported; \
-                     only inproc (same-process) is supported in phase 1"
-                )
-            }
+            Self::Remote(e) => write!(f, "cross-process cross-mob: {e}"),
             Self::MemberNotFound { member_id, mob_id } => {
                 write!(f, "member '{member_id}' not found in mob '{mob_id}'")
             }
@@ -86,6 +96,12 @@ impl From<meerkat_mob::MobError> for CrossMobError {
     }
 }
 
+impl From<RemoteMobError> for CrossMobError {
+    fn from(err: RemoteMobError) -> Self {
+        Self::Remote(err)
+    }
+}
+
 impl UnifiedRuntime {
     /// Register an external mob's handle for same-process cross-mob communication.
     pub async fn register_peer_mob(&self, mob_id: &str, handle: MobHandle) {
@@ -119,55 +135,124 @@ impl UnifiedRuntime {
 
     /// Wire a local member to a member in an external mob.
     ///
-    /// Resolves both members' peer IDs from roster entries, builds peer specs,
-    /// and calls `wire(local, PeerTarget::External(spec))` on both mob handles
-    /// to establish bidirectional trust.
+    /// Resolves both members' peer IDs from roster entries, builds peer specs
+    /// using the transport scheme advertised by the contact directory entry
+    /// (`inproc`, `tcp`, or `uds`), and registers the peer on both sides to
+    /// establish bidirectional trust.
+    ///
+    /// # Local vs remote dispatch
+    ///
+    /// The destination mob is dispatched as either [`LocalOrRemote::Local`]
+    /// (when an `Arc<MobHandle>` was registered via [`Self::register_peer_mob`])
+    /// or [`LocalOrRemote::Remote`] (when only a contact-directory TCP/UDS
+    /// entry exists). Phase 1 ships the structural seam; Phase 2 wires the
+    /// real cross-process control RPC — see
+    /// `runtime::cross_mob_remote::RemoteMobProxy`.
     pub async fn wire_cross_mob(
         &self,
         local_member_id: &str,
         remote_member_id: &str,
         remote_mob_id: &str,
     ) -> Result<(), CrossMobError> {
-        let _entry = self.resolve_contact(remote_mob_id)?;
-        let remote_handle = self.get_peer_handle(remote_mob_id).await?;
+        let entry = self.resolve_contact(remote_mob_id)?;
+        let remote = self.dispatch_for(&entry).await?;
+
         let local_handle = self.mob_runtime.handle();
         let local_mob_id = local_handle.mob_id().to_string();
-
         let local_mid = MeerkatId::from(local_member_id);
-        let remote_mid = MeerkatId::from(remote_member_id);
 
-        // Get peer info for both members from roster entries
         let (local_peer_id, local_comms_name) = self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
             .await?;
-        let (remote_peer_id, remote_comms_name) = self
-            .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
-            .await?;
 
-        // Build peer specs (inproc for same-process)
-        let remote_spec = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)?;
-        let local_spec = build_inproc_peer_spec(&local_comms_name, &local_peer_id)?;
+        match remote {
+            LocalOrRemote::Local(remote_handle) => {
+                let remote_mid = MeerkatId::from(remote_member_id);
+                let (remote_peer_id, remote_comms_name) = self
+                    .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
+                    .await?;
 
-        // Wire both sides; roll back the local side if the remote wire fails.
-        local_handle
-            .wire(local_mid.clone(), PeerTarget::External(remote_spec))
-            .await
-            .map_err(CrossMobError::Mob)?;
+                let remote_spec =
+                    build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)?;
+                let local_spec =
+                    build_peer_spec(&local_comms_name, &local_peer_id, &MobTransport::Inproc)?;
 
-        if let Err(e) = remote_handle
-            .wire(remote_mid, PeerTarget::External(local_spec))
-            .await
-        {
-            // Best-effort rollback — leave local state consistent.
-            if let Ok(rollback_spec) = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id) {
-                let _ = local_handle
-                    .unwire(local_mid, PeerTarget::External(rollback_spec))
-                    .await;
+                local_handle
+                    .wire(local_mid.clone(), PeerTarget::External(remote_spec))
+                    .await
+                    .map_err(CrossMobError::Mob)?;
+
+                if let Err(e) = remote_handle
+                    .wire(remote_mid.clone(), PeerTarget::External(local_spec))
+                    .await
+                {
+                    if let Ok(rollback_spec) =
+                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)
+                    {
+                        let _ = local_handle
+                            .unwire(local_mid, PeerTarget::External(rollback_spec))
+                            .await;
+                    }
+                    return Err(CrossMobError::Mob(e));
+                }
+
+                Ok(())
             }
-            return Err(CrossMobError::Mob(e));
-        }
+            LocalOrRemote::Remote(proxy) => {
+                // Cross-process bilateral wire:
+                // 1. Look up the remote member's peer info via control RPC.
+                // 2. Build a descriptor pointing to the remote member using
+                //    the contact-entry transport; wire locally first.
+                // 3. Send a `Wire` control request advertising our local
+                //    member's peer info; remote side wires its half.
+                // 4. On remote-side failure, roll back the local wire.
+                let (remote_peer_id, remote_comms_name) = proxy
+                    .lookup_member(remote_member_id)
+                    .await
+                    .map_err(CrossMobError::Remote)?;
+                let remote_spec =
+                    build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)?;
 
-        Ok(())
+                local_handle
+                    .wire(local_mid.clone(), PeerTarget::External(remote_spec))
+                    .await
+                    .map_err(CrossMobError::Mob)?;
+
+                // The remote side reaches us over the same transport scheme
+                // we use to reach it. The contact directory entry on the
+                // remote gateway will record our control endpoint; for the
+                // bilateral wire we advertise the same endpoint the
+                // ContactEntry currently encodes for *us*. Until we run
+                // a discovery RPC the other way, advertise an inproc
+                // back-pointer so trust is symmetric on the wire surface.
+                let pubkey_b64 = self
+                    .gateway_peer_keys
+                    .as_ref()
+                    .map(crate::auth::peer_keys::GatewayPeerKeys::pubkey_b64);
+                let local_spec_address = format!("inproc://{local_comms_name}");
+                if let Err(remote_err) = proxy
+                    .wire_remote(
+                        remote_member_id,
+                        &local_spec_address,
+                        &local_comms_name,
+                        &local_peer_id,
+                        pubkey_b64,
+                    )
+                    .await
+                {
+                    let rollback_spec =
+                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport);
+                    if let Ok(spec) = rollback_spec {
+                        let _ = local_handle
+                            .unwire(local_mid, PeerTarget::External(spec))
+                            .await;
+                    }
+                    return Err(CrossMobError::Remote(remote_err));
+                }
+
+                Ok(())
+            }
+        }
     }
 
     /// Unwire a cross-mob peering.
@@ -181,39 +266,84 @@ impl UnifiedRuntime {
         remote_member_id: &str,
         remote_mob_id: &str,
     ) -> Result<(), CrossMobError> {
-        let _entry = self.resolve_contact(remote_mob_id)?;
-        let remote_handle = self.get_peer_handle(remote_mob_id).await?;
+        let entry = self.resolve_contact(remote_mob_id)?;
+        let remote = self.dispatch_for(&entry).await?;
         let local_handle = self.mob_runtime.handle();
         let local_mob_id = local_handle.mob_id().to_string();
-
         let local_mid = MeerkatId::from(local_member_id);
-        let remote_mid = MeerkatId::from(remote_member_id);
 
         let mut first_error: Option<CrossMobError> = None;
 
-        // Unwire remote peer from local member
-        if let Ok((remote_peer_id, remote_comms_name)) = self
-            .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
-            .await
-            && let Ok(spec) = build_inproc_peer_spec(&remote_comms_name, &remote_peer_id)
-            && let Err(e) = local_handle
-                .unwire(local_mid.clone(), PeerTarget::External(spec))
-                .await
-        {
-            first_error = Some(CrossMobError::Mob(e));
-        }
-
-        // Unwire local peer from remote member (always attempt, even if above failed)
-        if let Ok((local_peer_id, local_comms_name)) = self
+        let (local_peer_id_opt, local_comms_name_opt) = match self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
             .await
-            && let Ok(spec) = build_inproc_peer_spec(&local_comms_name, &local_peer_id)
-            && let Err(e) = remote_handle
-                .unwire(remote_mid.clone(), PeerTarget::External(spec))
-                .await
-            && first_error.is_none()
         {
-            first_error = Some(CrossMobError::Mob(e));
+            Ok((p, c)) => (Some(p), Some(c)),
+            Err(_) => (None, None),
+        };
+
+        match remote {
+            LocalOrRemote::Local(remote_handle) => {
+                let remote_mid = MeerkatId::from(remote_member_id);
+                if let Ok((remote_peer_id, remote_comms_name)) = self
+                    .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
+                    .await
+                    && let Ok(spec) =
+                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)
+                    && let Err(e) = local_handle
+                        .unwire(local_mid.clone(), PeerTarget::External(spec))
+                        .await
+                {
+                    first_error = Some(CrossMobError::Mob(e));
+                }
+
+                if let (Some(local_peer_id), Some(local_comms_name)) =
+                    (&local_peer_id_opt, &local_comms_name_opt)
+                    && let Ok(spec) =
+                        build_peer_spec(local_comms_name, local_peer_id, &MobTransport::Inproc)
+                    && let Err(e) = remote_handle
+                        .unwire(remote_mid.clone(), PeerTarget::External(spec))
+                        .await
+                    && first_error.is_none()
+                {
+                    first_error = Some(CrossMobError::Mob(e));
+                }
+            }
+            LocalOrRemote::Remote(proxy) => {
+                if let Ok((remote_peer_id, remote_comms_name)) =
+                    proxy.lookup_member(remote_member_id).await
+                    && let Ok(spec) =
+                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)
+                    && let Err(e) = local_handle
+                        .unwire(local_mid.clone(), PeerTarget::External(spec))
+                        .await
+                {
+                    first_error = Some(CrossMobError::Mob(e));
+                }
+
+                if let (Some(local_peer_id), Some(local_comms_name)) =
+                    (&local_peer_id_opt, &local_comms_name_opt)
+                {
+                    let pubkey_b64 = self
+                        .gateway_peer_keys
+                        .as_ref()
+                        .map(crate::auth::peer_keys::GatewayPeerKeys::pubkey_b64);
+                    let local_spec_address = format!("inproc://{local_comms_name}");
+                    if let Err(e) = proxy
+                        .unwire_remote(
+                            remote_member_id,
+                            &local_spec_address,
+                            local_comms_name,
+                            local_peer_id,
+                            pubkey_b64,
+                        )
+                        .await
+                        && first_error.is_none()
+                    {
+                        first_error = Some(CrossMobError::Remote(e));
+                    }
+                }
+            }
         }
 
         match first_error {
@@ -239,28 +369,50 @@ impl UnifiedRuntime {
         remote_mob_id: &str,
         content: impl Into<meerkat_core::ContentInput>,
     ) -> Result<String, CrossMobError> {
-        let _entry = self.resolve_contact(remote_mob_id)?;
-        let remote_handle = self.get_peer_handle(remote_mob_id).await?;
+        let entry = self.resolve_contact(remote_mob_id)?;
+        let remote = self.dispatch_for(&entry).await?;
         let remote_mid = MeerkatId::from(remote_member_id);
         let content = content.into();
         let _ = from_local_member; // audit context; delivery is via remote handle
-        let _receipt = remote_handle
-            .member(&remote_mid)
-            .await
-            .map_err(CrossMobError::Mob)?
-            .send(content, HandlingMode::Queue)
-            .await
-            .map_err(CrossMobError::Mob)?;
-        // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
-        // Resolve the bridge session id from the remote mob handle.
-        let session_id = remote_handle
-            .resolve_bridge_session_id(&remote_mid)
-            .await
-            .ok_or_else(|| CrossMobError::NoCommsInfo {
-                member_id: remote_mid.to_string(),
-                mob_id: remote_mob_id.to_string(),
-            })?;
-        Ok(session_id.to_string())
+
+        match remote {
+            LocalOrRemote::Local(remote_handle) => {
+                let _receipt = remote_handle
+                    .member(&remote_mid)
+                    .await
+                    .map_err(CrossMobError::Mob)?
+                    .send(content, HandlingMode::Queue)
+                    .await
+                    .map_err(CrossMobError::Mob)?;
+                // Meerkat 0.6: MemberDeliveryReceipt no longer carries
+                // session_id. Resolve the bridge session id from the
+                // remote mob handle.
+                let session_id = remote_handle
+                    .resolve_bridge_session_id(&remote_mid)
+                    .await
+                    .ok_or_else(|| CrossMobError::NoCommsInfo {
+                        member_id: remote_mid.to_string(),
+                        mob_id: remote_mob_id.to_string(),
+                    })?;
+                Ok(session_id.to_string())
+            }
+            LocalOrRemote::Remote(proxy) => {
+                // Cross-process: serialize the content and ship it over
+                // the remote control channel. The peer gateway dispatches
+                // it against its local mob and returns the bridge session
+                // id that accepted the injection.
+                let content_json = serde_json::to_value(&content).map_err(|err| {
+                    CrossMobError::PeerSpec(format!(
+                        "failed to serialize content for remote inject: {err}"
+                    ))
+                })?;
+                let session_id = proxy
+                    .inject_message(remote_member_id, content_json)
+                    .await
+                    .map_err(CrossMobError::Remote)?;
+                Ok(session_id)
+            }
+        }
     }
 
     /// List external mobs from the contact directory.
@@ -282,13 +434,22 @@ impl UnifiedRuntime {
         !self.peer_mob_handles.read().await.is_empty()
     }
 
-    /// Whether the contact directory has any inproc entries (the only
-    /// transport currently supported for cross-mob wire/send).
+    /// Whether the contact directory has any inproc entries.
     pub fn has_inproc_contacts(&self) -> bool {
         self.contact_directory.as_ref().is_some_and(|d| {
             d.list()
                 .iter()
-                .any(|e| matches!(e.transport, crate::contact_directory::MobTransport::Inproc))
+                .any(|e| matches!(e.transport, MobTransport::Inproc))
+        })
+    }
+
+    /// Whether the contact directory has any cross-process (TCP/UDS) entries.
+    /// Useful for opting into the remote-mob proxy code path.
+    pub fn has_remote_contacts(&self) -> bool {
+        self.contact_directory.as_ref().is_some_and(|d| {
+            d.list()
+                .iter()
+                .any(|e| matches!(e.transport, MobTransport::Tcp(_) | MobTransport::Uds(_)))
         })
     }
 
@@ -379,29 +540,35 @@ impl UnifiedRuntime {
             .contact_directory
             .as_ref()
             .ok_or(CrossMobError::NoContactDirectory)?;
-        let entry = dir
-            .get(mob_id)
+        dir.get(mob_id)
             .cloned()
-            .ok_or_else(|| CrossMobError::UnknownMob(mob_id.to_string()))?;
-        if !matches!(
-            entry.transport,
-            crate::contact_directory::MobTransport::Inproc
-        ) {
-            return Err(CrossMobError::TransportNotSupported {
-                mob_id: mob_id.to_string(),
-                transport: format!("{:?}", entry.transport),
-            });
-        }
-        Ok(entry)
+            .ok_or_else(|| CrossMobError::UnknownMob(mob_id.to_string()))
     }
 
-    async fn get_peer_handle(&self, mob_id: &str) -> Result<MobHandle, CrossMobError> {
-        self.peer_mob_handles
+    /// Pick the appropriate dispatch arm for a contact entry.
+    ///
+    /// Order of preference:
+    /// 1. **Local** — if a `MobHandle` was registered via
+    ///    [`Self::register_peer_mob`] for this mob_id, use it directly
+    ///    (covers the inproc + same-process-test paths).
+    /// 2. **Remote** — for TCP/UDS contact entries with no registered
+    ///    handle, build a [`RemoteMobProxy`].
+    /// 3. **Error** — inproc entry with no registered handle, or unknown
+    ///    transport.
+    async fn dispatch_for(&self, entry: &ContactEntry) -> Result<LocalOrRemote, CrossMobError> {
+        if let Some(handle) = self
+            .peer_mob_handles
             .read()
             .await
-            .get(mob_id)
+            .get(&entry.mob_id)
             .cloned()
-            .ok_or_else(|| CrossMobError::NoPeerHandle(mob_id.to_string()))
+        {
+            return Ok(LocalOrRemote::Local(handle));
+        }
+        match RemoteMobProxy::from_entry(entry)? {
+            Some(proxy) => Ok(LocalOrRemote::Remote(proxy)),
+            None => Err(CrossMobError::NoPeerHandle(entry.mob_id.clone())),
+        }
     }
 
     /// Resolve a member's peer_id and comms name from the roster entry.
@@ -437,15 +604,30 @@ impl UnifiedRuntime {
     }
 }
 
-fn build_inproc_peer_spec(
+/// Build a `TrustedPeerDescriptor` whose address reflects the supplied transport.
+///
+/// Uses the comms-layer address schemes:
+/// - `inproc://{comms_name}` for in-process peers
+/// - `tcp://host:port` for TCP
+/// - `uds:///path` for UDS (note the triple slash — `uds://` plus an
+///   absolute path)
+///
+/// **Phase-1 seam.** Until Unit 4 lands signed `TrustedPeerDescriptor`s
+/// for cross-process peers, these specs go through
+/// [`TrustedPeerDescriptor::test_only_unsigned`]. The in-process router
+/// authorizes inproc peers via its identity map regardless; out-of-process
+/// callers wait for Unit 4 to swap in a signed descriptor.
+fn build_peer_spec(
     comms_name: &str,
     peer_id: &str,
+    transport: &MobTransport,
 ) -> Result<TrustedPeerDescriptor, CrossMobError> {
-    // Inproc cross-mob: the in-process router authorises via its identity
-    // map and signature verification is moot, so an unsigned descriptor
-    // is the right shape. Non-inproc paths use [`build_external_peer_spec`]
-    // which requires a real pubkey or fails closed.
-    TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, format!("inproc://{comms_name}"))
+    let address = match transport {
+        MobTransport::Inproc => format!("inproc://{comms_name}"),
+        MobTransport::Tcp(addr) => format!("tcp://{addr}"),
+        MobTransport::Uds(path) => format!("uds://{path}"),
+    };
+    TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, address)
         .map_err(CrossMobError::PeerSpec)
 }
 
@@ -481,5 +663,93 @@ fn build_external_peer_spec(
             TrustedPeerDescriptor::unsigned_with_pubkey(comms_name, peer_id, bytes, address)
                 .map_err(CrossMobError::PeerSpec)
         }
+    }
+}
+
+/// Build a TCP peer descriptor.
+///
+/// Uses the comms-layer address scheme `tcp://host:port`. **Phase-1 seam**:
+/// goes through [`TrustedPeerDescriptor::test_only_unsigned`]. Callers
+/// that need a real signed descriptor (Ed25519-stamped) should construct
+/// it via [`build_external_peer_spec`] with an explicit pubkey instead.
+pub fn build_tcp_peer_spec(
+    comms_name: &str,
+    peer_id: &str,
+    address: &str,
+) -> Result<TrustedPeerDescriptor, CrossMobError> {
+    TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, format!("tcp://{address}"))
+        .map_err(CrossMobError::PeerSpec)
+}
+
+/// Build a UDS peer descriptor.
+///
+/// Uses the comms-layer address scheme `uds:///path` (triple slash —
+/// `uds://` + absolute path). See [`build_tcp_peer_spec`] for the
+/// Phase-1 vs signed-descriptor seam note.
+pub fn build_uds_peer_spec(
+    comms_name: &str,
+    peer_id: &str,
+    path: &str,
+) -> Result<TrustedPeerDescriptor, CrossMobError> {
+    let normalized = if let Some(stripped) = path.strip_prefix('/') {
+        stripped
+    } else {
+        path
+    };
+    TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, format!("uds:///{normalized}"))
+        .map_err(CrossMobError::PeerSpec)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    const TEST_PEER_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn peer_spec_inproc_uses_comms_name_address() {
+        let spec = build_peer_spec(
+            "authors/coordinator/alice",
+            TEST_PEER_ID,
+            &MobTransport::Inproc,
+        )
+        .expect("spec");
+        assert_eq!(spec.address.endpoint(), "authors/coordinator/alice");
+    }
+
+    #[test]
+    fn peer_spec_tcp_uses_tcp_scheme() {
+        let spec = build_peer_spec(
+            "authors/coordinator/alice",
+            "00000000-0000-4000-8000-000000000001",
+            &MobTransport::Tcp("127.0.0.1:9001".to_string()),
+        )
+        .expect("spec");
+        assert_eq!(spec.address.endpoint(), "127.0.0.1:9001");
+    }
+
+    #[test]
+    fn peer_spec_uds_uses_uds_scheme() {
+        let spec = build_peer_spec(
+            "authors/coordinator/alice",
+            "00000000-0000-4000-8000-000000000001",
+            &MobTransport::Uds("/tmp/x.sock".to_string()),
+        )
+        .expect("spec");
+        assert_eq!(spec.address.endpoint(), "/tmp/x.sock");
+    }
+
+    #[test]
+    fn build_uds_peer_spec_handles_leading_slash() {
+        // Caller may pass the path with or without a leading slash; both
+        // produce the canonical `uds:///path` form.
+        let with = build_uds_peer_spec("a", "00000000-0000-4000-8000-000000000001", "/tmp/x.sock")
+            .expect("spec");
+        let without =
+            build_uds_peer_spec("a", "00000000-0000-4000-8000-000000000001", "tmp/x.sock")
+                .expect("spec");
+        assert_eq!(with.address.endpoint(), "/tmp/x.sock");
+        assert_eq!(without.address.endpoint(), "/tmp/x.sock");
     }
 }

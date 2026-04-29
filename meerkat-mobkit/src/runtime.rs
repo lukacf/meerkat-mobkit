@@ -38,6 +38,8 @@ use crate::types::{
 
 mod bootstrap;
 mod console_ingress;
+pub mod cross_mob_control;
+pub mod cross_mob_remote;
 mod delivery;
 mod event_transport;
 mod gating;
