@@ -611,16 +611,34 @@ pub(super) async fn handle_mob_events_query(
         Ok(q) => q,
         Err(response) => return *response,
     };
+    // Capture latest_cursor up front so an empty result still yields a
+    // numeric `next_after_seq`. Pre-fix, an empty match returned
+    // `next_after_seq: null` and a polling SDK had no anchor to resume
+    // from — it would either restart from latest (skipping events) or
+    // 0 (replaying everything).
+    let fallback_cursor = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .unwrap_or(0);
     match runtime.query_mob_events(&query).await {
-        Ok(events) => JsonRpcResponse {
-            jsonrpc: JSONRPC_VERSION.to_string(),
-            id: response_id,
-            result: Some(serde_json::json!({
-                "events": serde_json::to_value(&events).unwrap_or(Value::Null),
-                "next_after_seq": events.last().map(|event| event.cursor),
-            })),
-            error: None,
-        },
+        Ok(events) => {
+            let next_after_seq = events
+                .last()
+                .map(|event| event.cursor)
+                .or(query.after_seq)
+                .unwrap_or(fallback_cursor);
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+                    "next_after_seq": next_after_seq,
+                })),
+                error: None,
+            }
+        }
         Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
             after_cursor,
             latest_cursor,
@@ -1578,8 +1596,40 @@ pub(super) async fn handle_read_session_history(
         .and_then(Value::as_u64)
         .map(|value| value as usize)
         .unwrap_or(0);
+    // Regression: pre-fix, `limit: -1` (or any non-`u64` Number) was
+    // silently accepted as "no limit" because `as_u64()` returned None
+    // and the bare-`None` arm collapsed it with the legitimate
+    // `null`/missing case. Now: any Number that isn't a positive `u64`
+    // produces -32602.
     let limit = match params.get("limit") {
-        Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
+        Some(Value::Number(number)) => match number.as_u64() {
+            Some(0) => {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: limit must be >= 1".to_string(),
+                        data: None,
+                    }),
+                };
+            }
+            Some(value) => Some(value as usize),
+            None => {
+                // Negative, fractional, or out-of-range Number.
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: "Invalid params: limit must be a positive integer".to_string(),
+                        data: None,
+                    }),
+                };
+            }
+        },
         Some(Value::Null) | None => None,
         Some(_) => {
             return JsonRpcResponse {

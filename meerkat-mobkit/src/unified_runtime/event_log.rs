@@ -188,6 +188,11 @@ impl EventLogHandle {
     }
 }
 
+/// Hard cap on retained events while the store is unavailable. Beyond
+/// this, the oldest events in the retry buffer are dropped — bounded
+/// loss is preferable to OOM.
+const EVENT_LOG_RETRY_BUFFER_CAP: usize = 4096;
+
 /// Start the event log ingestion engine. Returns a handle for the runtime
 /// and spawns a background flush task.
 pub(crate) fn start_event_log(
@@ -196,8 +201,14 @@ pub(crate) fn start_event_log(
 ) -> EventLogHandle {
     let store: Arc<dyn EventLogStore> = Arc::from(config.store);
     let seq = Arc::new(AtomicU64::new(1));
-    // Buffer capacity: 4x batch size to absorb bursts
-    let (ingress_tx, ingress_rx) = mpsc::channel(config.batch_size * 4);
+    // Clamp batch_size — `mpsc::channel(0)` panics, and `batch_size = 0`
+    // would also defeat batching by triggering an immediate flush per
+    // event.
+    let batch_size = config.batch_size.max(1);
+    // Buffer capacity: 4x batch size to absorb bursts; floor at 4 so a
+    // tiny batch_size doesn't starve.
+    let channel_capacity = (batch_size * 4).max(4);
+    let (ingress_tx, ingress_rx) = mpsc::channel(channel_capacity);
 
     let handle = EventLogHandle {
         store: store.clone(),
@@ -209,7 +220,7 @@ pub(crate) fn start_event_log(
         store,
         seq,
         config.filter,
-        config.batch_size,
+        batch_size,
         config.flush_interval,
         error_hook,
     ));
@@ -247,7 +258,10 @@ async fn run_flush_loop(
                         }
                     }
                     None => {
-                        // Channel closed — flush remaining and exit
+                        // Channel closed — best-effort final flush and exit.
+                        // If this final flush fails, events on the floor
+                        // are unrecoverable; the error hook fires so
+                        // operators see it.
                         if !batch.is_empty() {
                             flush_batch(&store, &mut batch, &error_hook).await;
                         }
@@ -262,6 +276,18 @@ async fn run_flush_loop(
             }
         }
     }
+}
+
+/// Drop the oldest events from a retry buffer when it exceeds
+/// [`EVENT_LOG_RETRY_BUFFER_CAP`]. Returns the count dropped. Bounded
+/// loss is preferable to OOM under sustained store failure.
+fn enforce_retry_cap(batch: &mut Vec<PersistedEvent>) -> usize {
+    if batch.len() <= EVENT_LOG_RETRY_BUFFER_CAP {
+        return 0;
+    }
+    let drop = batch.len() - EVENT_LOG_RETRY_BUFFER_CAP;
+    batch.drain(0..drop);
+    drop
 }
 
 fn to_persisted(seq: &AtomicU64, envelope: &EventEnvelope<UnifiedEvent>) -> PersistedEvent {
@@ -284,14 +310,133 @@ async fn flush_batch(
     error_hook: &Option<super::ErrorHook>,
 ) {
     let events = std::mem::take(batch);
-    if let Err(err) = store.append_batch(events).await {
-        // Fire-and-forget error reporting via the error hook
+    if let Err(err) = store.append_batch(events.clone()).await {
+        // Restore the failed batch so the next tick / arrival retries
+        // — silent loss on transient store errors was the prior bug.
+        // Bound the retry buffer so a persistently-failing store can't
+        // drive mobkit OOM.
+        let mut restored = events;
+        restored.append(batch); // events that arrived after the failure
+        let dropped = enforce_retry_cap(&mut restored);
+        *batch = restored;
+
         if let Some(hook) = error_hook {
             let hook = hook.clone();
-            let msg = format!("event log flush failed: {err}");
+            let msg = if dropped > 0 {
+                format!(
+                    "event log flush failed: {err}; dropped {dropped} oldest events to bound the retry buffer at {EVENT_LOG_RETRY_BUFFER_CAP}"
+                )
+            } else {
+                format!("event log flush failed: {err}; will retry")
+            };
             tokio::spawn(async move {
                 let () = hook(super::types::ErrorEvent::EventLogFlushFailure { error: msg }).await;
             });
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Stub store that fails its first N `append_batch` calls and
+    /// succeeds thereafter, recording every event it eventually accepts.
+    struct FlakyStore {
+        failures_remaining: Mutex<usize>,
+        persisted: Mutex<Vec<PersistedEvent>>,
+        attempts: Mutex<usize>,
+    }
+
+    impl EventLogStore for FlakyStore {
+        fn append_batch(
+            &self,
+            events: Vec<PersistedEvent>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), EventLogError>> + Send + '_>> {
+            Box::pin(async move {
+                *self.attempts.lock().expect("attempts") += 1;
+                let mut left = self.failures_remaining.lock().expect("failures");
+                if *left > 0 {
+                    *left -= 1;
+                    #[derive(Debug)]
+                    struct Transient;
+                    impl std::fmt::Display for Transient {
+                        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                            write!(f, "transient")
+                        }
+                    }
+                    impl std::error::Error for Transient {}
+                    return Err(Box::new(Transient) as Box<dyn std::error::Error + Send>);
+                }
+                self.persisted.lock().expect("persisted").extend(events);
+                Ok(())
+            })
+        }
+
+        fn query(
+            &self,
+            _query: EventQuery,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PersistedEvent>, EventLogError>> + Send + '_>>
+        {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+    }
+
+    fn sample_event(id: &str) -> PersistedEvent {
+        PersistedEvent {
+            id: id.to_string(),
+            seq: 0,
+            timestamp_ms: 0,
+            member_id: None,
+            event: UnifiedEvent::Module(crate::types::ModuleEvent {
+                module: "test-module".into(),
+                event_type: "x".into(),
+                payload: serde_json::Value::Null,
+            }),
+        }
+    }
+
+    /// Regression: pre-fix, `flush_batch` did `mem::take(batch)` and
+    /// dropped the events on store error. After the fix, the events
+    /// stay in the batch until a subsequent flush succeeds.
+    #[tokio::test]
+    async fn flush_failure_retries_instead_of_dropping_events() {
+        let flaky = Arc::new(FlakyStore {
+            failures_remaining: Mutex::new(2),
+            persisted: Mutex::new(Vec::new()),
+            attempts: Mutex::new(0),
+        });
+        let store: Arc<dyn EventLogStore> = flaky.clone();
+        let mut batch = vec![sample_event("a"), sample_event("b")];
+
+        // First flush — fails. Batch must remain non-empty (events
+        // pushed back into the retry buffer).
+        flush_batch(&store, &mut batch, &None).await;
+        assert_eq!(batch.len(), 2, "events must be retained on flush failure");
+
+        // Second flush — fails again. Still retained.
+        flush_batch(&store, &mut batch, &None).await;
+        assert_eq!(batch.len(), 2);
+
+        // Third flush — succeeds. Batch drained, events persisted.
+        flush_batch(&store, &mut batch, &None).await;
+        assert!(batch.is_empty(), "batch must drain on successful flush");
+
+        assert_eq!(*flaky.attempts.lock().expect("attempts"), 3);
+        assert_eq!(flaky.persisted.lock().expect("persisted").len(), 2);
+    }
+
+    #[test]
+    fn enforce_retry_cap_drops_oldest() {
+        let mut batch: Vec<PersistedEvent> = (0..(EVENT_LOG_RETRY_BUFFER_CAP + 100))
+            .map(|i| sample_event(&format!("evt-{i}")))
+            .collect();
+        let dropped = enforce_retry_cap(&mut batch);
+        assert_eq!(dropped, 100);
+        assert_eq!(batch.len(), EVENT_LOG_RETRY_BUFFER_CAP);
+        // Newest 4096 retained — first remaining id is evt-100.
+        assert_eq!(batch.first().expect("first").id, "evt-100");
     }
 }

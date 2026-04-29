@@ -172,10 +172,18 @@ impl UnifiedRuntime {
                     .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
                     .await?;
 
-                let remote_spec =
-                    build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)?;
-                let local_spec =
-                    build_peer_spec(&local_comms_name, &local_peer_id, &MobTransport::Inproc)?;
+                let remote_spec = build_peer_spec(
+                    &remote_comms_name,
+                    &remote_peer_id,
+                    &entry.transport,
+                    entry.pubkey,
+                )?;
+                let local_spec = build_peer_spec(
+                    &local_comms_name,
+                    &local_peer_id,
+                    &MobTransport::Inproc,
+                    None,
+                )?;
 
                 local_handle
                     .wire(local_mid.clone(), PeerTarget::External(remote_spec))
@@ -186,9 +194,12 @@ impl UnifiedRuntime {
                     .wire(remote_mid.clone(), PeerTarget::External(local_spec))
                     .await
                 {
-                    if let Ok(rollback_spec) =
-                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)
-                    {
+                    if let Ok(rollback_spec) = build_peer_spec(
+                        &remote_comms_name,
+                        &remote_peer_id,
+                        &entry.transport,
+                        entry.pubkey,
+                    ) {
                         let _ = local_handle
                             .unwire(local_mid, PeerTarget::External(rollback_spec))
                             .await;
@@ -210,8 +221,12 @@ impl UnifiedRuntime {
                     .lookup_member(remote_member_id)
                     .await
                     .map_err(CrossMobError::Remote)?;
-                let remote_spec =
-                    build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)?;
+                let remote_spec = build_peer_spec(
+                    &remote_comms_name,
+                    &remote_peer_id,
+                    &entry.transport,
+                    entry.pubkey,
+                )?;
 
                 local_handle
                     .wire(local_mid.clone(), PeerTarget::External(remote_spec))
@@ -240,8 +255,12 @@ impl UnifiedRuntime {
                     )
                     .await
                 {
-                    let rollback_spec =
-                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport);
+                    let rollback_spec = build_peer_spec(
+                        &remote_comms_name,
+                        &remote_peer_id,
+                        &entry.transport,
+                        entry.pubkey,
+                    );
                     if let Ok(spec) = rollback_spec {
                         let _ = local_handle
                             .unwire(local_mid, PeerTarget::External(spec))
@@ -288,8 +307,12 @@ impl UnifiedRuntime {
                 if let Ok((remote_peer_id, remote_comms_name)) = self
                     .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
                     .await
-                    && let Ok(spec) =
-                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)
+                    && let Ok(spec) = build_peer_spec(
+                        &remote_comms_name,
+                        &remote_peer_id,
+                        &entry.transport,
+                        entry.pubkey,
+                    )
                     && let Err(e) = local_handle
                         .unwire(local_mid.clone(), PeerTarget::External(spec))
                         .await
@@ -299,8 +322,12 @@ impl UnifiedRuntime {
 
                 if let (Some(local_peer_id), Some(local_comms_name)) =
                     (&local_peer_id_opt, &local_comms_name_opt)
-                    && let Ok(spec) =
-                        build_peer_spec(local_comms_name, local_peer_id, &MobTransport::Inproc)
+                    && let Ok(spec) = build_peer_spec(
+                        local_comms_name,
+                        local_peer_id,
+                        &MobTransport::Inproc,
+                        None,
+                    )
                     && let Err(e) = remote_handle
                         .unwire(remote_mid.clone(), PeerTarget::External(spec))
                         .await
@@ -312,8 +339,12 @@ impl UnifiedRuntime {
             LocalOrRemote::Remote(proxy) => {
                 if let Ok((remote_peer_id, remote_comms_name)) =
                     proxy.lookup_member(remote_member_id).await
-                    && let Ok(spec) =
-                        build_peer_spec(&remote_comms_name, &remote_peer_id, &entry.transport)
+                    && let Ok(spec) = build_peer_spec(
+                        &remote_comms_name,
+                        &remote_peer_id,
+                        &entry.transport,
+                        entry.pubkey,
+                    )
                     && let Err(e) = local_handle
                         .unwire(local_mid.clone(), PeerTarget::External(spec))
                         .await
@@ -604,31 +635,27 @@ impl UnifiedRuntime {
     }
 }
 
-/// Build a `TrustedPeerDescriptor` whose address reflects the supplied transport.
+/// Build a `TrustedPeerDescriptor` whose address reflects the supplied
+/// transport. **Routes through [`build_external_peer_spec`] so the
+/// pubkey requirement is enforced**: inproc descriptors stay unsigned
+/// (the in-process router authorizes via its identity map), but TCP and
+/// UDS peers must have a non-zero 32-byte pubkey or the call fails
+/// closed with `CrossMobError::MissingPeerPubkey`.
 ///
-/// Uses the comms-layer address schemes:
-/// - `inproc://{comms_name}` for in-process peers
-/// - `tcp://host:port` for TCP
-/// - `uds:///path` for UDS (note the triple slash — `uds://` plus an
-///   absolute path)
-///
-/// **Phase-1 seam.** Until Unit 4 lands signed `TrustedPeerDescriptor`s
-/// for cross-process peers, these specs go through
-/// [`TrustedPeerDescriptor::test_only_unsigned`]. The in-process router
-/// authorizes inproc peers via its identity map regardless; out-of-process
-/// callers wait for Unit 4 to swap in a signed descriptor.
+/// `pubkey` is `None` for the local-half descriptor (always inproc) and
+/// `entry.pubkey` for the remote-half descriptor.
 fn build_peer_spec(
     comms_name: &str,
     peer_id: &str,
     transport: &MobTransport,
+    pubkey: Option<[u8; 32]>,
 ) -> Result<TrustedPeerDescriptor, CrossMobError> {
     let address = match transport {
         MobTransport::Inproc => format!("inproc://{comms_name}"),
         MobTransport::Tcp(addr) => format!("tcp://{addr}"),
         MobTransport::Uds(path) => format!("uds://{path}"),
     };
-    TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, address)
-        .map_err(CrossMobError::PeerSpec)
+    build_external_peer_spec(comms_name, peer_id, &address, pubkey)
 }
 
 /// Build a [`TrustedPeerDescriptor`] for an external (non-inproc) peer.
@@ -707,12 +734,16 @@ mod tests {
 
     const TEST_PEER_ID: &str = "00000000-0000-4000-8000-000000000001";
 
+    /// Non-zero placeholder pubkey for the trust-required tests.
+    const TEST_PUBKEY: [u8; 32] = [42u8; 32];
+
     #[test]
     fn peer_spec_inproc_uses_comms_name_address() {
         let spec = build_peer_spec(
             "authors/coordinator/alice",
             TEST_PEER_ID,
             &MobTransport::Inproc,
+            None,
         )
         .expect("spec");
         assert_eq!(spec.address.endpoint(), "authors/coordinator/alice");
@@ -724,6 +755,7 @@ mod tests {
             "authors/coordinator/alice",
             "00000000-0000-4000-8000-000000000001",
             &MobTransport::Tcp("127.0.0.1:9001".to_string()),
+            Some(TEST_PUBKEY),
         )
         .expect("spec");
         assert_eq!(spec.address.endpoint(), "127.0.0.1:9001");
@@ -735,9 +767,44 @@ mod tests {
             "authors/coordinator/alice",
             "00000000-0000-4000-8000-000000000001",
             &MobTransport::Uds("/tmp/x.sock".to_string()),
+            Some(TEST_PUBKEY),
         )
         .expect("spec");
         assert_eq!(spec.address.endpoint(), "/tmp/x.sock");
+    }
+
+    /// Regression: cross-mob TCP wires must fail closed without a pubkey.
+    /// Pre-fix `build_peer_spec` produced an unsigned descriptor for any
+    /// transport; meerkat-comms would have admitted any sender.
+    #[test]
+    fn peer_spec_tcp_without_pubkey_rejected() {
+        let result = build_peer_spec(
+            "authors/coordinator/alice",
+            TEST_PEER_ID,
+            &MobTransport::Tcp("127.0.0.1:9001".to_string()),
+            None,
+        );
+        assert!(
+            matches!(result, Err(CrossMobError::MissingPeerPubkey { .. })),
+            "TCP peer spec without pubkey must fail closed, got {:?}",
+            result
+        );
+    }
+
+    /// Regression: cross-mob UDS wires must also fail closed without a pubkey.
+    #[test]
+    fn peer_spec_uds_without_pubkey_rejected() {
+        let result = build_peer_spec(
+            "authors/coordinator/alice",
+            TEST_PEER_ID,
+            &MobTransport::Uds("/tmp/x.sock".to_string()),
+            None,
+        );
+        assert!(
+            matches!(result, Err(CrossMobError::MissingPeerPubkey { .. })),
+            "UDS peer spec without pubkey must fail closed, got {:?}",
+            result
+        );
     }
 
     #[test]
