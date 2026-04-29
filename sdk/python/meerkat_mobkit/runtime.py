@@ -817,6 +817,11 @@ class MobHandle:
             maybe = raw.get("events")
             if isinstance(maybe, list):
                 events = maybe
+        elif isinstance(raw, list):
+            # Wire shape parity with `query_mob_events`: a server that
+            # returns a bare list (older gateway, future shape change)
+            # must still yield events instead of silently dropping them.
+            events = raw
         for entry in events:
             if isinstance(entry, dict):
                 yield MobStructuralEvent.from_dict(entry)
@@ -1660,10 +1665,18 @@ class AsgiApp:
                 }).encode()
                 await _send_response(send, 200, resp)
             except RpcError as exc:
+                # Pre-fix this used `exc.message`, an attribute that
+                # never existed on `RpcError`. The handler then fell
+                # through to the generic `except Exception` arm and
+                # returned -32603 with an `AttributeError` message,
+                # masking the real RPC code/message.
+                error_payload: dict[str, Any] = {"code": exc.code, "message": str(exc)}
+                if exc.data is not None:
+                    error_payload["data"] = exc.data
                 resp = json.dumps({
                     "jsonrpc": "2.0",
                     "id": request_id,
-                    "error": {"code": exc.code, "message": exc.message},
+                    "error": error_payload,
                 }).encode()
                 await _send_response(send, 200, resp)
             except Exception as exc:

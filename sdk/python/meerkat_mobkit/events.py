@@ -195,13 +195,26 @@ class MobEvent:
     def from_sse(cls, sse: SseEvent) -> MobEvent:
         """Parse from a mob SSE event (attributed envelope)."""
         try:
-            raw = json.loads(sse.data)
+            raw_any = json.loads(sse.data)
         except (json.JSONDecodeError, TypeError):
-            raw = {}
-        # Mob events are attributed envelopes: {payload: {...}, member_id: "..."}
+            raw_any = {}
+        # Defensive: the wire CONTRACT is a dict, but a buggy gateway
+        # or wire-version skew can deliver a string / list / null. Pre-fix,
+        # those returned an `UnknownEvent` with the raw value silently
+        # discarded. Wrap them so consumers can recover the original.
+        if not isinstance(raw_any, dict):
+            return cls(
+                member_id="",
+                event=UnknownEvent(type="non_dict_payload", data={"raw": raw_any}),
+                timestamp_ms=0,
+            )
+        raw: dict[str, Any] = raw_any
         member_id = raw.get("member_id", raw.get("source", ""))
         payload = raw.get("payload", raw)
-        event = parse_agent_event(payload) if isinstance(payload, dict) else UnknownEvent(data=raw)
+        if isinstance(payload, dict):
+            event = parse_agent_event(payload)
+        else:
+            event = UnknownEvent(type="non_dict_payload", data={"raw": payload})
         return cls(
             member_id=member_id,
             event=event,
@@ -233,7 +246,13 @@ class AgentEvent:
             raw = json.loads(sse.data)
         except (json.JSONDecodeError, TypeError):
             raw = {}
-        parsed = parse_agent_event(raw) if isinstance(raw, dict) else UnknownEvent()
+        if isinstance(raw, dict):
+            parsed = parse_agent_event(raw)
+        else:
+            # Pre-fix non-dict payloads dropped the raw value. Preserve
+            # it on UnknownEvent so consumers can debug forward-compat
+            # events instead of seeing an empty payload.
+            parsed = UnknownEvent(type="non_dict_payload", data={"raw": raw})
         return cls(event_type=sse.event, event=parsed)
 
 

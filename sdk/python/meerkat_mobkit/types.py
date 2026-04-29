@@ -6,6 +6,27 @@ from enum import Enum
 from typing import Any
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """Best-effort int coercion for wire-typed dataclass fields.
+
+    The wire schema documents these fields as JSON numbers, but stubs,
+    older gateways, and test fixtures sometimes deliver `None`, `"15"`,
+    or floats. Pre-fix the SDK's `from_dict` parsers passed these
+    through untouched, breaking downstream arithmetic far from the
+    parse site. The fallback is `default` (typically `0`).
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class StatusResult:
     contract_version: str
@@ -123,8 +144,8 @@ class KeepAliveConfig:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> KeepAliveConfig:
         return cls(
-            interval_ms=data.get("interval_ms", 0),
-            event=data.get("event", ""),
+            interval_ms=_coerce_int(data.get("interval_ms"), 0),
+            event=str(data.get("event", "")),
         )
 
 
@@ -138,9 +159,9 @@ class EventEnvelope:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EventEnvelope:
         return cls(
-            event_id=data.get("event_id", ""),
-            source=data.get("source", ""),
-            timestamp_ms=data.get("timestamp_ms", 0),
+            event_id=str(data.get("event_id", "")),
+            source=str(data.get("source", "")),
+            timestamp_ms=_coerce_int(data.get("timestamp_ms"), 0),
             event=data.get("event"),
         )
 
