@@ -183,9 +183,27 @@ class PersistentTransport:
 
     def send_sync(self, request: dict[str, Any]) -> Any:
         self._ensure_running()
-        msg_id = str(request.get("id", ""))
+        # Pre-fix, requests with no `id` (or two callers using the
+        # same id) collided on `self._pending[""]`: the second
+        # `_pending[msg_id] = event` clobbered the first caller's
+        # Event, blocking it for the full timeout. Reject either
+        # condition explicitly so the deadlock surfaces as a clear
+        # ValueError at the call site.
+        raw_id = request.get("id")
+        if raw_id is None or (isinstance(raw_id, str) and not raw_id):
+            raise ValueError(
+                "persistent transport: request must carry a non-empty `id` "
+                "(use uuid4 or similar) — empty/missing ids collide on the "
+                "in-flight pending map and deadlock concurrent callers"
+            )
+        msg_id = str(raw_id)
         event = threading.Event()
         with self._pending_lock:
+            if msg_id in self._pending:
+                raise ValueError(
+                    f"persistent transport: request id {msg_id!r} is already "
+                    f"in flight; concurrent callers must use distinct ids"
+                )
             self._pending[msg_id] = event
         # Write request (lock only for write, release before wait)
         self._write_line(request)

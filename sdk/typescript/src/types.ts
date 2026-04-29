@@ -227,7 +227,16 @@ export interface SubscribeResult {
 
 export function parseSubscribeResult(raw: unknown): SubscribeResult {
   const d = asRecord(raw);
-  const eventsRaw = Array.isArray(d.events) ? d.events : [];
+  // Pre-fix this mapped every entry — including null/string/number —
+  // through `parseEventEnvelope`, where `asRecord` quietly returned
+  // `{}` and produced silently-empty envelopes. Filter to objects so
+  // non-object entries are dropped instead of becoming data-loss.
+  const eventsRaw = Array.isArray(d.events)
+    ? d.events.filter(
+        (entry): entry is Record<string, unknown> =>
+          typeof entry === "object" && entry !== null && !Array.isArray(entry),
+      )
+    : [];
   return {
     scope: String(d.scope ?? ""),
     replayFromEventId:
@@ -1053,6 +1062,26 @@ function contentBlockToDict(block: DispatchContentBlock): Record<string, unknown
   return { type: "text", text: block.text };
 }
 
+const DISPATCH_ORIGIN_VALUES: readonly DispatchOrigin[] = [
+  "connector",
+  "scheduler",
+  "policy",
+  "flow",
+  "system",
+];
+
+function parseDispatchOrigin(raw: unknown): DispatchOrigin {
+  // Pre-fix this was `String(d.origin ?? "system") as DispatchOrigin`
+  // — an unchecked cast that admitted arbitrary strings, so a
+  // consumer's `switch (input.origin)` over the closed set hit no
+  // branch silently. Validate against the union and fall back to
+  // "system" for anything else.
+  if (typeof raw === "string" && (DISPATCH_ORIGIN_VALUES as readonly string[]).includes(raw)) {
+    return raw as DispatchOrigin;
+  }
+  return "system";
+}
+
 export function parseDispatchInput(raw: unknown): DispatchInput {
   const d = asRecord(raw);
   let content: string | DispatchContentBlock[];
@@ -1065,7 +1094,7 @@ export function parseDispatchInput(raw: unknown): DispatchInput {
   }
   return {
     content,
-    origin: String(d.origin ?? "system") as DispatchOrigin,
+    origin: parseDispatchOrigin(d.origin),
     correlationId: typeof d.correlation_id === "string" ? d.correlation_id : undefined,
     idempotencyKey: typeof d.idempotency_key === "string" ? d.idempotency_key : undefined,
   };

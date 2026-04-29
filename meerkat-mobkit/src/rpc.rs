@@ -109,6 +109,14 @@ pub fn parse_rpc_capabilities(line: &str) -> Result<RpcCapabilities, RpcCapabili
 /// SDKs.
 pub const MOB_EVENTS_STALE_CURSOR_CODE: i64 = -32010;
 
+/// JSON-RPC error code returned by `mobkit/memory/index` and
+/// `mobkit/memory/query` when the configured memory backend cannot
+/// persist or retrieve the row. Distinct from
+/// [`MOB_EVENTS_STALE_CURSOR_CODE`] so SDKs can branch on `-32010`
+/// without misclassifying a memory backend failure as a stale-cursor
+/// event.
+pub const MEMORY_BACKEND_UNAVAILABLE_CODE: i64 = -32012;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
@@ -616,7 +624,7 @@ pub fn handle_mobkit_rpc_json(
                     id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
-                        code: -32010,
+                        code: MEMORY_BACKEND_UNAVAILABLE_CODE,
                         message: format!(
                             "Memory backend unavailable: {}",
                             MemoryParamsError::backend_message(&error)
@@ -1540,7 +1548,7 @@ pub async fn handle_unified_rpc_json(
                     id: response_id,
                     result: None,
                     error: Some(JsonRpcError {
-                        code: -32010,
+                        code: MEMORY_BACKEND_UNAVAILABLE_CODE,
                         message: format!(
                             "Memory backend unavailable: {}",
                             MemoryParamsError::backend_message(&error)

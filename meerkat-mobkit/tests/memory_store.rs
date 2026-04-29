@@ -521,7 +521,20 @@ fn phase13_elephant_memory_backend_endpoint_failure_maps_to_typed_rpc_error() {
     ));
     runtime.shutdown();
 
-    assert_eq!(indexed["error"]["code"], json!(-32010));
+    // Regression: -32012 (memory backend unavailable) must NOT collide
+    // with -32010 (mob_events stale cursor). SDKs branch on -32010 to
+    // raise MobEventsStaleError; a memory failure carrying -32010 would
+    // be misclassified.
+    assert_eq!(
+        indexed["error"]["code"],
+        json!(-32012),
+        "memory backend failure must use -32012, not -32010"
+    );
+    assert_ne!(
+        indexed["error"]["code"],
+        json!(-32010),
+        "memory backend code must be distinct from MOB_EVENTS_STALE_CURSOR_CODE"
+    );
     assert!(
         indexed["error"]["message"]
             .as_str()

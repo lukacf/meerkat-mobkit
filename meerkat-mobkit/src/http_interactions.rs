@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use async_stream::stream;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::post;
@@ -24,8 +24,12 @@ use meerkat_mob::ids::MeerkatId;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT, console_agent_event_payload};
+use crate::http_sse::{
+    DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT, console_agent_event_payload,
+    sse_request_authorized,
+};
 use crate::mob_handle_runtime::MobRuntimeError;
+use crate::runtime::RuntimeDecisionState;
 
 /// Observe-only request: only `member_id` is required.
 #[derive(Debug, Deserialize)]
@@ -36,12 +40,20 @@ struct InteractionStreamRequest {
 #[derive(Clone)]
 struct InteractionState {
     runtime: crate::mob_handle_runtime::MobRuntime,
+    /// When `Some(_)` and `decisions.console.require_app_auth` is on,
+    /// the SSE handshake validates the bearer / `auth_token` query
+    /// param against the same allowlist the console RPC uses. `None`
+    /// opts out of auth (in-process or trusted local embedding).
+    decisions: Option<RuntimeDecisionState>,
 }
 
-pub fn interaction_stream_router(runtime: crate::mob_handle_runtime::MobRuntime) -> Router {
+pub fn interaction_stream_router(
+    runtime: crate::mob_handle_runtime::MobRuntime,
+    decisions: Option<RuntimeDecisionState>,
+) -> Router {
     Router::new()
         .route("/interactions/stream", post(interaction_stream_handler))
-        .with_state(InteractionState { runtime })
+        .with_state(InteractionState { runtime, decisions })
 }
 
 fn http_error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
@@ -75,8 +87,19 @@ fn map_runtime_error(error: &MobRuntimeError) -> (StatusCode, Json<Value>) {
 
 async fn interaction_stream_handler(
     State(state): State<InteractionState>,
+    headers: HeaderMap,
+    uri: Uri,
     Json(request): Json<InteractionStreamRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if !sse_request_authorized(state.decisions.as_ref(), &headers, &uri) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "interactions stream requires a valid auth token",
+            })),
+        ));
+    }
     let member_id = request.member_id.trim().to_string();
 
     if member_id.is_empty() {

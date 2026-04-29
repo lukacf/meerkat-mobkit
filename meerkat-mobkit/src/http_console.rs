@@ -172,18 +172,25 @@ pub async fn console_json_handler(
     // resolver can validate it through the existing query-param path.
     //
     // JWT tokens use base64url characters (A-Za-z0-9_-.) plus optional '='
-    // padding.  split_path_and_query uses split_once('=') for key/value
-    // separation, so '=' in the token body lands in the value side correctly
-    // and '&' never appears in valid JWTs, so no percent-encoding is needed.
-    if !path.contains("auth_token=")
+    // padding. We percent-encode the bearer when injecting so opaque
+    // bearer tokens containing `&`, `=`, `+`, `%`, etc. (legal under
+    // RFC 6750 §2.1) survive the round trip — pre-fix, an `&` made
+    // injection skip and authentication fail. Substring detection of
+    // an existing `auth_token=` is now key-aware via form_urlencoded
+    // so `xauth_token=` doesn't masquerade as the real key.
+    let already_has_token = path
+        .split_once('?')
+        .map(|(_, q)| form_urlencoded::parse(q.as_bytes()).any(|(key, _)| key == "auth_token"))
+        .unwrap_or(false);
+    if !already_has_token
         && let Some(bearer) = headers
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .and_then(extract_bearer_token_from_header)
-        && bearer.bytes().all(|b| b != b'&')
     {
+        let encoded: String = form_urlencoded::byte_serialize(bearer.as_bytes()).collect();
         let sep = if path.contains('?') { '&' } else { '?' };
-        path = format!("{path}{sep}auth_token={bearer}");
+        path = format!("{path}{sep}auth_token={encoded}");
     }
 
     let config_module_ids: Vec<String> = state
@@ -372,7 +379,21 @@ async fn console_identity_stream_handler(
                         }
                     }
                     Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        // Emit a synthetic `stream_lagged` frame so the
+                        // client knows it missed events; pre-fix we
+                        // silently `break`-ed and the connection stayed
+                        // open via keep-alive forever.
+                        let lagged = console_stream_lagged_envelope(
+                            IDENTITY_STREAM_NAME,
+                            skipped,
+                        );
+                        if let Some(event) = sse_event_from_envelope(&lagged) {
+                            yield Ok::<Event, Infallible>(event);
+                        }
+                        // Keep the connection live; the receiver has
+                        // re-anchored to the broadcast tail.
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -457,7 +478,15 @@ async fn console_events_stream_handler(
                             yield Ok::<Event, Infallible>(event);
                         }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        let lagged = console_stream_lagged_envelope(
+                            ALL_EVENTS_STREAM_NAME,
+                            skipped,
+                        );
+                        if let Some(event) = sse_event_from_envelope(&lagged) {
+                            yield Ok::<Event, Infallible>(event);
+                        }
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
@@ -486,11 +515,29 @@ fn console_request_token(headers: &HeaderMap, uri: &Uri) -> Option<String> {
         .and_then(|v| v.to_str().ok())
         .and_then(extract_bearer_token_from_header)
         .map(String::from);
+    // Parse with form_urlencoded so percent-encoded tokens decode and
+    // `xauth_token=` substring shadowing does NOT match the real key.
     let query_token = uri.query().and_then(|q| {
-        q.split('&')
-            .find_map(|pair| pair.strip_prefix("auth_token=").map(String::from))
+        form_urlencoded::parse(q.as_bytes())
+            .find(|(key, _)| key == "auth_token")
+            .map(|(_, value)| value.into_owned())
     });
     bearer_token.or(query_token)
+}
+
+/// Validate that `last_event_id` matches the format the server actually
+/// mints (`console-stream-{stream}-{millis}` per
+/// [`stream_head_event_id`]). Rejects any client value containing
+/// characters outside `[A-Za-z0-9_\-]`. Pre-fix the unvalidated header
+/// was reflected verbatim into the error JSON; an operator console
+/// rendering it without escaping was exposed to log-injection /
+/// display-side XSS via headers like `<script>alert(1)</script>`.
+fn is_valid_last_event_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn replay_unavailable_response(
@@ -502,6 +549,15 @@ fn replay_unavailable_response(
         .and_then(|value| value.to_str().ok())
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
+    if !is_valid_last_event_id(requested_last_event_id) {
+        return Some((
+            StatusCode::BAD_REQUEST,
+            Json::<Value>(serde_json::json!({
+                "error": "invalid_last_event_id",
+                "stream": stream_name,
+            })),
+        ));
+    }
     Some((
         StatusCode::CONFLICT,
         Json::<Value>(
@@ -532,6 +588,25 @@ fn console_stream_control_envelope(
         timestamp_ms: current_time_ms(),
         data: serde_json::json!({
             "stream": stream_name,
+        }),
+    }
+}
+
+/// Synthetic envelope emitted when the broadcast receiver lags. Pre-fix
+/// the handler `break`-ed on `Lagged`, leaving the SSE connection open
+/// under keep-alive but silent forever. Clients now see this frame and
+/// know to refetch via the catch-up endpoint or accept missed events.
+fn console_stream_lagged_envelope(stream_name: &str, skipped: u64) -> ConsoleIdentityEventEnvelope {
+    ConsoleIdentityEventEnvelope {
+        event_id: format!("console-stream-{stream_name}-lagged-{}", current_time_ms()),
+        interaction_id: None,
+        identity: ALL_EVENTS_CONTROL_IDENTITY.to_string(),
+        event_type: "stream_lagged".to_string(),
+        timestamp_ms: current_time_ms(),
+        data: serde_json::json!({
+            "stream": stream_name,
+            "skipped": skipped,
+            "advice": "client should refetch state via catch-up endpoint or accept the gap",
         }),
     }
 }

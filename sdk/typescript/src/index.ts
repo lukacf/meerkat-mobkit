@@ -62,6 +62,8 @@ export {
   ContractMismatchError,
   NotConnectedError,
   MobkitRpcError,
+  isRpcError,
+  isMobEventsStaleError,
 } from "./errors.js";
 
 // -- Typed return models --------------------------------------------------

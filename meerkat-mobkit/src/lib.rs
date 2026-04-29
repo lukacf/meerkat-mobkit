@@ -73,8 +73,8 @@ pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
 pub use rpc::{
     IdentityFirstContext, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION, handle_console_ingress_json,
-    handle_mobkit_rpc_json, handle_unified_rpc_json,
+    MEMORY_BACKEND_UNAVAILABLE_CODE, MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION,
+    handle_console_ingress_json, handle_mobkit_rpc_json, handle_unified_rpc_json,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 pub use runtime::{

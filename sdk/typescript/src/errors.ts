@@ -130,6 +130,42 @@ export class NotConnectedError extends MobKitError {
   }
 }
 
+// -- Cross-module identity helpers ---------------------------------------
+
+/**
+ * Structural test for an `RpcError`. Pre-fix every site used
+ * `err instanceof RpcError`, but JS class identity is module-scoped:
+ * dual CJS+ESM packaging, vitest module isolation, and hoisted-vs-
+ * nested workspace deps can produce two `RpcError` constructors that
+ * fail `instanceof` for each other's instances. The structural check
+ * survives those splits.
+ */
+export function isRpcError(err: unknown): err is RpcError {
+  if (err instanceof RpcError) {
+    return true;
+  }
+  if (err === null || typeof err !== "object") {
+    return false;
+  }
+  const candidate = err as { name?: unknown; code?: unknown };
+  return (
+    candidate.name === "RpcError" ||
+    candidate.name === "MobEventsStaleError"
+  ) && typeof candidate.code === "number";
+}
+
+/** Structural test for a `MobEventsStaleError`. See `isRpcError`. */
+export function isMobEventsStaleError(err: unknown): err is MobEventsStaleError {
+  if (err instanceof MobEventsStaleError) {
+    return true;
+  }
+  return (
+    isRpcError(err) &&
+    err.code === MOB_EVENTS_STALE_CURSOR_CODE &&
+    (err as { name: string }).name === "MobEventsStaleError"
+  );
+}
+
 // -- Backward compatibility -----------------------------------------------
 
 /** @deprecated Use {@link RpcError} instead. */

@@ -37,14 +37,19 @@ async fn phase0_contract_007_tool_events_stream_with_tool_call_id() {
         duration_ms: 12,
         has_images: false,
     };
-    let app = agent_events_sse_router(Arc::new(move |_agent_id| {
-        let event = agent_event.clone();
-        Box::pin(async move {
-            Ok::<EventStream, MobRuntimeError>(Box::pin(futures::stream::iter(vec![
-                EventEnvelope::new("worker-1", 0, None, event),
-            ])) as EventStream)
-        })
-    }));
+    let app = agent_events_sse_router(
+        Arc::new(move |_agent_id| {
+            let event = agent_event.clone();
+            Box::pin(async move {
+                Ok::<EventStream, MobRuntimeError>(Box::pin(futures::stream::iter(vec![
+                    EventEnvelope::new("worker-1", 0, None, event),
+                ])) as EventStream)
+            })
+        }),
+        // No decisions: this test exercises the streaming shape, not
+        // auth gating. Auth coverage lives in `sse_auth_gate.rs`.
+        None,
+    );
 
     let response = app
         .oneshot(

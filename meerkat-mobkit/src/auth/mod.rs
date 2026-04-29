@@ -312,15 +312,12 @@ fn verify_signature(
             let mut mac = HmacSha256::new_from_slice(secret)
                 .map_err(|_| JwtValidationError::InvalidSignature)?;
             mac.update(signing_input);
-            let expected = mac.finalize().into_bytes();
-            if expected.len() != signature.len()
-                || expected
-                    .iter()
-                    .zip(signature.iter())
-                    .any(|(left, right)| left != right)
-            {
-                return Err(JwtValidationError::InvalidSignature);
-            }
+            // Pre-fix: byte-wise loop short-circuited on first mismatch
+            // — a remote timing oracle for HMAC tag forgery one byte at
+            // a time. `Mac::verify_slice` performs the comparison in
+            // constant time via the underlying HMAC implementation.
+            mac.verify_slice(signature)
+                .map_err(|_| JwtValidationError::InvalidSignature)?;
             Ok(())
         }
         (JwtVerificationKey::Rs256 { modulus, exponent }, "RS256") => {

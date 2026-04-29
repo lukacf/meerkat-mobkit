@@ -305,6 +305,48 @@ async fn subscribe_url_carries_continuation_cursor_and_filters() {
 }
 
 #[tokio::test]
+async fn query_with_empty_filter_match_still_advances_next_after_seq() {
+    // Regression: pre-fix, `next_after_seq` was `null` when the filter
+    // matched no events. A polling SDK with no anchor would either
+    // skip new matches (restart from latest) or replay from zero. The
+    // fix returns either the caller's `after_seq`, or the latest_cursor
+    // captured at handshake — never null.
+    let fixture = build_fixture().await;
+    drive_a_flow(&fixture.runtime).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Filter that matches nothing.
+    let response = query(
+        &fixture.runtime,
+        json!({ "mob_id": "no-such-mob-anywhere", "limit": 32 }),
+    )
+    .await;
+    assert!(
+        response.error.is_none(),
+        "filter-with-no-match must succeed: {:?}",
+        response.error
+    );
+    let result = response.result.expect("result");
+    let events = result
+        .get("events")
+        .and_then(Value::as_array)
+        .expect("events");
+    assert!(events.is_empty(), "filter must match no events");
+    let next = result.get("next_after_seq").and_then(Value::as_u64);
+    assert!(
+        next.is_some(),
+        "next_after_seq must be numeric when no events match (was null pre-fix)"
+    );
+    assert!(
+        next.unwrap() > 0,
+        "next_after_seq must advance past 0 once events exist on the ledger"
+    );
+
+    let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
 async fn query_after_seq_zero_paginates_forward_from_start() {
     let fixture = build_fixture().await;
     drive_a_flow(&fixture.runtime).await;
