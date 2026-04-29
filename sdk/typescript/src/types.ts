@@ -706,6 +706,199 @@ export function parseMobStructuralEvent(raw: unknown): MobStructuralEvent {
   };
 }
 
+// -- MobRun (full ledger projection) --------------------------------------
+
+/** Lifecycle states for a flow run; mirrors meerkat's `MobRunStatus`. */
+export type MobRunStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "canceled";
+
+/** Per-target step execution ledger entry; mirrors `StepLedgerEntry`. */
+export interface StepRecord {
+  readonly stepId: string;
+  readonly agentIdentity: string;
+  readonly status: string;
+  readonly output: unknown;
+  readonly timestamp: string;
+}
+
+export function parseStepRecord(raw: unknown): StepRecord {
+  const d = asRecord(raw);
+  return {
+    stepId: String(d.step_id ?? ""),
+    agentIdentity: String(d.agent_identity ?? ""),
+    status: String(d.status ?? ""),
+    output: d.output,
+    timestamp: String(d.timestamp ?? ""),
+  };
+}
+
+/** Flow-level failure log entry; mirrors `FailureLedgerEntry`. */
+export interface FailureRecord {
+  readonly stepId: string;
+  readonly reason: string;
+  readonly timestamp: string;
+}
+
+export function parseFailureRecord(raw: unknown): FailureRecord {
+  const d = asRecord(raw);
+  return {
+    stepId: String(d.step_id ?? ""),
+    reason: String(d.reason ?? ""),
+    timestamp: String(d.timestamp ?? ""),
+  };
+}
+
+/** Per-frame kernel snapshot; mirrors `FrameSnapshot`.
+ *
+ * `kernelState` is meerkat-internal `flow_frame::State` and passes
+ * through as `unknown`. */
+export interface FrameRecord {
+  readonly kernelState: unknown;
+}
+
+export function parseFrameRecord(raw: unknown): FrameRecord {
+  const d = asRecord(raw);
+  return { kernelState: d.kernel_state };
+}
+
+/** Per-loop kernel snapshot; mirrors `LoopSnapshot`.
+ *
+ * `kernelState` is meerkat-internal `loop_iteration::State` and passes
+ * through as `unknown`. */
+export interface LoopRecord {
+  readonly kernelState: unknown;
+}
+
+export function parseLoopRecord(raw: unknown): LoopRecord {
+  const d = asRecord(raw);
+  return { kernelState: d.kernel_state };
+}
+
+/** Loop-iteration → body-frame ledger entry; mirrors `LoopIterationLedgerEntry`. */
+export interface LoopIterationRecord {
+  readonly loopInstanceId: string;
+  readonly iteration: number;
+  readonly frameId: string;
+}
+
+export function parseLoopIterationRecord(raw: unknown): LoopIterationRecord {
+  const d = asRecord(raw);
+  return {
+    loopInstanceId: String(d.loop_instance_id ?? ""),
+    iteration: Number(d.iteration ?? 0),
+    frameId: String(d.frame_id ?? ""),
+  };
+}
+
+/**
+ * Persisted flow run aggregate returned by `MobHandle.listRuns`.
+ *
+ * Carries the full meerkat ledger projection. Meerkat-internal
+ * sub-shapes (`flowState`, `activationParams`, `StepRecord.output`,
+ * `rootStepOutputs` / `loopIterationOutputs` value blobs, frame /
+ * loop `kernelState`) pass through as `unknown` rather than being
+ * re-typed in the SDK. `frames` and `loops` are **maps**, not arrays.
+ */
+export interface MobRun {
+  readonly runId: string;
+  readonly mobId: string;
+  readonly flowId: string;
+  readonly status: MobRunStatus;
+  readonly flowState: unknown;
+  readonly activationParams: unknown;
+  readonly createdAt: string;
+  readonly completedAt: string | null;
+  readonly stepLedger: StepRecord[];
+  readonly failureLedger: FailureRecord[];
+  readonly frames: Readonly<Record<string, FrameRecord>>;
+  readonly loops: Readonly<Record<string, LoopRecord>>;
+  readonly loopIterationLedger: LoopIterationRecord[];
+  readonly schemaVersion: number;
+  readonly rootStepOutputs: Readonly<Record<string, unknown>>;
+  readonly loopIterationOutputs: Readonly<Record<string, unknown>>;
+}
+
+function parseMobRunStatus(raw: unknown): MobRunStatus {
+  const known: readonly MobRunStatus[] = [
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "canceled",
+  ];
+  if (typeof raw === "string" && (known as readonly string[]).includes(raw)) {
+    return raw as MobRunStatus;
+  }
+  return "pending";
+}
+
+export function parseMobRun(raw: unknown): MobRun {
+  const d = asRecord(raw);
+  const stepLedger = Array.isArray(d.step_ledger)
+    ? d.step_ledger.map(parseStepRecord)
+    : [];
+  const failureLedger = Array.isArray(d.failure_ledger)
+    ? d.failure_ledger.map(parseFailureRecord)
+    : [];
+  const iterations = Array.isArray(d.loop_iteration_ledger)
+    ? d.loop_iteration_ledger.map(parseLoopIterationRecord)
+    : [];
+  const framesIn =
+    typeof d.frames === "object" && d.frames !== null
+      ? (d.frames as Record<string, unknown>)
+      : {};
+  const frames: Record<string, FrameRecord> = {};
+  for (const [k, v] of Object.entries(framesIn)) {
+    if (typeof v === "object" && v !== null) {
+      frames[k] = parseFrameRecord(v);
+    }
+  }
+  const loopsIn =
+    typeof d.loops === "object" && d.loops !== null
+      ? (d.loops as Record<string, unknown>)
+      : {};
+  const loops: Record<string, LoopRecord> = {};
+  for (const [k, v] of Object.entries(loopsIn)) {
+    if (typeof v === "object" && v !== null) {
+      loops[k] = parseLoopRecord(v);
+    }
+  }
+  const rootOutputs =
+    typeof d.root_step_outputs === "object" && d.root_step_outputs !== null
+      ? (d.root_step_outputs as Record<string, unknown>)
+      : {};
+  const iterOutputs =
+    typeof d.loop_iteration_outputs === "object" &&
+    d.loop_iteration_outputs !== null
+      ? (d.loop_iteration_outputs as Record<string, unknown>)
+      : {};
+  return {
+    runId: String(d.run_id ?? ""),
+    mobId: String(d.mob_id ?? ""),
+    flowId: String(d.flow_id ?? ""),
+    status: parseMobRunStatus(d.status),
+    flowState: d.flow_state,
+    activationParams: d.activation_params,
+    createdAt: String(d.created_at ?? ""),
+    completedAt:
+      d.completed_at === null || d.completed_at === undefined
+        ? null
+        : String(d.completed_at),
+    stepLedger,
+    failureLedger,
+    frames,
+    loops,
+    loopIterationLedger: iterations,
+    schemaVersion: Number(d.schema_version ?? 0),
+    rootStepOutputs: rootOutputs,
+    loopIterationOutputs: iterOutputs,
+  };
+}
+
 // -- ErrorCategory / ErrorEvent -------------------------------------------
 
 export const ErrorCategory = {

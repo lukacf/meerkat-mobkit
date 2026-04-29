@@ -15,7 +15,13 @@ from urllib import request as urllib_request
 _log = logging.getLogger("meerkat_mobkit")
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
-from .errors import NotConnectedError, RpcError, TransportError
+from .errors import (
+    MOB_EVENTS_STALE_CURSOR_CODE,
+    MobEventsStaleError,
+    NotConnectedError,
+    RpcError,
+    TransportError,
+)
 from .events import AgentEvent, MobEvent
 from ._sse import SseEvent, parse_sse_stream
 from ._transport import PersistentTransport
@@ -199,6 +205,7 @@ class MobKitRuntime:
                 message=err.get("message", str(err)),
                 request_id=rid,
                 method=method,
+                data=err.get("data"),
             )
         return response.get("result")
 
@@ -214,6 +221,7 @@ class MobKitRuntime:
                 message=err.get("message", str(err)),
                 request_id=rid,
                 method=method,
+                data=err.get("data"),
             )
         return response.get("result")
 
@@ -739,10 +747,16 @@ class MobHandle:
         self,
         query: "EventQuery | dict[str, Any] | None" = None,
     ) -> list[MobStructuralEvent]:
-        """Query buffered structural mob events.
+        """Query structural mob events from the meerkat ledger.
 
         Returns events matching ``query``. Pass the highest seen
-        ``cursor`` as ``EventQuery.after_seq`` to paginate.
+        ``cursor`` as ``EventQuery.after_seq`` to paginate. Without
+        ``after_seq`` the call returns the latest matching events
+        (default ``limit = 256``).
+
+        Raises :class:`MobEventsStaleError` when ``after_seq`` is past
+        the current ledger frontier; the exception carries
+        ``after_cursor`` and ``latest_cursor`` so callers can rewind.
         """
         from .types import EventQuery, MobStructuralEvent
         if query is None:
@@ -753,7 +767,12 @@ class MobHandle:
             params = dict(query)
         else:
             raise TypeError(f"unsupported query type: {type(query).__name__}")
-        raw = await self._runtime._rpc("mobkit/mob_events/query", params)
+        try:
+            raw = await self._runtime._rpc("mobkit/mob_events/query", params)
+        except RpcError as err:
+            if err.code == MOB_EVENTS_STALE_CURSOR_CODE:
+                raise MobEventsStaleError.from_rpc_error(err) from err
+            raise
         events: list[Any] = []
         if isinstance(raw, dict):
             maybe = raw.get("events")
@@ -767,13 +786,16 @@ class MobHandle:
         self,
         query: "EventQuery | dict[str, Any] | None" = None,
     ) -> AsyncIterator[MobStructuralEvent]:
-        """Replay buffered structural mob events.
+        """Replay structural mob events as an async iterator.
 
         Returns an async iterator over the snapshot frame returned by
-        ``mobkit/mob_events/subscribe``. Live tailing requires the SSE
-        bridge endpoint; this method is the snapshot equivalent of
-        ``query_mob_events`` plus a stream marker for clients that prefer
-        an iterator API.
+        ``mobkit/mob_events/subscribe``. Live tailing for production
+        streaming uses the SSE bridge at ``/mobkit/mob_events/stream``;
+        this method is the JSON-RPC snapshot equivalent of
+        :meth:`query_mob_events` for clients that prefer an iterator.
+
+        Raises :class:`MobEventsStaleError` when ``after_seq`` is past
+        the current ledger frontier.
         """
         from .types import EventQuery, MobStructuralEvent
         if query is None:
@@ -784,7 +806,12 @@ class MobHandle:
             params = dict(query)
         else:
             raise TypeError(f"unsupported query type: {type(query).__name__}")
-        raw = await self._runtime._rpc("mobkit/mob_events/subscribe", params)
+        try:
+            raw = await self._runtime._rpc("mobkit/mob_events/subscribe", params)
+        except RpcError as err:
+            if err.code == MOB_EVENTS_STALE_CURSOR_CODE:
+                raise MobEventsStaleError.from_rpc_error(err) from err
+            raise
         events: list[Any] = []
         if isinstance(raw, dict):
             maybe = raw.get("events")
@@ -1242,6 +1269,30 @@ class MobHandle:
         else:
             flows = []
         return [str(flow_id) for flow_id in flows]
+
+    async def list_runs(self, flow_id: str | None = None) -> list[MobRun]:
+        """List flow runs for this mob.
+
+        Relays ``MobHandle::list_runs``. When ``flow_id`` is given,
+        only runs for that flow are returned. The returned :class:`MobRun`
+        carries the full meerkat ledger projection — ``step_ledger``,
+        ``failure_ledger``, ``frames``, ``loops``, ``loop_iteration_ledger``,
+        ``flow_state``, ``activation_params``, etc. — verbatim from the
+        on-the-wire JSON.
+        """
+        from .types import MobRun
+        params: dict[str, Any] = {}
+        if flow_id is not None:
+            params["flow_id"] = flow_id
+        raw = await self._runtime._rpc("mobkit/list_runs", params)
+        runs: list[Any] = []
+        if isinstance(raw, dict):
+            maybe = raw.get("runs")
+            if isinstance(maybe, list):
+                runs = maybe
+        elif isinstance(raw, list):
+            runs = raw
+        return [MobRun.from_dict(r) for r in runs if isinstance(r, dict)]
 
     async def run_flow(self, flow_id: str, params: Any = None) -> str:
         """Start a flow run and return its run ID.

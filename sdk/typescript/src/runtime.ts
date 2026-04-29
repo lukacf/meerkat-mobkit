@@ -19,7 +19,13 @@ import { readFileSync } from "node:fs";
 
 import type { MobKitBuilderConfig } from "./builder.js";
 import { CallbackDispatcher, type SessionAgentBuilder } from "./agent-builder.js";
-import { NotConnectedError, RpcError, TransportError } from "./errors.js";
+import {
+  MOB_EVENTS_STALE_CURSOR_CODE,
+  MobEventsStaleError,
+  NotConnectedError,
+  RpcError,
+  TransportError,
+} from "./errors.js";
 import { PersistentTransport, buildJsonRpcRequest } from "./transport.js";
 import { parseSseStream, type SseEvent } from "./sse.js";
 import {
@@ -54,6 +60,7 @@ import {
   parseReconcileEdgesReport,
   parsePersistedEvent,
   parseMobStructuralEvent,
+  parseMobRun,
   eventQueryToDict,
   parseIdentityStatus,
   dispatchInputToDict,
@@ -80,6 +87,7 @@ import {
   type ReconcileEdgesReport,
   type PersistedEvent,
   type MobStructuralEvent,
+  type MobRun,
   type EventQuery,
   type IdentityStatus,
   type DispatchInput,
@@ -288,6 +296,7 @@ export class MobKitRuntime {
         String(err.message ?? String(err)),
         rid,
         method,
+        err.data,
       );
     }
     return response.result;
@@ -489,28 +498,50 @@ export class MobHandle {
   }
 
   /**
-   * Query buffered structural mob events. Pass the highest seen
-   * `cursor` as `EventQuery.afterSeq` on the next call to paginate.
+   * Query structural mob events from the meerkat ledger. Pass the
+   * highest seen `cursor` as `EventQuery.afterSeq` on the next call to
+   * paginate. Without `afterSeq` the call returns the latest matching
+   * events (default `limit = 256`).
+   *
+   * Throws {@link MobEventsStaleError} when `afterSeq` is past the
+   * current ledger frontier; the exception carries `afterCursor` and
+   * `latestCursor` so callers can rewind.
    */
   async queryMobEvents(query?: EventQuery): Promise<MobStructuralEvent[]> {
     const params = query ? eventQueryToDict(query) : {};
-    const raw = await this._runtime._rpc("mobkit/mob_events/query", params);
-    return extractMobStructuralEvents(raw);
+    try {
+      const raw = await this._runtime._rpc("mobkit/mob_events/query", params);
+      return extractMobStructuralEvents(raw);
+    } catch (err) {
+      if (err instanceof RpcError && err.code === MOB_EVENTS_STALE_CURSOR_CODE) {
+        throw MobEventsStaleError.fromRpcError(err);
+      }
+      throw err;
+    }
   }
 
   /**
-   * Replay buffered structural mob events. Yields the snapshot frame
-   * returned by `mobkit/mob_events/subscribe` as an async iterator.
-   * Live tailing requires the dedicated SSE bridge.
+   * Replay structural mob events as an async iterator. Yields the
+   * snapshot frame returned by `mobkit/mob_events/subscribe`. Live
+   * tailing for production streaming uses the SSE bridge at
+   * `/mobkit/mob_events/stream`.
+   *
+   * Throws {@link MobEventsStaleError} when `afterSeq` is past the
+   * current ledger frontier.
    */
   async *subscribeMobEvents(
     query?: EventQuery,
   ): AsyncGenerator<MobStructuralEvent, void, undefined> {
     const params = query ? eventQueryToDict(query) : {};
-    const raw = await this._runtime._rpc(
-      "mobkit/mob_events/subscribe",
-      params,
-    );
+    let raw: unknown;
+    try {
+      raw = await this._runtime._rpc("mobkit/mob_events/subscribe", params);
+    } catch (err) {
+      if (err instanceof RpcError && err.code === MOB_EVENTS_STALE_CURSOR_CODE) {
+        throw MobEventsStaleError.fromRpcError(err);
+      }
+      throw err;
+    }
     for (const event of extractMobStructuralEvents(raw)) {
       yield event;
     }
@@ -643,6 +674,35 @@ export class MobHandle {
       }
     }
     return [];
+  }
+
+  /**
+   * List flow runs for this mob, optionally filtered to one `flowId`.
+   * Relays `MobHandle::list_runs`. Each {@link MobRun} carries the full
+   * meerkat ledger projection — `step_ledger`, `failure_ledger`,
+   * `frames`, `loops`, `loop_iteration_ledger`, `flow_state`,
+   * `activation_params`, etc. — verbatim from the wire JSON.
+   */
+  async listRuns(flowId?: string): Promise<MobRun[]> {
+    const params: Record<string, unknown> = {};
+    if (flowId !== undefined) params.flow_id = flowId;
+    const raw = await this._runtime._rpc("mobkit/list_runs", params);
+    let runs: unknown[] = [];
+    if (Array.isArray(raw)) {
+      runs = raw;
+    } else if (typeof raw === "object" && raw !== null) {
+      const maybe = (raw as Record<string, unknown>).runs;
+      if (Array.isArray(maybe)) {
+        runs = maybe;
+      }
+    }
+    const result: MobRun[] = [];
+    for (const entry of runs) {
+      if (typeof entry === "object" && entry !== null) {
+        result.push(parseMobRun(entry as Record<string, unknown>));
+      }
+    }
+    return result;
   }
 
   /**

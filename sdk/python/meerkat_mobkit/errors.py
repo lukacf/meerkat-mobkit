@@ -1,6 +1,13 @@
 """Typed error hierarchy for MobKit SDK."""
 from __future__ import annotations
 
+from typing import Any
+
+# JSON-RPC error code returned by `mobkit/mob_events/{query,subscribe}` and
+# the `/mobkit/mob_events/stream` SSE route when the caller's `after_seq`
+# is past the current ledger frontier.
+MOB_EVENTS_STALE_CURSOR_CODE: int = -32010
+
 
 class MobKitError(Exception):
     """Base exception for all MobKit SDK errors."""
@@ -13,11 +20,65 @@ class TransportError(MobKitError):
 class RpcError(MobKitError):
     """Raised when a JSON-RPC call returns an error response."""
 
-    def __init__(self, code: int, message: str, *, request_id: str = "", method: str = ""):
+    def __init__(
+        self,
+        code: int,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
         super().__init__(message)
         self.code = code
         self.request_id = request_id
         self.method = method
+        self.data = data
+
+
+class MobEventsStaleError(RpcError):
+    """Raised when the caller passes an ``after_seq`` past the current ledger frontier.
+
+    The server's structured ``data`` payload carries ``after_cursor`` and
+    ``latest_cursor``. Use ``latest_cursor`` to rewind and resume.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        after_cursor: int,
+        latest_cursor: int,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            MOB_EVENTS_STALE_CURSOR_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+        self.after_cursor = after_cursor
+        self.latest_cursor = latest_cursor
+
+    @classmethod
+    def from_rpc_error(cls, err: RpcError) -> MobEventsStaleError:
+        """Reify a generic ``RpcError`` with code ``-32010`` into the typed form.
+
+        Reads ``after_cursor`` / ``latest_cursor`` from ``err.data`` (the
+        JSON-RPC ``error.data`` payload). Missing fields fall back to ``0``.
+        """
+        payload = err.data if isinstance(err.data, dict) else {}
+        return cls(
+            str(err),
+            after_cursor=int(payload.get("after_cursor", 0)),
+            latest_cursor=int(payload.get("latest_cursor", 0)),
+            request_id=err.request_id,
+            method=err.method,
+            data=err.data,
+        )
 
 
 class CapabilityUnavailableError(MobKitError):
