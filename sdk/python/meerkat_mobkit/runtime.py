@@ -1236,6 +1236,54 @@ class MobHandle:
         raise RuntimeError(f"unexpected run_flow response: {raw!r}")
 
     # -----------------------------------------------------------------
+    # Mob/run labels — mobkit-side sidecar metadata
+    # -----------------------------------------------------------------
+
+    async def set_mob_labels(self, labels: dict[str, str]) -> None:
+        """Replace the label set associated with this mob.
+
+        Mobkit owns these labels — they are not part of meerkat-mob.
+        Replacement is wholesale; existing labels not present in
+        ``labels`` are dropped. Pass ``{}`` to clear.
+        """
+        await self._runtime._rpc("mobkit/mob_labels/set", {"labels": dict(labels)})
+
+    async def get_mob_labels(self) -> dict[str, str]:
+        """Return the label set associated with this mob (or ``{}``)."""
+        raw = await self._runtime._rpc("mobkit/mob_labels/get")
+        if isinstance(raw, dict):
+            labels = raw.get("labels", {})
+            if isinstance(labels, dict):
+                return {str(k): str(v) for k, v in labels.items()}
+        return {}
+
+    async def delete_mob_labels(self) -> None:
+        """Remove the label set associated with this mob."""
+        await self._runtime._rpc("mobkit/mob_labels/delete")
+
+    async def set_run_labels(self, run_id: str, labels: dict[str, str]) -> None:
+        """Replace the label set associated with ``run_id`` under this mob.
+
+        Replacement is wholesale (see :meth:`set_mob_labels`).
+        """
+        await self._runtime._rpc(
+            "mobkit/run_labels/set", {"run_id": run_id, "labels": dict(labels)}
+        )
+
+    async def get_run_labels(self, run_id: str) -> dict[str, str]:
+        """Return the label set for ``run_id`` (or ``{}``)."""
+        raw = await self._runtime._rpc("mobkit/run_labels/get", {"run_id": run_id})
+        if isinstance(raw, dict):
+            labels = raw.get("labels", {})
+            if isinstance(labels, dict):
+                return {str(k): str(v) for k, v in labels.items()}
+        return {}
+
+    async def delete_run_labels(self, run_id: str) -> None:
+        """Remove the label set for ``run_id``."""
+        await self._runtime._rpc("mobkit/run_labels/delete", {"run_id": run_id})
+
+    # -----------------------------------------------------------------
     # Batch
     # -----------------------------------------------------------------
 

@@ -16,7 +16,10 @@ use tokio::task::JoinHandle;
 use self::console_events::ConsoleEventStore;
 use self::mob_events::MobEventsStore;
 use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime, MobRuntimeError};
-use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_with_options};
+use crate::runtime::{
+    MetadataScope, MobkitRuntimeHandle, RuntimeMetadataTable, RuntimeOptions,
+    start_mobkit_runtime_with_options,
+};
 use crate::types::{
     AgentDiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope, UnifiedEvent,
 };
@@ -129,6 +132,9 @@ pub struct UnifiedRuntime {
 
     // Identity-first session bridge
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
+
+    // Mobkit-side label sidecar for mob- and run-scoped metadata
+    metadata_table: Arc<RuntimeMetadataTable>,
 }
 
 enum MobEventIngress {
@@ -151,7 +157,11 @@ impl UnifiedRuntime {
         module_runtime: MobkitRuntimeHandle,
     ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
-        let mob_events_store = MobEventsStore::new();
+        // Construct the metadata table first so the structural-events store
+        // can be wired with it — every projected envelope picks up the
+        // matching mob/run labels at projection time.
+        let metadata_table = Arc::new(RuntimeMetadataTable::new());
+        let mob_events_store = MobEventsStore::new().with_metadata_table(metadata_table.clone());
         let mob_event_ingress = Some(Self::create_event_ingress(
             mob_event_router,
             mob_events_store.clone(),
@@ -178,6 +188,7 @@ impl UnifiedRuntime {
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             session_bridge: None,
+            metadata_table,
         }
     }
 
@@ -274,6 +285,66 @@ impl UnifiedRuntime {
     /// Return the session bridge for identity-first operations, if configured.
     pub fn session_bridge(&self) -> Option<&Arc<dyn crate::identity_first::bridge::SessionBridge>> {
         self.session_bridge.as_ref()
+    }
+
+    /// Return the mob/run label sidecar table.
+    ///
+    /// Mobkit owns this table — meerkat-mob has no concept of mob- or
+    /// run-level labels. Apps use it to attach external context (repo,
+    /// branch, customer, deployment, environment) to a mob or a flow run.
+    pub fn metadata_table(&self) -> &Arc<RuntimeMetadataTable> {
+        &self.metadata_table
+    }
+
+    /// Replace the label set associated with this mob.
+    ///
+    /// An empty `labels` map clears the entry. Replacement is wholesale —
+    /// existing labels not present in `labels` are dropped. To merge,
+    /// read first via [`Self::get_mob_labels`] and combine.
+    pub async fn set_mob_labels(&self, labels: BTreeMap<String, String>) {
+        self.metadata_table
+            .set_labels(MetadataScope::Mob(self.mob_id()), labels)
+            .await;
+    }
+
+    /// Return the label set associated with this mob, or an empty map.
+    pub async fn get_mob_labels(&self) -> BTreeMap<String, String> {
+        self.metadata_table
+            .get_labels(&MetadataScope::Mob(self.mob_id()))
+            .await
+    }
+
+    /// Remove the label set associated with this mob.
+    pub async fn delete_mob_labels(&self) {
+        let _ = self
+            .metadata_table
+            .delete_labels(&MetadataScope::Mob(self.mob_id()))
+            .await;
+    }
+
+    /// Replace the label set for `run_id` under this mob.
+    pub async fn set_run_labels(&self, run_id: &str, labels: BTreeMap<String, String>) {
+        self.metadata_table
+            .set_labels(
+                MetadataScope::Run(self.mob_id(), run_id.to_string()),
+                labels,
+            )
+            .await;
+    }
+
+    /// Return the label set for `run_id` under this mob, or an empty map.
+    pub async fn get_run_labels(&self, run_id: &str) -> BTreeMap<String, String> {
+        self.metadata_table
+            .get_labels(&MetadataScope::Run(self.mob_id(), run_id.to_string()))
+            .await
+    }
+
+    /// Remove the label set for `run_id` under this mob.
+    pub async fn delete_run_labels(&self, run_id: &str) {
+        let _ = self
+            .metadata_table
+            .delete_labels(&MetadataScope::Run(self.mob_id(), run_id.to_string()))
+            .await;
     }
 
     /// Return the underlying event log store if one is configured.

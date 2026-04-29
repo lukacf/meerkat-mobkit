@@ -1,5 +1,34 @@
 # Changelog — @rkat/mobkit-sdk (TypeScript SDK)
 
+## Unreleased
+
+### Added — mob/run label sidecar
+
+`MobHandle` gains six methods for attaching external context (repo, branch,
+customer, deployment, environment) to a mob or a flow run. These labels are
+stored mobkit-side and are independent of meerkat-mob's member-level labels:
+
+- `setMobLabels(labels)` / `getMobLabels()` / `deleteMobLabels()`
+- `setRunLabels(runId, labels)` / `getRunLabels(runId)` / `deleteRunLabels(runId)`
+
+Set operations replace the entire label set (no merge). Reads return `{}` when
+no labels are present. Backed by `mobkit/{mob_labels,run_labels}/{set,get,delete}`
+RPCs.
+
+### Structural events carry labels
+
+`MobStructuralEvent` (from `MobHandle.queryMobEvents()` / `subscribeMobEvents()`)
+gains two fields populated at projection time:
+
+- `mobLabels: Record<string, string>` — snapshot of the mob-scoped label set
+  when the event was projected, empty if none.
+- `runLabels: Record<string, string>` — snapshot of the run-scoped label set
+  when the event has a `runId`, empty otherwise.
+
+This closes the loop between the structural-events surface and the label
+sidecar — apps that subscribe to `mobEvents` can correlate every event with
+the external context attached to its mob and run without a separate lookup.
+
 ## 0.6.0 — Meerkat 0.6 wire rename (BREAKING)
 
 ### Structural mob events surface

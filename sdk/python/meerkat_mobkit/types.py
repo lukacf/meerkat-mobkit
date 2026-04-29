@@ -399,11 +399,15 @@ class MobStructuralEvent:
     run_id: str | None
     step_id: str | None
     agent_identity: str | None
+    mob_labels: dict[str, str]
+    run_labels: dict[str, str]
     data: dict[str, Any]
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> MobStructuralEvent:
         payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+        mob_labels_raw = data.get("mob_labels", {})
+        run_labels_raw = data.get("run_labels", {})
         return cls(
             event_id=str(data.get("event_id", "")),
             cursor=int(data.get("cursor", 0)),
@@ -413,6 +417,8 @@ class MobStructuralEvent:
             run_id=data.get("run_id"),
             step_id=data.get("step_id"),
             agent_identity=data.get("agent_identity"),
+            mob_labels=dict(mob_labels_raw) if isinstance(mob_labels_raw, dict) else {},
+            run_labels=dict(run_labels_raw) if isinstance(run_labels_raw, dict) else {},
             data=dict(payload) if isinstance(payload, dict) else {},
         )
 

@@ -19,6 +19,7 @@ use meerkat_mob::event::{AttributedEvent, MobEvent, MobEventKind};
 use serde_json::Value;
 use tokio::sync::{RwLock, broadcast};
 
+use crate::runtime::{MetadataScope, RuntimeMetadataTable};
 use crate::types::MobStructuralEventEnvelope;
 use crate::unified_runtime::EventQuery;
 
@@ -40,6 +41,7 @@ pub struct MobEventsStore {
     next_cursor: Arc<AtomicU64>,
     state: Arc<RwLock<MobEventsState>>,
     event_tx: broadcast::Sender<MobStructuralEventEnvelope>,
+    metadata_table: Option<Arc<RuntimeMetadataTable>>,
 }
 
 impl Default for MobEventsStore {
@@ -54,7 +56,11 @@ struct MobEventsState {
 }
 
 impl MobEventsStore {
-    /// Create an empty in-memory store.
+    /// Create an empty in-memory store with no label provider attached.
+    /// Events projected through this store carry empty `mob_labels` /
+    /// `run_labels`. Use [`Self::with_metadata_table`] to wire in the
+    /// runtime's `RuntimeMetadataTable` so structural events are
+    /// label-enriched at projection time.
     pub fn new() -> Self {
         let (event_tx, _) = broadcast::channel(MOB_EVENTS_CHANNEL_CAP);
         Self {
@@ -64,7 +70,19 @@ impl MobEventsStore {
                 by_mob: BTreeMap::new(),
             })),
             event_tx,
+            metadata_table: None,
         }
+    }
+
+    /// Wire a label provider into the store. After this, every projected
+    /// structural envelope is enriched with the matching `mob_labels` and
+    /// (when the event has a `run_id`) `run_labels` snapshotted at
+    /// projection time. Returns the same store with the table attached so
+    /// callers can chain.
+    #[must_use]
+    pub fn with_metadata_table(mut self, table: Arc<RuntimeMetadataTable>) -> Self {
+        self.metadata_table = Some(table);
+        self
     }
 
     /// Subscribe to live structural mob events.
@@ -91,6 +109,9 @@ impl MobEventsStore {
     }
 
     /// Project a [`MobEvent`] into a structural envelope and record it.
+    /// When a `RuntimeMetadataTable` is attached (see
+    /// [`Self::with_metadata_table`]), the envelope's `mob_labels` and
+    /// `run_labels` are populated with snapshots taken at projection time.
     pub async fn project_mob_event(&self, event: &MobEvent) -> MobStructuralEventEnvelope {
         let cursor = self.next_cursor.fetch_add(1, Ordering::Relaxed);
         let mob_id = event.mob_id.as_str().to_string();
@@ -98,6 +119,7 @@ impl MobEventsStore {
         let kind = event_kind_label(&event.kind).to_string();
         let (run_id, step_id, agent_identity) = extract_structural_fields(&event.kind);
         let data = serde_json::to_value(&event.kind).unwrap_or(Value::Null);
+        let (mob_labels, run_labels) = self.lookup_labels(&mob_id, run_id.as_deref()).await;
         let envelope = MobStructuralEventEnvelope {
             event_id: format!("mob-evt-{cursor}"),
             cursor,
@@ -107,10 +129,34 @@ impl MobEventsStore {
             run_id,
             step_id,
             agent_identity,
+            mob_labels,
+            run_labels,
             data,
         };
         self.append_envelope(envelope.clone()).await;
         envelope
+    }
+
+    async fn lookup_labels(
+        &self,
+        mob_id: &str,
+        run_id: Option<&str>,
+    ) -> (BTreeMap<String, String>, BTreeMap<String, String>) {
+        let Some(table) = &self.metadata_table else {
+            return (BTreeMap::new(), BTreeMap::new());
+        };
+        let mob_labels = table
+            .get_labels(&MetadataScope::Mob(mob_id.to_string()))
+            .await;
+        let run_labels = match run_id {
+            Some(run_id) => {
+                table
+                    .get_labels(&MetadataScope::Run(mob_id.to_string(), run_id.to_string()))
+                    .await
+            }
+            None => BTreeMap::new(),
+        };
+        (mob_labels, run_labels)
     }
 
     async fn append_envelope(&self, envelope: MobStructuralEventEnvelope) {

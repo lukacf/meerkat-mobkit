@@ -679,6 +679,8 @@ export interface MobStructuralEvent {
   readonly runId: string | null;
   readonly stepId: string | null;
   readonly agentIdentity: string | null;
+  readonly mobLabels: Readonly<Record<string, string>>;
+  readonly runLabels: Readonly<Record<string, string>>;
   readonly data: Record<string, unknown>;
 }
 
@@ -695,6 +697,8 @@ export function parseMobStructuralEvent(raw: unknown): MobStructuralEvent {
     stepId: typeof d.step_id === "string" ? d.step_id : null,
     agentIdentity:
       typeof d.agent_identity === "string" ? d.agent_identity : null,
+    mobLabels: asStringRecord(d.mob_labels),
+    runLabels: asStringRecord(d.run_labels),
     data:
       typeof data === "object" && data !== null
         ? (data as Record<string, unknown>)

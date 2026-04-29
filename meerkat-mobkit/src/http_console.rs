@@ -36,6 +36,7 @@ use crate::runtime::{
     GatingDecideRequest, GatingDecision, RuntimeDecisionState, extract_bearer_token_from_header,
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
+use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
 use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
@@ -50,6 +51,7 @@ pub struct ConsoleJsonState {
     pub(crate) console_events: Option<ConsoleEventStore>,
     pub(crate) mob_events: Option<MobEventsStore>,
     pub(crate) stream_routes_enabled: bool,
+    pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
 }
 
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
@@ -67,6 +69,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         console_events: None,
         mob_events: None,
         stream_routes_enabled: true,
+        metadata_table: None,
     })
 }
 
@@ -85,6 +88,7 @@ pub fn console_json_router_with_runtime(
         None,
         None,
         false,
+        None,
     )
 }
 
@@ -98,6 +102,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     console_events: Option<ConsoleEventStore>,
     mob_events: Option<MobEventsStore>,
     stream_routes_enabled: bool,
+    metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
 ) -> Router {
     console_json_router_with_state(ConsoleJsonState {
         decisions,
@@ -108,6 +113,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         console_events,
         mob_events,
         stream_routes_enabled,
+        metadata_table,
     })
 }
 
@@ -265,6 +271,7 @@ pub async fn console_rpc_handler(
         state.contact_directory.as_ref(),
         state.event_log.clone(),
         state.console_events.clone(),
+        state.metadata_table.clone(),
         state.mob_events.clone(),
         parsed_request,
         is_authenticated,
@@ -690,6 +697,7 @@ async fn handle_console_runtime_rpc(
     contact_directory: Option<&ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     console_events: Option<ConsoleEventStore>,
+    metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     mob_events: Option<MobEventsStore>,
     request: JsonRpcRequest,
     is_authenticated: bool,
@@ -747,6 +755,17 @@ async fn handle_console_runtime_rpc(
                     "mobkit/cross_mob/wire_local",
                     "mobkit/cross_mob/unwire_local",
                 ]);
+            }
+            if metadata_table.is_some() {
+                methods.extend_from_slice(&["mobkit/mob_labels/get", "mobkit/run_labels/get"]);
+                if is_authenticated {
+                    methods.extend_from_slice(&[
+                        "mobkit/mob_labels/set",
+                        "mobkit/mob_labels/delete",
+                        "mobkit/run_labels/set",
+                        "mobkit/run_labels/delete",
+                    ]);
+                }
             }
             response_value(
                 response_id,
@@ -1882,6 +1901,26 @@ async fn handle_console_runtime_rpc(
                 None,
             )
         }
+        method
+            if matches!(
+                method,
+                "mobkit/mob_labels/set"
+                    | "mobkit/mob_labels/get"
+                    | "mobkit/mob_labels/delete"
+                    | "mobkit/run_labels/set"
+                    | "mobkit/run_labels/get"
+                    | "mobkit/run_labels/delete",
+            ) =>
+        {
+            dispatch_label_method(
+                method,
+                metadata_table.as_deref(),
+                runtime.handle().mob_id().as_str(),
+                response_id,
+                &request.params,
+            )
+            .await
+        }
         _ => response_value(
             response_id,
             None,
@@ -1890,6 +1929,66 @@ async fn handle_console_runtime_rpc(
                 message: "Method not found".to_string(),
             }),
         ),
+    }
+}
+
+/// Dispatch the six `mobkit/{mob,run}_labels/*` RPCs against a metadata table.
+///
+/// Single entrypoint shared by every label method; the dispatch arms in
+/// `handle_console_runtime_rpc` simply delegate based on the matched method
+/// name. Mirrors the unified-runtime handlers in `rpc::mob_methods` — both
+/// transports project the same outcomes to the same wire shape.
+async fn dispatch_label_method(
+    method: &str,
+    metadata_table: Option<&RuntimeMetadataTable>,
+    mob_id: &str,
+    response_id: Value,
+    params: &Value,
+) -> Value {
+    let Some(table) = metadata_table else {
+        return invalid_params(
+            response_id,
+            "metadata table not configured for this runtime",
+        );
+    };
+
+    let scope = match method {
+        "mobkit/mob_labels/set" | "mobkit/mob_labels/get" | "mobkit/mob_labels/delete" => {
+            MetadataScope::Mob(mob_id.to_string())
+        }
+        _ => match crate::runtime::parse_run_id_param(params) {
+            Ok(run_id) => MetadataScope::Run(mob_id.to_string(), run_id.to_string()),
+            Err(message) => return invalid_params(response_id, message),
+        },
+    };
+
+    let outcome = match method {
+        "mobkit/mob_labels/set" | "mobkit/run_labels/set" => {
+            crate::runtime::dispatch_labels_set(table, scope, params).await
+        }
+        "mobkit/mob_labels/get" | "mobkit/run_labels/get" => {
+            crate::runtime::dispatch_labels_get(table, scope).await
+        }
+        "mobkit/mob_labels/delete" | "mobkit/run_labels/delete" => {
+            crate::runtime::dispatch_labels_delete(table, scope).await
+        }
+        _ => unreachable!("dispatch_label_method called with non-label method: {method}"),
+    };
+
+    match outcome {
+        crate::runtime::LabelRpcResult::Accepted => response_value(
+            response_id,
+            Some(serde_json::json!({"accepted": true})),
+            None,
+        ),
+        crate::runtime::LabelRpcResult::Labels(labels) => response_value(
+            response_id,
+            Some(serde_json::json!({"labels": labels_to_json_value(&labels)})),
+            None,
+        ),
+        crate::runtime::LabelRpcResult::InvalidParams(message) => {
+            invalid_params(response_id, message)
+        }
     }
 }
 
