@@ -13,7 +13,12 @@
 //! the table at its boundary.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use chrono::Utc;
+use meerkat_mob::event::{MobEvent, MobEventKind};
+use meerkat_mob::ids::{FlowId, MobId, RunId};
+use meerkat_mobkit::unified_runtime::mob_events::MobEventsStore;
 use meerkat_mobkit::{MetadataScope, RuntimeMetadataTable};
 
 fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -139,4 +144,88 @@ async fn delete_missing_returns_none() {
     let table = RuntimeMetadataTable::new();
     let scope = MetadataScope::Mob("never-set".to_string());
     assert!(table.delete_labels(&scope).await.is_none());
+}
+
+/// When the structural events store is wired to the metadata table,
+/// every projected envelope picks up the matching mob/run labels at
+/// projection time. Closes the loop between Unit 5 (labels) and Unit 1
+/// (events) — the deferred join from the original split landings.
+#[tokio::test]
+async fn structural_event_envelope_carries_mob_and_run_labels() {
+    let table = Arc::new(RuntimeMetadataTable::new());
+    let mob_id = MobId::from("mob-events-with-labels");
+    let run_id = RunId::new();
+
+    table
+        .set_labels(
+            MetadataScope::Mob(mob_id.as_str().to_string()),
+            labels(&[("repo", "agents"), ("env", "prod")]),
+        )
+        .await;
+    table
+        .set_labels(
+            MetadataScope::Run(mob_id.as_str().to_string(), run_id.to_string()),
+            labels(&[("trace_id", "abc-123")]),
+        )
+        .await;
+
+    let store = MobEventsStore::new().with_metadata_table(table.clone());
+
+    let event = MobEvent {
+        cursor: 0,
+        timestamp: Utc::now(),
+        mob_id: mob_id.clone(),
+        kind: MobEventKind::FlowStarted {
+            run_id: run_id.clone(),
+            flow_id: FlowId::from("demo"),
+            params: serde_json::Value::Null,
+        },
+    };
+    let envelope = store.project_mob_event(&event).await;
+
+    assert_eq!(
+        envelope.run_id.as_deref(),
+        Some(run_id.to_string().as_str())
+    );
+    assert_eq!(
+        envelope.mob_labels.get("repo").map(String::as_str),
+        Some("agents")
+    );
+    assert_eq!(
+        envelope.mob_labels.get("env").map(String::as_str),
+        Some("prod")
+    );
+    assert_eq!(
+        envelope.run_labels.get("trace_id").map(String::as_str),
+        Some("abc-123")
+    );
+}
+
+/// Events without a `run_id` (e.g. mob-level lifecycle) still carry mob
+/// labels but have an empty `run_labels` set.
+#[tokio::test]
+async fn mob_level_events_have_empty_run_labels() {
+    let table = Arc::new(RuntimeMetadataTable::new());
+    let mob_id = MobId::from("mob-level-only");
+    table
+        .set_labels(
+            MetadataScope::Mob(mob_id.as_str().to_string()),
+            labels(&[("env", "stage")]),
+        )
+        .await;
+
+    let store = MobEventsStore::new().with_metadata_table(table);
+    let event = MobEvent {
+        cursor: 0,
+        timestamp: Utc::now(),
+        mob_id: mob_id.clone(),
+        kind: MobEventKind::MobReset,
+    };
+    let envelope = store.project_mob_event(&event).await;
+    assert!(envelope.run_id.is_none());
+    assert_eq!(
+        envelope.mob_labels.get("env").map(String::as_str),
+        Some("stage")
+    );
+    assert!(envelope.run_labels.is_empty());
 }

@@ -157,7 +157,11 @@ impl UnifiedRuntime {
         module_runtime: MobkitRuntimeHandle,
     ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
-        let mob_events_store = MobEventsStore::new();
+        // Construct the metadata table first so the structural-events store
+        // can be wired with it — every projected envelope picks up the
+        // matching mob/run labels at projection time.
+        let metadata_table = Arc::new(RuntimeMetadataTable::new());
+        let mob_events_store = MobEventsStore::new().with_metadata_table(metadata_table.clone());
         let mob_event_ingress = Some(Self::create_event_ingress(
             mob_event_router,
             mob_events_store.clone(),
@@ -184,7 +188,7 @@ impl UnifiedRuntime {
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             session_bridge: None,
-            metadata_table: Arc::new(RuntimeMetadataTable::new()),
+            metadata_table,
         }
     }
 

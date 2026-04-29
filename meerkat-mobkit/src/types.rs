@@ -38,6 +38,16 @@ pub struct MobStructuralEventEnvelope {
     /// otherwise `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_identity: Option<String>,
+    /// Mob-scoped labels at projection time (snapshot of the
+    /// `RuntimeMetadataTable` entry for `MetadataScope::Mob(mob_id)`).
+    /// Empty if no labels are set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mob_labels: BTreeMap<String, String>,
+    /// Run-scoped labels at projection time (snapshot of the
+    /// `RuntimeMetadataTable` entry for `MetadataScope::Run(mob_id, run_id)`).
+    /// Empty when the event has no `run_id` or no labels are set for the run.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub run_labels: BTreeMap<String, String>,
     /// Full structured payload (the variant-specific fields of `MobEventKind`).
     pub data: Value,
 }

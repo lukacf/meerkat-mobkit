@@ -17,6 +17,20 @@ Set operations replace the entire label set (no merge). Reads return `{}` when
 no labels are present. Backed by `mobkit/{mob_labels,run_labels}/{set,get,delete}`
 RPCs.
 
+### Structural events carry labels
+
+`MobStructuralEvent` (from `MobHandle.query_mob_events()` / `subscribe_mob_events()`)
+gains two fields populated at projection time:
+
+- `mob_labels: dict[str, str]` — snapshot of the mob-scoped label set when the
+  event was projected, empty if none.
+- `run_labels: dict[str, str]` — snapshot of the run-scoped label set when the
+  event has a `run_id`, empty otherwise.
+
+This closes the loop between the structural-events surface and the label
+sidecar — apps that subscribe to `mob_events` can correlate every event with
+the external context attached to its mob and run without a separate lookup.
+
 ## 0.6.0 — Meerkat 0.6 wire rename (BREAKING)
 
 ### Structural mob events surface
