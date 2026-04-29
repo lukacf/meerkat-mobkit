@@ -44,9 +44,59 @@ export class RpcError extends MobKitError {
     message: string,
     readonly requestId: string,
     readonly method: string,
+    /** Optional structured payload from the JSON-RPC `error.data` field. */
+    readonly data?: unknown,
   ) {
     super(message);
     this.name = "RpcError";
+  }
+}
+
+/**
+ * JSON-RPC error code returned when the caller's `after_seq` is past the
+ * current ledger frontier. Returned by `mobkit/mob_events/{query,subscribe}`
+ * and the `/mobkit/mob_events/stream` SSE route (HTTP 410 Gone).
+ */
+export const MOB_EVENTS_STALE_CURSOR_CODE = -32010 as const;
+
+/**
+ * Raised when the caller passes an `after_seq` past the current ledger
+ * frontier. The server's `error.data` payload carries `after_cursor` and
+ * `latest_cursor` — use the latter to rewind and resume.
+ */
+export class MobEventsStaleError extends RpcError {
+  constructor(
+    message: string,
+    readonly afterCursor: number,
+    readonly latestCursor: number,
+    requestId: string,
+    method: string,
+    data?: unknown,
+  ) {
+    super(MOB_EVENTS_STALE_CURSOR_CODE, message, requestId, method, data);
+    this.name = "MobEventsStaleError";
+  }
+
+  /**
+   * Reify a generic {@link RpcError} with code `-32010` into the typed
+   * form. Reads `after_cursor` / `latest_cursor` from the JSON-RPC
+   * `error.data` payload; missing fields fall back to `0`.
+   */
+  static fromRpcError(err: RpcError): MobEventsStaleError {
+    const payload =
+      typeof err.data === "object" && err.data !== null
+        ? (err.data as Record<string, unknown>)
+        : {};
+    const afterCursor = Number(payload.after_cursor ?? 0);
+    const latestCursor = Number(payload.latest_cursor ?? 0);
+    return new MobEventsStaleError(
+      err.message,
+      Number.isFinite(afterCursor) ? afterCursor : 0,
+      Number.isFinite(latestCursor) ? latestCursor : 0,
+      err.requestId,
+      err.method,
+      err.data,
+    );
   }
 }
 

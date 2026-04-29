@@ -1,45 +1,50 @@
-//! In-memory store for structural mob events projected from
-//! `meerkat_mob::AttributedEvent` / `MobEventKind`.
+//! Projection layer for structural mob events.
 //!
-//! Mirrors the deque-backed replay shape of [`super::console_events`]: a
-//! per-mob ring buffer + global ring buffer, a broadcast channel for
-//! live SSE subscribers, and a `query()` filtered by [`EventQuery`].
+//! After PR #67 mobkit kept its own ring buffer and minted process-local
+//! cursors via `AtomicU64`. Following the absorption of meerkat #445 the
+//! single source of truth is the meerkat ledger: `MobEvent.cursor` is
+//! durable, monotonic, and shared by every subscriber. This module is
+//! reduced to the minimum projection seam: take a `MobEvent`, label-join
+//! it with the runtime's `RuntimeMetadataTable`, and broadcast the
+//! resulting `MobStructuralEventEnvelope` to in-process subscribers.
 //!
-//! Unlike `ConsoleEventStore`, the structural surface preserves `mob_id`,
-//! `run_id`, `step_id`, and `agent_identity` from the originating
-//! `MobEventKind` variant so downstream consumers can reconstruct flow
-//! topology without going back to the lossy `UnifiedEvent::Agent`
-//! projection.
+//! Query and SSE paths now read the ledger directly (see
+//! `UnifiedRuntime::query_mob_events` and the
+//! `/mobkit/mob_events/stream` SSE route). The broadcast channel kept
+//! here serves in-process consumers (tests, embedded controllers); each
+//! external SSE client opens its own meerkat subscription so live tail
+//! and catch-up share the same ordered stream.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
+use meerkat_mob::MobError;
 use meerkat_mob::event::{AttributedEvent, MobEvent, MobEventKind};
+use meerkat_mob::runtime::MobEventsView;
 use serde_json::Value;
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::broadcast;
 
 use crate::runtime::{MetadataScope, RuntimeMetadataTable};
 use crate::types::MobStructuralEventEnvelope;
 use crate::unified_runtime::EventQuery;
 
-/// Maximum events retained in the global replay buffer.
-pub(crate) const MOB_EVENTS_REPLAY_CAP: usize = 4096;
-/// Maximum events retained per mob_id replay buffer.
-const MOB_EVENTS_PER_MOB_CAP: usize = 1024;
-/// Capacity of the broadcast channel used by SSE subscribers.
+/// Batch size used by the ledger-scanning query helpers. Matches the
+/// meerkat `MobEventsSubscriptionConfig::default().batch_limit`.
+pub(crate) const QUERY_BATCH_SIZE: usize = 128;
+
+/// Default per-call result cap when the caller does not supply `limit`.
+pub(crate) const DEFAULT_QUERY_LIMIT: usize = 256;
+
+/// Capacity of the broadcast channel used by in-process subscribers.
 const MOB_EVENTS_CHANNEL_CAP: usize = 512;
 
-/// Deque-backed replay store for structural mob events.
+/// Thin projection layer for structural mob events.
 ///
 /// Public so integration tests can construct one directly. Internal
 /// callers should obtain the runtime's store via
-/// [`crate::unified_runtime::UnifiedRuntime::query_mob_events`] /
 /// [`crate::unified_runtime::UnifiedRuntime::subscribe_mob_events`].
 #[derive(Clone)]
 pub struct MobEventsStore {
-    next_cursor: Arc<AtomicU64>,
-    state: Arc<RwLock<MobEventsState>>,
     event_tx: broadcast::Sender<MobStructuralEventEnvelope>,
     metadata_table: Option<Arc<RuntimeMetadataTable>>,
 }
@@ -50,25 +55,15 @@ impl Default for MobEventsStore {
     }
 }
 
-struct MobEventsState {
-    all_events: VecDeque<MobStructuralEventEnvelope>,
-    by_mob: BTreeMap<String, VecDeque<MobStructuralEventEnvelope>>,
-}
-
 impl MobEventsStore {
-    /// Create an empty in-memory store with no label provider attached.
-    /// Events projected through this store carry empty `mob_labels` /
+    /// Create an empty store with no label provider attached. Events
+    /// projected through this store carry empty `mob_labels` /
     /// `run_labels`. Use [`Self::with_metadata_table`] to wire in the
     /// runtime's `RuntimeMetadataTable` so structural events are
     /// label-enriched at projection time.
     pub fn new() -> Self {
         let (event_tx, _) = broadcast::channel(MOB_EVENTS_CHANNEL_CAP);
         Self {
-            next_cursor: Arc::new(AtomicU64::new(1)),
-            state: Arc::new(RwLock::new(MobEventsState {
-                all_events: VecDeque::new(),
-                by_mob: BTreeMap::new(),
-            })),
             event_tx,
             metadata_table: None,
         }
@@ -85,7 +80,11 @@ impl MobEventsStore {
         self
     }
 
-    /// Subscribe to live structural mob events.
+    /// Subscribe to live structural mob events. Each receiver sees every
+    /// envelope projected after subscription. Receivers that fall behind
+    /// `MOB_EVENTS_CHANNEL_CAP` will see `RecvError::Lagged`; production
+    /// SSE clients should subscribe directly to the meerkat ledger via
+    /// the `/mobkit/mob_events/stream` route instead.
     pub fn subscribe(&self) -> broadcast::Receiver<MobStructuralEventEnvelope> {
         self.event_tx.subscribe()
     }
@@ -103,24 +102,34 @@ impl MobEventsStore {
         &self,
         _event: &AttributedEvent,
     ) -> Option<MobStructuralEventEnvelope> {
-        // Attributed agent events do not carry structural mob fields. The
-        // structural projection is driven by `project_mob_event` below.
         None
     }
 
-    /// Project a [`MobEvent`] into a structural envelope and record it.
-    /// When a `RuntimeMetadataTable` is attached (see
-    /// [`Self::with_metadata_table`]), the envelope's `mob_labels` and
-    /// `run_labels` are populated with snapshots taken at projection time.
+    /// Project a [`MobEvent`] into a structural envelope and broadcast it
+    /// to in-process subscribers. The envelope's `cursor` is the meerkat
+    /// ledger cursor — durable across mobkit restarts.
     pub async fn project_mob_event(&self, event: &MobEvent) -> MobStructuralEventEnvelope {
-        let cursor = self.next_cursor.fetch_add(1, Ordering::Relaxed);
+        let envelope = self.build_envelope(event).await;
+        let _ = self.event_tx.send(envelope.clone());
+        envelope
+    }
+
+    /// Like [`Self::project_mob_event`] but does not broadcast. Used by
+    /// the query path which scans the ledger and projects events without
+    /// disturbing the live broadcast.
+    pub async fn project_event_for_query(&self, event: &MobEvent) -> MobStructuralEventEnvelope {
+        self.build_envelope(event).await
+    }
+
+    async fn build_envelope(&self, event: &MobEvent) -> MobStructuralEventEnvelope {
+        let cursor = event.cursor;
         let mob_id = event.mob_id.as_str().to_string();
         let timestamp_ms = event.timestamp.timestamp_millis().max(0) as u64;
         let kind = event_kind_label(&event.kind).to_string();
         let (run_id, step_id, agent_identity) = extract_structural_fields(&event.kind);
         let data = serde_json::to_value(&event.kind).unwrap_or(Value::Null);
         let (mob_labels, run_labels) = self.lookup_labels(&mob_id, run_id.as_deref()).await;
-        let envelope = MobStructuralEventEnvelope {
+        MobStructuralEventEnvelope {
             event_id: format!("mob-evt-{cursor}"),
             cursor,
             mob_id,
@@ -132,9 +141,7 @@ impl MobEventsStore {
             mob_labels,
             run_labels,
             data,
-        };
-        self.append_envelope(envelope.clone()).await;
-        envelope
+        }
     }
 
     async fn lookup_labels(
@@ -158,106 +165,257 @@ impl MobEventsStore {
         };
         (mob_labels, run_labels)
     }
+}
 
-    async fn append_envelope(&self, envelope: MobStructuralEventEnvelope) {
-        {
-            let mut state = self.state.write().await;
-            state.all_events.push_back(envelope.clone());
-            trim_deque(&mut state.all_events, MOB_EVENTS_REPLAY_CAP);
-            let per_mob = state
-                .by_mob
-                .entry(envelope.mob_id.clone())
-                .or_insert_with(VecDeque::new);
-            per_mob.push_back(envelope.clone());
-            trim_deque(per_mob, MOB_EVENTS_PER_MOB_CAP);
-        }
-        let _ = self.event_tx.send(envelope);
+/// Path of the per-client structural-events SSE route.
+pub const MOB_EVENTS_STREAM_PATH: &str = "/mobkit/mob_events/stream";
+
+/// Build the continuation URL returned by `mobkit/mob_events/subscribe`.
+///
+/// `after_seq` (the cursor the SSE handler will resume from) is set to
+/// `next_after_seq` if the snapshot returned events, else the
+/// caller-supplied `after_seq`, else `latest_cursor` captured at
+/// handshake time. This closes the gap between the JSON-RPC snapshot
+/// response and the SSE handshake where new events would otherwise be
+/// missed. The original filters are echoed back so the SSE client
+/// applies the same predicate without restating them.
+pub(crate) fn build_subscribe_url(
+    query: &EventQuery,
+    next_after_seq: Option<u64>,
+    fallback_cursor: u64,
+) -> String {
+    let after_seq = next_after_seq
+        .or(query.after_seq)
+        .unwrap_or(fallback_cursor);
+    let mut serializer = form_urlencoded::Serializer::new(String::new());
+    serializer.append_pair("after_seq", &after_seq.to_string());
+    if let Some(value) = query.mob_id.as_deref() {
+        serializer.append_pair("mob_id", value);
     }
-
-    /// Filter retained events by the given [`EventQuery`]. Returns events
-    /// in cursor-ascending order. Honors `mob_id`, `run_id`, `step_id`,
-    /// `event_types`, `since_ms`, `until_ms`, `after_seq` (exclusive),
-    /// `limit`. `member_id`/`identity` map to `agent_identity`.
-    pub async fn query(&self, query: &EventQuery) -> Vec<MobStructuralEventEnvelope> {
-        let state = self.state.read().await;
-        let source: Vec<MobStructuralEventEnvelope> = match query.mob_id.as_deref() {
-            Some(mob_id) => state
-                .by_mob
-                .get(mob_id)
-                .cloned()
-                .unwrap_or_else(VecDeque::new)
-                .into_iter()
-                .collect(),
-            None => state.all_events.iter().cloned().collect(),
-        };
-        let mut events = source;
-        if let Some(after) = query.after_seq {
-            events.retain(|event| event.cursor > after);
-        }
-        if let Some(since) = query.since_ms {
-            events.retain(|event| event.timestamp_ms >= since);
-        }
-        if let Some(until) = query.until_ms {
-            events.retain(|event| event.timestamp_ms < until);
-        }
-        if let Some(run_id) = query.run_id.as_deref() {
-            events.retain(|event| event.run_id.as_deref() == Some(run_id));
-        }
-        if let Some(step_id) = query.step_id.as_deref() {
-            events.retain(|event| event.step_id.as_deref() == Some(step_id));
-        }
-        let identity_filter = query.identity.as_deref().or(query.member_id.as_deref());
-        if let Some(identity) = identity_filter {
-            events.retain(|event| event.agent_identity.as_deref() == Some(identity));
-        }
-        if !query.event_types.is_empty() {
-            events.retain(|event| query.event_types.iter().any(|ty| ty == &event.kind));
-        }
-        if let Some(limit) = query.limit
-            && events.len() > limit
-        {
-            // Tail-window: keep the most recent `limit` events to match
-            // ConsoleEventStore::query semantics.
-            let start = events.len().saturating_sub(limit);
-            events = events.split_off(start);
-        }
-        events
+    if let Some(value) = query.run_id.as_deref() {
+        serializer.append_pair("run_id", value);
     }
+    if let Some(value) = query.step_id.as_deref() {
+        serializer.append_pair("step_id", value);
+    }
+    if let Some(value) = query.identity.as_deref() {
+        serializer.append_pair("identity", value);
+    }
+    if let Some(value) = query.member_id.as_deref() {
+        serializer.append_pair("member_id", value);
+    }
+    if let Some(value) = query.since_ms {
+        serializer.append_pair("since_ms", &value.to_string());
+    }
+    if let Some(value) = query.until_ms {
+        serializer.append_pair("until_ms", &value.to_string());
+    }
+    if !query.event_types.is_empty() {
+        serializer.append_pair("event_types", &query.event_types.join(","));
+    }
+    format!("{MOB_EVENTS_STREAM_PATH}?{}", serializer.finish())
+}
 
-    /// Replay events for SSE catchup, optionally resuming after a
-    /// last-seen `event_id`. If the checkpoint is unknown, fall back to
-    /// the full retained window.
-    #[allow(dead_code)]
-    pub(crate) async fn replay_all(
-        &self,
-        last_event_id: Option<&str>,
-    ) -> Vec<MobStructuralEventEnvelope> {
-        let state = self.state.read().await;
-        replay_slice(state.all_events.iter().cloned().collect(), last_event_id)
+/// Errors raised when scanning the meerkat ledger to satisfy a
+/// structural-events query. `Stale` is the typed variant the JSON-RPC
+/// layer maps to `-32010` with `data: { after_cursor, latest_cursor }`.
+#[derive(Debug)]
+pub enum MobEventsQueryError {
+    /// Caller supplied an `after_seq` past the current ledger frontier.
+    Stale {
+        after_cursor: u64,
+        latest_cursor: u64,
+    },
+    /// Any other failure surfaced by the meerkat events view.
+    Backend(MobError),
+}
+
+impl std::fmt::Display for MobEventsQueryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stale {
+                after_cursor,
+                latest_cursor,
+            } => write!(
+                f,
+                "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
+            ),
+            Self::Backend(err) => write!(f, "{err}"),
+        }
     }
 }
 
-fn trim_deque(deque: &mut VecDeque<MobStructuralEventEnvelope>, cap: usize) {
-    while deque.len() > cap {
-        deque.pop_front();
+impl std::error::Error for MobEventsQueryError {}
+
+impl From<MobError> for MobEventsQueryError {
+    fn from(err: MobError) -> Self {
+        if let MobError::StaleEventCursor {
+            after_cursor,
+            latest_cursor,
+        } = err
+        {
+            Self::Stale {
+                after_cursor,
+                latest_cursor,
+            }
+        } else {
+            Self::Backend(err)
+        }
     }
 }
 
-fn replay_slice(
-    events: Vec<MobStructuralEventEnvelope>,
-    last_event_id: Option<&str>,
-) -> Vec<MobStructuralEventEnvelope> {
-    let Some(last_event_id) = last_event_id.filter(|value| !value.trim().is_empty()) else {
-        return events;
-    };
-    if let Some(idx) = events
-        .iter()
-        .position(|event| event.event_id == last_event_id)
+/// Predicate matching a [`MobStructuralEventEnvelope`] against an
+/// [`EventQuery`]'s field filters. Cursor-bound and `limit` are handled
+/// by the scan loops, not by this function.
+pub(crate) fn envelope_matches(envelope: &MobStructuralEventEnvelope, query: &EventQuery) -> bool {
+    if let Some(since) = query.since_ms
+        && envelope.timestamp_ms < since
     {
-        // Inclusive replay so clients can dedup by event_id.
-        return events[idx..].to_vec();
+        return false;
     }
-    events
+    if let Some(until) = query.until_ms
+        && envelope.timestamp_ms >= until
+    {
+        return false;
+    }
+    if let Some(mob_id) = query.mob_id.as_deref()
+        && envelope.mob_id != mob_id
+    {
+        return false;
+    }
+    if let Some(run_id) = query.run_id.as_deref()
+        && envelope.run_id.as_deref() != Some(run_id)
+    {
+        return false;
+    }
+    if let Some(step_id) = query.step_id.as_deref()
+        && envelope.step_id.as_deref() != Some(step_id)
+    {
+        return false;
+    }
+    let identity_filter = query.identity.as_deref().or(query.member_id.as_deref());
+    if let Some(identity) = identity_filter
+        && envelope.agent_identity.as_deref() != Some(identity)
+    {
+        return false;
+    }
+    if !query.event_types.is_empty() && !query.event_types.iter().any(|ty| ty == &envelope.kind) {
+        return false;
+    }
+    true
+}
+
+/// Scan the ledger in batches of [`QUERY_BATCH_SIZE`], project each
+/// `MobEvent` via `store`, apply `query`'s field filters, and return
+/// results in cursor-ascending order.
+///
+/// Semantics:
+/// - With `after_seq`: scan **forward** from `after_seq`; on
+///   `StaleEventCursor` the typed [`MobEventsQueryError::Stale`] is
+///   returned so the JSON-RPC layer can surface code `-32010`.
+/// - Without `after_seq`: scan **backwards** from `latest_cursor`,
+///   accumulating the latest `limit` matching events, then return them
+///   in cursor-ascending order.
+///
+/// `limit` defaults to [`DEFAULT_QUERY_LIMIT`].
+pub(crate) async fn query_ledger_with_filter(
+    events: &MobEventsView,
+    store: &MobEventsStore,
+    query: &EventQuery,
+) -> Result<Vec<MobStructuralEventEnvelope>, MobEventsQueryError> {
+    let limit = query.limit.unwrap_or(DEFAULT_QUERY_LIMIT);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    if let Some(after_seq) = query.after_seq {
+        return scan_forward(events, store, query, after_seq, limit).await;
+    }
+    scan_backward(events, store, query, limit).await
+}
+
+async fn scan_forward(
+    events: &MobEventsView,
+    store: &MobEventsStore,
+    query: &EventQuery,
+    after_seq: u64,
+    limit: usize,
+) -> Result<Vec<MobStructuralEventEnvelope>, MobEventsQueryError> {
+    let mut results: Vec<MobStructuralEventEnvelope> =
+        Vec::with_capacity(limit.min(QUERY_BATCH_SIZE));
+    let mut cursor = after_seq;
+    loop {
+        let batch = events.poll_strict(cursor, QUERY_BATCH_SIZE).await?;
+        if batch.is_empty() {
+            break;
+        }
+        let cursor_before_batch = cursor;
+        for event in batch {
+            cursor = cursor.max(event.cursor);
+            let envelope = store.project_event_for_query(&event).await;
+            if envelope_matches(&envelope, query) {
+                results.push(envelope);
+                if results.len() >= limit {
+                    return Ok(results);
+                }
+            }
+        }
+        // Defensive non-progress guard. `poll_strict` is contracted to
+        // return events strictly after `cursor_before_batch` when the
+        // batch is non-empty, so this branch is unreachable — but
+        // bailing instead of looping forever keeps the failure mode
+        // bounded if the contract ever changes.
+        if cursor <= cursor_before_batch {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+async fn scan_backward(
+    events: &MobEventsView,
+    store: &MobEventsStore,
+    query: &EventQuery,
+    limit: usize,
+) -> Result<Vec<MobStructuralEventEnvelope>, MobEventsQueryError> {
+    let latest = events.latest_cursor().await?;
+    if latest == 0 {
+        return Ok(Vec::new());
+    }
+    let batch_size = QUERY_BATCH_SIZE as u64;
+    let mut window_end = latest;
+    let mut accumulator: Vec<MobStructuralEventEnvelope> = Vec::new();
+    loop {
+        let from = window_end.saturating_sub(batch_size);
+        let take = (window_end - from) as usize;
+        if take == 0 {
+            break;
+        }
+        let batch = events.poll_strict(from, take).await?;
+        if batch.is_empty() {
+            break;
+        }
+        let mut window_matches: Vec<MobStructuralEventEnvelope> = Vec::with_capacity(batch.len());
+        for event in batch {
+            let envelope = store.project_event_for_query(&event).await;
+            if envelope_matches(&envelope, query) {
+                window_matches.push(envelope);
+            }
+        }
+        // Prepend (cursor-ascending order preserved across windows).
+        let mut combined = Vec::with_capacity(window_matches.len() + accumulator.len());
+        combined.append(&mut window_matches);
+        combined.append(&mut accumulator);
+        accumulator = combined;
+        if accumulator.len() >= limit || from == 0 {
+            break;
+        }
+        window_end = from;
+    }
+    if accumulator.len() > limit {
+        let drop = accumulator.len() - limit;
+        accumulator.drain(0..drop);
+    }
+    Ok(accumulator)
 }
 
 /// Snake-case label for a `MobEventKind` matching the `serde(tag="type",
@@ -295,7 +453,7 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
 
 /// Pull `(run_id, step_id, agent_identity)` out of variants that carry
 /// them. Variants without a given field return `None` for that slot.
-fn extract_structural_fields(
+pub(crate) fn extract_structural_fields(
     kind: &MobEventKind,
 ) -> (Option<String>, Option<String>, Option<String>) {
     match kind {
@@ -364,7 +522,6 @@ fn extract_structural_fields(
         MobEventKind::TaskUpdated { owner, .. } => {
             (None, None, owner.as_ref().map(|v| v.as_str().to_string()))
         }
-        // Variants without flow / step / identity context.
         MobEventKind::MobCreated { .. }
         | MobEventKind::MobCompleted
         | MobEventKind::MobReset
@@ -387,9 +544,9 @@ mod tests {
         StepId,
     };
 
-    fn mob_event(kind: MobEventKind) -> MobEvent {
+    fn mob_event(cursor: u64, kind: MobEventKind) -> MobEvent {
         MobEvent {
-            cursor: 0,
+            cursor,
             timestamp: Utc::now(),
             mob_id: MobId::from("test-mob"),
             kind,
@@ -397,17 +554,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn projects_flow_started_with_run_id() {
+    async fn projects_flow_started_with_run_id_and_upstream_cursor() {
         let store = MobEventsStore::new();
         let run_id = RunId::new();
         let envelope = store
-            .project_mob_event(&mob_event(MobEventKind::FlowStarted {
-                run_id: run_id.clone(),
-                flow_id: FlowId::from("flow-a"),
-                params: serde_json::json!({}),
-            }))
+            .project_mob_event(&mob_event(
+                42,
+                MobEventKind::FlowStarted {
+                    run_id: run_id.clone(),
+                    flow_id: FlowId::from("flow-a"),
+                    params: serde_json::json!({}),
+                },
+            ))
             .await;
         assert_eq!(envelope.kind, "flow_started");
+        assert_eq!(envelope.cursor, 42);
+        assert_eq!(envelope.event_id, "mob-evt-42");
         assert_eq!(
             envelope.run_id.as_deref(),
             Some(run_id.to_string().as_str())
@@ -422,13 +584,17 @@ mod tests {
         let identity = AgentIdentity::from("worker-1");
         let run_id = RunId::new();
         let envelope = store
-            .project_mob_event(&mob_event(MobEventKind::StepDispatched {
-                run_id: run_id.clone(),
-                step_id: StepId::from("step-a"),
-                target: AgentRuntimeId::initial(identity),
-            }))
+            .project_mob_event(&mob_event(
+                7,
+                MobEventKind::StepDispatched {
+                    run_id: run_id.clone(),
+                    step_id: StepId::from("step-a"),
+                    target: AgentRuntimeId::initial(identity),
+                },
+            ))
             .await;
         assert_eq!(envelope.kind, "step_dispatched");
+        assert_eq!(envelope.cursor, 7);
         assert_eq!(
             envelope.run_id.as_deref(),
             Some(run_id.to_string().as_str())
@@ -442,124 +608,37 @@ mod tests {
         let store = MobEventsStore::new();
         let identity = AgentIdentity::from("researcher");
         let envelope = store
-            .project_mob_event(&mob_event(MobEventKind::MemberSpawned(
-                MemberSpawnedEvent::new(
+            .project_mob_event(&mob_event(
+                3,
+                MobEventKind::MemberSpawned(MemberSpawnedEvent::new(
                     identity.clone(),
                     Generation::INITIAL,
                     FenceToken::new(1),
                     AgentRuntimeId::initial(identity),
                     ProfileName::from("worker"),
-                ),
-            )))
+                )),
+            ))
             .await;
         assert_eq!(envelope.kind, "member_spawned");
         assert_eq!(envelope.agent_identity.as_deref(), Some("researcher"));
     }
 
     #[tokio::test]
-    async fn query_filters_by_run_id_and_after_seq() {
+    async fn project_event_for_query_does_not_broadcast() {
         let store = MobEventsStore::new();
-        let run_a = RunId::new();
-        let run_b = RunId::new();
-        let first = store
-            .project_mob_event(&mob_event(MobEventKind::FlowStarted {
-                run_id: run_a.clone(),
-                flow_id: FlowId::from("flow-a"),
-                params: serde_json::json!({}),
-            }))
-            .await;
-        let _second = store
-            .project_mob_event(&mob_event(MobEventKind::FlowStarted {
-                run_id: run_b,
-                flow_id: FlowId::from("flow-b"),
-                params: serde_json::json!({}),
-            }))
-            .await;
-        let third = store
-            .project_mob_event(&mob_event(MobEventKind::StepDispatched {
-                run_id: run_a.clone(),
-                step_id: StepId::from("step-1"),
-                target: AgentRuntimeId::initial(AgentIdentity::from("worker")),
-            }))
-            .await;
-
-        let filtered = store
-            .query(&EventQuery {
-                run_id: Some(run_a.to_string()),
-                ..EventQuery::default()
-            })
-            .await;
-        assert_eq!(filtered.len(), 2);
-        assert_eq!(filtered[0].cursor, first.cursor);
-        assert_eq!(filtered[1].cursor, third.cursor);
-
-        let after = store
-            .query(&EventQuery {
-                run_id: Some(run_a.to_string()),
-                after_seq: Some(first.cursor),
-                ..EventQuery::default()
-            })
-            .await;
-        assert_eq!(after.len(), 1);
-        assert_eq!(after[0].cursor, third.cursor);
-    }
-
-    #[tokio::test]
-    async fn query_filters_by_mob_id_and_event_types() {
-        let store = MobEventsStore::new();
-        let r1 = RunId::new();
-        let r2 = RunId::new();
+        let mut rx = store.subscribe();
         let _ = store
-            .project_mob_event(&MobEvent {
-                cursor: 0,
-                timestamp: Utc::now(),
-                mob_id: MobId::from("mob-A"),
-                kind: MobEventKind::FlowStarted {
-                    run_id: r1.clone(),
-                    flow_id: FlowId::from("f1"),
+            .project_event_for_query(&mob_event(
+                1,
+                MobEventKind::FlowStarted {
+                    run_id: RunId::new(),
+                    flow_id: FlowId::from("flow-a"),
                     params: serde_json::json!({}),
                 },
-            })
+            ))
             .await;
-        let _ = store
-            .project_mob_event(&MobEvent {
-                cursor: 0,
-                timestamp: Utc::now(),
-                mob_id: MobId::from("mob-A"),
-                kind: MobEventKind::FlowCompleted {
-                    run_id: r1,
-                    flow_id: FlowId::from("f1"),
-                },
-            })
-            .await;
-        let _ = store
-            .project_mob_event(&MobEvent {
-                cursor: 0,
-                timestamp: Utc::now(),
-                mob_id: MobId::from("mob-B"),
-                kind: MobEventKind::FlowStarted {
-                    run_id: r2,
-                    flow_id: FlowId::from("f2"),
-                    params: serde_json::json!({}),
-                },
-            })
-            .await;
-
-        let mob_a = store
-            .query(&EventQuery {
-                mob_id: Some("mob-A".to_string()),
-                ..EventQuery::default()
-            })
-            .await;
-        assert_eq!(mob_a.len(), 2);
-
-        let only_started = store
-            .query(&EventQuery {
-                event_types: vec!["flow_started".to_string()],
-                ..EventQuery::default()
-            })
-            .await;
-        assert_eq!(only_started.len(), 2);
-        assert!(only_started.iter().all(|e| e.kind == "flow_started"));
+        // The query-projection variant is silent; the broadcast channel
+        // should not receive anything.
+        assert!(rx.try_recv().is_err());
     }
 }

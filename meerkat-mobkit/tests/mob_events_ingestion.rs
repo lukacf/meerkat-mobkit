@@ -261,27 +261,32 @@ fn all_mob_event_kinds_project_with_kind_label() {
 }
 
 #[test]
-fn cursor_assigned_monotonically_and_data_preserves_kind_payload() {
+fn cursor_propagates_from_upstream_event_and_data_preserves_kind_payload() {
+    // Mobkit no longer mints cursors locally — every projected envelope
+    // carries the meerkat ledger cursor verbatim. This test asserts the
+    // pass-through and the JSON shape.
     let store = MobEventsStore::new();
     let kind = MobEventKind::FlowStarted {
         run_id: run(),
         flow_id: FlowId::from("flow-a"),
         params: serde_json::json!({"k": "v"}),
     };
-    let event = MobEvent {
-        cursor: 0,
+    let first = futures::executor::block_on(store.project_mob_event(&MobEvent {
+        cursor: 11,
         timestamp: Utc::now(),
         mob_id: MobId::from("mob-A"),
         kind,
-    };
-    let first = futures::executor::block_on(store.project_mob_event(&event));
+    }));
     let second = futures::executor::block_on(store.project_mob_event(&MobEvent {
-        cursor: 0,
+        cursor: 12,
         timestamp: Utc::now(),
         mob_id: MobId::from("mob-A"),
         kind: MobEventKind::MobCompleted,
     }));
-    assert!(second.cursor > first.cursor);
+    assert_eq!(first.cursor, 11);
+    assert_eq!(second.cursor, 12);
+    assert_eq!(first.event_id, "mob-evt-11");
+    assert_eq!(second.event_id, "mob-evt-12");
     assert_eq!(first.data["type"], "flow_started");
     assert_eq!(first.data["params"], serde_json::json!({"k": "v"}));
     assert_eq!(second.data["type"], "mob_completed");

@@ -101,6 +101,14 @@ pub fn parse_rpc_capabilities(line: &str) -> Result<RpcCapabilities, RpcCapabili
     serde_json::from_value(raw).map_err(|_| RpcCapabilitiesError::InvalidSchema)
 }
 
+/// JSON-RPC error code returned by `mobkit/mob_events/{query,subscribe}`
+/// when the caller's `after_seq` is past the current ledger frontier.
+/// The error `data` field carries `{ after_cursor, latest_cursor }` so
+/// SDKs can surface a typed exception. Single source of truth — keep
+/// this in sync with `MobEventsStaleError` in the Python and TypeScript
+/// SDKs.
+pub const MOB_EVENTS_STALE_CURSOR_CODE: i64 = -32010;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
@@ -111,10 +119,32 @@ pub struct JsonRpcRequest {
     pub params: Value,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcError {
     pub code: i64,
     pub message: String,
+    /// Optional structured payload as defined by JSON-RPC 2.0. Used by
+    /// typed errors (e.g. `event_query_stale` with `after_cursor` /
+    /// `latest_cursor`) so SDKs can surface a typed exception. Existing
+    /// construction sites can omit it via `..Default::default()`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl JsonRpcError {
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_data(mut self, data: Value) -> Self {
+        self.data = Some(data);
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +172,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32700,
                     message: "Parse error".to_string(),
+                    data: None,
                 }),
             });
         }
@@ -161,6 +192,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32600,
                     message: "Invalid Request".to_string(),
+                    data: None,
                 }),
             });
         }
@@ -176,6 +208,7 @@ pub fn handle_mobkit_rpc_json(
             error: Some(JsonRpcError {
                 code: -32600,
                 message: "Invalid Request".to_string(),
+                data: None,
             }),
         };
         return if is_notification {
@@ -254,6 +287,7 @@ pub fn handle_mobkit_rpc_json(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {reason}"),
+                            data: None,
                         }),
                     });
                 }
@@ -277,6 +311,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {err:?}"),
+                        data: None,
                     }),
                 },
             }
@@ -296,6 +331,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: "Invalid params: module_id required".to_string(),
+                        data: None,
                     }),
                 }
             } else {
@@ -316,6 +352,7 @@ pub fn handle_mobkit_rpc_json(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {err:?}"),
+                            data: None,
                         }),
                     },
                 }
@@ -339,6 +376,7 @@ pub fn handle_mobkit_rpc_json(
                             "Invalid params: {}",
                             format_schedule_validation_error(err)
                         ),
+                        data: None,
                     }),
                 },
             },
@@ -349,6 +387,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {message}"),
+                    data: None,
                 }),
             },
         },
@@ -370,6 +409,7 @@ pub fn handle_mobkit_rpc_json(
                             "Invalid params: {}",
                             format_schedule_validation_error(err)
                         ),
+                        data: None,
                     }),
                 },
             },
@@ -380,6 +420,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {message}"),
+                    data: None,
                 }),
             },
         },
@@ -402,6 +443,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -422,6 +464,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -444,6 +487,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -466,6 +510,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -488,6 +533,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -509,6 +555,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -531,6 +578,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -551,6 +599,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -572,6 +621,7 @@ pub fn handle_mobkit_rpc_json(
                             "Memory backend unavailable: {}",
                             MemoryParamsError::backend_message(&error)
                         ),
+                        data: None,
                     }),
                 },
                 Err(err) => JsonRpcResponse {
@@ -584,6 +634,7 @@ pub fn handle_mobkit_rpc_json(
                             "Invalid params: {}",
                             MemoryParamsError::Index(err).message()
                         ),
+                        data: None,
                     }),
                 },
             },
@@ -594,6 +645,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -614,6 +666,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -634,6 +687,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {message}"),
+                        data: None,
                     }),
                 },
                 Err(BigQuerySessionStoreRpcError::Store(error)) => JsonRpcResponse {
@@ -646,6 +700,7 @@ pub fn handle_mobkit_rpc_json(
                             "BigQuery session store request failed: {}",
                             format_bigquery_store_error(&error)
                         ),
+                        data: None,
                     }),
                 },
             }
@@ -667,6 +722,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -686,6 +742,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -708,6 +765,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -728,6 +786,7 @@ pub fn handle_mobkit_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -769,6 +828,7 @@ pub fn handle_mobkit_rpc_json(
                             error: Some(JsonRpcError {
                                 code: -32601,
                                 message: format!("Module '{mid}' not loaded"),
+                                data: None,
                             }),
                         },
                         Err(err) => JsonRpcResponse {
@@ -778,6 +838,7 @@ pub fn handle_mobkit_rpc_json(
                             error: Some(JsonRpcError {
                                 code: -32000,
                                 message: format!("Tool call failed: {err:?}"),
+                                data: None,
                             }),
                         },
                     }
@@ -789,6 +850,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: "Invalid params: module_id and tool required".to_string(),
+                        data: None,
                     }),
                 },
             }
@@ -826,6 +888,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32601,
                         message: format!("Module '{module_id}' not loaded"),
+                        data: None,
                     }),
                 },
                 Err(err) => JsonRpcResponse {
@@ -835,6 +898,7 @@ pub fn handle_mobkit_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("Module route failed: {err:?}"),
+                        data: None,
                     }),
                 },
             }
@@ -846,6 +910,7 @@ pub fn handle_mobkit_rpc_json(
             error: Some(JsonRpcError {
                 code: -32601,
                 message: "Method not found".to_string(),
+                data: None,
             }),
         },
     };
@@ -882,6 +947,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32700,
                     message: "Parse error".to_string(),
+                    data: None,
                 }),
             });
         }
@@ -901,6 +967,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32600,
                     message: "Invalid Request".to_string(),
+                    data: None,
                 }),
             });
         }
@@ -916,6 +983,7 @@ pub async fn handle_unified_rpc_json(
             error: Some(JsonRpcError {
                 code: -32600,
                 message: "Invalid Request".to_string(),
+                data: None,
             }),
         };
         return if is_notification {
@@ -998,6 +1066,7 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/cancel_flow",
                 "mobkit/flow_status",
                 "mobkit/list_flows",
+                "mobkit/list_runs",
                 "mobkit/run_flow",
                 "mobkit/collect_completed",
                 "mobkit/read_session_history",
@@ -1067,6 +1136,7 @@ pub async fn handle_unified_rpc_json(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {reason}"),
+                            data: None,
                         }),
                     });
                 }
@@ -1090,6 +1160,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {err:?}"),
+                        data: None,
                     }),
                 },
             }
@@ -1110,6 +1181,7 @@ pub async fn handle_unified_rpc_json(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: "Invalid params: module_id required".to_string(),
+                            data: None,
                         }),
                     }
                 } else {
@@ -1130,6 +1202,7 @@ pub async fn handle_unified_rpc_json(
                             error: Some(JsonRpcError {
                                 code: -32602,
                                 message: format!("Invalid params: {err:?}"),
+                                data: None,
                             }),
                         },
                     }
@@ -1164,6 +1237,7 @@ pub async fn handle_unified_rpc_json(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {err}"),
+                            data: None,
                         }),
                     },
                 }
@@ -1176,6 +1250,7 @@ pub async fn handle_unified_rpc_json(
                         code: -32602,
                         message: "Invalid params: module_id or (profile + meerkat_id) required"
                             .to_string(),
+                        data: None,
                     }),
                 }
             }
@@ -1199,6 +1274,7 @@ pub async fn handle_unified_rpc_json(
                                 "Invalid params: {}",
                                 format_schedule_validation_error(err)
                             ),
+                            data: None,
                         }),
                     },
                 }
@@ -1210,6 +1286,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {message}"),
+                    data: None,
                 }),
             },
         },
@@ -1229,6 +1306,7 @@ pub async fn handle_unified_rpc_json(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {err}"),
+                            data: None,
                         }),
                     },
                 }
@@ -1240,6 +1318,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {message}"),
+                    data: None,
                 }),
             },
         },
@@ -1265,6 +1344,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -1288,6 +1368,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1313,6 +1394,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -1339,6 +1421,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -1365,6 +1448,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -1386,6 +1470,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1404,6 +1489,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {err}"),
+                        data: None,
                     }),
                 },
             },
@@ -1414,6 +1500,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1436,6 +1523,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1457,6 +1545,7 @@ pub async fn handle_unified_rpc_json(
                             "Memory backend unavailable: {}",
                             MemoryParamsError::backend_message(&error)
                         ),
+                        data: None,
                     }),
                 },
                 Err(err) => JsonRpcResponse {
@@ -1469,6 +1558,7 @@ pub async fn handle_unified_rpc_json(
                             "Invalid params: {}",
                             MemoryParamsError::Index(err).message()
                         ),
+                        data: None,
                     }),
                 },
             },
@@ -1479,6 +1569,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1499,6 +1590,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1519,6 +1611,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {message}"),
+                        data: None,
                     }),
                 },
                 Err(BigQuerySessionStoreRpcError::Store(error)) => JsonRpcResponse {
@@ -1531,6 +1624,7 @@ pub async fn handle_unified_rpc_json(
                             "BigQuery session store request failed: {}",
                             format_bigquery_store_error(&error)
                         ),
+                        data: None,
                     }),
                 },
             }
@@ -1552,6 +1646,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1574,6 +1669,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1599,6 +1695,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("Invalid params: {}", err.message()),
+                        data: None,
                     }),
                 },
             }
@@ -1622,6 +1719,7 @@ pub async fn handle_unified_rpc_json(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {}", err.message()),
+                    data: None,
                 }),
             },
         },
@@ -1664,6 +1762,7 @@ pub async fn handle_unified_rpc_json(
                             error: Some(JsonRpcError {
                                 code: -32601,
                                 message: format!("Module '{mid}' not loaded"),
+                                data: None,
                             }),
                         },
                         Err(err) => JsonRpcResponse {
@@ -1673,6 +1772,7 @@ pub async fn handle_unified_rpc_json(
                             error: Some(JsonRpcError {
                                 code: -32000,
                                 message: format!("Tool call failed: {err:?}"),
+                                data: None,
                             }),
                         },
                     }
@@ -1684,6 +1784,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: "Invalid params: module_id and tool required".to_string(),
+                        data: None,
                     }),
                 },
             }
@@ -1768,6 +1869,9 @@ pub async fn handle_unified_rpc_json(
             mob_methods::handle_flow_status(runtime, response_id, &request.params).await
         }
         "mobkit/list_flows" => mob_methods::handle_list_flows(runtime, response_id).await,
+        "mobkit/list_runs" => {
+            mob_methods::handle_list_runs(runtime, response_id, &request.params).await
+        }
         "mobkit/run_flow" => {
             mob_methods::handle_run_flow(runtime, response_id, &request.params).await
         }
@@ -2373,6 +2477,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32601,
                         message: format!("Module '{module_id}' not loaded"),
+                        data: None,
                     }),
                 },
                 Err(err) => JsonRpcResponse {
@@ -2382,6 +2487,7 @@ pub async fn handle_unified_rpc_json(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("Module route failed: {err:?}"),
+                        data: None,
                     }),
                 },
             }
@@ -2393,6 +2499,7 @@ pub async fn handle_unified_rpc_json(
             error: Some(JsonRpcError {
                 code: -32601,
                 message: "Method not found".to_string(),
+                data: None,
             }),
         },
     };
@@ -2473,7 +2580,11 @@ fn identity_error_response(
         jsonrpc: JSONRPC_VERSION.to_string(),
         id: response_id,
         result: None,
-        error: Some(JsonRpcError { code, message }),
+        error: Some(JsonRpcError {
+            code,
+            message,
+            data: None,
+        }),
     }
 }
 
@@ -2485,6 +2596,7 @@ fn error_response(response_id: Value, code: i64, message: impl Into<String>) -> 
         error: Some(JsonRpcError {
             code,
             message: message.into(),
+            data: None,
         }),
     })
 }

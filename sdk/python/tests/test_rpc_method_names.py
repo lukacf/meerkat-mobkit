@@ -180,6 +180,109 @@ async def test_run_flow_rpc_name_and_params():
 
 
 @pytest.mark.asyncio
+async def test_list_runs_rpc_name_no_filter():
+    """list_runs must call mobkit/list_runs with no flow_id and parse the full ledger."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/list_runs": {
+            "runs": [
+                {
+                    "run_id": "r-1",
+                    "mob_id": "m-1",
+                    "flow_id": "alpha",
+                    "status": "completed",
+                    "flow_state": {"phase": "done"},
+                    "activation_params": {"k": "v"},
+                    "created_at": "2026-04-29T12:00:00Z",
+                    "completed_at": "2026-04-29T12:00:05Z",
+                    "step_ledger": [
+                        {
+                            "step_id": "s1",
+                            "agent_identity": "lead",
+                            "status": "completed",
+                            "output": {"text": "ok"},
+                            "timestamp": "2026-04-29T12:00:01Z",
+                        }
+                    ],
+                    "failure_ledger": [],
+                    "frames": {
+                        "frame-1": {"kernel_state": {"opaque": True}},
+                    },
+                    "loops": {
+                        "loop-1": {"kernel_state": {}},
+                    },
+                    "loop_iteration_ledger": [
+                        {
+                            "loop_instance_id": "loop-1",
+                            "iteration": 0,
+                            "frame_id": "frame-2",
+                        }
+                    ],
+                    "schema_version": 4,
+                    "root_step_outputs": {"s1": {"text": "ok"}},
+                    "loop_iteration_outputs": {"loop-1": []},
+                }
+            ]
+        }
+    })
+    runs = await handle.list_runs()
+    assert calls[0][0] == "mobkit/list_runs"
+    assert calls[0][1] == {}
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.run_id == "r-1"
+    assert run.flow_id == "alpha"
+    assert run.status.value == "completed"
+    assert run.activation_params == {"k": "v"}
+    assert run.completed_at == "2026-04-29T12:00:05Z"
+    assert len(run.step_ledger) == 1
+    assert run.step_ledger[0].step_id == "s1"
+    # frames / loops are MAPS keyed by id, not arrays.
+    assert "frame-1" in run.frames
+    assert "loop-1" in run.loops
+    assert run.loop_iteration_ledger[0].iteration == 0
+    assert run.schema_version == 4
+
+
+@pytest.mark.asyncio
+async def test_list_runs_rpc_name_with_flow_id_filter():
+    """list_runs(flow_id=...) must forward flow_id."""
+    handle, calls = make_mock_mob_handle({"mobkit/list_runs": {"runs": []}})
+    runs = await handle.list_runs(flow_id="alpha")
+    assert calls[0][0] == "mobkit/list_runs"
+    assert calls[0][1] == {"flow_id": "alpha"}
+    assert runs == []
+
+
+@pytest.mark.asyncio
+async def test_query_mob_events_stale_raises_typed_error():
+    """A -32010 RpcError must be reified into MobEventsStaleError carrying both cursors."""
+    from meerkat_mobkit.errors import MobEventsStaleError, RpcError
+
+    async def stale_rpc(method, params=None):
+        raise RpcError(
+            code=-32010,
+            message="stale mob event cursor: requested 999, latest 42",
+            request_id="rid",
+            method=method,
+            data={"after_cursor": 999, "latest_cursor": 42},
+        )
+
+    from meerkat_mobkit.runtime import MobHandle
+
+    runtime = MagicMock()
+    runtime._rpc = stale_rpc
+    handle = MobHandle.__new__(MobHandle)
+    handle._runtime = runtime
+
+    with pytest.raises(MobEventsStaleError) as info:
+        await handle.query_mob_events({"after_seq": 999})
+
+    assert info.value.after_cursor == 999
+    assert info.value.latest_cursor == 42
+    assert info.value.code == -32010
+
+
+@pytest.mark.asyncio
 async def test_wait_ready_rpc_name():
     """wait_ready must call mobkit/wait_ready and forward timeout in ms."""
     handle, calls = make_mock_mob_handle({

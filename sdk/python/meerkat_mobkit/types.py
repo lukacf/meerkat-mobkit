@@ -423,6 +423,197 @@ class MobStructuralEvent:
         )
 
 
+class MobRunStatus(str, Enum):
+    """Lifecycle states for a flow run.
+
+    Mirrors meerkat's ``MobRunStatus`` enum (snake_case wire form).
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+    @classmethod
+    def parse(cls, raw: Any) -> MobRunStatus:
+        if isinstance(raw, MobRunStatus):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return cls(raw)
+            except ValueError:
+                return cls.PENDING
+        return cls.PENDING
+
+
+@dataclass(frozen=True)
+class StepRecord:
+    """Per-target step execution ledger entry.
+
+    Mirrors meerkat's ``StepLedgerEntry``. ``status`` is a snake_case
+    string (e.g. ``"dispatched"``, ``"completed"``, ``"failed"``).
+    """
+    step_id: str
+    agent_identity: str
+    status: str
+    output: Any
+    timestamp: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StepRecord:
+        return cls(
+            step_id=str(data.get("step_id", "")),
+            agent_identity=str(data.get("agent_identity", "")),
+            status=str(data.get("status", "")),
+            output=data.get("output"),
+            timestamp=str(data.get("timestamp", "")),
+        )
+
+
+@dataclass(frozen=True)
+class FailureRecord:
+    """Flow-level failure log entry. Mirrors meerkat's ``FailureLedgerEntry``."""
+    step_id: str
+    reason: str
+    timestamp: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FailureRecord:
+        return cls(
+            step_id=str(data.get("step_id", "")),
+            reason=str(data.get("reason", "")),
+            timestamp=str(data.get("timestamp", "")),
+        )
+
+
+@dataclass(frozen=True)
+class FrameRecord:
+    """Per-frame kernel snapshot. Mirrors meerkat's ``FrameSnapshot``.
+
+    The ``kernel_state`` shape is meerkat-internal flow_frame state and
+    passes through as :class:`Any`.
+    """
+    kernel_state: Any
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FrameRecord:
+        return cls(kernel_state=data.get("kernel_state"))
+
+
+@dataclass(frozen=True)
+class LoopRecord:
+    """Per-loop kernel snapshot. Mirrors meerkat's ``LoopSnapshot``.
+
+    The ``kernel_state`` shape is meerkat-internal loop_iteration state
+    and passes through as :class:`Any`.
+    """
+    kernel_state: Any
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LoopRecord:
+        return cls(kernel_state=data.get("kernel_state"))
+
+
+@dataclass(frozen=True)
+class LoopIterationRecord:
+    """Loop-iteration → body-frame ledger entry.
+
+    Mirrors meerkat's ``LoopIterationLedgerEntry``.
+    """
+    loop_instance_id: str
+    iteration: int
+    frame_id: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> LoopIterationRecord:
+        return cls(
+            loop_instance_id=str(data.get("loop_instance_id", "")),
+            iteration=int(data.get("iteration", 0)),
+            frame_id=str(data.get("frame_id", "")),
+        )
+
+
+@dataclass(frozen=True)
+class MobRun:
+    """Persisted flow run aggregate returned by :meth:`MobHandle.list_runs`.
+
+    Carries the full meerkat ledger projection. Meerkat-internal
+    sub-shapes (``flow_state``, ``activation_params``,
+    ``StepRecord.output``, ``root_step_outputs`` /
+    ``loop_iteration_outputs`` value blobs, frame / loop
+    ``kernel_state``) pass through as :class:`Any` rather than being
+    re-typed in the SDK.
+    """
+    run_id: str
+    mob_id: str
+    flow_id: str
+    status: MobRunStatus
+    flow_state: Any
+    activation_params: Any
+    created_at: str
+    completed_at: str | None
+    step_ledger: list[StepRecord]
+    failure_ledger: list[FailureRecord]
+    frames: dict[str, FrameRecord]
+    loops: dict[str, LoopRecord]
+    loop_iteration_ledger: list[LoopIterationRecord]
+    schema_version: int
+    root_step_outputs: dict[str, Any]
+    loop_iteration_outputs: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobRun:
+        step_raw = data.get("step_ledger", [])
+        failure_raw = data.get("failure_ledger", [])
+        frames_raw = data.get("frames", {})
+        loops_raw = data.get("loops", {})
+        iter_raw = data.get("loop_iteration_ledger", [])
+        completed = data.get("completed_at")
+        return cls(
+            run_id=str(data.get("run_id", "")),
+            mob_id=str(data.get("mob_id", "")),
+            flow_id=str(data.get("flow_id", "")),
+            status=MobRunStatus.parse(data.get("status")),
+            flow_state=data.get("flow_state"),
+            activation_params=data.get("activation_params"),
+            created_at=str(data.get("created_at", "")),
+            completed_at=str(completed) if completed is not None else None,
+            step_ledger=[
+                StepRecord.from_dict(entry)
+                for entry in step_raw
+                if isinstance(entry, dict)
+            ],
+            failure_ledger=[
+                FailureRecord.from_dict(entry)
+                for entry in failure_raw
+                if isinstance(entry, dict)
+            ],
+            frames={
+                str(key): FrameRecord.from_dict(value)
+                for key, value in (frames_raw.items() if isinstance(frames_raw, dict) else [])
+                if isinstance(value, dict)
+            },
+            loops={
+                str(key): LoopRecord.from_dict(value)
+                for key, value in (loops_raw.items() if isinstance(loops_raw, dict) else [])
+                if isinstance(value, dict)
+            },
+            loop_iteration_ledger=[
+                LoopIterationRecord.from_dict(entry)
+                for entry in iter_raw
+                if isinstance(entry, dict)
+            ],
+            schema_version=int(data.get("schema_version", 0)),
+            root_step_outputs=dict(data.get("root_step_outputs", {}))
+            if isinstance(data.get("root_step_outputs"), dict)
+            else {},
+            loop_iteration_outputs=dict(data.get("loop_iteration_outputs", {}))
+            if isinstance(data.get("loop_iteration_outputs"), dict)
+            else {},
+        )
+
+
 MEMBER_STATE_ACTIVE: str = "active"
 MEMBER_STATE_RETIRING: str = "retiring"
 

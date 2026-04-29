@@ -595,6 +595,7 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
         Some(JsonRpcError {
             code: -32602,
             message: message.into(),
+            data: None,
         }),
     )
 }
@@ -606,6 +607,29 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
         Some(JsonRpcError {
             code: -32000,
             message: message.into(),
+            data: None,
+        }),
+    )
+}
+
+/// Render a stale-cursor failure as a JSON-RPC envelope with code
+/// `-32010`, a typed error body the SDKs can parse into the
+/// `MobEventsStaleError` exception, and a `data` field carrying both
+/// cursors so callers can rewind to the current frontier.
+fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64) -> Value {
+    response_value(
+        id,
+        None,
+        Some(JsonRpcError {
+            code: crate::rpc::MOB_EVENTS_STALE_CURSOR_CODE,
+            message: format!(
+                "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
+            ),
+            data: Some(serde_json::json!({
+                "error": "event_query_stale",
+                "after_cursor": after_cursor,
+                "latest_cursor": latest_cursor,
+            })),
         }),
     )
 }
@@ -728,6 +752,7 @@ async fn handle_console_runtime_rpc(
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
                 "mobkit/list_flows",
+                "mobkit/list_runs",
                 "mobkit/query_events",
                 "mobkit/mob_events/query",
                 "mobkit/mob_events/subscribe",
@@ -911,6 +936,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32001,
                         message: format!("unknown identity: {identity}"),
+                        data: None,
                     }),
                 );
             };
@@ -921,6 +947,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32002,
                         message: format!("not addressable: {identity}"),
+                        data: None,
                     }),
                 );
             }
@@ -931,6 +958,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32004,
                         message: format!("identity retiring: {identity}"),
+                        data: None,
                     }),
                 );
             }
@@ -953,6 +981,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32003,
                         message: message.to_string(),
+                        data: None,
                     }),
                 );
             }
@@ -1105,6 +1134,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1119,6 +1149,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1149,6 +1180,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1163,6 +1195,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1182,6 +1215,7 @@ async fn handle_console_runtime_rpc(
                     Some(JsonRpcError {
                         code: -32601,
                         message: "Method not found".to_string(),
+                        data: None,
                     }),
                 );
             };
@@ -1401,28 +1435,60 @@ async fn handle_console_runtime_rpc(
                     }
                 }
             };
-            let events = match mob_events.as_ref() {
-                Some(store) => store.query(&query).await,
-                None => Vec::new(),
+            let Some(store) = mob_events.as_ref() else {
+                return response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "events": [],
+                        "next_after_seq": Value::Null,
+                    })),
+                    None,
+                );
             };
-            let last_cursor = events.last().map(|event| event.cursor);
-            let body = if request.method == "mobkit/mob_events/subscribe" {
-                serde_json::json!({
-                    "stream": "mob_events",
-                    "events": events,
-                    "next_after_seq": last_cursor,
-                    "keep_alive": {
-                        "interval_ms": 15_000_u64,
-                        "event": "keep_alive",
-                    },
-                })
-            } else {
-                serde_json::json!({
-                    "events": events,
-                    "next_after_seq": last_cursor,
-                })
-            };
-            response_value(response_id, Some(body), None)
+            let events_view = runtime.handle().events();
+            // Capture latest_cursor at handshake so the SSE continuation
+            // URL still covers the empty-snapshot case without losing
+            // events between the JSON-RPC response and the SSE connect.
+            let latest_at_handshake = events_view.latest_cursor().await.unwrap_or(0);
+            let result = crate::unified_runtime::mob_events::query_ledger_with_filter(
+                &events_view,
+                store,
+                &query,
+            )
+            .await;
+            match result {
+                Ok(events) => {
+                    let last_cursor = events.last().map(|event| event.cursor);
+                    let body = if request.method == "mobkit/mob_events/subscribe" {
+                        let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
+                            &query,
+                            last_cursor,
+                            latest_at_handshake,
+                        );
+                        serde_json::json!({
+                            "stream": "mob_events",
+                            "events": events,
+                            "next_after_seq": last_cursor,
+                            "subscribe_url": subscribe_url,
+                            "keep_alive": {
+                                "interval_ms": 15_000_u64,
+                                "event": "keep_alive",
+                            },
+                        })
+                    } else {
+                        serde_json::json!({
+                            "events": events,
+                            "next_after_seq": last_cursor,
+                        })
+                    };
+                    response_value(response_id, Some(body), None)
+                }
+                Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
+                    after_cursor,
+                    latest_cursor,
+                }) => stale_event_cursor_response(response_id, after_cursor, latest_cursor),
+                Err(err) => internal_error(response_id, format!("mob_events query failed: {err}")),
+            }
         }
         // 0.5 API methods
         "mobkit/member_status" => {
@@ -1599,6 +1665,24 @@ async fn handle_console_runtime_rpc(
                 None,
             )
         }
+        "mobkit/list_runs" => {
+            let flow_id = request
+                .params
+                .get("flow_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(meerkat_mob::FlowId::from);
+            match runtime.handle().list_runs(flow_id.as_ref()).await {
+                Ok(runs) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "runs": serde_json::to_value(&runs).unwrap_or(Value::Null),
+                    })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("list_runs failed: {err}")),
+            }
+        }
         "mobkit/run_flow" => {
             let Some(flow_id_str) = request.params.get("flow_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "flow_id required");
@@ -1767,6 +1851,7 @@ async fn handle_console_runtime_rpc(
                 Some(JsonRpcError {
                     code: -32004,
                     message: "gateway has no signing keypair configured".to_string(),
+                    data: None,
                 }),
             ),
         },
@@ -1800,6 +1885,7 @@ async fn handle_console_runtime_rpc(
                                 Some(JsonRpcError {
                                     code: -32000,
                                     message: format!("member {mid:?} has no comms runtime"),
+                                    data: None,
                                 }),
                             ),
                         },
@@ -1809,6 +1895,7 @@ async fn handle_console_runtime_rpc(
                             Some(JsonRpcError {
                                 code: -32000,
                                 message: format!("member {mid:?} not found"),
+                                data: None,
                             }),
                         ),
                     }
@@ -1857,6 +1944,7 @@ async fn handle_console_runtime_rpc(
             Some(JsonRpcError {
                 code: -32601,
                 message: "Method not found".to_string(),
+                data: None,
             }),
         ),
     }

@@ -61,7 +61,7 @@ pub use http_console::{
 pub use http_interactions::interaction_stream_router;
 pub use http_sse::{
     AgentEventSubscribeFn, MobEventSubscribeFn, agent_event_sse, agent_events_sse_router,
-    mob_events_sse_router,
+    mob_events_sse_router, mob_structural_events_sse_router,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
@@ -72,8 +72,9 @@ pub use mocks::{MockModuleProcess, MockProcessError};
 pub use process::{ProcessBoundaryError, run_process_json_line};
 pub use protocol::{ProtocolParseError, parse_module_event_line, parse_unified_event_line};
 pub use rpc::{
-    IdentityFirstContext, JsonRpcError, JsonRpcRequest, JsonRpcResponse, MOBKIT_CONTRACT_VERSION,
-    handle_console_ingress_json, handle_mobkit_rpc_json, handle_unified_rpc_json,
+    IdentityFirstContext, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
+    MOB_EVENTS_STALE_CURSOR_CODE, MOBKIT_CONTRACT_VERSION, handle_console_ingress_json,
+    handle_mobkit_rpc_json, handle_unified_rpc_json,
 };
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 pub use runtime::{
@@ -82,20 +83,21 @@ pub use runtime::{
     ConsoleRestJsonResponse, DecisionRuntimeError, ElephantMemoryBackendConfig,
     ElephantMemoryStoreError, GatingAuditEntry, GatingDecideError, GatingDecideRequest,
     GatingDecision, GatingDecisionResult, GatingEvaluateRequest, GatingEvaluateResult,
-    GatingOutcome, GatingPendingEntry, GatingRiskTier, JsonFileSessionStore,
+    GatingOutcome, GatingPendingEntry, GatingRiskTier, InMemoryMetadataStore, JsonFileSessionStore,
     JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent, LifecycleStage,
     McpBoundaryError, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
     MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult, MemoryStoreInfo,
-    MetadataScope, MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState,
+    MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState,
     ModuleHealthTransition, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
-    NormalizationError, RpcRouteError, RpcRuntimeError, RuntimeBoundaryError,
-    RuntimeDecisionInputs, RuntimeDecisionState, RuntimeFromConfigError, RuntimeMetadataTable,
-    RuntimeMutationError, RuntimeOptions, RuntimeRoute, RuntimeRouteMutationError,
-    RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch, ScheduleDispatchReport,
-    ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger, SchedulingSupervisorSignal,
-    SessionPersistenceRow, SessionStoreContract, SessionStoreKind, SubscribeRequest,
-    SubscribeResponse, SubscribeScope, SupervisorReport, TrustedOidcRuntimeConfig, WILDCARD_ROUTE,
-    build_runtime_decision_state, evaluate_schedules_at_tick, handle_console_rest_json_route,
+    NormalizationError, PersistentMetadataStore, RpcRouteError, RpcRuntimeError,
+    RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState, RuntimeFromConfigError,
+    RuntimeMetadataTable, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
+    RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
+    ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
+    SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
+    SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
+    TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
+    evaluate_schedules_at_tick, handle_console_rest_json_route,
     handle_console_rest_json_route_with_snapshot, materialize_latest_session_rows,
     materialize_live_session_rows, normalize_event_line, route_module_call,
     route_module_call_rpc_json, route_module_call_rpc_subprocess, run_discovered_module_once,

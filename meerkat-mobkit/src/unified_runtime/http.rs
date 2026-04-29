@@ -8,7 +8,9 @@ use meerkat_mob::ids::MeerkatId;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime_and_events};
 use crate::http_interactions::interaction_stream_router;
-use crate::http_sse::{agent_events_sse_router, mob_events_sse_router};
+use crate::http_sse::{
+    agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
+};
 use crate::runtime::RuntimeDecisionState;
 
 use super::UnifiedRuntime;
@@ -36,6 +38,9 @@ impl UnifiedRuntime {
     pub fn build_reference_app_router(&self, decisions: RuntimeDecisionState) -> Router {
         let agent_runtime = self.mob_runtime.clone();
         let mob_runtime = self.mob_runtime.clone();
+        // Auth-gate the structural-events SSE route with the same
+        // RuntimeDecisionState the console RPC route uses.
+        let sse_decisions = decisions.clone();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
@@ -54,6 +59,11 @@ impl UnifiedRuntime {
                 let mob_runtime = mob_runtime.clone();
                 Box::pin(async move { mob_runtime.handle().subscribe_mob_events().await })
             })))
+            .merge(mob_structural_events_sse_router(
+                self.mob_runtime.handle(),
+                self.mob_events_store(),
+                Some(sse_decisions),
+            ))
             .merge(interaction_stream_router(self.mob_runtime.clone()))
     }
 }

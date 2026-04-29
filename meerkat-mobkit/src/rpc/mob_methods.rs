@@ -88,6 +88,7 @@ pub(super) async fn handle_send_message(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("send_message failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -99,6 +100,7 @@ pub(super) async fn handle_send_message(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id and message (or content) required".to_string(),
+                data: None,
             }),
         },
     }
@@ -139,6 +141,7 @@ pub(super) async fn handle_find_members(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: label_key and label_value required".to_string(),
+                data: None,
             }),
         },
     }
@@ -171,6 +174,7 @@ pub(super) async fn handle_ensure_member(
                                     message: format!(
                                         "Invalid params: labels must be a map of string to string: {err}"
                                     ),
+                                    data: None,
                                 }),
                             };
                         }
@@ -192,6 +196,7 @@ pub(super) async fn handle_ensure_member(
                                     code: -32602,
                                     message: "Invalid params: resume_session_id must be a string"
                                         .to_string(),
+                                    data: None,
                                 }),
                             };
                         }
@@ -208,6 +213,7 @@ pub(super) async fn handle_ensure_member(
                                     message: format!(
                                         "Invalid params: resume_session_id is not a valid session ID: {s}"
                                     ),
+                                    data: None,
                                 }),
                             };
                         }
@@ -231,6 +237,7 @@ pub(super) async fn handle_ensure_member(
                                         message: format!(
                                             "Invalid params: additional_instructions[{i}] must be a string"
                                         ),
+                                        data: None,
                                     }),
                                 };
                             }
@@ -246,7 +253,8 @@ pub(super) async fn handle_ensure_member(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: "Invalid params: additional_instructions must be an array of strings".to_string(),
-                        }),
+                    data: None,
+                }),
                     };
                 }
             };
@@ -289,6 +297,7 @@ pub(super) async fn handle_ensure_member(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("ensure_member failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -300,6 +309,7 @@ pub(super) async fn handle_ensure_member(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: role and agent_identity required".to_string(),
+                data: None,
             }),
         },
     }
@@ -348,6 +358,7 @@ pub(super) async fn handle_get_member(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("member not found: {mid}"),
+                        data: None,
                     }),
                 },
             }
@@ -359,6 +370,7 @@ pub(super) async fn handle_get_member(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -386,6 +398,7 @@ pub(super) async fn handle_retire_member(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("retire_member failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -397,6 +410,7 @@ pub(super) async fn handle_retire_member(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -428,6 +442,7 @@ pub(super) async fn handle_respawn_member(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("respawn_member failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -439,6 +454,7 @@ pub(super) async fn handle_respawn_member(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -483,6 +499,7 @@ pub(super) async fn handle_rediscover(
             error: Some(JsonRpcError {
                 code: -32000,
                 message: format!("rediscover failed: {err}"),
+                data: None,
             }),
         },
     }
@@ -503,6 +520,7 @@ pub(super) async fn handle_query_events(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {err}"),
+                    data: None,
                 }),
             };
         }
@@ -521,6 +539,7 @@ pub(super) async fn handle_query_events(
             error: Some(JsonRpcError {
                 code: -32000,
                 message: format!("query_events failed: {err}"),
+                data: None,
             }),
         },
         None => JsonRpcResponse {
@@ -538,23 +557,51 @@ pub(super) async fn handle_query_events(
 fn parse_mob_events_query(
     response_id: &Value,
     params: Value,
-) -> Result<crate::unified_runtime::EventQuery, JsonRpcResponse> {
+) -> Result<crate::unified_runtime::EventQuery, Box<JsonRpcResponse>> {
     if params.is_null() {
         return Ok(crate::unified_runtime::EventQuery::default());
     }
-    serde_json::from_value(params).map_err(|err| JsonRpcResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: response_id.clone(),
-        result: None,
-        error: Some(JsonRpcError {
-            code: -32602,
-            message: format!("Invalid params: {err}"),
-        }),
+    serde_json::from_value(params).map_err(|err| {
+        Box::new(JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id.clone(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: format!("Invalid params: {err}"),
+                data: None,
+            }),
+        })
     })
 }
 
+use super::MOB_EVENTS_STALE_CURSOR_CODE;
+
+fn stale_cursor_response(
+    response_id: Value,
+    after_cursor: u64,
+    latest_cursor: u64,
+) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: None,
+        error: Some(JsonRpcError {
+            code: MOB_EVENTS_STALE_CURSOR_CODE,
+            message: format!(
+                "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
+            ),
+            data: Some(serde_json::json!({
+                "error": "event_query_stale",
+                "after_cursor": after_cursor,
+                "latest_cursor": latest_cursor,
+            })),
+        }),
+    }
+}
+
 /// Handle `mobkit/mob_events/query` — return structural mob events
-/// matching the supplied [`EventQuery`].
+/// matching the supplied [`EventQuery`] by scanning the meerkat ledger.
 pub(super) async fn handle_mob_events_query(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -562,24 +609,40 @@ pub(super) async fn handle_mob_events_query(
 ) -> JsonRpcResponse {
     let query = match parse_mob_events_query(&response_id, params) {
         Ok(q) => q,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
-    let events = runtime.query_mob_events(&query).await;
-    JsonRpcResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: response_id,
-        result: Some(serde_json::json!({
-            "events": serde_json::to_value(&events).unwrap_or(Value::Null),
-            "next_after_seq": events.last().map(|event| event.cursor),
-        })),
-        error: None,
+    match runtime.query_mob_events(&query).await {
+        Ok(events) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+                "next_after_seq": events.last().map(|event| event.cursor),
+            })),
+            error: None,
+        },
+        Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
+            after_cursor,
+            latest_cursor,
+        }) => stale_cursor_response(response_id, after_cursor, latest_cursor),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("mob_events/query failed: {err}"),
+                data: None,
+            }),
+        },
     }
 }
 
-/// Handle `mobkit/mob_events/subscribe` — replay buffered structural mob
-/// events for SSE catchup. Mirrors the snapshot-frame shape of the
-/// existing `mobkit/events/subscribe` so consumers can take the latest
-/// `cursor` and resume via `mobkit/mob_events/query` with `after_seq`.
+/// Handle `mobkit/mob_events/subscribe` — JSON-RPC handshake that
+/// returns a snapshot of structural events plus a `subscribe_url`
+/// pointing to the SSE route. Pre-handshake validation rejects stale
+/// cursors with the typed `-32010` error before any SSE connection is
+/// opened.
 pub(super) async fn handle_mob_events_subscribe(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -587,23 +650,56 @@ pub(super) async fn handle_mob_events_subscribe(
 ) -> JsonRpcResponse {
     let query = match parse_mob_events_query(&response_id, params) {
         Ok(q) => q,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
-    let events = runtime.query_mob_events(&query).await;
-    let last_cursor = events.last().map(|event| event.cursor);
-    JsonRpcResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: response_id,
-        result: Some(serde_json::json!({
-            "stream": "mob_events",
-            "events": serde_json::to_value(&events).unwrap_or(Value::Null),
-            "next_after_seq": last_cursor,
-            "keep_alive": {
-                "interval_ms": 15_000_u64,
-                "event": "keep_alive",
-            },
-        })),
-        error: None,
+    // Capture latest_cursor at handshake so the continuation URL
+    // covers the empty-snapshot case (no events matched yet, no caller
+    // after_seq supplied) without dropping a window between snapshot
+    // and SSE connect.
+    let latest_at_handshake = runtime
+        .mob_handle()
+        .events()
+        .latest_cursor()
+        .await
+        .unwrap_or(0);
+    match runtime.query_mob_events(&query).await {
+        Ok(events) => {
+            let last_cursor = events.last().map(|event| event.cursor);
+            let subscribe_url = crate::unified_runtime::mob_events::build_subscribe_url(
+                &query,
+                last_cursor,
+                latest_at_handshake,
+            );
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "stream": "mob_events",
+                    "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+                    "next_after_seq": last_cursor,
+                    "subscribe_url": subscribe_url,
+                    "keep_alive": {
+                        "interval_ms": 15_000_u64,
+                        "event": "keep_alive",
+                    },
+                })),
+                error: None,
+            }
+        }
+        Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
+            after_cursor,
+            latest_cursor,
+        }) => stale_cursor_response(response_id, after_cursor, latest_cursor),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("mob_events/subscribe failed: {err}"),
+                data: None,
+            }),
+        },
     }
 }
 
@@ -643,6 +739,7 @@ pub(super) async fn handle_cross_mob_wire(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("cross_mob/wire failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -656,6 +753,7 @@ pub(super) async fn handle_cross_mob_wire(
                 message:
                     "Invalid params: local_member_id, remote_member_id, and remote_mob_id required"
                         .to_string(),
+                data: None,
             }),
         },
     }
@@ -693,6 +791,7 @@ pub(super) async fn handle_cross_mob_unwire(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("cross_mob/unwire failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -706,6 +805,7 @@ pub(super) async fn handle_cross_mob_unwire(
                 message:
                     "Invalid params: local_member_id, remote_member_id, and remote_mob_id required"
                         .to_string(),
+                data: None,
             }),
         },
     }
@@ -745,6 +845,7 @@ pub(super) async fn handle_cross_mob_send(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("cross_mob/send failed: {err}"),
+                    data: None,
                     }),
                 },
             }
@@ -756,7 +857,8 @@ pub(super) async fn handle_cross_mob_send(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: from_member_id, remote_member_id, remote_mob_id, and message (or content) required".to_string(),
-            }),
+                    data: None,
+                }),
         },
     }
 }
@@ -807,6 +909,7 @@ pub(super) async fn handle_cross_mob_peer_info(
                 error: Some(JsonRpcError {
                     code: -32000,
                     message: format!("cross_mob/peer_info failed: {err}"),
+                    data: None,
                 }),
             },
         },
@@ -817,6 +920,7 @@ pub(super) async fn handle_cross_mob_peer_info(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -852,6 +956,7 @@ pub(super) async fn handle_member_status(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("member_status failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -863,6 +968,7 @@ pub(super) async fn handle_member_status(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -894,6 +1000,7 @@ pub(super) async fn handle_force_cancel_member(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("force_cancel_member failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -905,6 +1012,7 @@ pub(super) async fn handle_force_cancel_member(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -930,6 +1038,7 @@ pub(super) async fn handle_spawn_helper(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {msg}"),
+                            data: None,
                         }),
                     };
                 }
@@ -963,6 +1072,7 @@ pub(super) async fn handle_spawn_helper(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("spawn_helper failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -974,6 +1084,7 @@ pub(super) async fn handle_spawn_helper(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: agent_identity and task required".to_string(),
+                data: None,
             }),
         },
     }
@@ -1004,6 +1115,7 @@ pub(super) async fn handle_fork_helper(
                             error: Some(JsonRpcError {
                                 code: -32602,
                                 message: format!("Invalid params: fork_context: {err}"),
+                                data: None,
                             }),
                         };
                     }
@@ -1020,6 +1132,7 @@ pub(super) async fn handle_fork_helper(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: format!("Invalid params: {msg}"),
+                            data: None,
                         }),
                     };
                 }
@@ -1056,6 +1169,7 @@ pub(super) async fn handle_fork_helper(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("fork_helper failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -1068,6 +1182,7 @@ pub(super) async fn handle_fork_helper(
                 code: -32602,
                 message: "Invalid params: source_member_id, agent_identity, and task required"
                     .to_string(),
+                data: None,
             }),
         },
     }
@@ -1097,6 +1212,7 @@ pub(super) async fn handle_attach_existing_session(
                             code: -32602,
                             message: "Invalid params: session_id must be a valid session ID"
                                 .to_string(),
+                            data: None,
                         }),
                     };
                 }
@@ -1120,6 +1236,7 @@ pub(super) async fn handle_attach_existing_session(
                         error: Some(JsonRpcError {
                             code: -32000,
                             message: format!("attach_existing_session status lookup failed: {err}"),
+                            data: None,
                         }),
                     },
                 },
@@ -1130,6 +1247,7 @@ pub(super) async fn handle_attach_existing_session(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("attach_existing_session failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -1142,6 +1260,7 @@ pub(super) async fn handle_attach_existing_session(
                 code: -32602,
                 message: "Invalid params: role, agent_identity, and session_id required"
                     .to_string(),
+                data: None,
             }),
         },
     }
@@ -1162,6 +1281,43 @@ pub(super) async fn handle_list_flows(
         id: response_id,
         result: Some(serde_json::json!({ "flows": flows })),
         error: None,
+    }
+}
+
+/// Handle `mobkit/list_runs` — return [`meerkat_mob::run::MobRun`]
+/// records for this mob, optionally filtered by `flow_id`. Each run
+/// serializes via meerkat's existing `Serialize` impl, so the response
+/// carries the full ledger projection (`step_ledger`, `failure_ledger`,
+/// `frames`, `loops`, `loop_iteration_ledger`, `flow_state`, etc.).
+pub(super) async fn handle_list_runs(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let flow_id = params
+        .get("flow_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(meerkat_mob::FlowId::from);
+    match runtime.mob_handle().list_runs(flow_id.as_ref()).await {
+        Ok(runs) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "runs": serde_json::to_value(&runs).unwrap_or(Value::Null),
+            })),
+            error: None,
+        },
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("list_runs failed: {err}"),
+                data: None,
+            }),
+        },
     }
 }
 
@@ -1190,6 +1346,7 @@ pub(super) async fn handle_run_flow(
                     error: Some(JsonRpcError {
                         code: -32602,
                         message: format!("run_flow failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -1201,6 +1358,7 @@ pub(super) async fn handle_run_flow(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: flow_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -1224,6 +1382,7 @@ pub(super) async fn handle_cancel_flow(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: "Invalid params: run_id not a valid run id".to_string(),
+                            data: None,
                         }),
                     };
                 }
@@ -1242,6 +1401,7 @@ pub(super) async fn handle_cancel_flow(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("cancel_flow failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -1253,6 +1413,7 @@ pub(super) async fn handle_cancel_flow(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: run_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -1276,6 +1437,7 @@ pub(super) async fn handle_flow_status(
                         error: Some(JsonRpcError {
                             code: -32602,
                             message: "Invalid params: run_id not a valid run id".to_string(),
+                            data: None,
                         }),
                     };
                 }
@@ -1300,6 +1462,7 @@ pub(super) async fn handle_flow_status(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("flow_status failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -1311,6 +1474,7 @@ pub(super) async fn handle_flow_status(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: run_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -1373,6 +1537,7 @@ pub(super) async fn handle_wait_ready(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("wait_for_ready failed: {message}"),
+                        data: None,
                     }),
                 }
             }
@@ -1424,6 +1589,7 @@ pub(super) async fn handle_read_session_history(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: "Invalid params: limit must be a positive integer".to_string(),
+                    data: None,
                 }),
             };
         }
@@ -1449,6 +1615,7 @@ pub(super) async fn handle_read_session_history(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("read_session_history failed: {err}"),
+                        data: None,
                     }),
                 },
             }
@@ -1460,6 +1627,7 @@ pub(super) async fn handle_read_session_history(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: session_id required".to_string(),
+                data: None,
             }),
         },
     }
@@ -1486,6 +1654,7 @@ pub(super) async fn handle_cross_mob_unwire_local(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {err}"),
+                    data: None,
                 }),
             };
         }
@@ -1519,6 +1688,7 @@ pub(super) async fn handle_cross_mob_unwire_local(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("cross_mob/unwire_local failed: {err}"),
+                    data: None,
                     }),
                 },
             }
@@ -1530,7 +1700,8 @@ pub(super) async fn handle_cross_mob_unwire_local(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: local_member_id, remote_comms_name, remote_peer_id, and remote_address required".to_string(),
-            }),
+                    data: None,
+                }),
         },
     }
 }
@@ -1556,6 +1727,7 @@ pub(super) async fn handle_cross_mob_wire_local(
                 error: Some(JsonRpcError {
                     code: -32602,
                     message: format!("Invalid params: {err}"),
+                    data: None,
                 }),
             };
         }
@@ -1589,6 +1761,7 @@ pub(super) async fn handle_cross_mob_wire_local(
                     error: Some(JsonRpcError {
                         code: -32000,
                         message: format!("cross_mob/wire_local failed: {err}"),
+                    data: None,
                     }),
                 },
             }
@@ -1600,7 +1773,8 @@ pub(super) async fn handle_cross_mob_wire_local(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: local_member_id, remote_comms_name, remote_peer_id, and remote_address required".to_string(),
-            }),
+                    data: None,
+                }),
         },
     }
 }
@@ -1626,6 +1800,7 @@ fn label_response(response_id: Value, outcome: LabelRpcResult) -> JsonRpcRespons
             Some(JsonRpcError {
                 code: -32602,
                 message: format!("Invalid params: {message}"),
+                data: None,
             }),
         ),
     };
@@ -1767,6 +1942,7 @@ pub(super) async fn handle_peer_pubkey(
             error: Some(JsonRpcError {
                 code: -32004,
                 message: "gateway has no signing keypair configured".to_string(),
+                data: None,
             }),
         },
     }

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use meerkat_core::event::agent_event_type;
 use meerkat_mob::ids::MeerkatId;
-use meerkat_mob::{AttributedEvent, MobEventRouterHandle, MobHandle, SpawnMemberSpec};
+use meerkat_mob::{AttributedEvent, MobError, MobEventRouterHandle, MobHandle, SpawnMemberSpec};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
@@ -17,8 +17,8 @@ use self::console_events::ConsoleEventStore;
 use self::mob_events::MobEventsStore;
 use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime, MobRuntimeError};
 use crate::runtime::{
-    MetadataScope, MobkitRuntimeHandle, RuntimeMetadataTable, RuntimeOptions,
-    start_mobkit_runtime_with_options,
+    InMemoryMetadataStore, MetadataScope, MobkitRuntimeHandle, PersistentMetadataStore,
+    RuntimeMetadataTable, RuntimeOptions, start_mobkit_runtime_with_options,
 };
 use crate::types::{
     AgentDiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope, UnifiedEvent,
@@ -124,7 +124,7 @@ pub struct UnifiedRuntime {
     event_log: Option<event_log::EventLogHandle>,
     console_events: ConsoleEventStore,
     mob_events: MobEventsStore,
-    mob_events_poll_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -142,6 +142,11 @@ pub struct UnifiedRuntime {
 
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
+
+    // Persistent metadata adapter (currently used for the structural-events
+    // subscription cursor). Falls back to `InMemoryMetadataStore` when not
+    // explicitly configured — see `UnifiedRuntimeBuilder::persistent_metadata`.
+    persistent_metadata: Arc<dyn PersistentMetadataStore>,
 }
 
 enum MobEventIngress {
@@ -162,6 +167,7 @@ impl UnifiedRuntime {
     pub(crate) async fn from_parts(
         mob_runtime: MobRuntime,
         module_runtime: MobkitRuntimeHandle,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
     ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
         // Construct the metadata table first so the structural-events store
@@ -173,8 +179,11 @@ impl UnifiedRuntime {
             mob_event_router,
             mob_events_store.clone(),
         ));
-        let mob_events_task =
-            Self::spawn_mob_events_poller(mob_runtime.handle(), mob_events_store.clone());
+        let mob_events_task = Self::spawn_mob_events_subscriber(
+            mob_runtime.handle(),
+            mob_events_store.clone(),
+            persistent_metadata.clone(),
+        );
         Self {
             mob_runtime,
             post_spawn_hook: None,
@@ -191,23 +200,37 @@ impl UnifiedRuntime {
             event_log: None,
             console_events: ConsoleEventStore::new(),
             mob_events: mob_events_store,
-            mob_events_poll_task: tokio::sync::Mutex::new(mob_events_task),
+            mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             gateway_peer_keys: None,
             session_bridge: None,
             metadata_table,
+            persistent_metadata,
         }
     }
 
-    /// Spawn a background task that polls the mob's structural event log
-    /// and projects each `MobEvent` into the in-memory `MobEventsStore`.
+    /// Spawn a background task that opens a streaming subscription to
+    /// the meerkat mob event ledger and projects each [`MobEvent`] into
+    /// the runtime's [`MobEventsStore`]. The task resumes from the
+    /// last-projected cursor recorded in `persistent_metadata`, so the
+    /// SDK-side cursor is durable across mobkit restarts on
+    /// SQLite-backed deployments.
+    ///
     /// Returns `None` when there is no current tokio runtime (e.g. unit
     /// tests outside an async context); in that case the store is still
     /// usable via direct projection.
-    fn spawn_mob_events_poller(handle: MobHandle, store: MobEventsStore) -> Option<JoinHandle<()>> {
+    fn spawn_mob_events_subscriber(
+        handle: MobHandle,
+        store: MobEventsStore,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
+    ) -> Option<JoinHandle<()>> {
         let runtime_handle = tokio::runtime::Handle::try_current().ok()?;
-        Some(runtime_handle.spawn(run_mob_events_poller(handle, store)))
+        Some(runtime_handle.spawn(run_mob_events_subscription(
+            handle,
+            store,
+            persistent_metadata,
+        )))
     }
 
     pub async fn bootstrap(
@@ -221,6 +244,7 @@ impl UnifiedRuntime {
             Vec::new(),
             timeout,
             RuntimeOptions::default(),
+            Arc::new(InMemoryMetadataStore::new()),
         )
         .await
     }
@@ -231,6 +255,7 @@ impl UnifiedRuntime {
         module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
         timeout: Duration,
         options: RuntimeOptions,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
         let mob_runtime = MobRuntime::bootstrap(mob_spec)
             .await
@@ -241,7 +266,9 @@ impl UnifiedRuntime {
         .join();
 
         match module_start_result {
-            Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime).await),
+            Ok(Ok(module_runtime)) => {
+                Ok(Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await)
+            }
             Ok(Err(error)) => {
                 let startup_error = UnifiedRuntimeBootstrapError::Module(error);
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await
@@ -302,6 +329,14 @@ impl UnifiedRuntime {
     /// branch, customer, deployment, environment) to a mob or a flow run.
     pub fn metadata_table(&self) -> &Arc<RuntimeMetadataTable> {
         &self.metadata_table
+    }
+
+    /// Return the persistent metadata adapter — used by the
+    /// structural-events subscription to checkpoint its last-projected
+    /// cursor. Tests and integration code that need to inspect the
+    /// persisted cursor reach through this accessor.
+    pub fn persistent_metadata(&self) -> &Arc<dyn PersistentMetadataStore> {
+        &self.persistent_metadata
     }
 
     /// Replace the label set associated with this mob.
@@ -386,14 +421,24 @@ impl UnifiedRuntime {
         self.console_events.query(query).await
     }
 
-    /// Query buffered structural mob events.
+    /// Query structural mob events from the meerkat ledger.
     ///
     /// Returns events filtered by [`EventQuery`] in cursor-ascending
     /// order. `EventQuery::after_seq` acts as the pagination cursor: the
     /// caller passes the highest `cursor` seen so far to receive only
-    /// strictly-newer events.
-    pub async fn query_mob_events(&self, query: &EventQuery) -> Vec<MobStructuralEventEnvelope> {
-        self.mob_events.query(query).await
+    /// strictly-newer events. Without `after_seq` the call returns the
+    /// **latest** matching events up to `limit` (default 256), scanning
+    /// the ledger backwards from `latest_cursor`.
+    ///
+    /// Errors propagate the typed [`mob_events::MobEventsQueryError`]
+    /// so the JSON-RPC handler can surface `StaleEventCursor` as code
+    /// `-32010`.
+    pub async fn query_mob_events(
+        &self,
+        query: &EventQuery,
+    ) -> Result<Vec<MobStructuralEventEnvelope>, mob_events::MobEventsQueryError> {
+        let events = self.mob_runtime.handle().events();
+        mob_events::query_ledger_with_filter(&events, &self.mob_events, query).await
     }
 
     /// Subscribe to live structural mob events. Returns a broadcast
@@ -531,52 +576,98 @@ async fn run_mob_event_forwarder(
     router.cancel();
 }
 
-/// Poll the mob's structural event log and project each `MobEvent` into
-/// the in-memory [`MobEventsStore`]. Runs until the mob handle stops
-/// returning events (machine destroyed) or the runtime drops.
+/// Streaming subscription against the meerkat mob event ledger. Each
+/// projected envelope's cursor is the upstream `MobEvent.cursor`; after
+/// projection the cursor is checkpointed via `persistent_metadata` so
+/// the next runtime instance can resume from where this one left off.
 ///
-/// Polls on the same cadence as the meerkat-mob `MobEventRouter` (500ms)
-/// to avoid tight loops while keeping live SSE catchup snappy.
-async fn run_mob_events_poller(handle: MobHandle, store: MobEventsStore) {
-    use std::time::Duration;
-    const MAX_CONSECUTIVE_ERRORS: u32 = 32;
-    let mut cursor: u64 = 0;
-    let mut consecutive_errors: u32 = 0;
-    let mut interval = tokio::time::interval(Duration::from_millis(500));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        interval.tick().await;
-        let events = match handle.poll_events(cursor, 256).await {
-            Ok(events) => {
-                consecutive_errors = 0;
-                events
+/// Resume semantics on startup:
+/// - persisted cursor present → `subscribe_after(cursor)`. On
+///   `MobError::StaleEventCursor` (the ledger has been truncated past
+///   our checkpoint) the task logs a warning and falls through to a
+///   fresh `subscribe()` at the current latest.
+/// - no persisted cursor → `subscribe()` (latest, no replay).
+///
+/// Exits when the upstream `event_rx` closes (machine destroyed) or
+/// when subscription setup fails after a stale-cursor fallback.
+async fn run_mob_events_subscription(
+    handle: MobHandle,
+    store: MobEventsStore,
+    persistent_metadata: Arc<dyn PersistentMetadataStore>,
+) {
+    let mob_id = handle.mob_id().as_str().to_string();
+    let resume_cursor = match persistent_metadata.get_subscription_cursor(&mob_id).await {
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                mob_id = %mob_id,
+                error = %err,
+                "mob_events subscription: failed to read persisted cursor; resuming from latest"
+            );
+            None
+        }
+    };
+
+    let events = handle.events();
+    let mut subscription = match resume_cursor {
+        Some(cursor) => match events.subscribe_after(cursor).await {
+            Ok(sub) => sub,
+            Err(MobError::StaleEventCursor {
+                after_cursor,
+                latest_cursor,
+            }) => {
+                tracing::warn!(
+                    mob_id = %mob_id,
+                    after_cursor,
+                    latest_cursor,
+                    "mob_events subscription: persisted cursor is past ledger frontier; resuming at latest"
+                );
+                match events.subscribe().await {
+                    Ok(sub) => sub,
+                    Err(err) => {
+                        tracing::warn!(
+                            mob_id = %mob_id,
+                            error = %err,
+                            "mob_events subscription: failed to subscribe at latest after stale-cursor recovery"
+                        );
+                        return;
+                    }
+                }
             }
             Err(err) => {
-                // Polling failures are typically transient (machine
-                // contention, store hiccups). After a long sustained run
-                // of failures we assume the actor is gone for good and
-                // exit so the task doesn't churn forever.
-                consecutive_errors = consecutive_errors.saturating_add(1);
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-                    tracing::warn!(
-                        error = %err,
-                        "mob_events poller: giving up after sustained poll_events failures"
-                    );
-                    break;
-                }
-                tracing::debug!(
+                tracing::warn!(
+                    mob_id = %mob_id,
                     error = %err,
-                    "mob_events poller: poll_events failed; will retry"
+                    "mob_events subscription: failed to resume from persisted cursor"
                 );
-                continue;
+                return;
             }
-        };
-        if events.is_empty() {
-            continue;
-        }
-        for event in events {
-            cursor = cursor.max(event.cursor);
-            let _ = store.project_mob_event(&event).await;
+        },
+        None => match events.subscribe().await {
+            Ok(sub) => sub,
+            Err(err) => {
+                tracing::warn!(
+                    mob_id = %mob_id,
+                    error = %err,
+                    "mob_events subscription: initial subscribe failed"
+                );
+                return;
+            }
+        },
+    };
+
+    while let Some(event) = subscription.event_rx.recv().await {
+        let envelope = store.project_mob_event(&event).await;
+        if let Err(err) = persistent_metadata
+            .set_subscription_cursor(&mob_id, envelope.cursor)
+            .await
+        {
+            tracing::warn!(
+                mob_id = %mob_id,
+                cursor = envelope.cursor,
+                error = %err,
+                "mob_events subscription: failed to persist cursor; continuing"
+            );
         }
     }
 }

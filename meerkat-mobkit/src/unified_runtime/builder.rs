@@ -11,7 +11,9 @@ use crate::contact_directory::ContactDirectory;
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
 };
-use crate::runtime::RuntimeOptions;
+use crate::runtime::{
+    InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions, SqliteMetadataStore,
+};
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -70,6 +72,7 @@ pub struct UnifiedRuntimeBuilder {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     mob_storage_in_memory: bool,
+    persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -280,6 +283,20 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Install a persistent metadata store. Used for the structural-events
+    /// subscription cursor — see `runtime::metadata::PersistentMetadataStore`.
+    /// When unset, the builder defaults to an `InMemoryMetadataStore`, which
+    /// is correct for in-memory mob deployments. Production gateways with a
+    /// SQLite mob storage should pass `SqliteMetadataStore::open(path)`
+    /// against the same database the mob uses, so the structural-events
+    /// subscription can resume from the last-projected cursor on restart
+    /// rather than jumping forward to "latest" and dropping events emitted
+    /// between processes.
+    pub fn persistent_metadata(mut self, store: Arc<dyn PersistentMetadataStore>) -> Self {
+        self.persistent_metadata = Some(store);
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Build
     // -----------------------------------------------------------------------
@@ -353,12 +370,36 @@ impl UnifiedRuntimeBuilder {
         });
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
+        // The structural-events subscription cursor lives in the
+        // persistent metadata adapter. For ephemeral builds this can be
+        // in-memory (the ledger itself isn't durable, so there's nothing
+        // to resume from). For persistent_state builds we MUST default
+        // to SQLite — otherwise after a gateway restart the subscriber
+        // resumes from `latest_cursor` and silently skips every event
+        // that was written to the durable mob ledger while MobKit was
+        // down. Callers can still override via `.persistent_metadata()`.
+        let persistent_metadata: Arc<dyn PersistentMetadataStore> =
+            if let Some(store) = self.persistent_metadata.clone() {
+                store
+            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
+                let metadata_path = state_path.join("mobkit_metadata.sqlite");
+                Arc::new(SqliteMetadataStore::open(&metadata_path).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to open mobkit_metadata.sqlite at {}: {e}",
+                        metadata_path.display()
+                    ))
+                })?)
+            } else {
+                Arc::new(InMemoryMetadataStore::new())
+            };
+
         let runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
             timeout,
             self.options,
+            persistent_metadata,
         )
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
