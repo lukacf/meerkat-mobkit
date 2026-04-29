@@ -39,6 +39,68 @@ var import_client = require("react-dom/client");
 // src/ConsoleApp.tsx
 var import_react19 = __toESM(require("react"));
 
+// node_modules/clsx/dist/clsx.mjs
+function r(e) {
+  var t, f, n = "";
+  if ("string" == typeof e || "number" == typeof e) n += e;
+  else if ("object" == typeof e) if (Array.isArray(e)) {
+    var o = e.length;
+    for (t = 0; t < o; t++) e[t] && (f = r(e[t])) && (n && (n += " "), n += f);
+  } else for (f in e) e[f] && (n && (n += " "), n += f);
+  return n;
+}
+function clsx() {
+  for (var e, t, f = 0, n = "", o = arguments.length; f < o; f++) (e = arguments[f]) && (t = r(e)) && (n && (n += " "), n += t);
+  return n;
+}
+var clsx_default = clsx;
+
+// ../packages/console-components/src/shared.ts
+function fallbackCopyTextToClipboard(text) {
+  if (typeof document === "undefined" || !document.body || typeof document.execCommand !== "function") {
+    return false;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.top = "0";
+  textarea.style.left = "0";
+  textarea.style.opacity = "0";
+  textarea.style.pointerEvents = "none";
+  document.body.appendChild(textarea);
+  const selection = typeof document.getSelection === "function" ? document.getSelection() : null;
+  const existingRanges = selection ? Array.from({ length: selection.rangeCount }, (_value, index) => selection.getRangeAt(index)) : [];
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  document.body.removeChild(textarea);
+  if (selection) {
+    selection.removeAllRanges();
+    existingRanges.forEach((range) => selection.addRange(range));
+  }
+  return copied;
+}
+async function copyTextToClipboard(text) {
+  if (!text.trim()) {
+    return false;
+  }
+  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+    }
+  }
+  return fallbackCopyTextToClipboard(text);
+}
+
 // ../packages/console-components/src/activity/console-activity-rail.tsx
 var import_jsx_runtime = require("react/jsx-runtime");
 
@@ -252,6 +314,17 @@ function normalizeConsoleInteractionRejectedError(value) {
 var FILE_CHANGE_RE = /^(Created|Updated|Modified|Deleted)\b/i;
 var TERMINAL_DURATION_RE = /^Worked for\s+.+$/i;
 var TERMINAL_STATUS_RE = /^(Success|Running|Failed|Cancelled)$/i;
+function escapeHtml(value) {
+  return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+function renderConversationInlineMarkdown(text) {
+  const codeTokens = [];
+  const escaped = escapeHtml(text || "").replace(/`([^`]+)`/g, (_match, code) => {
+    const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
+    return `@@CODE_${index}@@`;
+  }).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>').replace(/\n/g, "<br />");
+  return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");
+}
 function conversationRichBlockCopyText(block) {
   switch (block.type) {
     case "code":
@@ -1283,6 +1356,11 @@ function buildConsoleDockViewState(state, options = {}) {
   };
 }
 
+// ../packages/console-core/src/format.ts
+function formatCount(value) {
+  return new Intl.NumberFormat("en-US").format(Number(value) || 0);
+}
+
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_react3 = require("react");
 
@@ -1291,13 +1369,405 @@ var import_react2 = require("react");
 
 // ../packages/console-components/src/conversation/change-stat-pair.tsx
 var import_jsx_runtime3 = require("react/jsx-runtime");
+function ChangeStatPair({
+  plus,
+  minus,
+  className
+}) {
+  return /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: clsx_default("cc-change-stat", className), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "cc-change-stat__value is-plus", children: [
+      "+",
+      formatCount(plus)
+    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime3.jsxs)("span", { className: "cc-change-stat__value is-minus", children: [
+      "-",
+      formatCount(minus)
+    ] })
+  ] });
+}
 
 // ../packages/console-components/src/copy-button.tsx
 var import_react = require("react");
 var import_jsx_runtime4 = require("react/jsx-runtime");
+function CopyButton({
+  text,
+  label,
+  copiedLabel = "Copied",
+  className,
+  Icon: Icon2
+}) {
+  const [copied, setCopied] = (0, import_react.useState)(false);
+  const resetTimerRef = (0, import_react.useRef)(null);
+  const disabled = !text.trim();
+  (0, import_react.useEffect)(() => () => {
+    if (resetTimerRef.current != null) {
+      window.clearTimeout(resetTimerRef.current);
+    }
+  }, []);
+  async function handleClick() {
+    if (disabled) {
+      return;
+    }
+    const wasCopied = await copyTextToClipboard(text);
+    if (!wasCopied) {
+      return;
+    }
+    setCopied(true);
+    if (resetTimerRef.current != null) {
+      window.clearTimeout(resetTimerRef.current);
+    }
+    resetTimerRef.current = window.setTimeout(() => {
+      setCopied(false);
+      resetTimerRef.current = null;
+    }, 1600);
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(
+    "button",
+    {
+      className: clsx_default("cc-copy-btn", className),
+      type: "button",
+      "aria-label": copied ? copiedLabel : label,
+      title: copied ? copiedLabel : label,
+      "data-copied": copied ? "true" : void 0,
+      disabled,
+      onClick: () => {
+        void handleClick();
+      },
+      children: Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Icon2, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
+    }
+  );
+}
 
 // ../packages/console-components/src/conversation/conversation-rich-content.tsx
 var import_jsx_runtime5 = require("react/jsx-runtime");
+function markdownHtml(text) {
+  return { __html: renderConversationInlineMarkdown(text) };
+}
+function commandCopyText(block) {
+  return [block.title, block.body, block.output || "", block.footer || ""].filter(Boolean).join("\n").trim();
+}
+function fileChangeCopyText(block) {
+  return [
+    block.verb,
+    block.before || "",
+    block.name,
+    block.after || "",
+    `+${block.plus}`,
+    `-${block.minus}`
+  ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+}
+function alignmentAttr(alignment) {
+  return alignment || "left";
+}
+function renderThinkingBlock(block) {
+  if (!block.label?.trim() && !block.text?.trim()) {
+    return null;
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+    "div",
+    {
+      className: clsx_default(
+        "cc-rich-thinking",
+        block.final && "cc-rich-thinking--final",
+        block.persisted && "cc-rich-thinking--persisted"
+      ),
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-thinking__label", children: block.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text) })
+      ]
+    }
+  );
+}
+function renderBlock(block, index, Icon2) {
+  if (block.type === "paragraph") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text) }, `paragraph-${index}`);
+  }
+  if (block.type === "heading") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      "h3",
+      {
+        className: `cc-rich-heading cc-rich-heading--${Number(block.level) || 2}`,
+        dangerouslySetInnerHTML: markdownHtml(block.text)
+      },
+      `heading-${index}`
+    );
+  }
+  if (block.type === "code") {
+    const codeBlock = block;
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "cc-rich-code-card", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-code-card__header", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-code-language", children: codeBlock.language || "text" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          CopyButton,
+          {
+            copiedLabel: "Copied code",
+            Icon: Icon2,
+            label: "Copy code",
+            text: codeBlock.body
+          }
+        )
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-rich-code-body", children: codeBlock.highlightedHtml ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        "code",
+        {
+          className: `cc-rich-code-content language-${codeBlock.language || "text"}`,
+          dangerouslySetInnerHTML: { __html: codeBlock.highlightedHtml }
+        }
+      ) : /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("code", { className: `cc-rich-code-content language-${codeBlock.language || "text"}`, children: codeBlock.body }) })
+    ] }, `code-${index}`);
+  }
+  if (block.type === "table") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-table-wrap", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("table", { className: "cc-rich-table", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("thead", { children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tr", { children: block.headers.map((header, cellIndex) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        "th",
+        {
+          "data-align": alignmentAttr(block.alignments[cellIndex]),
+          dangerouslySetInnerHTML: markdownHtml(header)
+        },
+        `header-${cellIndex}`
+      )) }) }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tbody", { children: block.rows.map((row, rowIndex) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("tr", { children: block.headers.map((_header, cellIndex) => /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+        "td",
+        {
+          "data-align": alignmentAttr(block.alignments[cellIndex]),
+          dangerouslySetInnerHTML: markdownHtml(row[cellIndex] || "")
+        },
+        `cell-${rowIndex}-${cellIndex}`
+      )) }, `row-${rowIndex}`)) })
+    ] }) }, `table-${index}`);
+  }
+  if (block.type === "command") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-command-stack", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-command-caption", children: block.caption }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-command-card", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-command-card__header", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-command-card__title", children: block.title }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+            CopyButton,
+            {
+              copiedLabel: "Copied command output",
+              Icon: Icon2,
+              label: "Copy command output",
+              text: commandCopyText(block)
+            }
+          )
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-rich-command-card__body", children: block.body }),
+        block.output ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-rich-command-card__output", children: block.output }) : null,
+        block.footer ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-command-card__footer", children: block.footer }) : null
+      ] })
+    ] }, `command-${index}`);
+  }
+  if (block.type === "file-change") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: "cc-rich-file-change", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-file-change__main", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__verb", children: block.verb }),
+        block.before ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__context", dangerouslySetInnerHTML: markdownHtml(block.before) }) : null,
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("button", { className: "cc-rich-file-change__link", type: "button", children: block.name }),
+        block.after ? /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__context", dangerouslySetInnerHTML: markdownHtml(block.after) }) : null
+      ] }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-file-change__stats", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ChangeStatPair, { minus: block.minus, plus: block.plus }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-file-change__dot" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          CopyButton,
+          {
+            copiedLabel: "Copied file change",
+            Icon: Icon2,
+            label: "Copy file change",
+            text: fileChangeCopyText(block)
+          }
+        )
+      ] })
+    ] }, `file-change-${index}`);
+  }
+  if (block.type === "divider") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-rich-divider", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__line" }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__label", children: block.text }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__line" })
+    ] }, `divider-${index}`);
+  }
+  if (block.type === "tool-call") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolCallBlock, { block }, `tool-call-${index}`);
+  }
+  const thinking = renderThinkingBlock(block);
+  if (!thinking) {
+    return null;
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { children: thinking }, `thinking-${index}`);
+}
+var PEER_TOOL_NAMES = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
+function copyText(text) {
+  navigator.clipboard?.writeText(text).catch(() => {
+  });
+}
+function toolBlockCopyText(block) {
+  if (block.peerTarget) {
+    const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
+    return [
+      `${dir} ${block.peerTarget}`,
+      block.peerIntent,
+      block.peerBody,
+      block.result
+    ].filter(Boolean).join(": ").trim();
+  }
+  const parts = [`$ ${block.name}`];
+  if (block.arguments) parts.push(`Input: ${block.arguments}`);
+  if (block.result) parts.push(`Result: ${block.result}`);
+  return parts.join("\n").trim();
+}
+function CopyBtn({ text, label = "Copy" }) {
+  const [copied, setCopied] = (0, import_react2.useState)(false);
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+    "button",
+    {
+      className: "cc-tool-call__copy",
+      type: "button",
+      title: label,
+      onClick: (e) => {
+        e.stopPropagation();
+        copyText(text);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      },
+      children: copied ? "\u2713" : "\u2398"
+    }
+  );
+}
+function ToolCallBlock({ block }) {
+  const [expanded, setExpanded] = (0, import_react2.useState)(false);
+  const isPeer = PEER_TOOL_NAMES.has(block.name);
+  const statusIcon = block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF";
+  const statusClass = `cc-tool-call--${block.status}`;
+  if (isPeer || block.peerIncoming) {
+    const target = block.peerTarget || "peer";
+    const content = block.peerBody || block.peerIntent || "";
+    const arrow = block.peerIncoming ? "\u2199" : "\u2197";
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass), children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+        "button",
+        {
+          className: "cc-tool-call__header",
+          type: "button",
+          onClick: () => setExpanded((prev) => !prev),
+          "aria-expanded": expanded,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.peerIncoming ? `Received from ${target}` : target }),
+            content && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: content }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
+            /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
+          ]
+        }
+      ),
+      expanded && block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result }) })
+    ] });
+  }
+  let argsPreview = block.arguments || "";
+  try {
+    const parsed = JSON.parse(argsPreview);
+    if (typeof parsed === "object" && parsed !== null) {
+      argsPreview = Object.entries(parsed).map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`).join(", ");
+    }
+  } catch {
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call", statusClass), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "button",
+      {
+        className: "cc-tool-call__header",
+        type: "button",
+        onClick: () => setExpanded((prev) => !prev),
+        "aria-expanded": expanded,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: "\u2699" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.name }),
+          argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: argsPreview }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__status", children: [
+            statusIcon,
+            " ",
+            block.status === "pending" ? "Running" : block.status === "success" ? "Success" : "Failed"
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__body", children: [
+      argsPreview && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Input" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: argsPreview })
+      ] }),
+      block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Result" }),
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result })
+      ] })
+    ] })
+  ] });
+}
+function PeerToolGroup({ blocks }) {
+  const [expanded, setExpanded] = (0, import_react2.useState)(false);
+  const targets = blocks.map((b) => b.peerTarget || "peer");
+  const allSuccess = blocks.every((b) => b.status === "success");
+  const anyError = blocks.some((b) => b.status === "error");
+  const statusIcon = anyError ? "\u2717" : allSuccess ? "\u2713" : "\u22EF";
+  const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
+  const isIncoming = blocks[0]?.peerIncoming;
+  const arrow = isIncoming ? "\u2199" : "\u2197";
+  const label = isIncoming ? `Received from ${targets.join(", ")}` : `Sent to ${targets.join(", ")}`;
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass), children: [
+    /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
+      "button",
+      {
+        className: "cc-tool-call__header",
+        type: "button",
+        onClick: () => setExpanded((prev) => !prev),
+        "aria-expanded": expanded,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: label }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: blocks.map((b) => toolBlockCopyText(b)).join("\n") })
+        ]
+      }
+    ),
+    expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: blocks.map((block, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__peer-row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__peer-target", children: [
+        isIncoming ? "\u2190" : "\u2192",
+        " ",
+        block.peerTarget || "peer"
+      ] }),
+      block.peerIntent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-intent", children: block.peerIntent }),
+      block.peerBody && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-body", children: block.peerBody }),
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: `cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`, children: block.status === "success" ? "\u2713" : block.status === "error" ? "\u2717" : "\u22EF" })
+    ] }, block.toolCallId || i)) })
+  ] });
+}
+function ConversationRichContent({
+  blocks,
+  richStyle = "default",
+  Icon: Icon2
+}) {
+  const allPeerTools = blocks.length > 1 && blocks.every((b) => {
+    if (b.type !== "tool-call") return false;
+    const tc = b;
+    return PEER_TOOL_NAMES.has(tc.name) || tc.peerIncoming;
+  });
+  if (allPeerTools) {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(PeerToolGroup, { blocks });
+  }
+  const body = blocks.map((block, index) => renderBlock(block, index, Icon2)).filter(Boolean);
+  if (body.length === 0) {
+    return null;
+  }
+  if (richStyle === "streaming") {
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-rich-streaming", children: body });
+  }
+  return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(import_jsx_runtime5.Fragment, { children: body });
+}
 
 // ../packages/console-components/src/conversation/summary-card.tsx
 var import_jsx_runtime6 = require("react/jsx-runtime");
@@ -3129,8 +3599,8 @@ function GatingInboxPanel({ pending, audit, onDecide }) {
   const [tab, setTab] = import_react9.default.useState("pending");
   const [selectedId, setSelectedId] = import_react9.default.useState(null);
   const autoApproved = audit.filter((e) => {
-    const r = e;
-    return String(r.decision || "").toLowerCase() === "auto_approve" || String(r.event_type || "").includes("auto");
+    const r2 = e;
+    return String(r2.decision || "").toLowerCase() === "auto_approve" || String(r2.event_type || "").includes("auto");
   });
   const currentList = tab === "pending" ? pending : tab === "auto" ? autoApproved : audit;
   return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)("div", { className: "gating", "data-testid": "gating-panel", children: [
@@ -3189,13 +3659,13 @@ function GatingInboxPanel({ pending, audit, onDecide }) {
         " items."
       ] }),
       currentList.map((entry, index) => {
-        const r = entry;
-        const pid = String(r.pending_id || r.audit_id || `item-${index}`);
-        const action = String(r.action_id || r.event_type || "unknown action");
-        const agent = String(r.agent || r.identity || r.actor || "");
-        const waited = formatWaited(r);
-        const risk = getRisk(r);
-        const payload = payloadSummary(r);
+        const r2 = entry;
+        const pid = String(r2.pending_id || r2.audit_id || `item-${index}`);
+        const action = String(r2.action_id || r2.event_type || "unknown action");
+        const agent = String(r2.agent || r2.identity || r2.actor || "");
+        const waited = formatWaited(r2);
+        const risk = getRisk(r2);
+        const payload = payloadSummary(r2);
         const selected = selectedId === pid;
         const showActions = tab === "pending";
         return /* @__PURE__ */ (0, import_jsx_runtime19.jsxs)(
@@ -3291,7 +3761,7 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
       return hay.includes(q.toLowerCase());
     });
   }, [agents, q, role]);
-  const active = rows.find((r) => r.member_id === sel) || rows[0];
+  const active = rows.find((r2) => r2.member_id === sel) || rows[0];
   const activeIdentity = active?.identity || active?.member_id || "";
   return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "view roster", "data-testid": "roster-panel", children: [
     /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "view__head", children: [
@@ -3312,7 +3782,7 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
           onChange: (e) => setQ(e.target.value)
         }
       ),
-      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "view__segs", children: ROLE_BUCKETS.map((r) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("button", { className: role === r ? "is-active" : "", onClick: () => setRole(r), children: r }, r)) })
+      /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "view__segs", children: ROLE_BUCKETS.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("button", { className: role === r2 ? "is-active" : "", onClick: () => setRole(r2), children: r2 }, r2)) })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "roster__body", children: [
       /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "roster__table", children: [
@@ -3325,35 +3795,35 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Chk" }),
           /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: "Lease" })
         ] }),
-        rows.map((r) => {
-          const isSel = active && r.member_id === active.member_id;
+        rows.map((r2) => {
+          const isSel = active && r2.member_id === active.member_id;
           return /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
             "div",
             {
               className: `roster__row ${isSel ? "is-selected" : ""}`,
-              "data-state": stateLabel(r.state),
+              "data-state": stateLabel(r2.state),
               onClick: () => {
-                setSel(r.member_id);
-                onSelect(r);
+                setSel(r2.member_id);
+                onSelect(r2);
               },
-              "data-testid": `roster-row:${r.member_id}`,
+              "data-testid": `roster-row:${r2.member_id}`,
               children: [
                 /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { className: "roster__name", children: [
                   /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__dot" }),
                   /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { children: r.label }),
-                    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "roster__id", children: r.identity || r.member_id })
+                    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { children: r2.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("div", { className: "roster__id", children: r2.identity || r2.member_id })
                   ] })
                 ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: roleOf(r) }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__state", children: stateLabel(r.state) }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.role || "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r.generation ?? "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r.checkpoint_version ?? "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r.lease_healthy === false ? "unhealthy" : "ok" })
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: roleOf(r2) }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "roster__state", children: stateLabel(r2.state) }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r2.role || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r2.generation ?? "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono", children: r2.checkpoint_version ?? "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { className: "mono dim", children: r2.lease_healthy === false ? "unhealthy" : "ok" })
               ]
             },
-            r.member_id
+            r2.member_id
           );
         })
       ] }),
@@ -3428,10 +3898,10 @@ function RoutingPanel({ data }) {
     if (!q) return routes;
     const needle = q.toLowerCase();
     return routes.filter(
-      (r) => r.route_key.toLowerCase().includes(needle) || r.recipient.toLowerCase().includes(needle) || r.sink.toLowerCase().includes(needle) || r.target_module.toLowerCase().includes(needle)
+      (r2) => r2.route_key.toLowerCase().includes(needle) || r2.recipient.toLowerCase().includes(needle) || r2.sink.toLowerCase().includes(needle) || r2.target_module.toLowerCase().includes(needle)
     );
   }, [routes, q]);
-  const active = rows.find((r) => r.route_key === sel) || rows[0];
+  const active = rows.find((r2) => r2.route_key === sel) || rows[0];
   const recentDeliveries = deliveries.slice(0, 40);
   const trafficForRoute = (routeKey) => deliveries.filter((d) => d.route_id === routeKey).length;
   return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "view routing", "data-testid": "routing-panel", children: [
@@ -3464,24 +3934,24 @@ function RoutingPanel({ data }) {
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "Module" }),
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: "24h" })
         ] }),
-        rows.map((r) => {
-          const isSel = active && r.route_key === active.route_key;
+        rows.map((r2) => {
+          const isSel = active && r2.route_key === active.route_key;
           return /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)(
             "div",
             {
               className: `routing__row ${isSel ? "is-selected" : ""}`,
-              onClick: () => setSel(r.route_key),
-              "data-testid": `routing-route:${r.route_key}`,
+              onClick: () => setSel(r2.route_key),
+              "data-testid": `routing-route:${r2.route_key}`,
               children: [
-                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "routing__intent mono", children: r.route_key }),
-                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono dim", children: r.channel || "\u2014" }),
-                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono", children: r.recipient }),
-                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "dim", children: r.sink }),
-                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono dim", children: r.target_module }),
-                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono", children: trafficForRoute(r.route_key) })
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "routing__intent mono", children: r2.route_key }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono dim", children: r2.channel || "\u2014" }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono", children: r2.recipient }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "dim", children: r2.sink }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono dim", children: r2.target_module }),
+                /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "mono", children: trafficForRoute(r2.route_key) })
               ]
             },
-            r.route_key
+            r2.route_key
           );
         }),
         rows.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { style: { padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }, children: "No routes configured." })
@@ -3549,10 +4019,10 @@ var import_jsx_runtime22 = require("react/jsx-runtime");
 function derivePolicies(audit) {
   const byAction = /* @__PURE__ */ new Map();
   for (const entry of audit) {
-    const r = entry;
-    const action = String(r.action_id || r.event_type || "unknown");
-    const decision = String(r.decision || "").toLowerCase();
-    const approver = String(r.approver_id || r.actor || "");
+    const r2 = entry;
+    const action = String(r2.action_id || r2.event_type || "unknown");
+    const decision = String(r2.decision || "").toLowerCase();
+    const approver = String(r2.approver_id || r2.actor || "");
     const cur = byAction.get(action) || { approved: 0, rejected: 0, escalated: 0, approvers: /* @__PURE__ */ new Set() };
     if (decision === "approve" || decision === "auto_approve") cur.approved++;
     else if (decision === "reject") cur.rejected++;
@@ -4173,35 +4643,10 @@ function formatTime3(iso) {
   const ss = String(d.getSeconds()).padStart(2, "0");
   return `${hh}:${mm}:${ss}`;
 }
-function summariseRichBlock(block) {
-  switch (block.type) {
-    case "paragraph":
-      return block.text;
-    case "heading":
-      return block.text;
-    case "code":
-      return block.code;
-    case "command":
-      return block.command;
-    case "divider":
-      return block.text;
-    case "file-change":
-      return `${block.verb} ${block.name} (+${block.plus}/-${block.minus})`;
-    case "table":
-      return block.rows.map((r) => r.join(" \xB7 ")).join("\n");
-    case "tool-call": {
-      const parts = [block.name];
-      if (block.peerTarget) parts.push(`\u2192 ${block.peerTarget}`);
-      if (block.peerIntent) parts.push(`(${block.peerIntent})`);
-      if (block.peerBody) parts.push(block.peerBody.slice(0, 160));
-      else if (block.arguments) parts.push(block.arguments.slice(0, 160));
-      return parts.join(" ");
-    }
-    case "thinking":
-      return block.text;
-    default:
-      return "";
-  }
+function richBlockKind(block, isUser) {
+  if (block.type === "tool-call") return "tool";
+  if (block.type === "thinking") return "thought";
+  return isUser ? "user" : "agent";
 }
 function flattenEntry(entry) {
   if (entry.kind === "summary") {
@@ -4223,40 +4668,39 @@ function flattenEntry(entry) {
   const role = entry.identity.role;
   const isUser = role === "user";
   const label = entry.identity.label;
+  const time = formatTime3(entry.createdAt);
   if (entry.variant === "rich" && Array.isArray(entry.blocks) && entry.blocks.length > 0) {
     const msgs = [];
+    let groupKind = null;
+    let groupBlocks = [];
+    let groupStart = 0;
+    const flushGroup = (endIndex) => {
+      if (groupKind === null || groupBlocks.length === 0) return;
+      msgs.push({
+        id: `${entry.id}:${groupStart}-${endIndex - 1}`,
+        kind: groupKind,
+        time,
+        who: groupKind === "agent" ? label : void 0,
+        blocks: groupBlocks
+      });
+      groupKind = null;
+      groupBlocks = [];
+    };
     for (let i = 0; i < entry.blocks.length; i++) {
       const block = entry.blocks[i];
-      const text = summariseRichBlock(block);
-      if (!text) continue;
-      if (block.type === "tool-call") {
-        msgs.push({
-          id: `${entry.id}:${i}`,
-          kind: "tool",
-          time: formatTime3(entry.createdAt),
-          text
-        });
-      } else if (block.type === "thinking") {
-        msgs.push({
-          id: `${entry.id}:${i}`,
-          kind: "thought",
-          time: formatTime3(entry.createdAt),
-          text
-        });
-      } else {
-        msgs.push({
-          id: `${entry.id}:${i}`,
-          kind: isUser ? "user" : "agent",
-          time: formatTime3(entry.createdAt),
-          who: isUser ? void 0 : label,
-          text
-        });
+      const kind = richBlockKind(block, isUser);
+      if (kind !== groupKind) {
+        flushGroup(i);
+        groupKind = kind;
+        groupStart = i;
       }
+      groupBlocks.push(block);
     }
+    flushGroup(entry.blocks.length);
     return msgs.length ? msgs : [{
       id: entry.id,
       kind: isUser ? "user" : "agent",
-      time: formatTime3(entry.createdAt),
+      time,
       who: isUser ? void 0 : label,
       text: ""
     }];
@@ -4264,7 +4708,7 @@ function flattenEntry(entry) {
   return [{
     id: entry.id,
     kind: isUser ? "user" : "agent",
-    time: formatTime3(entry.createdAt),
+    time,
     who: isUser ? void 0 : label,
     text: entry.text || ""
   }];
@@ -4287,7 +4731,28 @@ function ChatPane({
   import_react17.default.useEffect(() => {
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [entries.length, phase]);
-  const messages = import_react17.default.useMemo(() => entries.flatMap(flattenEntry), [entries]);
+  const messages = import_react17.default.useMemo(() => {
+    const flat = entries.flatMap(flattenEntry);
+    const merged = [];
+    for (const m of flat) {
+      const last = merged[merged.length - 1];
+      const canMerge = last && last.kind === "tool" && m.kind === "tool" && Array.isArray(last.blocks) && Array.isArray(m.blocks) && // Only fold blocks that are all peer tool calls (regardless
+      // of direction). Generic tool calls keep their own row.
+      last.blocks.every(
+        (b) => b.type === "tool-call" && (b.peerTarget !== void 0 || b.peerIncoming === true)
+      ) && m.blocks.every(
+        (b) => b.type === "tool-call" && (b.peerTarget !== void 0 || b.peerIncoming === true)
+      ) && // Don't fold incoming + outgoing into the same group.
+      last.blocks[0].type === "tool-call" && m.blocks[0].type === "tool-call" && Boolean(last.blocks[0].peerIncoming) === Boolean(m.blocks[0].peerIncoming);
+      if (canMerge && last && last.blocks && m.blocks) {
+        last.blocks = [...last.blocks, ...m.blocks];
+        last.id = `${last.id}+${m.id}`;
+      } else {
+        merged.push({ ...m });
+      }
+    }
+    return merged;
+  }, [entries]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
@@ -4320,7 +4785,7 @@ function ChatPane({
         /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg__bubble", children: [
           m.kind === "user" && m.who && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("b", { children: m.who }) }),
           m.kind === "agent" && m.who && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("b", { children: m.who }) }),
-          m.text && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__text", children: m.text })
+          m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "msg__text", children: m.text })
         ] })
       ] }, m.id)),
       phase && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg msg--origin", "data-testid": `chat-phase:${phase}`, children: [
@@ -4539,8 +5004,8 @@ function SplitView(props) {
     const rect = host.getBoundingClientRect();
     e.currentTarget.setPointerCapture(e.pointerId);
     function move(ev) {
-      const r = direction === "horizontal" ? (ev.clientX - rect.left) / rect.width : (ev.clientY - rect.top) / rect.height;
-      props.onResizeSplit(node.id, Math.max(0.1, Math.min(0.9, r)));
+      const r2 = direction === "horizontal" ? (ev.clientX - rect.left) / rect.width : (ev.clientY - rect.top) / rect.height;
+      props.onResizeSplit(node.id, Math.max(0.1, Math.min(0.9, r2)));
     }
     function end() {
       window.removeEventListener("pointermove", move);
@@ -4906,9 +5371,9 @@ function ConsoleApp({ baseUrl }) {
         break;
       case "text_delta": {
         if (currentPhase === "tool-executing") {
-          const r = Math.max(0, 300 - elapsedMs);
-          if (r > 0) {
-            schedulePanelPhase(panelKey, "generating", r);
+          const r2 = Math.max(0, 300 - elapsedMs);
+          if (r2 > 0) {
+            schedulePanelPhase(panelKey, "generating", r2);
             break;
           }
         }
@@ -4980,8 +5445,8 @@ function ConsoleApp({ baseUrl }) {
     const inspects = openPanels.filter((t) => t.kind === "identity-inspect");
     if (inspects.length) {
       const entries = await Promise.all(inspects.map(async (t) => {
-        const r = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
-        return [t.identity, r];
+        const r2 = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
+        return [t.identity, r2];
       }));
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
@@ -5327,13 +5792,13 @@ function ConsoleApp({ baseUrl }) {
     ] });
   }
   function renderHealthPanel(identities) {
-    return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("ul", { className: "console-panel__list", children: identities.map((r) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("li", { "data-testid": `health-identity:${r.identity}`, children: [
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("strong", { children: r.display_name || r.identity }),
+    return /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "console-panel", "data-testid": "health-panel", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("ul", { className: "console-panel__list", children: identities.map((r2) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("li", { "data-testid": `health-identity:${r2.identity}`, children: [
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("strong", { children: r2.display_name || r2.identity }),
       " \xB7 ",
-      r.state,
+      r2.state,
       " \xB7 ",
-      r.addressability
-    ] }, r.identity)) }) });
+      r2.addressability
+    ] }, r2.identity)) }) });
   }
   function handleInspectAgent(agent) {
     dock.openTarget(buildInspectTarget(agent), "new_tab");

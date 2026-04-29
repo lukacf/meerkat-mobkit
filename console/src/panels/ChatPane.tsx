@@ -3,6 +3,7 @@ import type {
   ConversationTimelineEntry,
   ConversationRichBlock,
 } from "@console-core";
+import { ConversationRichContent } from "@console-components";
 import type { ConsoleAgent } from "../types";
 
 interface ChatPaneProps {
@@ -41,28 +42,19 @@ function formatTime(iso?: string): string {
   return `${hh}:${mm}:${ss}`;
 }
 
-function summariseRichBlock(block: ConversationRichBlock): Msg["text"] {
-  switch (block.type) {
-    case "paragraph":   return block.text;
-    case "heading":     return block.text;
-    case "code":        return block.code;
-    case "command":     return block.command;
-    case "divider":     return block.text;
-    case "file-change": return `${block.verb} ${block.name} (+${block.plus}/-${block.minus})`;
-    case "table":       return block.rows.map((r) => r.join(" · ")).join("\n");
-    case "tool-call": {
-      const parts = [block.name];
-      if (block.peerTarget) parts.push(`→ ${block.peerTarget}`);
-      if (block.peerIntent) parts.push(`(${block.peerIntent})`);
-      if (block.peerBody) parts.push(block.peerBody.slice(0, 160));
-      else if (block.arguments) parts.push(block.arguments.slice(0, 160));
-      return parts.join(" ");
-    }
-    case "thinking":    return block.text;
-    default:            return "";
-  }
+/// Classify a single rich block into the row "kind" used by the
+/// surrounding bubble layout. `tool-call` and `thinking` get their
+/// own visual lane; everything else rides the agent/user lane.
+function richBlockKind(block: ConversationRichBlock, isUser: boolean): MsgKind {
+  if (block.type === "tool-call") return "tool";
+  if (block.type === "thinking") return "thought";
+  return isUser ? "user" : "agent";
 }
 
+/// Group consecutive rich blocks of the same kind so peer-comms tool
+/// calls (`send_request` to multiple peers) and consecutive
+/// `tool-call` blocks render as one collapsible group via
+/// `ConversationRichContent`'s `PeerToolGroup` / per-block render.
 function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
   if (entry.kind === "summary") {
     return [{
@@ -85,43 +77,46 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
   const role = entry.identity.role;
   const isUser = role === "user";
   const label = entry.identity.label;
+  const time = formatTime(entry.createdAt);
 
   if (entry.variant === "rich" && Array.isArray(entry.blocks) && entry.blocks.length > 0) {
+    // Group consecutive blocks of the same kind so the peer-comms
+    // "↗ Sent to a, b, c" collapsible blob keeps its grouping
+    // (previously gutted by the Rams visual refresh — peer/tool
+    // blocks were flattened to one-line strings per call).
     const msgs: Msg[] = [];
+    let groupKind: MsgKind | null = null;
+    let groupBlocks: ConversationRichBlock[] = [];
+    let groupStart = 0;
+    const flushGroup = (endIndex: number) => {
+      if (groupKind === null || groupBlocks.length === 0) return;
+      msgs.push({
+        id: `${entry.id}:${groupStart}-${endIndex - 1}`,
+        kind: groupKind,
+        time,
+        who: groupKind === "agent" ? label : undefined,
+        blocks: groupBlocks,
+      });
+      groupKind = null;
+      groupBlocks = [];
+    };
     for (let i = 0; i < entry.blocks.length; i++) {
       const block = entry.blocks[i];
-      const text = summariseRichBlock(block);
-      if (!text) continue;
-      if (block.type === "tool-call") {
-        msgs.push({
-          id: `${entry.id}:${i}`,
-          kind: "tool",
-          time: formatTime(entry.createdAt),
-          text,
-        });
-      } else if (block.type === "thinking") {
-        msgs.push({
-          id: `${entry.id}:${i}`,
-          kind: "thought",
-          time: formatTime(entry.createdAt),
-          text,
-        });
-      } else {
-        msgs.push({
-          id: `${entry.id}:${i}`,
-          kind: isUser ? "user" : "agent",
-          time: formatTime(entry.createdAt),
-          who: isUser ? undefined : label,
-          text,
-        });
+      const kind = richBlockKind(block, isUser);
+      if (kind !== groupKind) {
+        flushGroup(i);
+        groupKind = kind;
+        groupStart = i;
       }
+      groupBlocks.push(block);
     }
+    flushGroup(entry.blocks.length);
     return msgs.length
       ? msgs
       : [{
           id: entry.id,
           kind: isUser ? "user" : "agent",
-          time: formatTime(entry.createdAt),
+          time,
           who: isUser ? undefined : label,
           text: "",
         }];
@@ -130,7 +125,7 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
   return [{
     id: entry.id,
     kind: isUser ? "user" : "agent",
-    time: formatTime(entry.createdAt),
+    time,
     who: isUser ? undefined : label,
     text: entry.text || "",
   }];
@@ -155,7 +150,45 @@ export function ChatPane({
     if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [entries.length, phase]);
 
-  const messages = React.useMemo(() => entries.flatMap(flattenEntry), [entries]);
+  const messages = React.useMemo(() => {
+    // Defensive cross-entry merge: the adapter groups consecutive
+    // peer tool calls into one entry only when the previous entry is
+    // already a peer group. Any interleaved frame (a text delta, a
+    // module event, a non-peer tool) breaks the chain — leaving us
+    // with N adjacent rich entries each holding one peer tool block.
+    // Re-merge them at the message level so `ConversationRichContent`
+    // sees `blocks.length > 1` and renders `PeerToolGroup`.
+    const flat = entries.flatMap(flattenEntry);
+    const merged: Msg[] = [];
+    for (const m of flat) {
+      const last = merged[merged.length - 1];
+      const canMerge =
+        last &&
+        last.kind === "tool" &&
+        m.kind === "tool" &&
+        Array.isArray(last.blocks) &&
+        Array.isArray(m.blocks) &&
+        // Only fold blocks that are all peer tool calls (regardless
+        // of direction). Generic tool calls keep their own row.
+        last.blocks.every(
+          (b) => b.type === "tool-call" && (b.peerTarget !== undefined || b.peerIncoming === true),
+        ) &&
+        m.blocks.every(
+          (b) => b.type === "tool-call" && (b.peerTarget !== undefined || b.peerIncoming === true),
+        ) &&
+        // Don't fold incoming + outgoing into the same group.
+        last.blocks[0].type === "tool-call" &&
+        m.blocks[0].type === "tool-call" &&
+        Boolean((last.blocks[0]).peerIncoming) === Boolean((m.blocks[0]).peerIncoming);
+      if (canMerge && last && last.blocks && m.blocks) {
+        last.blocks = [...last.blocks, ...m.blocks];
+        last.id = `${last.id}+${m.id}`;
+      } else {
+        merged.push({ ...m });
+      }
+    }
+    return merged;
+  }, [entries]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
 
@@ -188,7 +221,11 @@ export function ChatPane({
             <div className="msg__bubble">
               {m.kind === "user" && m.who && <span className="msg__who"><b>{m.who}</b></span>}
               {m.kind === "agent" && m.who && <span className="msg__who"><b>{m.who}</b></span>}
-              {m.text && <span className="msg__text">{m.text}</span>}
+              {m.blocks && m.blocks.length > 0 ? (
+                <ConversationRichContent blocks={m.blocks} />
+              ) : (
+                m.text && <span className="msg__text">{m.text}</span>
+              )}
             </div>
           </div>
         ))}
