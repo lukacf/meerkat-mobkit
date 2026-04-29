@@ -1,5 +1,12 @@
 //! JWT validation, JWKS caching, and OIDC discovery for API authentication.
 
+pub mod peer_keys;
+
+pub use peer_keys::{
+    GatewayPeerKeyError, GatewayPeerKeys, KEY_FILE_NAME as GATEWAY_PEER_KEY_FILE,
+    PubkeyDecodeError, decode_pubkey_b64,
+};
+
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use std::time::{Duration, Instant};

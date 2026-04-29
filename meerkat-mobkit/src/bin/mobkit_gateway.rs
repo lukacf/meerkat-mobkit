@@ -11,9 +11,9 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, MOBKIT_CONTRACT_VERSION,
-    MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata, RuntimeDecisionState, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime,
+    AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, GatewayPeerKeys,
+    MOBKIT_CONTRACT_VERSION, MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata,
+    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
 };
 use meerkat_store::SqliteSessionStore;
 use serde::{Deserialize, Serialize};
@@ -636,6 +636,20 @@ async fn run() -> anyhow::Result<()> {
             .with_context(|| format!("failed to parse {}", contacts_path.display()))?;
         runtime.set_contact_directory(directory);
     }
+
+    // Load (or mint and persist) the gateway's Ed25519 signing keypair.
+    // Stored under the same state directory the registry lives in, which
+    // already survives across runs. Cross-process peers fetch the
+    // resulting pubkey via `mobkit/peer_pubkey`; inproc-only deployments
+    // never use it but it's cheap to keep one ready.
+    let gateway_state_dir = state_dir().context("resolve gateway state directory")?;
+    let peer_keys = GatewayPeerKeys::load_or_create(&gateway_state_dir).with_context(|| {
+        format!(
+            "failed to load or mint gateway peer key under {}",
+            gateway_state_dir.display()
+        )
+    })?;
+    runtime.set_gateway_peer_keys(peer_keys);
 
     if !used_workspace_config {
         let mut labels = BTreeMap::new();

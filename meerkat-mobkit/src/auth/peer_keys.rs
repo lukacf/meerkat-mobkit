@@ -1,0 +1,292 @@
+//! Gateway Ed25519 keypair — long-lived signing identity for cross-process
+//! mob peering.
+//!
+//! The mobkit gateway needs a stable Ed25519 keypair so other gateways can
+//! validate the signatures on envelopes it sends across TCP / UDS. Inproc
+//! peering is unaffected: the in-process router authorises by identity map
+//! and never inspects signatures, so an inproc-only gateway can stay on an
+//! ephemeral key without persistence.
+//!
+//! Two construction modes:
+//!
+//! * [`GatewayPeerKeys::load_or_create`] — pass a state directory. The key
+//!   is read from `<state_dir>/peer_key.ed25519` (raw 32-byte secret) if
+//!   present; otherwise a fresh keypair is minted and persisted with
+//!   `0o600` permissions on Unix.
+//! * [`GatewayPeerKeys::ephemeral`] — mint a fresh keypair held in memory
+//!   only. Tests and gateway processes that do not own a state directory
+//!   use this.
+//!
+//! The 32-byte raw seed format keeps the on-disk key drop-in compatible
+//! with `ed25519-dalek::SigningKey::from_bytes` and lets ops sites swap
+//! a key in by writing 32 bytes — no PEM/CBOR parsing required.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use ed25519_dalek::{SecretKey, SigningKey, VerifyingKey};
+
+/// File name used inside the gateway state directory.
+pub const KEY_FILE_NAME: &str = "peer_key.ed25519";
+
+/// A long-lived Ed25519 signing identity for the local gateway.
+///
+/// Cheap to clone (the underlying `SigningKey` is small and `Arc`-shared
+/// at the wrapper level). Treat as opaque — callers should reach for
+/// [`Self::verifying_key`] / [`Self::pubkey_bytes`] / [`Self::pubkey_b64`]
+/// rather than touching the secret material.
+#[derive(Clone)]
+pub struct GatewayPeerKeys {
+    inner: Arc<GatewayPeerKeysInner>,
+}
+
+struct GatewayPeerKeysInner {
+    signing: SigningKey,
+    public: VerifyingKey,
+}
+
+impl GatewayPeerKeys {
+    /// Load the keypair from `<state_dir>/peer_key.ed25519` if present, or
+    /// mint a fresh one and persist it.
+    ///
+    /// The state directory is created if it does not exist. On Unix the
+    /// key file is written with `0o600` so other users on the host cannot
+    /// impersonate this gateway.
+    pub fn load_or_create(state_dir: &Path) -> Result<Self, GatewayPeerKeyError> {
+        let key_path = state_dir.join(KEY_FILE_NAME);
+        if key_path.exists() {
+            return Self::load(&key_path);
+        }
+        fs::create_dir_all(state_dir).map_err(|source| GatewayPeerKeyError::Io {
+            path: state_dir.to_path_buf(),
+            source,
+        })?;
+        let keys = Self::ephemeral();
+        keys.persist_to(&key_path)?;
+        Ok(keys)
+    }
+
+    /// Mint a fresh keypair held in memory only.
+    ///
+    /// Intended for tests and gateway profiles that do not own a state
+    /// directory. The pubkey is still stable for the lifetime of the
+    /// process — peers that fetch it via `mobkit/peer_pubkey` will see
+    /// a consistent identity until restart.
+    pub fn ephemeral() -> Self {
+        let mut rng = rand_core::OsRng;
+        let signing = SigningKey::generate(&mut rng);
+        let public = signing.verifying_key();
+        Self {
+            inner: Arc::new(GatewayPeerKeysInner { signing, public }),
+        }
+    }
+
+    fn load(path: &Path) -> Result<Self, GatewayPeerKeyError> {
+        let bytes = fs::read(path).map_err(|source| GatewayPeerKeyError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        if bytes.len() != 32 {
+            return Err(GatewayPeerKeyError::InvalidLength {
+                path: path.to_path_buf(),
+                actual: bytes.len(),
+            });
+        }
+        let mut secret: SecretKey = [0u8; 32];
+        secret.copy_from_slice(&bytes);
+        let signing = SigningKey::from_bytes(&secret);
+        let public = signing.verifying_key();
+        Ok(Self {
+            inner: Arc::new(GatewayPeerKeysInner { signing, public }),
+        })
+    }
+
+    fn persist_to(&self, path: &Path) -> Result<(), GatewayPeerKeyError> {
+        let bytes = self.inner.signing.to_bytes();
+        fs::write(path, bytes).map_err(|source| GatewayPeerKeyError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        // Restrict permissions on Unix. Best-effort — failure to chmod is
+        // not fatal because the secret is already on disk and an operator
+        // can chmod it themselves.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+
+    /// 32-byte Ed25519 verifying key, suitable for stamping onto a
+    /// `TrustedPeerDescriptor`.
+    pub fn pubkey_bytes(&self) -> [u8; 32] {
+        self.inner.public.to_bytes()
+    }
+
+    /// Borrow the verifying key.
+    pub fn verifying_key(&self) -> &VerifyingKey {
+        &self.inner.public
+    }
+
+    /// Borrow the signing key. Tests use this to build inbound envelopes
+    /// that need to be signed by the peer; production callers should not
+    /// reach for this directly.
+    pub fn signing_key(&self) -> &SigningKey {
+        &self.inner.signing
+    }
+
+    /// Standard-base64 encoding of the 32-byte verifying key. Used by the
+    /// `mobkit/peer_pubkey` RPC and bootstrap-by-fetch flows.
+    pub fn pubkey_b64(&self) -> String {
+        BASE64.encode(self.inner.public.to_bytes())
+    }
+}
+
+impl std::fmt::Debug for GatewayPeerKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewayPeerKeys")
+            .field("pubkey_b64", &self.pubkey_b64())
+            .finish()
+    }
+}
+
+/// Errors loading or persisting the gateway keypair.
+#[derive(Debug)]
+pub enum GatewayPeerKeyError {
+    /// The on-disk key file was the wrong size — typically corruption or
+    /// a non-32-byte format that needs manual cleanup.
+    InvalidLength { path: PathBuf, actual: usize },
+    /// Filesystem failure (read / write / mkdir).
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+impl std::fmt::Display for GatewayPeerKeyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidLength { path, actual } => write!(
+                f,
+                "gateway peer key file {} is {actual} bytes (expected 32)",
+                path.display()
+            ),
+            Self::Io { path, source } => {
+                write!(
+                    f,
+                    "gateway peer key io error for {}: {source}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for GatewayPeerKeyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::InvalidLength { .. } => None,
+        }
+    }
+}
+
+/// Decode a `"<base64>"` (32-byte) Ed25519 pubkey string.
+///
+/// Used by both the contact-directory loader (where pubkey lives in TOML)
+/// and clients consuming the `mobkit/peer_pubkey` RPC response. Accepts
+/// the bare standard-base64 form; the `ed25519:` prefix used inside
+/// meerkat-comms trust files is stripped if present so callers can paste
+/// either shape.
+pub fn decode_pubkey_b64(text: &str) -> Result<[u8; 32], PubkeyDecodeError> {
+    let trimmed = text.trim();
+    let body = trimmed.strip_prefix("ed25519:").unwrap_or(trimmed);
+    let bytes = BASE64.decode(body).map_err(PubkeyDecodeError::Base64)?;
+    if bytes.len() != 32 {
+        return Err(PubkeyDecodeError::WrongLength(bytes.len()));
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    Ok(out)
+}
+
+/// Errors decoding a base64-encoded Ed25519 pubkey.
+#[derive(Debug)]
+pub enum PubkeyDecodeError {
+    Base64(base64::DecodeError),
+    WrongLength(usize),
+}
+
+impl std::fmt::Display for PubkeyDecodeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Base64(e) => write!(f, "invalid pubkey base64: {e}"),
+            Self::WrongLength(n) => write!(f, "pubkey must be 32 bytes, got {n}"),
+        }
+    }
+}
+
+impl std::error::Error for PubkeyDecodeError {}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn ephemeral_minted_keys_are_unique() {
+        let a = GatewayPeerKeys::ephemeral();
+        let b = GatewayPeerKeys::ephemeral();
+        assert_ne!(
+            a.pubkey_bytes(),
+            b.pubkey_bytes(),
+            "fresh ephemeral keys must be distinct"
+        );
+    }
+
+    #[test]
+    fn load_or_create_persists_and_round_trips() {
+        let dir = tempdir().expect("tempdir");
+        let first = GatewayPeerKeys::load_or_create(dir.path()).expect("create");
+        let pubkey = first.pubkey_bytes();
+        // Second call returns the persisted key, not a fresh one.
+        let second = GatewayPeerKeys::load_or_create(dir.path()).expect("load");
+        assert_eq!(second.pubkey_bytes(), pubkey, "key must persist");
+        assert!(dir.path().join(KEY_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn load_or_create_rejects_short_file() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::write(dir.path().join(KEY_FILE_NAME), b"too short").expect("write");
+        let err = GatewayPeerKeys::load_or_create(dir.path()).expect_err("short file must fail");
+        assert!(matches!(err, GatewayPeerKeyError::InvalidLength { .. }));
+    }
+
+    #[test]
+    fn pubkey_b64_round_trips() {
+        let keys = GatewayPeerKeys::ephemeral();
+        let encoded = keys.pubkey_b64();
+        let decoded = decode_pubkey_b64(&encoded).expect("decode");
+        assert_eq!(decoded, keys.pubkey_bytes());
+    }
+
+    #[test]
+    fn decode_strips_ed25519_prefix() {
+        let keys = GatewayPeerKeys::ephemeral();
+        let prefixed = format!("ed25519:{}", keys.pubkey_b64());
+        let decoded = decode_pubkey_b64(&prefixed).expect("decode prefixed");
+        assert_eq!(decoded, keys.pubkey_bytes());
+    }
+
+    #[test]
+    fn decode_rejects_wrong_length() {
+        let err = decode_pubkey_b64("aGVsbG8=").expect_err("must reject 5-byte payload");
+        assert!(matches!(err, PubkeyDecodeError::WrongLength(_)));
+    }
+}

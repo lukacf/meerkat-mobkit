@@ -1476,6 +1476,20 @@ pub(super) async fn handle_cross_mob_unwire_local(
     let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
     let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
     let remote_address = params.get("remote_address").and_then(Value::as_str);
+    let remote_pubkey = match parse_optional_pubkey(params, "remote_pubkey_b64") {
+        Ok(value) => value,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Invalid params: {err}"),
+                }),
+            };
+        }
+    };
 
     match (local_member_id, remote_comms_name, remote_peer_id, remote_address) {
         (Some(local), Some(comms_name), Some(peer_id), Some(addr))
@@ -1484,7 +1498,10 @@ pub(super) async fn handle_cross_mob_unwire_local(
                 && !peer_id.is_empty()
                 && !addr.is_empty() =>
         {
-            match runtime.unwire_local(local, comms_name, peer_id, addr).await {
+            match runtime
+                .unwire_local(local, comms_name, peer_id, addr, remote_pubkey)
+                .await
+            {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1529,6 +1546,20 @@ pub(super) async fn handle_cross_mob_wire_local(
     let remote_comms_name = params.get("remote_comms_name").and_then(Value::as_str);
     let remote_peer_id = params.get("remote_peer_id").and_then(Value::as_str);
     let remote_address = params.get("remote_address").and_then(Value::as_str);
+    let remote_pubkey = match parse_optional_pubkey(params, "remote_pubkey_b64") {
+        Ok(value) => value,
+        Err(err) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: format!("Invalid params: {err}"),
+                }),
+            };
+        }
+    };
 
     match (local_member_id, remote_comms_name, remote_peer_id, remote_address) {
         (Some(local), Some(comms_name), Some(peer_id), Some(addr))
@@ -1537,7 +1568,10 @@ pub(super) async fn handle_cross_mob_wire_local(
                 && !peer_id.is_empty()
                 && !addr.is_empty() =>
         {
-            match runtime.wire_local(local, comms_name, peer_id, addr).await {
+            match runtime
+                .wire_local(local, comms_name, peer_id, addr, remote_pubkey)
+                .await
+            {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -1675,4 +1709,65 @@ pub(super) async fn handle_run_labels_delete(
         Err(err) => err,
     };
     label_response(response_id, outcome)
+}
+
+// ---------------------------------------------------------------------------
+// Cross-mob peer trust — Ed25519 peer descriptor support
+// ---------------------------------------------------------------------------
+
+/// Parse an optional `<field>` (base64 Ed25519 pubkey) from a params object.
+///
+/// Returns `Ok(None)` if the field is absent or null. Returns the decoded
+/// 32 bytes if the field is a non-empty string. Empty strings are treated
+/// as absent so callers can pass `""` from a UI to mean "use defaults".
+fn parse_optional_pubkey(params: &Value, field: &str) -> Result<Option<[u8; 32]>, String> {
+    let value = match params.get(field) {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let s = value
+        .as_str()
+        .ok_or_else(|| format!("{field} must be a base64 string"))?;
+    if s.is_empty() {
+        return Ok(None);
+    }
+    crate::auth::peer_keys::decode_pubkey_b64(s)
+        .map(Some)
+        .map_err(|err| format!("{field}: {err}"))
+}
+
+/// Handle `mobkit/peer_pubkey` — return the local gateway's Ed25519
+/// signing pubkey so peer gateways can bootstrap trust.
+///
+/// Returns `{"pubkey_b64": "<base64>"}` when a keypair is configured.
+/// Returns a `-32004 capability_unavailable` error when the gateway has
+/// no keys (e.g. inproc-only deployment that never called
+/// `set_gateway_peer_keys`) so callers can fall back to TOFU rather than
+/// stalling.
+pub(super) async fn handle_peer_pubkey(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+) -> JsonRpcResponse {
+    match runtime.gateway_peer_keys() {
+        Some(keys) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "pubkey_b64": keys.pubkey_b64(),
+            })),
+            error: None,
+        },
+        None => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32004,
+                message: "gateway has no signing keypair configured".to_string(),
+            }),
+        },
+    }
 }

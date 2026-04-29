@@ -48,6 +48,10 @@ pub struct ConsoleJsonState {
     pub module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     pub contact_directory: Option<ContactDirectory>,
     pub event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    /// Local gateway signing identity. Plumbed in so the console RPC
+    /// dispatch can answer `mobkit/peer_pubkey` and stamp non-inproc
+    /// `cross_mob/wire_local` descriptors with a real pubkey.
+    pub gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
     pub(crate) console_events: Option<ConsoleEventStore>,
     pub(crate) mob_events: Option<MobEventsStore>,
     pub(crate) stream_routes_enabled: bool,
@@ -66,6 +70,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         module_runtime: None,
         contact_directory: None,
         event_log: None,
+        gateway_peer_keys: None,
         console_events: None,
         mob_events: None,
         stream_routes_enabled: true,
@@ -87,6 +92,7 @@ pub fn console_json_router_with_runtime(
         event_log,
         None,
         None,
+        None,
         false,
         None,
     )
@@ -99,6 +105,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     contact_directory: Option<ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
     console_events: Option<ConsoleEventStore>,
     mob_events: Option<MobEventsStore>,
     stream_routes_enabled: bool,
@@ -110,6 +117,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         module_runtime,
         contact_directory,
         event_log,
+        gateway_peer_keys,
         console_events,
         mob_events,
         stream_routes_enabled,
@@ -270,6 +278,7 @@ pub async fn console_rpc_handler(
         state.module_runtime.clone(),
         state.contact_directory.as_ref(),
         state.event_log.clone(),
+        state.gateway_peer_keys.as_ref(),
         state.console_events.clone(),
         state.metadata_table.clone(),
         state.mob_events.clone(),
@@ -696,6 +705,7 @@ async fn handle_console_runtime_rpc(
     module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     contact_directory: Option<&ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    gateway_peer_keys: Option<&crate::auth::peer_keys::GatewayPeerKeys>,
     console_events: Option<ConsoleEventStore>,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     mob_events: Option<MobEventsStore>,
@@ -723,6 +733,7 @@ async fn handle_console_runtime_rpc(
                 "mobkit/mob_events/subscribe",
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/directory",
+                "mobkit/peer_pubkey",
             ];
             if module_runtime.is_some() {
                 methods.extend_from_slice(&[
@@ -1739,107 +1750,26 @@ async fn handle_console_runtime_rpc(
             }
         }
         "mobkit/cross_mob/wire_local" => {
-            let local = request
-                .params
-                .get("local_member_id")
-                .and_then(Value::as_str);
-            let comms_name = request
-                .params
-                .get("remote_comms_name")
-                .and_then(Value::as_str);
-            let peer_id = request.params.get("remote_peer_id").and_then(Value::as_str);
-            let addr = request.params.get("remote_address").and_then(Value::as_str);
-            match (local, comms_name, peer_id, addr) {
-                (Some(local_id), Some(cname), Some(pid), Some(address))
-                    if !local_id.is_empty()
-                        && !cname.is_empty()
-                        && !pid.is_empty()
-                        && !address.is_empty() =>
-                {
-                    match TrustedPeerDescriptor::test_only_unsigned(cname, pid, address) {
-                        Err(err) => {
-                            invalid_params(response_id, format!("invalid peer spec: {err}"))
-                        }
-                        Ok(spec) => {
-                            match runtime
-                                .handle()
-                                .wire(MeerkatId::from(local_id), PeerTarget::External(spec))
-                                .await
-                            {
-                                Ok(()) => response_value(
-                                    response_id,
-                                    Some(serde_json::json!({
-                                        "accepted": true,
-                                        "local_member_id": local_id,
-                                        "remote_comms_name": cname,
-                                    })),
-                                    None,
-                                ),
-                                Err(err) => internal_error(
-                                    response_id,
-                                    format!("cross_mob/wire_local failed: {err}"),
-                                ),
-                            }
-                        }
-                    }
-                }
-                _ => invalid_params(
-                    response_id,
-                    "local_member_id, remote_comms_name, remote_peer_id, and remote_address required",
-                ),
-            }
+            handle_console_wire_local(runtime, &request.params, response_id, true).await
         }
         "mobkit/cross_mob/unwire_local" => {
-            let local = request
-                .params
-                .get("local_member_id")
-                .and_then(Value::as_str);
-            let comms_name = request
-                .params
-                .get("remote_comms_name")
-                .and_then(Value::as_str);
-            let peer_id = request.params.get("remote_peer_id").and_then(Value::as_str);
-            let addr = request.params.get("remote_address").and_then(Value::as_str);
-            match (local, comms_name, peer_id, addr) {
-                (Some(local_id), Some(cname), Some(pid), Some(address))
-                    if !local_id.is_empty()
-                        && !cname.is_empty()
-                        && !pid.is_empty()
-                        && !address.is_empty() =>
-                {
-                    match TrustedPeerDescriptor::test_only_unsigned(cname, pid, address) {
-                        Err(err) => {
-                            invalid_params(response_id, format!("invalid peer spec: {err}"))
-                        }
-                        Ok(spec) => {
-                            match runtime
-                                .handle()
-                                .unwire(MeerkatId::from(local_id), PeerTarget::External(spec))
-                                .await
-                            {
-                                Ok(()) => response_value(
-                                    response_id,
-                                    Some(serde_json::json!({
-                                        "accepted": true,
-                                        "local_member_id": local_id,
-                                        "remote_comms_name": cname,
-                                    })),
-                                    None,
-                                ),
-                                Err(err) => internal_error(
-                                    response_id,
-                                    format!("cross_mob/unwire_local failed: {err}"),
-                                ),
-                            }
-                        }
-                    }
-                }
-                _ => invalid_params(
-                    response_id,
-                    "local_member_id, remote_comms_name, remote_peer_id, and remote_address required",
-                ),
-            }
+            handle_console_wire_local(runtime, &request.params, response_id, false).await
         }
+        "mobkit/peer_pubkey" => match gateway_peer_keys {
+            Some(keys) => response_value(
+                response_id,
+                Some(serde_json::json!({ "pubkey_b64": keys.pubkey_b64() })),
+                None,
+            ),
+            None => response_value(
+                response_id,
+                None,
+                Some(JsonRpcError {
+                    code: -32004,
+                    message: "gateway has no signing keypair configured".to_string(),
+                }),
+            ),
+        },
         "mobkit/cross_mob/peer_info" => {
             let member_id = request.params.get("member_id").and_then(Value::as_str);
             match member_id {
@@ -1989,6 +1919,110 @@ async fn dispatch_label_method(
         crate::runtime::LabelRpcResult::InvalidParams(message) => {
             invalid_params(response_id, message)
         }
+    }
+}
+
+/// Shared body for `mobkit/cross_mob/wire_local` and `unwire_local` over
+/// the console transport. `wire = true` calls `MobHandle::wire`, `false`
+/// calls `MobHandle::unwire`. Both share param parsing and response shape.
+///
+/// Non-inproc transports (`tcp://`, `uds://`) require a non-zero pubkey;
+/// the caller may supply it via `remote_pubkey_b64` or rely on TOFU
+/// flows configured at the contact-directory layer (which this handler
+/// does not consult — it only sees the explicit params).
+async fn handle_console_wire_local(
+    runtime: &MobRuntime,
+    params: &Value,
+    response_id: Value,
+    wire: bool,
+) -> Value {
+    let local = params.get("local_member_id").and_then(Value::as_str);
+    let comms_name = params.get("remote_comms_name").and_then(Value::as_str);
+    let peer_id = params.get("remote_peer_id").and_then(Value::as_str);
+    let addr = params.get("remote_address").and_then(Value::as_str);
+
+    let remote_pubkey = match params.get("remote_pubkey_b64") {
+        None => None,
+        Some(v) if v.is_null() => None,
+        Some(v) => match v.as_str() {
+            Some(s) if !s.is_empty() => match crate::auth::peer_keys::decode_pubkey_b64(s) {
+                Ok(bytes) => Some(bytes),
+                Err(err) => {
+                    return invalid_params(response_id, format!("remote_pubkey_b64: {err}"));
+                }
+            },
+            _ => None,
+        },
+    };
+
+    let (local_id, cname, pid, address) = match (local, comms_name, peer_id, addr) {
+        (Some(l), Some(c), Some(p), Some(a))
+            if !l.is_empty() && !c.is_empty() && !p.is_empty() && !a.is_empty() =>
+        {
+            (l, c, p, a)
+        }
+        _ => {
+            return invalid_params(
+                response_id,
+                "local_member_id, remote_comms_name, remote_peer_id, and remote_address required",
+            );
+        }
+    };
+
+    let is_inproc = address.starts_with("inproc://");
+    let spec_result = match (is_inproc, remote_pubkey) {
+        (true, None) => TrustedPeerDescriptor::test_only_unsigned(cname, pid, address),
+        (true, Some(bytes)) => {
+            TrustedPeerDescriptor::unsigned_with_pubkey(cname, pid, bytes, address)
+        }
+        (false, None) => {
+            return invalid_params(
+                response_id,
+                "remote_pubkey_b64 is required for non-inproc transports",
+            );
+        }
+        (false, Some(bytes)) => {
+            if bytes == [0u8; 32] {
+                return invalid_params(
+                    response_id,
+                    "remote_pubkey_b64 must be non-zero for non-inproc transports",
+                );
+            }
+            TrustedPeerDescriptor::unsigned_with_pubkey(cname, pid, bytes, address)
+        }
+    };
+
+    let spec = match spec_result {
+        Ok(spec) => spec,
+        Err(err) => {
+            return invalid_params(response_id, format!("invalid peer spec: {err}"));
+        }
+    };
+
+    let result = if wire {
+        runtime
+            .handle()
+            .wire(MeerkatId::from(local_id), PeerTarget::External(spec))
+            .await
+    } else {
+        runtime
+            .handle()
+            .unwire(MeerkatId::from(local_id), PeerTarget::External(spec))
+            .await
+    };
+
+    let action = if wire { "wire_local" } else { "unwire_local" };
+    match result {
+        Ok(()) => response_value(
+            response_id,
+            Some(serde_json::json!({
+                "accepted": true,
+                "local_member_id": local_id,
+                "remote_comms_name": cname,
+            })),
+            None,
+        ),
+        Err(err) => internal_error(response_id, format!("cross_mob/{action} failed: {err}")),
     }
 }
 
