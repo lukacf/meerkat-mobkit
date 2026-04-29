@@ -37,6 +37,7 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 use crate::unified_runtime::console_events::ConsoleEventStore;
+use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery};
 
 #[derive(Clone)]
@@ -47,6 +48,7 @@ pub struct ConsoleJsonState {
     pub contact_directory: Option<ContactDirectory>,
     pub event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     pub(crate) console_events: Option<ConsoleEventStore>,
+    pub(crate) mob_events: Option<MobEventsStore>,
     pub(crate) stream_routes_enabled: bool,
 }
 
@@ -63,6 +65,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         contact_directory: None,
         event_log: None,
         console_events: None,
+        mob_events: None,
         stream_routes_enabled: true,
     })
 }
@@ -80,10 +83,12 @@ pub fn console_json_router_with_runtime(
         contact_directory,
         event_log,
         None,
+        None,
         false,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn console_json_router_with_runtime_and_events(
     decisions: RuntimeDecisionState,
     runtime: MobRuntime,
@@ -91,6 +96,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     contact_directory: Option<ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     console_events: Option<ConsoleEventStore>,
+    mob_events: Option<MobEventsStore>,
     stream_routes_enabled: bool,
 ) -> Router {
     console_json_router_with_state(ConsoleJsonState {
@@ -100,6 +106,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         contact_directory,
         event_log,
         console_events,
+        mob_events,
         stream_routes_enabled,
     })
 }
@@ -258,6 +265,7 @@ pub async fn console_rpc_handler(
         state.contact_directory.as_ref(),
         state.event_log.clone(),
         state.console_events.clone(),
+        state.mob_events.clone(),
         parsed_request,
         is_authenticated,
     )
@@ -675,12 +683,14 @@ async fn lookup_member_with_session(
     Some((entry, session_id))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_console_runtime_rpc(
     runtime: &MobRuntime,
     module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     contact_directory: Option<&ContactDirectory>,
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     console_events: Option<ConsoleEventStore>,
+    mob_events: Option<MobEventsStore>,
     request: JsonRpcRequest,
     is_authenticated: bool,
 ) -> Value {
@@ -701,6 +711,8 @@ async fn handle_console_runtime_rpc(
                 "mobkit/flow_status",
                 "mobkit/list_flows",
                 "mobkit/query_events",
+                "mobkit/mob_events/query",
+                "mobkit/mob_events/subscribe",
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/directory",
             ];
@@ -1347,6 +1359,40 @@ async fn handle_console_runtime_rpc(
                     )
                 }
             }
+        }
+        "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
+            let query: EventQuery = if request.params.is_null() {
+                EventQuery::default()
+            } else {
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(q) => q,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid query params: {err}"));
+                    }
+                }
+            };
+            let events = match mob_events.as_ref() {
+                Some(store) => store.query(&query).await,
+                None => Vec::new(),
+            };
+            let last_cursor = events.last().map(|event| event.cursor);
+            let body = if request.method == "mobkit/mob_events/subscribe" {
+                serde_json::json!({
+                    "stream": "mob_events",
+                    "events": events,
+                    "next_after_seq": last_cursor,
+                    "keep_alive": {
+                        "interval_ms": 15_000_u64,
+                        "event": "keep_alive",
+                    },
+                })
+            } else {
+                serde_json::json!({
+                    "events": events,
+                    "next_after_seq": last_cursor,
+                })
+            };
+            response_value(response_id, Some(body), None)
         }
         // 0.5 API methods
         "mobkit/member_status" => {

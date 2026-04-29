@@ -2,6 +2,26 @@
 
 ## 0.6.0 — Meerkat 0.6 wire rename (BREAKING)
 
+### Structural mob events surface
+
+Added `MobHandle.queryMobEvents()` and `MobHandle.subscribeMobEvents()`,
+backed by the new `mobkit/mob_events/query` and
+`mobkit/mob_events/subscribe` JSON-RPC methods. The structural surface
+preserves the full `MobEventKind` vocabulary from meerkat-mob (25
+variants — `flow_started`, `step_dispatched`, `members_wired`,
+`supervisor_escalation`, ...) along with the `mobId`, `runId`,
+`stepId`, and `agentIdentity` fields that the legacy lossy
+`UnifiedEvent::Agent` projection discards.
+
+- New `MobStructuralEvent` interface with `parseMobStructuralEvent`
+  carries `eventId`, `cursor`, `mobId`, `timestampMs`, `kind`, `runId`,
+  `stepId`, `agentIdentity`, `data`.
+- `EventQuery` extended with `mobId`, `runId`, `stepId`, `identity`
+  filters. `afterSeq` is the cursor — pass the highest-seen `cursor`
+  to paginate strictly-newer events.
+
+
+
 Aligns the TypeScript SDK's wire-level field names with the meerkat 0.6
 platform. Consumers upgrading from 0.5.x need to rename a handful of field
 references — see the table below. No behavioural changes.

@@ -53,6 +53,7 @@ import {
   parseRediscoverReport,
   parseReconcileEdgesReport,
   parsePersistedEvent,
+  parseMobStructuralEvent,
   eventQueryToDict,
   parseIdentityStatus,
   dispatchInputToDict,
@@ -78,6 +79,7 @@ import {
   type RediscoverReport,
   type ReconcileEdgesReport,
   type PersistedEvent,
+  type MobStructuralEvent,
   type EventQuery,
   type IdentityStatus,
   type DispatchInput,
@@ -89,6 +91,20 @@ import {
 let requestCounter = 0;
 function nextRequestId(method: string): string {
   return `${method}:${++requestCounter}`;
+}
+
+function extractMobStructuralEvents(raw: unknown): MobStructuralEvent[] {
+  let events: unknown = raw;
+  if (typeof raw === "object" && raw !== null) {
+    const record = raw as Record<string, unknown>;
+    if (Array.isArray(record.events)) {
+      events = record.events;
+    }
+  }
+  if (!Array.isArray(events)) {
+    return [];
+  }
+  return events.map(parseMobStructuralEvent);
 }
 
 /** Serialize a config value for JSON transport.
@@ -470,6 +486,34 @@ export class MobHandle {
       return events.map(parsePersistedEvent);
     }
     return [];
+  }
+
+  /**
+   * Query buffered structural mob events. Pass the highest seen
+   * `cursor` as `EventQuery.afterSeq` on the next call to paginate.
+   */
+  async queryMobEvents(query?: EventQuery): Promise<MobStructuralEvent[]> {
+    const params = query ? eventQueryToDict(query) : {};
+    const raw = await this._runtime._rpc("mobkit/mob_events/query", params);
+    return extractMobStructuralEvents(raw);
+  }
+
+  /**
+   * Replay buffered structural mob events. Yields the snapshot frame
+   * returned by `mobkit/mob_events/subscribe` as an async iterator.
+   * Live tailing requires the dedicated SSE bridge.
+   */
+  async *subscribeMobEvents(
+    query?: EventQuery,
+  ): AsyncGenerator<MobStructuralEvent, void, undefined> {
+    const params = query ? eventQueryToDict(query) : {};
+    const raw = await this._runtime._rpc(
+      "mobkit/mob_events/subscribe",
+      params,
+    );
+    for (const event of extractMobStructuralEvents(raw)) {
+      yield event;
+    }
   }
 
   // -- Messaging ----------------------------------------------------------

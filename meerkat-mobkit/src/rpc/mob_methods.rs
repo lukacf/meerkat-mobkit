@@ -535,6 +535,78 @@ pub(super) async fn handle_query_events(
     }
 }
 
+fn parse_mob_events_query(
+    response_id: &Value,
+    params: Value,
+) -> Result<crate::unified_runtime::EventQuery, JsonRpcResponse> {
+    if params.is_null() {
+        return Ok(crate::unified_runtime::EventQuery::default());
+    }
+    serde_json::from_value(params).map_err(|err| JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id.clone(),
+        result: None,
+        error: Some(JsonRpcError {
+            code: -32602,
+            message: format!("Invalid params: {err}"),
+        }),
+    })
+}
+
+/// Handle `mobkit/mob_events/query` — return structural mob events
+/// matching the supplied [`EventQuery`].
+pub(super) async fn handle_mob_events_query(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: Value,
+) -> JsonRpcResponse {
+    let query = match parse_mob_events_query(&response_id, params) {
+        Ok(q) => q,
+        Err(response) => return response,
+    };
+    let events = runtime.query_mob_events(&query).await;
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(serde_json::json!({
+            "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+            "next_after_seq": events.last().map(|event| event.cursor),
+        })),
+        error: None,
+    }
+}
+
+/// Handle `mobkit/mob_events/subscribe` — replay buffered structural mob
+/// events for SSE catchup. Mirrors the snapshot-frame shape of the
+/// existing `mobkit/events/subscribe` so consumers can take the latest
+/// `cursor` and resume via `mobkit/mob_events/query` with `after_seq`.
+pub(super) async fn handle_mob_events_subscribe(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: Value,
+) -> JsonRpcResponse {
+    let query = match parse_mob_events_query(&response_id, params) {
+        Ok(q) => q,
+        Err(response) => return response,
+    };
+    let events = runtime.query_mob_events(&query).await;
+    let last_cursor = events.last().map(|event| event.cursor);
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(serde_json::json!({
+            "stream": "mob_events",
+            "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+            "next_after_seq": last_cursor,
+            "keep_alive": {
+                "interval_ms": 15_000_u64,
+                "event": "keep_alive",
+            },
+        })),
+        error: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Cross-mob operations
 // ---------------------------------------------------------------------------

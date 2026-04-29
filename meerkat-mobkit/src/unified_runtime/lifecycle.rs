@@ -275,6 +275,12 @@ impl UnifiedRuntime {
             }
             None => {}
         }
+
+        // Stop the structural mob-events poller task as well.
+        if let Some(task) = self.mob_events_poll_task.lock().await.take() {
+            task.abort();
+            let _ = task.await;
+        }
     }
 
     fn try_recv_ingress_event(

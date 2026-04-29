@@ -14,9 +14,12 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
 use self::console_events::ConsoleEventStore;
+use self::mob_events::MobEventsStore;
 use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime, MobRuntimeError};
 use crate::runtime::{MobkitRuntimeHandle, RuntimeOptions, start_mobkit_runtime_with_options};
-use crate::types::{AgentDiscoverySpec, EventEnvelope, MobKitConfig, UnifiedEvent};
+use crate::types::{
+    AgentDiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope, UnifiedEvent,
+};
 
 pub mod builder;
 pub(crate) mod console_events;
@@ -26,6 +29,7 @@ pub mod edge_types;
 pub mod event_log;
 pub mod http;
 pub mod lifecycle;
+pub mod mob_events;
 pub mod mob_ops;
 pub mod module_ops;
 pub mod types;
@@ -116,6 +120,8 @@ pub struct UnifiedRuntime {
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
     event_log: Option<event_log::EventLogHandle>,
     console_events: ConsoleEventStore,
+    mob_events: MobEventsStore,
+    mob_events_poll_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -145,7 +151,13 @@ impl UnifiedRuntime {
         module_runtime: MobkitRuntimeHandle,
     ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
-        let mob_event_ingress = Some(Self::create_event_ingress(mob_event_router));
+        let mob_events_store = MobEventsStore::new();
+        let mob_event_ingress = Some(Self::create_event_ingress(
+            mob_event_router,
+            mob_events_store.clone(),
+        ));
+        let mob_events_task =
+            Self::spawn_mob_events_poller(mob_runtime.handle(), mob_events_store.clone());
         Self {
             mob_runtime,
             post_spawn_hook: None,
@@ -161,10 +173,22 @@ impl UnifiedRuntime {
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
             event_log: None,
             console_events: ConsoleEventStore::new(),
+            mob_events: mob_events_store,
+            mob_events_poll_task: tokio::sync::Mutex::new(mob_events_task),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             session_bridge: None,
         }
+    }
+
+    /// Spawn a background task that polls the mob's structural event log
+    /// and projects each `MobEvent` into the in-memory `MobEventsStore`.
+    /// Returns `None` when there is no current tokio runtime (e.g. unit
+    /// tests outside an async context); in that case the store is still
+    /// usable via direct projection.
+    fn spawn_mob_events_poller(handle: MobHandle, store: MobEventsStore) -> Option<JoinHandle<()>> {
+        let runtime_handle = tokio::runtime::Handle::try_current().ok()?;
+        Some(runtime_handle.spawn(run_mob_events_poller(handle, store)))
     }
 
     pub async fn bootstrap(
@@ -236,6 +260,13 @@ impl UnifiedRuntime {
         self.console_events.clone()
     }
 
+    /// Internal accessor used by console-facing RPC routers to share the
+    /// in-memory structural mob events store without holding a full
+    /// runtime reference.
+    pub(crate) fn mob_events_store(&self) -> MobEventsStore {
+        self.mob_events.clone()
+    }
+
     pub(crate) fn module_runtime_handle(&self) -> Arc<tokio::sync::Mutex<MobkitRuntimeHandle>> {
         Arc::clone(&self.module_runtime)
     }
@@ -274,6 +305,26 @@ impl UnifiedRuntime {
         query: &EventQuery,
     ) -> Vec<crate::console_contracts::ConsoleIdentityEventEnvelope> {
         self.console_events.query(query).await
+    }
+
+    /// Query buffered structural mob events.
+    ///
+    /// Returns events filtered by [`EventQuery`] in cursor-ascending
+    /// order. `EventQuery::after_seq` acts as the pagination cursor: the
+    /// caller passes the highest `cursor` seen so far to receive only
+    /// strictly-newer events.
+    pub async fn query_mob_events(&self, query: &EventQuery) -> Vec<MobStructuralEventEnvelope> {
+        self.mob_events.query(query).await
+    }
+
+    /// Subscribe to live structural mob events. Returns a broadcast
+    /// receiver that yields each newly-projected envelope. The receiver
+    /// will report `RecvError::Lagged` if it falls behind the in-memory
+    /// channel cap.
+    pub fn subscribe_mob_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<MobStructuralEventEnvelope> {
+        self.mob_events.subscribe()
     }
 
     /// Ingest an event into the event log (if configured). Non-blocking.
@@ -350,14 +401,17 @@ impl UnifiedRuntime {
         }
     }
 
-    fn create_event_ingress(router: MobEventRouterHandle) -> MobEventIngress {
+    fn create_event_ingress(
+        router: MobEventRouterHandle,
+        mob_events: MobEventsStore,
+    ) -> MobEventIngress {
         let Ok(handle) = tokio::runtime::Handle::try_current() else {
             return MobEventIngress::Pull(router);
         };
 
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
-        let task = handle.spawn(run_mob_event_forwarder(router, event_tx));
+        let task = handle.spawn(run_mob_event_forwarder(router, event_tx, mob_events));
         MobEventIngress::Forwarder(MobEventForwarder { event_rx, task })
     }
 
@@ -378,8 +432,15 @@ impl UnifiedRuntime {
 async fn run_mob_event_forwarder(
     mut router: MobEventRouterHandle,
     event_tx: Sender<EventEnvelope<UnifiedEvent>>,
+    mob_events: MobEventsStore,
 ) {
     while let Some(attributed_event) = router.event_rx.recv().await {
+        // Fan out to the structural mob events store. Today this is a
+        // no-op for attributed agent events (they don't carry mob/run/
+        // step fields), but the projection seam keeps the surface
+        // symmetric with the `MobEvent` poller and lets future code add
+        // attribution without touching the forwarder shape.
+        let _ = mob_events.project_attributed_event(&attributed_event).await;
         if event_tx
             .send(attributed_event_to_unified(attributed_event))
             .await
@@ -389,6 +450,56 @@ async fn run_mob_event_forwarder(
         }
     }
     router.cancel();
+}
+
+/// Poll the mob's structural event log and project each `MobEvent` into
+/// the in-memory [`MobEventsStore`]. Runs until the mob handle stops
+/// returning events (machine destroyed) or the runtime drops.
+///
+/// Polls on the same cadence as the meerkat-mob `MobEventRouter` (500ms)
+/// to avoid tight loops while keeping live SSE catchup snappy.
+async fn run_mob_events_poller(handle: MobHandle, store: MobEventsStore) {
+    use std::time::Duration;
+    const MAX_CONSECUTIVE_ERRORS: u32 = 32;
+    let mut cursor: u64 = 0;
+    let mut consecutive_errors: u32 = 0;
+    let mut interval = tokio::time::interval(Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let events = match handle.poll_events(cursor, 256).await {
+            Ok(events) => {
+                consecutive_errors = 0;
+                events
+            }
+            Err(err) => {
+                // Polling failures are typically transient (machine
+                // contention, store hiccups). After a long sustained run
+                // of failures we assume the actor is gone for good and
+                // exit so the task doesn't churn forever.
+                consecutive_errors = consecutive_errors.saturating_add(1);
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+                    tracing::warn!(
+                        error = %err,
+                        "mob_events poller: giving up after sustained poll_events failures"
+                    );
+                    break;
+                }
+                tracing::debug!(
+                    error = %err,
+                    "mob_events poller: poll_events failed; will retry"
+                );
+                continue;
+            }
+        };
+        if events.is_empty() {
+            continue;
+        }
+        for event in events {
+            cursor = cursor.max(event.cursor);
+            let _ = store.project_mob_event(&event).await;
+        }
+    }
 }
 
 fn attributed_event_to_unified(attributed: AttributedEvent) -> EventEnvelope<UnifiedEvent> {

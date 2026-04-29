@@ -983,6 +983,8 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/reconcile_edges",
                 "mobkit/rediscover",
                 "mobkit/query_events",
+                "mobkit/mob_events/query",
+                "mobkit/mob_events/subscribe",
                 // Always available: local-only member introspection
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/wire_local",
@@ -1708,6 +1710,12 @@ pub async fn handle_unified_rpc_json(
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
         "mobkit/query_events" => {
             mob_methods::handle_query_events(runtime, response_id, request.params).await
+        }
+        "mobkit/mob_events/query" => {
+            mob_methods::handle_mob_events_query(runtime, response_id, request.params).await
+        }
+        "mobkit/mob_events/subscribe" => {
+            mob_methods::handle_mob_events_subscribe(runtime, response_id, request.params).await
         }
         "mobkit/cross_mob/wire" => {
             mob_methods::handle_cross_mob_wire(runtime, response_id, &request.params).await

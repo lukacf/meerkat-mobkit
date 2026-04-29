@@ -103,8 +103,8 @@ pub use runtime::{
     start_mobkit_runtime_with_options,
 };
 pub use types::{
-    AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, ModuleConfig, ModuleEvent,
-    PreSpawnData, RestartPolicy, UnifiedEvent,
+    AgentDiscoverySpec, DiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope,
+    ModuleConfig, ModuleEvent, PreSpawnData, RestartPolicy, UnifiedEvent,
 };
 pub use unified_runtime::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,

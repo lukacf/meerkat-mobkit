@@ -92,6 +92,7 @@ export {
   parseRediscoverReport,
   parseReconcileEdgesReport,
   parsePersistedEvent,
+  parseMobStructuralEvent,
   parseErrorEvent,
   eventQueryToDict,
   // Identity-first parsers
@@ -148,6 +149,7 @@ export type {
   UnifiedModuleEvent,
   UnifiedEvent,
   PersistedEvent,
+  MobStructuralEvent,
   EventQuery,
   ErrorEvent,
   ErrorCategoryValue,
