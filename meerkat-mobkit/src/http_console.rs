@@ -610,6 +610,27 @@ fn internal_error(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
+/// Render a stale-cursor failure as a JSON-RPC envelope with code
+/// `-32010`, a typed error body the SDKs can parse into the
+/// `MobEventsStaleError` exception, and a `data` field carrying both
+/// cursors so callers can rewind to the current frontier.
+fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64) -> Value {
+    response_value(
+        id,
+        Some(serde_json::json!({
+            "error": "event_query_stale",
+            "after_cursor": after_cursor,
+            "latest_cursor": latest_cursor,
+        })),
+        Some(JsonRpcError {
+            code: -32010,
+            message: format!(
+                "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
+            ),
+        }),
+    )
+}
+
 fn parse_console_helper_options(
     options_val: Option<&Value>,
 ) -> Result<meerkat_mob::HelperOptions, String> {
@@ -1401,28 +1422,51 @@ async fn handle_console_runtime_rpc(
                     }
                 }
             };
-            let events = match mob_events.as_ref() {
-                Some(store) => store.query(&query).await,
-                None => Vec::new(),
+            let Some(store) = mob_events.as_ref() else {
+                return response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "events": [],
+                        "next_after_seq": Value::Null,
+                    })),
+                    None,
+                );
             };
-            let last_cursor = events.last().map(|event| event.cursor);
-            let body = if request.method == "mobkit/mob_events/subscribe" {
-                serde_json::json!({
-                    "stream": "mob_events",
-                    "events": events,
-                    "next_after_seq": last_cursor,
-                    "keep_alive": {
-                        "interval_ms": 15_000_u64,
-                        "event": "keep_alive",
-                    },
-                })
-            } else {
-                serde_json::json!({
-                    "events": events,
-                    "next_after_seq": last_cursor,
-                })
-            };
-            response_value(response_id, Some(body), None)
+            let events_view = runtime.handle().events();
+            let result = crate::unified_runtime::mob_events::query_ledger_with_filter(
+                &events_view,
+                store,
+                &query,
+            )
+            .await;
+            match result {
+                Ok(events) => {
+                    let last_cursor = events.last().map(|event| event.cursor);
+                    let body = if request.method == "mobkit/mob_events/subscribe" {
+                        serde_json::json!({
+                            "stream": "mob_events",
+                            "events": events,
+                            "next_after_seq": last_cursor,
+                            "subscribe_url": "/mobkit/mob_events/stream",
+                            "keep_alive": {
+                                "interval_ms": 15_000_u64,
+                                "event": "keep_alive",
+                            },
+                        })
+                    } else {
+                        serde_json::json!({
+                            "events": events,
+                            "next_after_seq": last_cursor,
+                        })
+                    };
+                    response_value(response_id, Some(body), None)
+                }
+                Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
+                    after_cursor,
+                    latest_cursor,
+                }) => stale_event_cursor_response(response_id, after_cursor, latest_cursor),
+                Err(err) => internal_error(response_id, format!("mob_events query failed: {err}")),
+            }
         }
         // 0.5 API methods
         "mobkit/member_status" => {

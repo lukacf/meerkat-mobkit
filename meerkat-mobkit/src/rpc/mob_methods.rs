@@ -553,8 +553,36 @@ fn parse_mob_events_query(
     })
 }
 
+/// JSON-RPC error code reported when the caller passes an `after_seq`
+/// past the current ledger frontier. The error `data` field carries
+/// `{ after_cursor, latest_cursor }` so SDKs can surface a typed
+/// exception.
+pub(super) const MOB_EVENTS_STALE_CURSOR_CODE: i64 = -32010;
+
+fn stale_cursor_response(
+    response_id: Value,
+    after_cursor: u64,
+    latest_cursor: u64,
+) -> JsonRpcResponse {
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(serde_json::json!({
+            "error": "event_query_stale",
+            "after_cursor": after_cursor,
+            "latest_cursor": latest_cursor,
+        })),
+        error: Some(JsonRpcError {
+            code: MOB_EVENTS_STALE_CURSOR_CODE,
+            message: format!(
+                "stale mob event cursor: requested {after_cursor}, latest {latest_cursor}"
+            ),
+        }),
+    }
+}
+
 /// Handle `mobkit/mob_events/query` — return structural mob events
-/// matching the supplied [`EventQuery`].
+/// matching the supplied [`EventQuery`] by scanning the meerkat ledger.
 pub(super) async fn handle_mob_events_query(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -564,22 +592,37 @@ pub(super) async fn handle_mob_events_query(
         Ok(q) => q,
         Err(response) => return response,
     };
-    let events = runtime.query_mob_events(&query).await;
-    JsonRpcResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: response_id,
-        result: Some(serde_json::json!({
-            "events": serde_json::to_value(&events).unwrap_or(Value::Null),
-            "next_after_seq": events.last().map(|event| event.cursor),
-        })),
-        error: None,
+    match runtime.query_mob_events(&query).await {
+        Ok(events) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+                "next_after_seq": events.last().map(|event| event.cursor),
+            })),
+            error: None,
+        },
+        Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
+            after_cursor,
+            latest_cursor,
+        }) => stale_cursor_response(response_id, after_cursor, latest_cursor),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("mob_events/query failed: {err}"),
+            }),
+        },
     }
 }
 
-/// Handle `mobkit/mob_events/subscribe` — replay buffered structural mob
-/// events for SSE catchup. Mirrors the snapshot-frame shape of the
-/// existing `mobkit/events/subscribe` so consumers can take the latest
-/// `cursor` and resume via `mobkit/mob_events/query` with `after_seq`.
+/// Handle `mobkit/mob_events/subscribe` — JSON-RPC handshake that
+/// returns a snapshot of structural events plus a `subscribe_url`
+/// pointing to the SSE route. Pre-handshake validation rejects stale
+/// cursors with the typed `-32010` error before any SSE connection is
+/// opened.
 pub(super) async fn handle_mob_events_subscribe(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -589,21 +632,38 @@ pub(super) async fn handle_mob_events_subscribe(
         Ok(q) => q,
         Err(response) => return response,
     };
-    let events = runtime.query_mob_events(&query).await;
-    let last_cursor = events.last().map(|event| event.cursor);
-    JsonRpcResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: response_id,
-        result: Some(serde_json::json!({
-            "stream": "mob_events",
-            "events": serde_json::to_value(&events).unwrap_or(Value::Null),
-            "next_after_seq": last_cursor,
-            "keep_alive": {
-                "interval_ms": 15_000_u64,
-                "event": "keep_alive",
-            },
-        })),
-        error: None,
+    match runtime.query_mob_events(&query).await {
+        Ok(events) => {
+            let last_cursor = events.last().map(|event| event.cursor);
+            JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: Some(serde_json::json!({
+                    "stream": "mob_events",
+                    "events": serde_json::to_value(&events).unwrap_or(Value::Null),
+                    "next_after_seq": last_cursor,
+                    "subscribe_url": "/mobkit/mob_events/stream",
+                    "keep_alive": {
+                        "interval_ms": 15_000_u64,
+                        "event": "keep_alive",
+                    },
+                })),
+                error: None,
+            }
+        }
+        Err(crate::unified_runtime::mob_events::MobEventsQueryError::Stale {
+            after_cursor,
+            latest_cursor,
+        }) => stale_cursor_response(response_id, after_cursor, latest_cursor),
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("mob_events/subscribe failed: {err}"),
+            }),
+        },
     }
 }
 

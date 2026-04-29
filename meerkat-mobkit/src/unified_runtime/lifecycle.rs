@@ -276,8 +276,8 @@ impl UnifiedRuntime {
             None => {}
         }
 
-        // Stop the structural mob-events poller task as well.
-        if let Some(task) = self.mob_events_poll_task.lock().await.take() {
+        // Stop the structural mob-events subscription task as well.
+        if let Some(task) = self.mob_events_subscriber_task.lock().await.take() {
             task.abort();
             let _ = task.await;
         }
