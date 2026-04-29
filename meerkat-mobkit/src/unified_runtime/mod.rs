@@ -17,8 +17,8 @@ use self::console_events::ConsoleEventStore;
 use self::mob_events::MobEventsStore;
 use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime, MobRuntimeError};
 use crate::runtime::{
-    MetadataScope, MobkitRuntimeHandle, RuntimeMetadataTable, RuntimeOptions,
-    start_mobkit_runtime_with_options,
+    InMemoryMetadataStore, MetadataScope, MobkitRuntimeHandle, PersistentMetadataStore,
+    RuntimeMetadataTable, RuntimeOptions, start_mobkit_runtime_with_options,
 };
 use crate::types::{
     AgentDiscoverySpec, EventEnvelope, MobKitConfig, MobStructuralEventEnvelope, UnifiedEvent,
@@ -142,6 +142,11 @@ pub struct UnifiedRuntime {
 
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
+
+    // Persistent metadata adapter (currently used for the structural-events
+    // subscription cursor). Falls back to `InMemoryMetadataStore` when not
+    // explicitly configured — see `UnifiedRuntimeBuilder::persistent_metadata`.
+    persistent_metadata: Arc<dyn PersistentMetadataStore>,
 }
 
 enum MobEventIngress {
@@ -162,6 +167,7 @@ impl UnifiedRuntime {
     pub(crate) async fn from_parts(
         mob_runtime: MobRuntime,
         module_runtime: MobkitRuntimeHandle,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
     ) -> Self {
         let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
         // Construct the metadata table first so the structural-events store
@@ -197,6 +203,7 @@ impl UnifiedRuntime {
             gateway_peer_keys: None,
             session_bridge: None,
             metadata_table,
+            persistent_metadata,
         }
     }
 
@@ -221,6 +228,7 @@ impl UnifiedRuntime {
             Vec::new(),
             timeout,
             RuntimeOptions::default(),
+            Arc::new(InMemoryMetadataStore::new()),
         )
         .await
     }
@@ -231,6 +239,7 @@ impl UnifiedRuntime {
         module_agent_events: Vec<EventEnvelope<UnifiedEvent>>,
         timeout: Duration,
         options: RuntimeOptions,
+        persistent_metadata: Arc<dyn PersistentMetadataStore>,
     ) -> Result<Self, UnifiedRuntimeBootstrapError> {
         let mob_runtime = MobRuntime::bootstrap(mob_spec)
             .await
@@ -241,7 +250,9 @@ impl UnifiedRuntime {
         .join();
 
         match module_start_result {
-            Ok(Ok(module_runtime)) => Ok(Self::from_parts(mob_runtime, module_runtime).await),
+            Ok(Ok(module_runtime)) => {
+                Ok(Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await)
+            }
             Ok(Err(error)) => {
                 let startup_error = UnifiedRuntimeBootstrapError::Module(error);
                 Self::rollback_mob_runtime(mob_runtime, startup_error).await
@@ -302,6 +313,14 @@ impl UnifiedRuntime {
     /// branch, customer, deployment, environment) to a mob or a flow run.
     pub fn metadata_table(&self) -> &Arc<RuntimeMetadataTable> {
         &self.metadata_table
+    }
+
+    /// Return the persistent metadata adapter — used by the
+    /// structural-events subscription to checkpoint its last-projected
+    /// cursor. Tests and integration code that need to inspect the
+    /// persisted cursor reach through this accessor.
+    pub fn persistent_metadata(&self) -> &Arc<dyn PersistentMetadataStore> {
+        &self.persistent_metadata
     }
 
     /// Replace the label set associated with this mob.

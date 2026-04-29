@@ -11,7 +11,7 @@ use crate::contact_directory::ContactDirectory;
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
 };
-use crate::runtime::RuntimeOptions;
+use crate::runtime::{InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions};
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -70,6 +70,7 @@ pub struct UnifiedRuntimeBuilder {
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
     mob_storage_in_memory: bool,
+    persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
 }
 
 impl UnifiedRuntimeBuilder {
@@ -280,6 +281,20 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
+    /// Install a persistent metadata store. Used for the structural-events
+    /// subscription cursor — see `runtime::metadata::PersistentMetadataStore`.
+    /// When unset, the builder defaults to an `InMemoryMetadataStore`, which
+    /// is correct for in-memory mob deployments. Production gateways with a
+    /// SQLite mob storage should pass `SqliteMetadataStore::open(path)`
+    /// against the same database the mob uses, so the structural-events
+    /// subscription can resume from the last-projected cursor on restart
+    /// rather than jumping forward to "latest" and dropping events emitted
+    /// between processes.
+    pub fn persistent_metadata(mut self, store: Arc<dyn PersistentMetadataStore>) -> Self {
+        self.persistent_metadata = Some(store);
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Build
     // -----------------------------------------------------------------------
@@ -353,12 +368,18 @@ impl UnifiedRuntimeBuilder {
         });
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
 
+        let persistent_metadata = self
+            .persistent_metadata
+            .clone()
+            .unwrap_or_else(|| Arc::new(InMemoryMetadataStore::new()));
+
         let runtime = UnifiedRuntime::bootstrap_with_options(
             mob_spec,
             module_config,
             self.module_agent_events,
             timeout,
             self.options,
+            persistent_metadata,
         )
         .await
         .map_err(UnifiedRuntimeBuilderError::Bootstrap)?;
