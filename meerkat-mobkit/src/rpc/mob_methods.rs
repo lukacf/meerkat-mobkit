@@ -557,19 +557,21 @@ pub(super) async fn handle_query_events(
 fn parse_mob_events_query(
     response_id: &Value,
     params: Value,
-) -> Result<crate::unified_runtime::EventQuery, JsonRpcResponse> {
+) -> Result<crate::unified_runtime::EventQuery, Box<JsonRpcResponse>> {
     if params.is_null() {
         return Ok(crate::unified_runtime::EventQuery::default());
     }
-    serde_json::from_value(params).map_err(|err| JsonRpcResponse {
-        jsonrpc: JSONRPC_VERSION.to_string(),
-        id: response_id.clone(),
-        result: None,
-        error: Some(JsonRpcError {
-            code: -32602,
-            message: format!("Invalid params: {err}"),
-            data: None,
-        }),
+    serde_json::from_value(params).map_err(|err| {
+        Box::new(JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id.clone(),
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: format!("Invalid params: {err}"),
+                data: None,
+            }),
+        })
     })
 }
 
@@ -611,7 +613,7 @@ pub(super) async fn handle_mob_events_query(
 ) -> JsonRpcResponse {
     let query = match parse_mob_events_query(&response_id, params) {
         Ok(q) => q,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match runtime.query_mob_events(&query).await {
         Ok(events) => JsonRpcResponse {
@@ -652,7 +654,7 @@ pub(super) async fn handle_mob_events_subscribe(
 ) -> JsonRpcResponse {
     let query = match parse_mob_events_query(&response_id, params) {
         Ok(q) => q,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match runtime.query_mob_events(&query).await {
         Ok(events) => {
