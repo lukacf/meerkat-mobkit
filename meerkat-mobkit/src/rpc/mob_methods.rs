@@ -1075,6 +1075,65 @@ pub(super) async fn handle_attach_existing_session(
     }
 }
 
+pub(super) async fn handle_list_flows(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+) -> JsonRpcResponse {
+    let flows: Vec<String> = runtime
+        .mob_handle()
+        .list_flows()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect();
+    JsonRpcResponse {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: response_id,
+        result: Some(serde_json::json!({ "flows": flows })),
+        error: None,
+    }
+}
+
+pub(super) async fn handle_run_flow(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let flow_id_str = params.get("flow_id").and_then(Value::as_str);
+    let flow_params = params.get("params").cloned().unwrap_or(Value::Null);
+
+    match flow_id_str {
+        Some(fid) if !fid.is_empty() => {
+            let flow_id = meerkat_mob::FlowId::from(fid);
+            match runtime.mob_handle().run_flow(flow_id, flow_params).await {
+                Ok(run_id) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({ "run_id": run_id.to_string() })),
+                    error: None,
+                },
+                Err(err) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: format!("run_flow failed: {err}"),
+                    }),
+                },
+            }
+        }
+        _ => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: flow_id required".to_string(),
+            }),
+        },
+    }
+}
+
 pub(super) async fn handle_cancel_flow(
     runtime: &UnifiedRuntime,
     response_id: Value,

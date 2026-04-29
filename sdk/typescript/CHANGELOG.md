@@ -79,6 +79,15 @@ Rename in your code:
   0.6's `MobHandle::wait_for_ready`. Replaces ad-hoc client-side
   polling loops on `member_status`.
 
+### New: flow enumeration + start
+
+- `MobHandle.listFlows()` — returns the flow IDs declared by the mob's
+  `[flows.*]` tables. Relays meerkat 0.6's `MobHandle::list_flows` via
+  the new `mobkit/list_flows` RPC.
+- `MobHandle.runFlow(flowId, params?)` — starts a flow run and returns
+  its `run_id` string. Relays `MobHandle::run_flow` via
+  `mobkit/run_flow`.
+
 ### Unchanged
 
 - The `DurableAgentSpec` identity-first surface keeps its `profile` field (it

@@ -581,6 +581,45 @@ export class MobHandle {
     };
   }
 
+  // -- Flows --------------------------------------------------------------
+
+  /**
+   * List all configured flow IDs in this mob definition. Relays meerkat
+   * 0.6's `MobHandle::list_flows`. Order is unspecified.
+   */
+  async listFlows(): Promise<string[]> {
+    const raw = await this._runtime._rpc("mobkit/list_flows");
+    if (Array.isArray(raw)) {
+      return raw.map((id) => String(id));
+    }
+    if (typeof raw === "object" && raw !== null) {
+      const flows = (raw as Record<string, unknown>).flows;
+      if (Array.isArray(flows)) {
+        return flows.map((id) => String(id));
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Start a flow run and return its run ID. Relays meerkat 0.6's
+   * `MobHandle::run_flow`. `params` is forwarded verbatim as the flow's
+   * activation params (any JSON value).
+   */
+  async runFlow(flowId: string, params: unknown = null): Promise<string> {
+    const raw = await this._runtime._rpc("mobkit/run_flow", {
+      flow_id: flowId,
+      params,
+    });
+    if (typeof raw === "object" && raw !== null) {
+      const runId = (raw as Record<string, unknown>).run_id;
+      if (typeof runId === "string") {
+        return runId;
+      }
+    }
+    throw new Error(`unexpected run_flow response: ${JSON.stringify(raw)}`);
+  }
+
   // -- Routing ------------------------------------------------------------
 
   async resolveRouting(

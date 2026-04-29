@@ -1144,6 +1144,37 @@ class MobHandle:
             return None
         return MobRunSnapshot.from_dict(raw)
 
+    async def list_flows(self) -> list[str]:
+        """List all configured flow IDs in this mob definition.
+
+        Relays meerkat 0.6's ``MobHandle::list_flows``. Returns the flow IDs
+        declared by the mob's ``[flows.*]`` tables, in unspecified order.
+        """
+        raw = await self._runtime._rpc("mobkit/list_flows")
+        if isinstance(raw, dict):
+            flows = raw.get("flows", [])
+        elif isinstance(raw, list):
+            flows = raw
+        else:
+            flows = []
+        return [str(flow_id) for flow_id in flows]
+
+    async def run_flow(self, flow_id: str, params: Any = None) -> str:
+        """Start a flow run and return its run ID.
+
+        Relays meerkat 0.6's ``MobHandle::run_flow``. ``params`` is forwarded
+        verbatim as the flow's activation params (any JSON value, defaults to
+        ``None``). The returned ``run_id`` can be passed to
+        :meth:`flow_status` and :meth:`cancel_flow`.
+        """
+        rpc_params: dict[str, Any] = {"flow_id": flow_id, "params": params}
+        raw = await self._runtime._rpc("mobkit/run_flow", rpc_params)
+        if isinstance(raw, dict):
+            run_id = raw.get("run_id")
+            if isinstance(run_id, str):
+                return run_id
+        raise RuntimeError(f"unexpected run_flow response: {raw!r}")
+
     # -----------------------------------------------------------------
     # Batch
     # -----------------------------------------------------------------

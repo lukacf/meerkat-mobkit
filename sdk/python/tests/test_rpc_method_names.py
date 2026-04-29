@@ -156,6 +156,30 @@ async def test_flow_status_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_list_flows_rpc_name():
+    """list_flows must call mobkit/list_flows and parse the {flows: [...]} envelope."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/list_flows": {"flows": ["demo", "pipeline"]}
+    })
+    result = await handle.list_flows()
+    assert calls[0][0] == "mobkit/list_flows"
+    assert calls[0][1] is None
+    assert result == ["demo", "pipeline"]
+
+
+@pytest.mark.asyncio
+async def test_run_flow_rpc_name_and_params():
+    """run_flow must call mobkit/run_flow with flow_id+params and return run_id."""
+    handle, calls = make_mock_mob_handle({
+        "mobkit/run_flow": {"run_id": "run_abc123"}
+    })
+    run_id = await handle.run_flow("demo", {"choice": "a"})
+    assert calls[0][0] == "mobkit/run_flow"
+    assert calls[0][1] == {"flow_id": "demo", "params": {"choice": "a"}}
+    assert run_id == "run_abc123"
+
+
+@pytest.mark.asyncio
 async def test_wait_ready_rpc_name():
     """wait_ready must call mobkit/wait_ready and forward timeout in ms."""
     handle, calls = make_mock_mob_handle({
@@ -165,5 +189,3 @@ async def test_wait_ready_rpc_name():
     assert calls[0][0] == "mobkit/wait_ready"
     assert calls[0][1] == {"timeout_ms": 2500}
     assert result == {"ready": [], "timeout": False}
-
-

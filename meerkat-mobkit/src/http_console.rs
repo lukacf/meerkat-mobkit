@@ -699,6 +699,7 @@ async fn handle_console_runtime_rpc(
                 "mobkit/collect_completed",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
+                "mobkit/list_flows",
                 "mobkit/query_events",
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/directory",
@@ -726,6 +727,7 @@ async fn handle_console_runtime_rpc(
                     "mobkit/respawn_member",
                     "mobkit/force_cancel_member",
                     "mobkit/cancel_flow",
+                    "mobkit/run_flow",
                     "mobkit/spawn_helper",
                     "mobkit/fork_helper",
                     "mobkit/attach_existing_session",
@@ -1506,6 +1508,37 @@ async fn handle_console_runtime_rpc(
                 ),
                 Ok(None) => response_value(response_id, Some(Value::Null), None),
                 Err(err) => internal_error(response_id, format!("flow_status failed: {err}")),
+            }
+        }
+        "mobkit/list_flows" => {
+            let flows: Vec<String> = runtime
+                .handle()
+                .list_flows()
+                .into_iter()
+                .map(|id| id.to_string())
+                .collect();
+            response_value(
+                response_id,
+                Some(serde_json::json!({ "flows": flows })),
+                None,
+            )
+        }
+        "mobkit/run_flow" => {
+            let Some(flow_id_str) = request.params.get("flow_id").and_then(Value::as_str) else {
+                return invalid_params(response_id, "flow_id required");
+            };
+            if flow_id_str.is_empty() {
+                return invalid_params(response_id, "flow_id required");
+            }
+            let flow_id = meerkat_mob::FlowId::from(flow_id_str);
+            let flow_params = request.params.get("params").cloned().unwrap_or(Value::Null);
+            match runtime.handle().run_flow(flow_id, flow_params).await {
+                Ok(run_id) => response_value(
+                    response_id,
+                    Some(serde_json::json!({ "run_id": run_id.to_string() })),
+                    None,
+                ),
+                Err(err) => invalid_params(response_id, format!("run_flow failed: {err}")),
             }
         }
         "mobkit/spawn_helper" => {
