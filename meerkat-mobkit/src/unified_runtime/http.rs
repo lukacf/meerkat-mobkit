@@ -8,7 +8,9 @@ use meerkat_mob::ids::MeerkatId;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime_and_events};
 use crate::http_interactions::interaction_stream_router;
-use crate::http_sse::{agent_events_sse_router, mob_events_sse_router};
+use crate::http_sse::{
+    agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
+};
 use crate::runtime::RuntimeDecisionState;
 
 use super::UnifiedRuntime;
@@ -54,6 +56,10 @@ impl UnifiedRuntime {
                 let mob_runtime = mob_runtime.clone();
                 Box::pin(async move { mob_runtime.handle().subscribe_mob_events().await })
             })))
+            .merge(mob_structural_events_sse_router(
+                self.mob_runtime.handle(),
+                self.mob_events_store(),
+            ))
             .merge(interaction_stream_router(self.mob_runtime.clone()))
     }
 }

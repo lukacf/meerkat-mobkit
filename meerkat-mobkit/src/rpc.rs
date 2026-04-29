@@ -998,6 +998,7 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/cancel_flow",
                 "mobkit/flow_status",
                 "mobkit/list_flows",
+                "mobkit/list_runs",
                 "mobkit/run_flow",
                 "mobkit/collect_completed",
                 "mobkit/read_session_history",
@@ -1768,6 +1769,9 @@ pub async fn handle_unified_rpc_json(
             mob_methods::handle_flow_status(runtime, response_id, &request.params).await
         }
         "mobkit/list_flows" => mob_methods::handle_list_flows(runtime, response_id).await,
+        "mobkit/list_runs" => {
+            mob_methods::handle_list_runs(runtime, response_id, &request.params).await
+        }
         "mobkit/run_flow" => {
             mob_methods::handle_run_flow(runtime, response_id, &request.params).await
         }

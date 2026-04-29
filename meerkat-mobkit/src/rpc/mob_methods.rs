@@ -1225,6 +1225,42 @@ pub(super) async fn handle_list_flows(
     }
 }
 
+/// Handle `mobkit/list_runs` — return [`meerkat_mob::run::MobRun`]
+/// records for this mob, optionally filtered by `flow_id`. Each run
+/// serializes via meerkat's existing `Serialize` impl, so the response
+/// carries the full ledger projection (`step_ledger`, `failure_ledger`,
+/// `frames`, `loops`, `loop_iteration_ledger`, `flow_state`, etc.).
+pub(super) async fn handle_list_runs(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let flow_id = params
+        .get("flow_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(meerkat_mob::FlowId::from);
+    match runtime.mob_handle().list_runs(flow_id.as_ref()).await {
+        Ok(runs) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "runs": serde_json::to_value(&runs).unwrap_or(Value::Null),
+            })),
+            error: None,
+        },
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("list_runs failed: {err}"),
+            }),
+        },
+    }
+}
+
 pub(super) async fn handle_run_flow(
     runtime: &UnifiedRuntime,
     response_id: Value,

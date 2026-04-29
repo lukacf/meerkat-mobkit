@@ -218,7 +218,7 @@ impl From<MobError> for MobEventsQueryError {
 /// Predicate matching a [`MobStructuralEventEnvelope`] against an
 /// [`EventQuery`]'s field filters. Cursor-bound and `limit` are handled
 /// by the scan loops, not by this function.
-fn envelope_matches(envelope: &MobStructuralEventEnvelope, query: &EventQuery) -> bool {
+pub(crate) fn envelope_matches(envelope: &MobStructuralEventEnvelope, query: &EventQuery) -> bool {
     if let Some(since) = query.since_ms
         && envelope.timestamp_ms < since
     {

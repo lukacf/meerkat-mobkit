@@ -749,6 +749,7 @@ async fn handle_console_runtime_rpc(
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
                 "mobkit/list_flows",
+                "mobkit/list_runs",
                 "mobkit/query_events",
                 "mobkit/mob_events/query",
                 "mobkit/mob_events/subscribe",
@@ -1642,6 +1643,24 @@ async fn handle_console_runtime_rpc(
                 Some(serde_json::json!({ "flows": flows })),
                 None,
             )
+        }
+        "mobkit/list_runs" => {
+            let flow_id = request
+                .params
+                .get("flow_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(meerkat_mob::FlowId::from);
+            match runtime.handle().list_runs(flow_id.as_ref()).await {
+                Ok(runs) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "runs": serde_json::to_value(&runs).unwrap_or(Value::Null),
+                    })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("list_runs failed: {err}")),
+            }
         }
         "mobkit/run_flow" => {
             let Some(flow_id_str) = request.params.get("flow_id").and_then(Value::as_str) else {

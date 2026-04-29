@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_stream::stream;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -17,8 +17,12 @@ use futures::StreamExt;
 use meerkat_core::AgentEvent;
 use meerkat_core::comms::EventStream;
 use meerkat_core::event::agent_event_type;
-use meerkat_mob::MobEventRouterHandle;
+use meerkat_mob::{MobEventRouterHandle, MobHandle};
+use serde::Deserialize;
 use serde_json::{Value, json};
+
+use crate::unified_runtime::EventQuery;
+use crate::unified_runtime::mob_events::MobEventsStore;
 
 use crate::mob_handle_runtime::MobRuntimeError;
 use meerkat_core::comms::SendError;
@@ -205,4 +209,153 @@ async fn mob_events_sse_handler(State(state): State<MobSseState>) -> impl IntoRe
             .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
             .text(KEEP_ALIVE_TEXT),
     )
+}
+
+// ---------------------------------------------------------------------------
+// Structural mob events: per-client meerkat ledger subscription
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `/mobkit/mob_events/stream`. Mirrors
+/// [`EventQuery`] for the field filters; cursor pagination is `after_seq`.
+#[derive(Debug, Default, Deserialize)]
+pub struct MobStructuralStreamQuery {
+    #[serde(default)]
+    pub after_seq: Option<u64>,
+    #[serde(default)]
+    pub mob_id: Option<String>,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub step_id: Option<String>,
+    #[serde(default)]
+    pub identity: Option<String>,
+    #[serde(default)]
+    pub member_id: Option<String>,
+    /// Comma-separated list of event-kind labels to keep
+    /// (e.g. `flow_started,step_completed`). Empty / absent = all.
+    #[serde(default)]
+    pub event_types: Option<String>,
+    #[serde(default)]
+    pub since_ms: Option<u64>,
+    #[serde(default)]
+    pub until_ms: Option<u64>,
+}
+
+impl MobStructuralStreamQuery {
+    fn into_event_query(self) -> EventQuery {
+        EventQuery {
+            since_ms: self.since_ms,
+            until_ms: self.until_ms,
+            member_id: self.member_id,
+            identity: self.identity,
+            mob_id: self.mob_id,
+            run_id: self.run_id,
+            step_id: self.step_id,
+            event_types: self
+                .event_types
+                .map(|raw| {
+                    raw.split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            limit: None,
+            after_seq: self.after_seq,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MobStructuralSseState {
+    handle: MobHandle,
+    store: MobEventsStore,
+}
+
+/// Per-client SSE subscription to the meerkat structural-event ledger.
+///
+/// Each connection opens its own `MobEventsView::subscribe_after` so
+/// catch-up and live tail share the same ordered stream and there is
+/// no race window between snapshot and live subscription. Stale
+/// cursors are rejected with HTTP 410 Gone before any SSE handshake.
+/// Filtering matches the `mobkit/mob_events/query` predicate; the
+/// per-client `MobEventsSubscription` is dropped when the client
+/// disconnects, which cancels the upstream forwarder automatically.
+pub fn mob_structural_events_sse_router(handle: MobHandle, store: MobEventsStore) -> Router {
+    Router::new()
+        .route(
+            "/mobkit/mob_events/stream",
+            get(mob_structural_events_sse_handler),
+        )
+        .with_state(MobStructuralSseState { handle, store })
+}
+
+async fn mob_structural_events_sse_handler(
+    State(state): State<MobStructuralSseState>,
+    Query(params): Query<MobStructuralStreamQuery>,
+) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, (StatusCode, Json<Value>)>
+{
+    let query = params.into_event_query();
+    let events_view = state.handle.events();
+
+    let latest = events_view.latest_cursor().await.map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "events_view_unavailable",
+                "detail": err.to_string(),
+            })),
+        )
+    })?;
+
+    if let Some(after_seq) = query.after_seq
+        && after_seq > latest
+    {
+        return Err((
+            StatusCode::GONE,
+            Json(json!({
+                "error": "event_query_stale",
+                "after_cursor": after_seq,
+                "latest_cursor": latest,
+            })),
+        ));
+    }
+
+    let after_cursor = query.after_seq.unwrap_or(latest);
+    let mut subscription = events_view
+        .subscribe_after(after_cursor)
+        .await
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "subscribe_failed",
+                    "detail": err.to_string(),
+                })),
+            )
+        })?;
+
+    let store = state.store;
+    let stream = stream! {
+        while let Some(event) = subscription.event_rx.recv().await {
+            let envelope = store.project_event_for_query(&event).await;
+            if !crate::unified_runtime::mob_events::envelope_matches(&envelope, &query) {
+                continue;
+            }
+            let payload = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
+            yield Ok::<Event, Infallible>(
+                Event::default()
+                    .id(format!("mob-evt-{}", envelope.cursor))
+                    .event(envelope.kind.clone())
+                    .data(payload),
+            );
+        }
+    };
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+            .text(KEEP_ALIVE_TEXT),
+    ))
 }

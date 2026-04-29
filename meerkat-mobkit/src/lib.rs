@@ -61,7 +61,7 @@ pub use http_console::{
 pub use http_interactions::interaction_stream_router;
 pub use http_sse::{
     AgentEventSubscribeFn, MobEventSubscribeFn, agent_event_sse, agent_events_sse_router,
-    mob_events_sse_router,
+    mob_events_sse_router, mob_structural_events_sse_router,
 };
 pub use mob_handle_runtime::{
     AfterCreateHook, CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, MobRuntime,
