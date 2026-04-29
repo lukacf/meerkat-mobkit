@@ -5,6 +5,43 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// A structural mob event projected from `meerkat_mob::AttributedEvent` and
+/// `MobEventKind` into a flat, identity-aware envelope suitable for SSE
+/// replay and JSON-RPC query.
+///
+/// Mirrors the shape of [`crate::console_contracts::ConsoleIdentityEventEnvelope`]
+/// but preserves structural fields (`mob_id`, `run_id`, `step_id`,
+/// `agent_identity`) that the lossy `UnifiedEvent::Agent` projection
+/// discards. `cursor` is a monotonically increasing sequence assigned at
+/// ingestion time and serves as the pagination token (clients pass the
+/// last-seen cursor as `EventQuery::after_seq`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MobStructuralEventEnvelope {
+    /// Unique event id (mirrors the originating mob event cursor when
+    /// available, prefixed with `mob-evt-`).
+    pub event_id: String,
+    /// Monotonic ingestion sequence (used as `after_seq` cursor).
+    pub cursor: u64,
+    /// Mob this event belongs to.
+    pub mob_id: String,
+    /// Millisecond-precision wall-clock timestamp at ingestion.
+    pub timestamp_ms: u64,
+    /// Snake-case event kind (e.g. `flow_started`, `step_dispatched`).
+    pub kind: String,
+    /// Run id when the event is associated with a flow run, otherwise `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Step id when the event is associated with a flow step, otherwise `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
+    /// Stable agent identity when the event is attributable to a member,
+    /// otherwise `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<String>,
+    /// Full structured payload (the variant-specific fields of `MobEventKind`).
+    pub data: Value,
+}
+
 /// Timestamped wrapper around an event payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventEnvelope<T> {

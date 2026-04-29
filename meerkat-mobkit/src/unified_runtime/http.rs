@@ -22,6 +22,7 @@ impl UnifiedRuntime {
             self.contact_directory.clone(),
             self.event_log_store(),
             Some(self.console_events()),
+            Some(self.mob_events_store()),
             true,
         )
     }

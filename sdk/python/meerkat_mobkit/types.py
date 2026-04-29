@@ -340,10 +340,20 @@ class PersistedEvent:
 
 @dataclass
 class EventQuery:
-    """Query parameters for historical event retrieval."""
+    """Query parameters for historical event retrieval.
+
+    ``after_seq`` is the pagination cursor — pass the highest ``seq`` /
+    ``cursor`` you have seen to receive only strictly-newer events.
+    ``mob_id``, ``run_id``, ``step_id``, and ``identity`` filter the
+    structural mob-events surface (``mobkit/mob_events/query``).
+    """
     since_ms: int | None = None
     until_ms: int | None = None
     member_id: str | None = None
+    identity: str | None = None
+    mob_id: str | None = None
+    run_id: str | None = None
+    step_id: str | None = None
     event_types: list[str] = field(default_factory=list)
     limit: int | None = None
     after_seq: int | None = None
@@ -356,6 +366,14 @@ class EventQuery:
             d["until_ms"] = self.until_ms
         if self.member_id is not None:
             d["member_id"] = self.member_id
+        if self.identity is not None:
+            d["identity"] = self.identity
+        if self.mob_id is not None:
+            d["mob_id"] = self.mob_id
+        if self.run_id is not None:
+            d["run_id"] = self.run_id
+        if self.step_id is not None:
+            d["step_id"] = self.step_id
         if self.event_types:
             d["event_types"] = self.event_types
         if self.limit is not None:
@@ -363,6 +381,40 @@ class EventQuery:
         if self.after_seq is not None:
             d["after_seq"] = self.after_seq
         return d
+
+
+@dataclass(frozen=True)
+class MobStructuralEvent:
+    """A structural mob event projected from ``MobEventKind``.
+
+    Carries flow/step/identity context that the legacy lossy
+    ``UnifiedEvent::Agent`` projection discards. Use ``cursor`` as the
+    ``EventQuery.after_seq`` pagination token on the next request.
+    """
+    event_id: str
+    cursor: int
+    mob_id: str
+    timestamp_ms: int
+    kind: str
+    run_id: str | None
+    step_id: str | None
+    agent_identity: str | None
+    data: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MobStructuralEvent:
+        payload = data.get("data") if isinstance(data.get("data"), dict) else {}
+        return cls(
+            event_id=str(data.get("event_id", "")),
+            cursor=int(data.get("cursor", 0)),
+            mob_id=str(data.get("mob_id", "")),
+            timestamp_ms=int(data.get("timestamp_ms", 0)),
+            kind=str(data.get("kind", "")),
+            run_id=data.get("run_id"),
+            step_id=data.get("step_id"),
+            agent_identity=data.get("agent_identity"),
+            data=dict(payload) if isinstance(payload, dict) else {},
+        )
 
 
 MEMBER_STATE_ACTIVE: str = "active"

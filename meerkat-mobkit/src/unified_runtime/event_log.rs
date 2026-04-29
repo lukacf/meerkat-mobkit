@@ -42,6 +42,12 @@ pub struct PersistedEvent {
 // ---------------------------------------------------------------------------
 
 /// Query parameters for historical event retrieval.
+///
+/// `after_seq` IS the cursor for pagination. Stores that surface a
+/// monotonic sequence (`PersistedEvent::seq`, `MobStructuralEventEnvelope::cursor`)
+/// MUST treat it as an exclusive lower bound and return events with
+/// `seq > after_seq`. Callers paginate by passing the last-seen `seq` as
+/// `after_seq` on the next query.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EventQuery {
     /// Only events after this timestamp (inclusive).
@@ -56,13 +62,22 @@ pub struct EventQuery {
     /// Filter to events from a specific identity when the store supports identity-native rows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<String>,
+    /// Filter to events from a specific mob (structural event surface).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mob_id: Option<String>,
+    /// Filter to events scoped to a specific flow run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Filter to events scoped to a specific flow step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
     /// Filter to specific event types (e.g. "run_completed", "run_failed").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_types: Vec<String>,
     /// Maximum number of events to return.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    /// Resume after this sequence number (for pagination).
+    /// Resume after this sequence number (exclusive; the cursor for pagination).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after_seq: Option<u64>,
 }

@@ -626,11 +626,20 @@ export function parsePersistedEvent(raw: unknown): PersistedEvent {
 
 // -- EventQuery -----------------------------------------------------------
 
+/**
+ * Query parameters for historical event retrieval. `afterSeq` is the
+ * pagination cursor — pass the highest seen `seq`/`cursor` to receive
+ * only strictly-newer events. `mobId`, `runId`, `stepId`, `identity`
+ * filter the structural mob-events surface (`mobkit/mob_events/query`).
+ */
 export interface EventQuery {
   readonly sinceMs?: number;
   readonly untilMs?: number;
   readonly memberId?: string;
   readonly identity?: string;
+  readonly mobId?: string;
+  readonly runId?: string;
+  readonly stepId?: string;
   readonly eventTypes?: readonly string[];
   readonly limit?: number;
   readonly afterSeq?: number;
@@ -642,12 +651,55 @@ export function eventQueryToDict(query: EventQuery): Record<string, unknown> {
   if (query.untilMs !== undefined) d.until_ms = query.untilMs;
   if (query.memberId !== undefined) d.member_id = query.memberId;
   if (query.identity !== undefined) d.identity = query.identity;
+  if (query.mobId !== undefined) d.mob_id = query.mobId;
+  if (query.runId !== undefined) d.run_id = query.runId;
+  if (query.stepId !== undefined) d.step_id = query.stepId;
   if (query.eventTypes !== undefined && query.eventTypes.length > 0) {
     d.event_types = [...query.eventTypes];
   }
   if (query.limit !== undefined) d.limit = query.limit;
   if (query.afterSeq !== undefined) d.after_seq = query.afterSeq;
   return d;
+}
+
+// -- MobStructuralEvent ---------------------------------------------------
+
+/**
+ * Structural mob event projected from `MobEventKind`. Preserves
+ * `mobId`/`runId`/`stepId`/`agentIdentity` that the legacy lossy
+ * `UnifiedEvent::Agent` projection discards. Use `cursor` as the
+ * `EventQuery.afterSeq` pagination token on the next request.
+ */
+export interface MobStructuralEvent {
+  readonly eventId: string;
+  readonly cursor: number;
+  readonly mobId: string;
+  readonly timestampMs: number;
+  readonly kind: string;
+  readonly runId: string | null;
+  readonly stepId: string | null;
+  readonly agentIdentity: string | null;
+  readonly data: Record<string, unknown>;
+}
+
+export function parseMobStructuralEvent(raw: unknown): MobStructuralEvent {
+  const d = asRecord(raw);
+  const data = d.data;
+  return {
+    eventId: String(d.event_id ?? ""),
+    cursor: Number(d.cursor ?? 0),
+    mobId: String(d.mob_id ?? ""),
+    timestampMs: Number(d.timestamp_ms ?? 0),
+    kind: String(d.kind ?? ""),
+    runId: typeof d.run_id === "string" ? d.run_id : null,
+    stepId: typeof d.step_id === "string" ? d.step_id : null,
+    agentIdentity:
+      typeof d.agent_identity === "string" ? d.agent_identity : null,
+    data:
+      typeof data === "object" && data !== null
+        ? (data as Record<string, unknown>)
+        : {},
+  };
 }
 
 // -- ErrorCategory / ErrorEvent -------------------------------------------

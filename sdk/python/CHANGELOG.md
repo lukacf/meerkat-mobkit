@@ -4,6 +4,26 @@ All notable changes to the Python SDK are documented here.
 
 ## 0.6.0 — Meerkat 0.6 wire rename (BREAKING)
 
+### Structural mob events surface
+
+Added `MobHandle.query_mob_events()` and `MobHandle.subscribe_mob_events()`,
+backed by the new `mobkit/mob_events/query` and `mobkit/mob_events/subscribe`
+JSON-RPC methods. The structural surface preserves the full
+`MobEventKind` vocabulary from meerkat-mob (25 variants — `flow_started`,
+`step_dispatched`, `members_wired`, `supervisor_escalation`, ...) along
+with the `mob_id`, `run_id`, `step_id`, and `agent_identity` fields that
+the legacy lossy `UnifiedEvent::Agent` projection discards.
+
+- New typed envelope `MobStructuralEvent` (frozen dataclass with
+  `from_dict`) carries `event_id`, `cursor`, `mob_id`, `timestamp_ms`,
+  `kind`, `run_id`, `step_id`, `agent_identity`, `data`.
+- `EventQuery` extended with `mob_id`, `run_id`, `step_id`, `identity`
+  filters. `after_seq` is the cursor — pass the highest-seen `cursor` to
+  paginate strictly-newer events.
+- Both methods accept either an `EventQuery` instance or a plain dict.
+
+
+
 Aligns the Python SDK's wire-level field names with the meerkat 0.6 platform.
 Consumers upgrading from 0.5.x need to rename a handful of field references —
 see the table below. No behavioural changes.

@@ -33,6 +33,7 @@ from .types import (
     MemoryIndexResult,
     MemoryQueryResult,
     MemoryStoreInfo,
+    MobStructuralEvent,
     ModelsCatalogResult,
     ReconcileEdgesReport,
     ReconcileResult,
@@ -733,6 +734,65 @@ class MobHandle:
         if isinstance(events, list):
             return [PersistedEvent.from_dict(e) for e in events]
         return []
+
+    async def query_mob_events(
+        self,
+        query: "EventQuery | dict[str, Any] | None" = None,
+    ) -> list[MobStructuralEvent]:
+        """Query buffered structural mob events.
+
+        Returns events matching ``query``. Pass the highest seen
+        ``cursor`` as ``EventQuery.after_seq`` to paginate.
+        """
+        from .types import EventQuery, MobStructuralEvent
+        if query is None:
+            params: dict[str, Any] = {}
+        elif isinstance(query, EventQuery):
+            params = query.to_dict()
+        elif isinstance(query, dict):
+            params = dict(query)
+        else:
+            raise TypeError(f"unsupported query type: {type(query).__name__}")
+        raw = await self._runtime._rpc("mobkit/mob_events/query", params)
+        events: list[Any] = []
+        if isinstance(raw, dict):
+            maybe = raw.get("events")
+            if isinstance(maybe, list):
+                events = maybe
+        elif isinstance(raw, list):
+            events = raw
+        return [MobStructuralEvent.from_dict(e) for e in events if isinstance(e, dict)]
+
+    async def subscribe_mob_events(
+        self,
+        query: "EventQuery | dict[str, Any] | None" = None,
+    ) -> AsyncIterator[MobStructuralEvent]:
+        """Replay buffered structural mob events.
+
+        Returns an async iterator over the snapshot frame returned by
+        ``mobkit/mob_events/subscribe``. Live tailing requires the SSE
+        bridge endpoint; this method is the snapshot equivalent of
+        ``query_mob_events`` plus a stream marker for clients that prefer
+        an iterator API.
+        """
+        from .types import EventQuery, MobStructuralEvent
+        if query is None:
+            params: dict[str, Any] = {}
+        elif isinstance(query, EventQuery):
+            params = query.to_dict()
+        elif isinstance(query, dict):
+            params = dict(query)
+        else:
+            raise TypeError(f"unsupported query type: {type(query).__name__}")
+        raw = await self._runtime._rpc("mobkit/mob_events/subscribe", params)
+        events: list[Any] = []
+        if isinstance(raw, dict):
+            maybe = raw.get("events")
+            if isinstance(maybe, list):
+                events = maybe
+        for entry in events:
+            if isinstance(entry, dict):
+                yield MobStructuralEvent.from_dict(entry)
 
     # -----------------------------------------------------------------
     # Roster — member lifecycle
