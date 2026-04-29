@@ -2,6 +2,21 @@
 
 All notable changes to the Python SDK are documented here.
 
+## Unreleased
+
+### Added — mob/run label sidecar
+
+`MobHandle` gains six methods for attaching external context (repo, branch,
+customer, deployment, environment) to a mob or a flow run. These labels are
+stored mobkit-side and are independent of meerkat-mob's member-level labels:
+
+- `set_mob_labels(labels)` / `get_mob_labels()` / `delete_mob_labels()`
+- `set_run_labels(run_id, labels)` / `get_run_labels(run_id)` / `delete_run_labels(run_id)`
+
+Set operations replace the entire label set (no merge). Reads return `{}` when
+no labels are present. Backed by `mobkit/{mob_labels,run_labels}/{set,get,delete}`
+RPCs.
+
 ## 0.6.0 — Meerkat 0.6 wire rename (BREAKING)
 
 ### Structural mob events surface

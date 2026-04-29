@@ -24,6 +24,7 @@ impl UnifiedRuntime {
             Some(self.console_events()),
             Some(self.mob_events_store()),
             true,
+            Some(Arc::clone(self.metadata_table())),
         )
     }
 

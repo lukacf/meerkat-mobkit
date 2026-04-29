@@ -1001,6 +1001,12 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/collect_completed",
                 "mobkit/read_session_history",
                 "mobkit/wait_ready",
+                "mobkit/mob_labels/set",
+                "mobkit/mob_labels/get",
+                "mobkit/mob_labels/delete",
+                "mobkit/run_labels/set",
+                "mobkit/run_labels/get",
+                "mobkit/run_labels/delete",
             ];
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
@@ -1771,6 +1777,22 @@ pub async fn handle_unified_rpc_json(
         }
         "mobkit/read_session_history" => {
             mob_methods::handle_read_session_history(runtime, response_id, &request.params).await
+        }
+        "mobkit/mob_labels/set" => {
+            mob_methods::handle_mob_labels_set(runtime, response_id, &request.params).await
+        }
+        "mobkit/mob_labels/get" => mob_methods::handle_mob_labels_get(runtime, response_id).await,
+        "mobkit/mob_labels/delete" => {
+            mob_methods::handle_mob_labels_delete(runtime, response_id).await
+        }
+        "mobkit/run_labels/set" => {
+            mob_methods::handle_run_labels_set(runtime, response_id, &request.params).await
+        }
+        "mobkit/run_labels/get" => {
+            mob_methods::handle_run_labels_get(runtime, response_id, &request.params).await
+        }
+        "mobkit/run_labels/delete" => {
+            mob_methods::handle_run_labels_delete(runtime, response_id, &request.params).await
         }
         // ----- identity-first methods -----
         "mobkit/interact" => {

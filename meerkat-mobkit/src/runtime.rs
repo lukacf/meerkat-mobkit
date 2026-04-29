@@ -42,6 +42,7 @@ mod delivery;
 mod event_transport;
 mod gating;
 mod memory;
+pub mod metadata;
 mod module_boundary;
 mod routing;
 mod rpc;
@@ -56,6 +57,11 @@ pub use console_ingress::{
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 pub use event_transport::normalize_event_line;
+pub use metadata::{
+    LabelRpcResult, MetadataScope, RuntimeMetadataTable, dispatch_labels_delete,
+    dispatch_labels_get, dispatch_labels_set, labels_to_json_value, parse_labels_param,
+    parse_run_id_param,
+};
 pub use routing::WILDCARD_ROUTE;
 pub use routing::route_module_call;
 pub use rpc::{

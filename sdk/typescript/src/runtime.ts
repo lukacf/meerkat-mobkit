@@ -869,6 +869,70 @@ export class MobHandle {
       await this._runtime._rpc("mobkit/reconcile_edges"),
     );
   }
+
+  // -- Mob/run labels — mobkit-side sidecar metadata ----------------------
+
+  /**
+   * Replace the label set associated with this mob.
+   *
+   * Mobkit owns these labels — they are separate from meerkat-mob's
+   * member-level labels. Replacement is wholesale; pass `{}` to clear.
+   */
+  async setMobLabels(labels: Record<string, string>): Promise<void> {
+    await this._runtime._rpc("mobkit/mob_labels/set", { labels });
+  }
+
+  /** Return the label set associated with this mob (or `{}`). */
+  async getMobLabels(): Promise<Record<string, string>> {
+    const raw = await this._runtime._rpc("mobkit/mob_labels/get");
+    if (typeof raw !== "object" || raw === null) return {};
+    const labels = (raw as Record<string, unknown>).labels;
+    if (typeof labels !== "object" || labels === null) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(labels as Record<string, unknown>)) {
+      out[k] = String(v);
+    }
+    return out;
+  }
+
+  /** Remove the label set associated with this mob. */
+  async deleteMobLabels(): Promise<void> {
+    await this._runtime._rpc("mobkit/mob_labels/delete");
+  }
+
+  /**
+   * Replace the label set associated with `runId` under this mob.
+   * Replacement is wholesale (see {@link setMobLabels}).
+   */
+  async setRunLabels(
+    runId: string,
+    labels: Record<string, string>,
+  ): Promise<void> {
+    await this._runtime._rpc("mobkit/run_labels/set", {
+      run_id: runId,
+      labels,
+    });
+  }
+
+  /** Return the label set for `runId` (or `{}`). */
+  async getRunLabels(runId: string): Promise<Record<string, string>> {
+    const raw = await this._runtime._rpc("mobkit/run_labels/get", {
+      run_id: runId,
+    });
+    if (typeof raw !== "object" || raw === null) return {};
+    const labels = (raw as Record<string, unknown>).labels;
+    if (typeof labels !== "object" || labels === null) return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(labels as Record<string, unknown>)) {
+      out[k] = String(v);
+    }
+    return out;
+  }
+
+  /** Remove the label set for `runId`. */
+  async deleteRunLabels(runId: string): Promise<void> {
+    await this._runtime._rpc("mobkit/run_labels/delete", { run_id: runId });
+  }
 }
 
 // -- ToolCaller -----------------------------------------------------------
