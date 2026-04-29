@@ -115,6 +115,59 @@ async for event in handle.subscribe_mob():
 
 Observation is independent of delivery. Subscribe before or after sending — the stream is continuous.
 
+### Structural mob events — durable observability
+
+`MobHandle.query_mob_events()` and `subscribe_mob_events()` project
+every meerkat `MobEventKind` (25 variants) into a typed envelope
+preserving `mob_id`, `run_id`, `step_id`, `agent_identity`, and the
+full payload.
+
+```python
+from meerkat_mobkit import EventQuery, MobEventsStaleError
+
+# Latest 256 matching events
+events = await handle.query_mob_events(EventQuery(
+    event_types=["flow_started", "flow_completed"],
+    mob_id="home",
+))
+for e in events:
+    print(e.cursor, e.kind, e.run_id, e.data)
+
+# Resume from a checkpointed cursor
+try:
+    new_events = await handle.query_mob_events(EventQuery(
+        after_seq=last_seen_cursor,
+    ))
+except MobEventsStaleError as exc:
+    # Cursor is past the current frontier — rewind.
+    new_events = await handle.query_mob_events(EventQuery(
+        after_seq=exc.latest_cursor,
+    ))
+```
+
+`MobStructuralEvent.cursor` is the **meerkat ledger cursor** —
+durable across mobkit gateway restarts when the runtime is built
+with `.persistent_state(path)`. Checkpoint a cursor and resume by
+passing it as `after_seq` on the next call.
+
+### Flow runs
+
+```python
+# All runs across all flows
+runs = await handle.list_runs()
+
+# Filter to one flow
+runs = await handle.list_runs(flow_id="onboarding")
+
+for run in runs:
+    print(run.run_id, run.status, len(run.step_ledger))
+```
+
+Returns `MobRun` carrying the full meerkat ledger projection
+(`step_ledger`, `failure_ledger`, `frames` keyed by frame id, `loops`
+keyed by loop id, `loop_iteration_ledger`, `flow_state`,
+`activation_params`, `schema_version`, etc.).
+
 ### Control plane — manage the runtime
 
 ```python
@@ -301,6 +354,7 @@ from meerkat_mobkit import (
     SessionAgentBuilder,
     # Errors
     MobKitError, TransportError, RpcError,
+    MobEventsStaleError, MOB_EVENTS_STALE_CURSOR_CODE,
     NotConnectedError, CapabilityUnavailableError, ContractMismatchError,
     # Typed results
     StatusResult, CapabilitiesResult, ReconcileResult,
@@ -319,6 +373,9 @@ from meerkat_mobkit import (
     MemoryQueryResult, MemoryStoreInfo, MemoryIndexResult,
     # Events
     MobEvent, AgentEvent, EventStream,
+    # Structural mob events + flow runs
+    MobStructuralEvent, MobRun, MobRunStatus,
+    StepRecord, FailureRecord, FrameRecord, LoopRecord, LoopIterationRecord,
     # Config modules
     auth, memory, session_store,
 )

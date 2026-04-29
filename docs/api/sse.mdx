@@ -4,10 +4,25 @@ description: "Server-Sent Events for real-time MobKit interaction and event subs
 icon: "bolt"
 ---
 
-MobKit uses Server-Sent Events (SSE) for two related real-time flows:
+MobKit uses Server-Sent Events (SSE) for several real-time flows:
 
 - interaction-scoped streaming through `POST /interactions/stream`
+- agent-scoped streaming through `GET /agents/{agent_id}/events`
+- mob-merged streaming through `GET /mob/events`
+- structural mob events through `GET /mobkit/mob_events/stream`
 - event subscription and replay through `mobkit/events/subscribe`
+
+## Authentication
+
+Every SSE route honors `RuntimeDecisionState.console.require_app_auth`.
+When `require_app_auth` is on, the request must carry one of:
+
+- `Authorization: Bearer <token>` header, or
+- `?auth_token=<token>` query parameter
+
+Missing or invalid credentials return HTTP **401**. Tokens are
+percent-decoded; a token containing characters that need URL-encoding
+(`=`, `&`, `+`, `%`) is handled correctly.
 
 ## Interaction stream
 
@@ -77,6 +92,73 @@ Supported scopes:
 | `agent` | Requires `agent_id` |
 | `interaction` | Interaction-scoped replay |
 
+## Structural mob events stream
+
+```
+GET /mobkit/mob_events/stream?after_seq=<cursor>&mob_id=<id>&run_id=<id>&event_types=<list>
+```
+
+Per-client SSE stream of structural `MobEvent`s (typed envelopes
+preserving `mob_id`, `run_id`, `step_id`, `agent_identity`, and the
+full `MobEventKind` payload).
+
+Each connection opens its own `MobEventsView::subscribe_after` so
+catch-up and live tail share the same ordered stream — there is no
+race window between snapshot and live subscription.
+
+### Query parameters
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `after_seq` | u64 | Resume from this cursor (exclusive). When omitted, starts at the current `latest_cursor` (live tail only). |
+| `mob_id` | string | Filter by mob id |
+| `run_id` | string | Filter by flow run id |
+| `step_id` | string | Filter by flow step id |
+| `event_types` | comma-separated | e.g. `flow_started,step_completed` |
+| `since_ms` / `until_ms` | u64 | Inclusive / exclusive timestamp filters |
+| `identity` / `member_id` | string | Filter by agent identity |
+
+### Frame format
+
+```
+event: flow_started
+id: mob-evt-1234
+data: {"event_id":"mob-evt-1234","cursor":1234,"mob_id":"home","run_id":"...","kind":"flow_started",...}
+```
+
+### Stale cursor
+
+If `after_seq > latest_cursor`, the route returns HTTP **410 Gone**
+with `{"error":"event_query_stale","after_cursor":N,"latest_cursor":M}`.
+SDK clients should rewind to `latest_cursor` and reconnect.
+
+### Continuation from `mobkit/mob_events/subscribe`
+
+The JSON-RPC handshake returns a snapshot frame plus a
+`subscribe_url` field that already encodes the resume cursor and
+filters:
+
+```json
+{
+  "stream": "mob_events",
+  "events": [...],
+  "next_after_seq": 1234,
+  "subscribe_url": "/mobkit/mob_events/stream?after_seq=1234&mob_id=home",
+  "keep_alive": {"interval_ms": 15000, "event": "keep_alive"}
+}
+```
+
+`after_seq` falls back to `latest_cursor` captured at handshake
+when the snapshot is empty, so the SSE handler picks up gaplessly
+even when no events match yet.
+
+### Cursor durability
+
+`MobStructuralEvent.cursor` is the meerkat ledger cursor — durable
+across mobkit gateway restarts when the runtime is built with
+`.persistent_state(path)`. SDK consumers can checkpoint a cursor
+and resume by reconnecting with `after_seq=<checkpointed cursor>`.
+
 ## Keep-alive
 
 The server sends keep-alive frames at a configurable interval (default: 15 seconds) to prevent connection timeouts:
@@ -84,6 +166,12 @@ The server sends keep-alive frames at a configurable interval (default: 15 secon
 ```
 : keep-alive
 ```
+
+When the broadcast lags (slow consumer, channel saturated), the
+console SSE routes emit a synthetic `stream_lagged` envelope with
+the count of skipped events instead of silently breaking the
+connection. Clients should refetch via the catch-up endpoint or
+reconnect with a fresh `last-event-id`.
 
 ## Sending messages
 

@@ -49,9 +49,75 @@ Clients must validate the contract version before sending requests.
 {
   "jsonrpc": "2.0",
   "id": 1,
-  "error": { "code": -32602, "message": "Invalid params" }
+  "error": {
+    "code": -32602,
+    "message": "Invalid params",
+    "data": { ... }
+  }
 }
 ```
+
+The optional `data` field carries structured context for typed
+errors. SDKs surface it on `RpcError.data`.
+
+### Mobkit-specific error codes
+
+| Code | Meaning | `data` shape |
+|------|---------|--------------|
+| `-32010` | `mob_events/{query,subscribe}` `after_seq` past `latest_cursor` (stale cursor) | `{after_cursor, latest_cursor, error: "event_query_stale"}` |
+| `-32012` | `memory/{index,query}` backend unavailable | none |
+
+The `-32010` constant is exported from both SDKs as
+`MOB_EVENTS_STALE_CURSOR_CODE`. The Python and TypeScript SDKs auto-
+reify `-32010` errors into `MobEventsStaleError` (a typed subclass of
+`RpcError`) carrying `after_cursor` and `latest_cursor`.
+
+---
+
+## Mob events
+
+### `mob_events/query`
+
+Scan the meerkat structural-event ledger and return matches.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `after_seq` | `u64` | no | Resume after this cursor (exclusive). Without it, returns the **latest N** matching events. |
+| `limit` | `usize` | no | Cap on returned events (default 256). |
+| `mob_id` / `run_id` / `step_id` | `string` | no | Filter by id |
+| `identity` / `member_id` | `string` | no | Filter by agent identity |
+| `event_types` | `string[]` | no | E.g. `["flow_started", "step_completed"]` |
+| `since_ms` / `until_ms` | `u64` | no | Inclusive / exclusive timestamp filters |
+</Accordion>
+
+The response always carries a numeric `next_after_seq` — even when
+the filter matches nothing — so polling SDKs keep a valid resume
+anchor (caller's `after_seq` or the current `latest_cursor`).
+
+### `mob_events/subscribe`
+
+JSON-RPC handshake that returns a snapshot plus a `subscribe_url`
+pointing to the [`/mobkit/mob_events/stream`](/api/sse) SSE route.
+The URL carries `after_seq` (`next_after_seq` ∨ caller's `after_seq` ∨
+`latest_cursor`) and the original filters so the SSE handler picks
+up gaplessly with the same predicate.
+
+### `list_runs`
+
+List flow runs for this mob.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `flow_id` | `string` | no | When given, only return runs for this flow. |
+</Accordion>
+
+Returns `{runs: MobRun[]}` carrying the full meerkat ledger projection:
+`step_ledger`, `failure_ledger`, `frames` (map keyed by frame id),
+`loops` (map keyed by loop id), `loop_iteration_ledger`,
+`flow_state`, `activation_params`, `schema_version`,
+`root_step_outputs`, `loop_iteration_outputs`.
 
 ---
 

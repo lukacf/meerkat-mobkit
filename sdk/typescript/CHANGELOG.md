@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+### Streaming structural events + durable cursors
+
+Parity with the Python SDK: structural events are now durable
+end-to-end. Cursors come from the meerkat ledger and survive mobkit
+restarts on SQLite-backed deployments.
+
+- `MobStructuralEvent.cursor` is the meerkat ledger cursor (not a
+  per-process counter). The runtime auto-installs a SQLite metadata
+  store next to `.persistent_state(path)` builds.
+- New `MobEventsStaleError extends RpcError` raised by
+  `queryMobEvents()` / `subscribeMobEvents()` on JSON-RPC code
+  `-32010`. Carries `afterCursor` and `latestCursor`. The shared
+  `MOB_EVENTS_STALE_CURSOR_CODE` constant is exported.
+- `mobkit/mob_events/subscribe` returns a `subscribe_url` pointing
+  to the new `/mobkit/mob_events/stream?after_seq=...&...` SSE
+  route; original filters echo back so the SSE handler picks up
+  gaplessly with the same predicate.
+- `mobkit/mob_events/query` always returns a numeric
+  `next_after_seq` even on empty match (was `null`).
+
+### `MobHandle.listRuns(flowId?)`
+
+New SDK method wrapping `mobkit/list_runs`. Returns `MobRun[]` with
+the full meerkat ledger projection: `stepLedger`, `failureLedger`,
+`frames` (map keyed by frame id), `loops` (map keyed by loop id),
+`loopIterationLedger`, `flowState`, `activationParams`,
+`schemaVersion`, `rootStepOutputs`, `loopIterationOutputs`.
+Meerkat-internal sub-shapes pass through opaquely as `unknown`.
+
+New interfaces and parsers exported from `@rkat/mobkit-sdk`:
+`MobRun`, `MobRunStatus`, `StepRecord`, `FailureRecord`,
+`FrameRecord`, `LoopRecord`, `LoopIterationRecord` plus
+`parseMobRun` / `parseStepRecord` / etc.
+
+### Bug-hunt fixes (PR #69)
+
+- `RpcError.data` propagates the JSON-RPC `error.data` payload.
+- New `isRpcError(err)` / `isMobEventsStaleError(err)` structural
+  type guards. **Use these instead of `instanceof RpcError`** —
+  dual CJS+ESM packaging, vitest module isolation, and
+  hoisted-vs-nested monorepos all produce two `RpcError`
+  constructors that fail `instanceof` for each other's instances.
+  The structural checks survive the split.
+- `MobKitRuntime.start()` no longer rewrites `mobkit/init`
+  `RpcError` as a generic `TransportError`. Original code/message/
+  data flow through; only synthesizes `TransportError` when the
+  subprocess actually died.
+- `SseBridge` ties the underlying HTTP request to the generator
+  lifetime. Breaking out of `for await (const e of
+  handle.subscribeAgent(...))` now destroys the request — pre-fix
+  it leaked an `http.ClientRequest` per iteration.
+- `createJsonRpcHttpTransport` accepts a `timeoutMs` option
+  (default 60s) and aborts via `AbortController`. Pre-fix a server
+  that accepted but never replied hung the caller's `await`
+  forever.
+- SSE parser handles `id:N` / `event:foo` lines without the
+  optional space (SSE-spec-legal). Pre-fix only the
+  `"id: "` / `"event: "` prefixes matched and resume cursors were
+  lost.
+- `parseSubscribeResult` filters non-object entries from `events[]`
+  before mapping. Pre-fix null/string/number entries were coerced
+  into silently-empty envelopes — data loss.
+- `parseDispatchInput` validates `origin` against the closed
+  `DispatchOrigin` union and falls back to `"system"` for unknown
+  values. Pre-fix it was an unchecked cast.
+
 ### Cross-mob signed-peer surface
 
 - New `mobkit/peer_pubkey` RPC returns the local gateway's Ed25519
