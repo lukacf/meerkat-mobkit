@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::auth::peer_keys::decode_pubkey_b64;
+
 /// Transport for reaching an external mob.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MobTransport {
@@ -16,10 +18,22 @@ pub enum MobTransport {
 }
 
 /// Entry in the contact directory for one external mob.
+///
+/// The optional `pubkey` is the peer gateway's Ed25519 signing pubkey —
+/// 32 bytes, used by meerkat-comms to verify envelope signatures on real
+/// (TCP/UDS) transports. Inproc peers leave it unset and rely on the
+/// router's identity map. For non-inproc peers, callers that want signed
+/// envelopes either populate `pubkey` from a TOFU bootstrap (fetched via
+/// `mobkit/peer_pubkey`) or fail closed at wire time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactEntry {
     pub mob_id: String,
     pub transport: MobTransport,
+    /// 32-byte Ed25519 signing pubkey. `None` is allowed for inproc; for
+    /// real transports, [`UnifiedRuntime::wire_local`] rejects when this
+    /// is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<[u8; 32]>,
 }
 
 /// Error loading or parsing a contact directory.
@@ -29,6 +43,8 @@ pub enum ContactDirectoryError {
     Parse(String),
     /// Invalid transport string.
     InvalidTransport { mob_id: String, value: String },
+    /// Pubkey field present but did not decode as 32 bytes of base64.
+    InvalidPubkey { mob_id: String, reason: String },
 }
 
 impl std::fmt::Display for ContactDirectoryError {
@@ -37,6 +53,9 @@ impl std::fmt::Display for ContactDirectoryError {
             Self::Parse(reason) => write!(f, "contact directory parse error: {reason}"),
             Self::InvalidTransport { mob_id, value } => {
                 write!(f, "invalid transport for mob '{mob_id}': {value}")
+            }
+            Self::InvalidPubkey { mob_id, reason } => {
+                write!(f, "invalid pubkey for mob '{mob_id}': {reason}")
             }
         }
     }
@@ -55,12 +74,18 @@ pub struct ContactDirectory {
 impl ContactDirectory {
     /// Parse a contact directory from TOML.
     ///
-    /// Expected format:
+    /// Two value shapes per mob are accepted, side by side:
+    ///
     /// ```toml
     /// [mobs]
+    /// # Bare-string form (backward compatible, no pubkey).
     /// google-workspace = "inproc"
-    /// home-assistant = "tcp://192.168.1.50:9002"
-    /// smart-home = "uds:///var/run/meerkat/smart-home.sock"
+    ///
+    /// # Table form — required for non-inproc peers that want signed
+    /// # envelopes. `pubkey` is base64 of the 32-byte Ed25519 verifying
+    /// # key, optionally prefixed with `ed25519:` for parity with
+    /// # meerkat-comms trust files.
+    /// home-assistant = { transport = "tcp://192.168.1.50:9002", pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" }
     /// ```
     pub fn from_toml(text: &str) -> Result<Self, ContactDirectoryError> {
         let table: toml::Value =
@@ -74,20 +99,8 @@ impl ContactDirectory {
 
         let mut entries = BTreeMap::new();
         for (mob_id, value) in mobs {
-            let transport_str =
-                value
-                    .as_str()
-                    .ok_or_else(|| ContactDirectoryError::InvalidTransport {
-                        mob_id: mob_id.clone(),
-                        value: format!("{value}"),
-                    })?;
-            let transport = parse_transport(transport_str).ok_or_else(|| {
-                ContactDirectoryError::InvalidTransport {
-                    mob_id: mob_id.clone(),
-                    value: transport_str.to_string(),
-                }
-            })?;
-            entries.insert(mob_id.clone(), ContactEntry { mob_id, transport });
+            let entry = parse_entry(&mob_id, &value)?;
+            entries.insert(mob_id, entry);
         }
 
         Ok(Self { entries })
@@ -107,6 +120,57 @@ impl ContactDirectory {
     pub fn list(&self) -> Vec<&ContactEntry> {
         self.entries.values().collect()
     }
+}
+
+fn parse_entry(mob_id: &str, value: &toml::Value) -> Result<ContactEntry, ContactDirectoryError> {
+    if let Some(s) = value.as_str() {
+        let transport =
+            parse_transport(s).ok_or_else(|| ContactDirectoryError::InvalidTransport {
+                mob_id: mob_id.to_string(),
+                value: s.to_string(),
+            })?;
+        return Ok(ContactEntry {
+            mob_id: mob_id.to_string(),
+            transport,
+            pubkey: None,
+        });
+    }
+
+    if let Some(tbl) = value.as_table() {
+        let transport_str = tbl
+            .get("transport")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ContactDirectoryError::InvalidTransport {
+                mob_id: mob_id.to_string(),
+                value: format!("{value}"),
+            })?;
+        let transport = parse_transport(transport_str).ok_or_else(|| {
+            ContactDirectoryError::InvalidTransport {
+                mob_id: mob_id.to_string(),
+                value: transport_str.to_string(),
+            }
+        })?;
+        let pubkey =
+            match tbl.get("pubkey").and_then(|v| v.as_str()) {
+                Some(s) => Some(decode_pubkey_b64(s).map_err(|err| {
+                    ContactDirectoryError::InvalidPubkey {
+                        mob_id: mob_id.to_string(),
+                        reason: err.to_string(),
+                    }
+                })?),
+                None => None,
+            };
+        return Ok(ContactEntry {
+            mob_id: mob_id.to_string(),
+            transport,
+            pubkey,
+        });
+    }
+
+    Err(ContactDirectoryError::InvalidTransport {
+        mob_id: mob_id.to_string(),
+        value: format!("{value}"),
+    })
 }
 
 fn parse_transport(s: &str) -> Option<MobTransport> {
@@ -174,6 +238,51 @@ mod tests {
             dir.get("smart-home").unwrap().transport,
             MobTransport::Uds("/var/run/meerkat/smart-home.sock".to_string())
         );
+        // Bare-string form leaves pubkey unset (backward compatible).
+        for entry in dir.list() {
+            assert!(entry.pubkey.is_none(), "{} pubkey", entry.mob_id);
+        }
+    }
+
+    #[test]
+    fn parse_table_form_carries_pubkey() {
+        let pubkey_b64 = "KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=";
+        let dir = ContactDirectory::from_toml(&format!(
+            r#"
+            [mobs]
+            home-assistant = {{ transport = "tcp://192.168.1.50:9002", pubkey = "{pubkey_b64}" }}
+            "#,
+        ))
+        .unwrap();
+        let entry = dir.get("home-assistant").unwrap();
+        assert!(matches!(entry.transport, MobTransport::Tcp(_)));
+        assert_eq!(entry.pubkey, Some([42u8; 32]));
+    }
+
+    #[test]
+    fn parse_table_form_accepts_ed25519_prefix() {
+        let dir = ContactDirectory::from_toml(
+            r#"
+            [mobs]
+            home-assistant = { transport = "tcp://1.2.3.4:9000", pubkey = "ed25519:KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio=" }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(dir.get("home-assistant").unwrap().pubkey, Some([42u8; 32]));
+    }
+
+    #[test]
+    fn parse_table_form_rejects_bad_pubkey() {
+        let result = ContactDirectory::from_toml(
+            r#"
+            [mobs]
+            home-assistant = { transport = "tcp://1.2.3.4:9000", pubkey = "not-base64!!" }
+            "#,
+        );
+        assert!(matches!(
+            result,
+            Err(ContactDirectoryError::InvalidPubkey { .. })
+        ));
     }
 
     #[test]

@@ -129,6 +129,13 @@ pub struct UnifiedRuntime {
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
     peer_mob_handles: tokio::sync::RwLock<BTreeMap<String, MobHandle>>,
+    /// Long-lived Ed25519 signing identity for cross-process peering.
+    /// `None` is the default for inproc-only deployments and tests;
+    /// production gateways set this via
+    /// [`UnifiedRuntime::set_gateway_peer_keys`] during bootstrap so the
+    /// `mobkit/peer_pubkey` RPC and non-inproc `wire_*` paths can stamp
+    /// a real pubkey on outbound descriptors.
+    gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
 
     // Identity-first session bridge
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
@@ -187,6 +194,7 @@ impl UnifiedRuntime {
             mob_events_poll_task: tokio::sync::Mutex::new(mob_events_task),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
+            gateway_peer_keys: None,
             session_bridge: None,
             metadata_table,
         }

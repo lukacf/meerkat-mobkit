@@ -21,6 +21,7 @@ impl UnifiedRuntime {
             Some(self.module_runtime_handle()),
             self.contact_directory.clone(),
             self.event_log_store(),
+            self.gateway_peer_keys().cloned(),
             Some(self.console_events()),
             Some(self.mob_events_store()),
             true,

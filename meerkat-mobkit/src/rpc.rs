@@ -989,6 +989,7 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/cross_mob/peer_info",
                 "mobkit/cross_mob/wire_local",
                 "mobkit/cross_mob/unwire_local",
+                "mobkit/peer_pubkey",
                 "mobkit/member_status",
                 "mobkit/force_cancel_member",
                 "mobkit/spawn_helper",
@@ -1744,6 +1745,7 @@ pub async fn handle_unified_rpc_json(
         "mobkit/cross_mob/unwire_local" => {
             mob_methods::handle_cross_mob_unwire_local(runtime, response_id, &request.params).await
         }
+        "mobkit/peer_pubkey" => mob_methods::handle_peer_pubkey(runtime, response_id).await,
         "mobkit/member_status" => {
             mob_methods::handle_member_status(runtime, response_id, &request.params).await
         }

@@ -4,32 +4,21 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
-### Added — mob/run label sidecar
+### Cross-mob signed-peer surface
 
-`MobHandle` gains six methods for attaching external context (repo, branch,
-customer, deployment, environment) to a mob or a flow run. These labels are
-stored mobkit-side and are independent of meerkat-mob's member-level labels:
-
-- `set_mob_labels(labels)` / `get_mob_labels()` / `delete_mob_labels()`
-- `set_run_labels(run_id, labels)` / `get_run_labels(run_id)` / `delete_run_labels(run_id)`
-
-Set operations replace the entire label set (no merge). Reads return `{}` when
-no labels are present. Backed by `mobkit/{mob_labels,run_labels}/{set,get,delete}`
-RPCs.
-
-### Structural events carry labels
-
-`MobStructuralEvent` (from `MobHandle.query_mob_events()` / `subscribe_mob_events()`)
-gains two fields populated at projection time:
-
-- `mob_labels: dict[str, str]` — snapshot of the mob-scoped label set when the
-  event was projected, empty if none.
-- `run_labels: dict[str, str]` — snapshot of the run-scoped label set when the
-  event has a `run_id`, empty otherwise.
-
-This closes the loop between the structural-events surface and the label
-sidecar — apps that subscribe to `mob_events` can correlate every event with
-the external context attached to its mob and run without a separate lookup.
+- New `MobHandle.peer_pubkey()` → returns the local gateway's Ed25519
+  signing pubkey as a base64 string. Wraps the new `mobkit/peer_pubkey`
+  RPC. Use this to bootstrap trust before populating a peer mobkit's
+  contact directory with this gateway's pubkey.
+- `MobHandle.wire_local()` and `MobHandle.unwire_local()` accept an
+  optional keyword `remote_pubkey_b64`. Non-inproc transports (`tcp://`,
+  `uds://`) require it: the gateway rejects unsigned descriptors on real
+  transports so meerkat-comms can verify envelope signatures at ingress.
+  Inproc-only callers keep the existing four-positional-arg shape.
+- `mobkit/cross_mob/directory` entries gain an optional `pubkey` field
+  (base64) when the contact-directory TOML uses the new table form
+  (`{ transport = "...", pubkey = "ed25519:..." }`). Bare-string entries
+  remain backward compatible and report `pubkey = None`.
 
 ## 0.6.0 — Meerkat 0.6 wire rename (BREAKING)
 

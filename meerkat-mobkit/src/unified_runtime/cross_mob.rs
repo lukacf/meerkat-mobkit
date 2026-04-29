@@ -5,6 +5,7 @@ use meerkat_core::types::HandlingMode;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobHandle, PeerTarget};
 
+use crate::auth::peer_keys::GatewayPeerKeys;
 use crate::contact_directory::{ContactDirectory, ContactEntry};
 
 use super::UnifiedRuntime;
@@ -21,6 +22,11 @@ pub enum CrossMobError {
     /// The contact entry uses TCP or UDS transport, which is not yet supported.
     /// Phase 1 only supports inproc (same-process) cross-mob communication.
     TransportNotSupported { mob_id: String, transport: String },
+    /// Caller asked to wire a non-inproc peer but did not supply (or
+    /// could not derive) a 32-byte Ed25519 pubkey. Mobkit refuses to
+    /// build an unsigned descriptor on real transports — meerkat-comms
+    /// would then admit any sender at ingress.
+    MissingPeerPubkey { mob_id: Option<String> },
     /// Member not found in the target mob's roster.
     MemberNotFound { member_id: String, mob_id: String },
     /// Member has no comms runtime (not comms-enabled).
@@ -55,6 +61,19 @@ impl std::fmt::Display for CrossMobError {
             }
             Self::Mob(err) => write!(f, "mob error: {err}"),
             Self::PeerSpec(reason) => write!(f, "peer spec error: {reason}"),
+            Self::MissingPeerPubkey { mob_id } => match mob_id {
+                Some(id) => write!(
+                    f,
+                    "non-inproc peer for mob '{id}' has no signing pubkey; \
+                     bootstrap via mobkit/peer_pubkey or populate the contact \
+                     directory's pubkey field before wiring"
+                ),
+                None => write!(
+                    f,
+                    "non-inproc peer has no signing pubkey; supply a 32-byte \
+                     Ed25519 pubkey or use inproc transport"
+                ),
+            },
         }
     }
 }
@@ -79,6 +98,23 @@ impl UnifiedRuntime {
     /// Set the contact directory for cross-mob address resolution.
     pub fn set_contact_directory(&mut self, directory: ContactDirectory) {
         self.contact_directory = Some(directory);
+    }
+
+    /// Install the long-lived Ed25519 keypair this gateway advertises via
+    /// `mobkit/peer_pubkey` and (when meerkat-comms grows out-of-process
+    /// transports) signs outbound envelopes with.
+    ///
+    /// Inproc-only deployments and most tests skip this — the in-process
+    /// router authorises by identity map and signature verification is
+    /// moot. Production gateways and any cross-process integration test
+    /// must call this.
+    pub fn set_gateway_peer_keys(&mut self, keys: GatewayPeerKeys) {
+        self.gateway_peer_keys = Some(keys);
+    }
+
+    /// Borrow the local gateway keypair if one was installed.
+    pub fn gateway_peer_keys(&self) -> Option<&GatewayPeerKeys> {
+        self.gateway_peer_keys.as_ref()
     }
 
     /// Wire a local member to a member in an external mob.
@@ -284,19 +320,26 @@ impl UnifiedRuntime {
     ///
     /// `remote_address` is the comms transport address (e.g. `"inproc://name"`
     /// for same-process, `"tcp://host:port"` for cross-process).
+    /// `remote_pubkey` is the peer gateway's 32-byte Ed25519 verifying
+    /// key. Inproc transports may pass `None` (the in-process router
+    /// authorises by identity map). Non-inproc transports MUST supply a
+    /// non-zero pubkey — this call fails closed with
+    /// [`CrossMobError::MissingPeerPubkey`] otherwise so unsigned
+    /// descriptors never reach a real transport.
     pub async fn wire_local(
         &self,
         local_member_id: &str,
         remote_comms_name: &str,
         remote_peer_id: &str,
         remote_address: &str,
+        remote_pubkey: Option<[u8; 32]>,
     ) -> Result<(), CrossMobError> {
-        let spec = TrustedPeerDescriptor::test_only_unsigned(
+        let spec = build_external_peer_spec(
             remote_comms_name,
             remote_peer_id,
             remote_address,
-        )
-        .map_err(CrossMobError::PeerSpec)?;
+            remote_pubkey,
+        )?;
         let local_mid = MeerkatId::from(local_member_id);
         self.mob_runtime
             .handle()
@@ -313,13 +356,14 @@ impl UnifiedRuntime {
         remote_comms_name: &str,
         remote_peer_id: &str,
         remote_address: &str,
+        remote_pubkey: Option<[u8; 32]>,
     ) -> Result<(), CrossMobError> {
-        let spec = TrustedPeerDescriptor::test_only_unsigned(
+        let spec = build_external_peer_spec(
             remote_comms_name,
             remote_peer_id,
             remote_address,
-        )
-        .map_err(CrossMobError::PeerSpec)?;
+            remote_pubkey,
+        )?;
         let local_mid = MeerkatId::from(local_member_id);
         self.mob_runtime
             .handle()
@@ -397,11 +441,45 @@ fn build_inproc_peer_spec(
     comms_name: &str,
     peer_id: &str,
 ) -> Result<TrustedPeerDescriptor, CrossMobError> {
-    // Cross-mob mobkit is inproc-only (phase 1), so the unsigned descriptor
-    // is the right shape: the in-process router authorizes via its identity
-    // map and signature verification is moot. When mobkit grows
-    // out-of-process cross-mob transport, callers must construct a
-    // descriptor with a real Ed25519 pubkey instead.
+    // Inproc cross-mob: the in-process router authorises via its identity
+    // map and signature verification is moot, so an unsigned descriptor
+    // is the right shape. Non-inproc paths use [`build_external_peer_spec`]
+    // which requires a real pubkey or fails closed.
     TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, format!("inproc://{comms_name}"))
         .map_err(CrossMobError::PeerSpec)
+}
+
+/// Build a [`TrustedPeerDescriptor`] for an external (non-inproc) peer.
+///
+/// The address scheme decides the policy:
+///
+/// * `inproc://...` — keep behaviour aligned with
+///   [`build_inproc_peer_spec`]: pubkey is optional and an unsigned
+///   descriptor is acceptable.
+/// * `tcp://...` / `uds://...` — fail closed unless a non-zero 32-byte
+///   pubkey is supplied. meerkat-comms keys its trust store by pubkey;
+///   admitting an all-zero pubkey would let any sender in.
+fn build_external_peer_spec(
+    comms_name: &str,
+    peer_id: &str,
+    address: &str,
+    pubkey: Option<[u8; 32]>,
+) -> Result<TrustedPeerDescriptor, CrossMobError> {
+    let is_inproc = address.starts_with("inproc://");
+    match (is_inproc, pubkey) {
+        (true, None) => TrustedPeerDescriptor::test_only_unsigned(comms_name, peer_id, address)
+            .map_err(CrossMobError::PeerSpec),
+        (true, Some(bytes)) => {
+            TrustedPeerDescriptor::unsigned_with_pubkey(comms_name, peer_id, bytes, address)
+                .map_err(CrossMobError::PeerSpec)
+        }
+        (false, None) => Err(CrossMobError::MissingPeerPubkey { mob_id: None }),
+        (false, Some(bytes)) => {
+            if bytes == [0u8; 32] {
+                return Err(CrossMobError::MissingPeerPubkey { mob_id: None });
+            }
+            TrustedPeerDescriptor::unsigned_with_pubkey(comms_name, peer_id, bytes, address)
+                .map_err(CrossMobError::PeerSpec)
+        }
+    }
 }

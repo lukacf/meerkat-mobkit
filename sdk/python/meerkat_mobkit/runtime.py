@@ -1042,12 +1042,30 @@ class MobHandle:
         )
         return raw if isinstance(raw, dict) else {}
 
+    async def peer_pubkey(self) -> str:
+        """Return the local gateway's Ed25519 signing pubkey, base64.
+
+        Used to bootstrap trust before populating a peer mobkit's
+        contact directory with this gateway's pubkey. Raises
+        :class:`CapabilityUnavailableError` from the underlying
+        transport if the local gateway is inproc-only and never
+        configured a keypair.
+        """
+        raw = await self._runtime._rpc("mobkit/peer_pubkey")
+        if isinstance(raw, dict):
+            value = raw.get("pubkey_b64")
+            if isinstance(value, str):
+                return value
+        return ""
+
     async def wire_local(
         self,
         local_member_id: str,
         remote_comms_name: str,
         remote_peer_id: str,
         remote_address: str,
+        *,
+        remote_pubkey_b64: str | None = None,
     ) -> None:
         """Wire a local member to a remote peer (local side only).
 
@@ -1063,16 +1081,20 @@ class MobHandle:
 
         For cross-process (TCP/UDS), replace the address with the remote
         gateway's transport endpoint — peer_info always returns inproc.
+        Pass ``remote_pubkey_b64`` (base64 of the peer gateway's Ed25519
+        verifying key, fetched via :meth:`peer_pubkey`) to stamp a real
+        signing pubkey on the descriptor; the gateway rejects non-inproc
+        wires without one.
         """
-        await self._runtime._rpc(
-            "mobkit/cross_mob/wire_local",
-            {
-                "local_member_id": local_member_id,
-                "remote_comms_name": remote_comms_name,
-                "remote_peer_id": remote_peer_id,
-                "remote_address": remote_address,
-            },
-        )
+        params: dict[str, str] = {
+            "local_member_id": local_member_id,
+            "remote_comms_name": remote_comms_name,
+            "remote_peer_id": remote_peer_id,
+            "remote_address": remote_address,
+        }
+        if remote_pubkey_b64 is not None:
+            params["remote_pubkey_b64"] = remote_pubkey_b64
+        await self._runtime._rpc("mobkit/cross_mob/wire_local", params)
 
     async def unwire_local(
         self,
@@ -1080,17 +1102,19 @@ class MobHandle:
         remote_comms_name: str,
         remote_peer_id: str,
         remote_address: str,
+        *,
+        remote_pubkey_b64: str | None = None,
     ) -> None:
         """Undo a wire_local — unwire a local member from a previously wired peer (local side only)."""
-        await self._runtime._rpc(
-            "mobkit/cross_mob/unwire_local",
-            {
-                "local_member_id": local_member_id,
-                "remote_comms_name": remote_comms_name,
-                "remote_peer_id": remote_peer_id,
-                "remote_address": remote_address,
-            },
-        )
+        params: dict[str, str] = {
+            "local_member_id": local_member_id,
+            "remote_comms_name": remote_comms_name,
+            "remote_peer_id": remote_peer_id,
+            "remote_address": remote_address,
+        }
+        if remote_pubkey_b64 is not None:
+            params["remote_pubkey_b64"] = remote_pubkey_b64
+        await self._runtime._rpc("mobkit/cross_mob/unwire_local", params)
 
     # -----------------------------------------------------------------
     # Rich member inspection
