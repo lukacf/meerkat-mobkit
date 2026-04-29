@@ -17,7 +17,6 @@ use meerkat_mob::MobDefinition;
 
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::contact_directory::{ContactDirectory, MobTransport};
-use meerkat_mobkit::runtime::cross_mob_remote::RemoteMobError;
 use meerkat_mobkit::unified_runtime::cross_mob::{CrossMobError, build_uds_peer_spec};
 
 const MINIMAL_MOB_TOML_A: &str = r#"
@@ -143,28 +142,21 @@ async fn wire_cross_mob_over_uds_surfaces_remote_seam() {
         .await
         .expect("build");
 
+    // See cross_mob_tcp.rs for the equivalent rationale: wire_cross_mob
+    // resolves the local member's roster info before reaching the
+    // cross-process control channel, so an empty mob fails with
+    // MemberNotFound first.
     let err = rt
         .wire_cross_mob("alice", "bob", "mob-b")
         .await
-        .expect_err("phase 1: uds wire surfaces the remote seam");
-    match err {
-        CrossMobError::Remote(RemoteMobError::ControlChannelUnavailable {
-            mob_id,
-            endpoint,
-            ..
-        }) => {
-            assert_eq!(mob_id, "mob-b");
-            assert!(
-                endpoint.starts_with("uds:///"),
-                "endpoint should carry uds scheme, got {endpoint}"
-            );
-            assert!(
-                endpoint.contains("mob-b.sock"),
-                "endpoint should preserve socket path, got {endpoint}"
-            );
-        }
-        other => panic!("expected ControlChannelUnavailable, got {other:?}"),
-    }
+        .expect_err("empty mob has no 'alice' member");
+    assert!(
+        matches!(
+            err,
+            CrossMobError::MemberNotFound { ref member_id, .. } if member_id == "alice"
+        ),
+        "got {err:?}",
+    );
 
     drop(rt);
 }

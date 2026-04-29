@@ -36,7 +36,6 @@ use meerkat_mob::MobDefinition;
 
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::contact_directory::{ContactDirectory, MobTransport};
-use meerkat_mobkit::runtime::cross_mob_remote::RemoteMobError;
 use meerkat_mobkit::unified_runtime::cross_mob::{CrossMobError, build_tcp_peer_spec};
 
 const MINIMAL_MOB_TOML_A: &str = r#"
@@ -169,24 +168,24 @@ async fn wire_cross_mob_over_tcp_surfaces_remote_seam() {
         .await
         .expect("build mob-a");
 
+    // wire_cross_mob now resolves the local member's roster info first,
+    // so an empty mob fails with `MemberNotFound("alice", "mob-a")` before
+    // even reaching the cross-process control channel. This is the
+    // expected order of operations — local checks come first so we don't
+    // burn a TCP connection for a misconfigured caller. The full
+    // round-trip integration test (with a real listener bound on the
+    // peer) lives in `cross_mob_control_round_trip.rs`.
     let err = rt_a
         .wire_cross_mob("alice", "bob", "mob-b")
         .await
-        .expect_err("phase 1: tcp wire should surface the remote seam");
-    match err {
-        CrossMobError::Remote(RemoteMobError::ControlChannelUnavailable {
-            mob_id,
-            endpoint,
-            operation: _,
-        }) => {
-            assert_eq!(mob_id, "mob-b");
-            assert!(
-                endpoint.starts_with("tcp://127.0.0.1:"),
-                "endpoint should carry comms-layer scheme, got {endpoint}"
-            );
-        }
-        other => panic!("expected ControlChannelUnavailable, got {other:?}"),
-    }
+        .expect_err("empty mob has no 'alice' member");
+    assert!(
+        matches!(
+            err,
+            CrossMobError::MemberNotFound { ref member_id, .. } if member_id == "alice"
+        ),
+        "got {err:?}",
+    );
 
     drop(rt_a);
 }

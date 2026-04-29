@@ -56,14 +56,49 @@ use crate::contact_directory::{ContactEntry, MobTransport};
 pub enum RemoteMobError {
     /// The contact directory entry uses an unsupported transport.
     UnsupportedTransport { mob_id: String, transport: String },
-    /// The cross-process control channel for this peer mob is not yet
-    /// connected. Phase 1 surfaces this so callers see the seam without
-    /// silently misbehaving.
+    /// The cross-process control channel for this peer mob is not
+    /// reachable: connect failed, write/read failed, or the peer timed
+    /// out. The `operation` field reports which RPC stage hit the wall.
     ControlChannelUnavailable {
         mob_id: String,
         endpoint: String,
         operation: &'static str,
     },
+    /// The peer rejected our request with an error response. Carries the
+    /// peer's stable `code` (e.g. `unknown_member`, `mob_error`) and a
+    /// human-readable message.
+    Rejected {
+        mob_id: String,
+        endpoint: String,
+        code: String,
+        message: String,
+    },
+    /// We failed to encode the request payload — usually a programmer
+    /// error (un-serializable JSON value passed in).
+    Encode { endpoint: String, message: String },
+    /// We received a response we couldn't decode — peer is speaking a
+    /// different protocol or sent corrupted data.
+    Decode { endpoint: String, message: String },
+}
+
+impl RemoteMobError {
+    /// Attach IO-error context to a `ControlChannelUnavailable` variant.
+    /// Internal helper for the control-protocol module — keeps the public
+    /// shape stable while letting us record the underlying message.
+    pub(crate) fn with_context(self, context: String) -> Self {
+        match self {
+            Self::ControlChannelUnavailable {
+                mob_id,
+                endpoint,
+                operation,
+            } => Self::ControlChannelUnavailable {
+                mob_id: if mob_id.is_empty() { context } else { mob_id },
+                endpoint,
+                operation,
+            },
+            other => other,
+        }
+    }
 }
 
 impl std::fmt::Display for RemoteMobError {
@@ -82,10 +117,30 @@ impl std::fmt::Display for RemoteMobError {
             } => {
                 write!(
                     f,
-                    "remote mob '{mob_id}' control channel ({endpoint}) is not available; \
-                     operation '{operation}' is not yet supported across processes — \
-                     register a local MobHandle via register_peer_mob() for in-process peers, \
-                     or wait for cross-mob control RPC (Phase 2)"
+                    "remote mob '{mob_id}' control channel ({endpoint}): operation '{operation}' \
+                     failed — confirm the peer gateway is running with a control listener bound \
+                     on this endpoint"
+                )
+            }
+            Self::Rejected {
+                mob_id,
+                endpoint,
+                code,
+                message,
+            } => {
+                write!(
+                    f,
+                    "remote mob '{mob_id}' control channel ({endpoint}) rejected request \
+                     [{code}]: {message}"
+                )
+            }
+            Self::Encode { endpoint, message } => {
+                write!(f, "control request encode failed for {endpoint}: {message}")
+            }
+            Self::Decode { endpoint, message } => {
+                write!(
+                    f,
+                    "control response decode failed for {endpoint}: {message}"
                 )
             }
         }
@@ -171,48 +226,166 @@ impl RemoteMobProxy {
 
     /// Wire a peer on the remote side.
     ///
-    /// **Phase 1 stub** — returns [`RemoteMobError::ControlChannelUnavailable`].
-    /// Phase 2 sends a `WireRequest` over the control channel.
+    /// Sends a `Wire` control request to the peer gateway over its
+    /// configured TCP/UDS endpoint. The remote side calls
+    /// `MobHandle::wire(local_member, PeerTarget::External(spec))` and
+    /// responds with `Ok` or `Err`.
     pub async fn wire_remote(
         &self,
-        _remote_member: &str,
-        _local_peer_spec_address: &str,
+        remote_member: &str,
+        local_peer_spec_address: &str,
+        local_comms_name: &str,
+        local_peer_id: &str,
+        local_pubkey_b64: Option<String>,
     ) -> Result<(), RemoteMobError> {
-        Err(RemoteMobError::ControlChannelUnavailable {
-            mob_id: self.mob_id.clone(),
-            endpoint: self.endpoint.comms_address(),
-            operation: "wire",
-        })
+        let request = super::cross_mob_control::ControlRequest::Wire {
+            remote_member: remote_member.to_string(),
+            local_peer_spec_address: local_peer_spec_address.to_string(),
+            local_comms_name: local_comms_name.to_string(),
+            local_peer_id: local_peer_id.to_string(),
+            local_pubkey_b64,
+        };
+        self.dispatch_no_payload(request, "wire").await
     }
 
-    /// Unwire a peer on the remote side.
-    ///
-    /// **Phase 1 stub** — see [`Self::wire_remote`].
+    /// Unwire a peer on the remote side. Symmetric with [`Self::wire_remote`].
     pub async fn unwire_remote(
         &self,
-        _remote_member: &str,
-        _local_peer_spec_address: &str,
+        remote_member: &str,
+        local_peer_spec_address: &str,
+        local_comms_name: &str,
+        local_peer_id: &str,
+        local_pubkey_b64: Option<String>,
     ) -> Result<(), RemoteMobError> {
-        Err(RemoteMobError::ControlChannelUnavailable {
-            mob_id: self.mob_id.clone(),
-            endpoint: self.endpoint.comms_address(),
-            operation: "unwire",
-        })
+        let request = super::cross_mob_control::ControlRequest::Unwire {
+            remote_member: remote_member.to_string(),
+            local_peer_spec_address: local_peer_spec_address.to_string(),
+            local_comms_name: local_comms_name.to_string(),
+            local_peer_id: local_peer_id.to_string(),
+            local_pubkey_b64,
+        };
+        self.dispatch_no_payload(request, "unwire").await
     }
 
     /// Inject an external-turn message into a remote member's session.
     ///
-    /// **Phase 1 stub** — see [`Self::wire_remote`].
+    /// Returns the bridge session id that accepted the injection, so the
+    /// caller can correlate downstream events. Mirrors the local
+    /// `MobHandle::send` shape used by `send_cross_mob`.
     pub async fn inject_message(
         &self,
-        _remote_member: &str,
-        _content_json: serde_json::Value,
+        remote_member: &str,
+        content_json: serde_json::Value,
     ) -> Result<String, RemoteMobError> {
-        Err(RemoteMobError::ControlChannelUnavailable {
-            mob_id: self.mob_id.clone(),
-            endpoint: self.endpoint.comms_address(),
-            operation: "inject_message_into_member_session",
-        })
+        let request = super::cross_mob_control::ControlRequest::Inject {
+            remote_member: remote_member.to_string(),
+            content: content_json,
+        };
+        let response = super::cross_mob_control::RemoteControlClient::send(
+            &self.endpoint,
+            &request,
+            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
+        )
+        .await
+        .map_err(|err| self.attach_mob_id(err))?;
+        match response {
+            super::cross_mob_control::ControlResponse::Injected { session_id } => Ok(session_id),
+            super::cross_mob_control::ControlResponse::Err { code, message } => {
+                Err(RemoteMobError::Rejected {
+                    mob_id: self.mob_id.clone(),
+                    endpoint: self.endpoint.comms_address(),
+                    code,
+                    message,
+                })
+            }
+            other => Err(RemoteMobError::Decode {
+                endpoint: self.endpoint.comms_address(),
+                message: format!("expected Injected response, got {other:?}"),
+            }),
+        }
+    }
+
+    async fn dispatch_no_payload(
+        &self,
+        request: super::cross_mob_control::ControlRequest,
+        operation: &'static str,
+    ) -> Result<(), RemoteMobError> {
+        let response = super::cross_mob_control::RemoteControlClient::send(
+            &self.endpoint,
+            &request,
+            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
+        )
+        .await
+        .map_err(|err| self.attach_mob_id(err))?;
+        match response {
+            super::cross_mob_control::ControlResponse::Ok => Ok(()),
+            super::cross_mob_control::ControlResponse::Err { code, message } => {
+                Err(RemoteMobError::Rejected {
+                    mob_id: self.mob_id.clone(),
+                    endpoint: self.endpoint.comms_address(),
+                    code,
+                    message,
+                })
+            }
+            other => Err(RemoteMobError::Decode {
+                endpoint: self.endpoint.comms_address(),
+                message: format!("expected Ok for {operation}, got {other:?}"),
+            }),
+        }
+    }
+
+    /// Look up a remote member's peer info via the control channel.
+    /// Used during `wire_cross_mob` to discover what `TrustedPeerDescriptor`
+    /// to build for the local-side wire without caller-supplied bookkeeping.
+    pub async fn lookup_member(
+        &self,
+        remote_member: &str,
+    ) -> Result<(String, String), RemoteMobError> {
+        let request = super::cross_mob_control::ControlRequest::LookupMember {
+            remote_member: remote_member.to_string(),
+        };
+        let response = super::cross_mob_control::RemoteControlClient::send(
+            &self.endpoint,
+            &request,
+            super::cross_mob_control::DEFAULT_CONTROL_TIMEOUT,
+        )
+        .await
+        .map_err(|err| self.attach_mob_id(err))?;
+        match response {
+            super::cross_mob_control::ControlResponse::Member {
+                peer_id,
+                comms_name,
+            } => Ok((peer_id, comms_name)),
+            super::cross_mob_control::ControlResponse::Err { code, message } => {
+                Err(RemoteMobError::Rejected {
+                    mob_id: self.mob_id.clone(),
+                    endpoint: self.endpoint.comms_address(),
+                    code,
+                    message,
+                })
+            }
+            other => Err(RemoteMobError::Decode {
+                endpoint: self.endpoint.comms_address(),
+                message: format!("expected Member response, got {other:?}"),
+            }),
+        }
+    }
+
+    fn attach_mob_id(&self, err: RemoteMobError) -> RemoteMobError {
+        match err {
+            RemoteMobError::ControlChannelUnavailable {
+                mob_id,
+                endpoint,
+                operation,
+            } if mob_id.is_empty() || mob_id != self.mob_id => {
+                RemoteMobError::ControlChannelUnavailable {
+                    mob_id: self.mob_id.clone(),
+                    endpoint,
+                    operation,
+                }
+            }
+            other => other,
+        }
     }
 }
 
@@ -226,6 +399,7 @@ mod tests {
         let entry = ContactEntry {
             mob_id: "demo".to_string(),
             transport: MobTransport::Inproc,
+            pubkey: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry).expect("inproc is supported");
         assert!(proxy.is_none());
@@ -236,6 +410,7 @@ mod tests {
         let entry = ContactEntry {
             mob_id: "remote".to_string(),
             transport: MobTransport::Tcp("127.0.0.1:9001".to_string()),
+            pubkey: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry)
             .expect("tcp is supported")
@@ -251,6 +426,7 @@ mod tests {
         let entry = ContactEntry {
             mob_id: "remote-uds".to_string(),
             transport: MobTransport::Uds("/tmp/cross-mob.sock".to_string()),
+            pubkey: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry)
             .expect("uds is supported")
@@ -263,22 +439,33 @@ mod tests {
         );
     }
 
+    /// When no listener is bound at the configured endpoint, `wire_remote`
+    /// surfaces `ControlChannelUnavailable` with the mob id attached.
+    /// (End-to-end happy path lives in `tests/cross_mob_tcp.rs` once
+    /// the unified runtime spins up its own control listener.)
     #[tokio::test]
-    async fn wire_remote_stub_reports_unavailable() {
+    async fn wire_remote_returns_unavailable_when_no_listener() {
         let entry = ContactEntry {
             mob_id: "remote".to_string(),
-            transport: MobTransport::Tcp("127.0.0.1:9001".to_string()),
+            transport: MobTransport::Tcp("127.0.0.1:1".to_string()),
+            pubkey: None,
         };
         let proxy = RemoteMobProxy::from_entry(&entry)
             .expect("tcp ok")
             .expect("some");
         let err = proxy
-            .wire_remote("alice", "tcp://127.0.0.1:9000")
+            .wire_remote(
+                "alice",
+                "tcp://127.0.0.1:9000",
+                "demo/role/alice",
+                "00000000-0000-4000-8000-000000000001",
+                None,
+            )
             .await
-            .expect_err("phase 1 stub");
-        assert!(matches!(
-            err,
-            RemoteMobError::ControlChannelUnavailable { .. }
-        ));
+            .expect_err("no listener");
+        assert!(
+            matches!(err, RemoteMobError::ControlChannelUnavailable { ref mob_id, .. } if mob_id == "remote"),
+            "got {err:?}"
+        );
     }
 }
