@@ -255,8 +255,12 @@ pub fn meerkat_reconcile_report_to_wire(
             .map(|failure| MobReconcileFailure {
                 agent_identity: failure.agent_identity.to_string(),
                 stage: match failure.stage {
-                    meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => "spawn".into(),
-                    meerkat_mob::runtime::reconcile::ReconcileStage::Retire => "retire".into(),
+                    meerkat_mob::runtime::reconcile::ReconcileStage::Spawn => {
+                        meerkat_contracts::WireMobReconcileStage::Spawn
+                    }
+                    meerkat_mob::runtime::reconcile::ReconcileStage::Retire => {
+                        meerkat_contracts::WireMobReconcileStage::Retire
+                    }
                 },
                 error: failure.error.to_string(),
             })

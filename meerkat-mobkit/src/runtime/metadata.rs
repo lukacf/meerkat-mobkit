@@ -12,8 +12,11 @@
 //! [`MetadataScope`] so the same surface can serve mobs and runs uniformly.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
+use rusqlite::Connection;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
@@ -174,6 +177,228 @@ pub fn parse_run_id_param(params: &Value) -> Result<&str, String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Persistent metadata adapter
+// ---------------------------------------------------------------------------
+//
+// Distinct from the in-memory `RuntimeMetadataTable` above. The label sidecar
+// resets on restart (acceptable — labels are app-injected runtime metadata).
+// The structural-events subscription cursor must survive restart so a
+// restarted gateway resumes from where it left off rather than dropping
+// events emitted between processes. This adapter owns that durable state.
+
+/// Errors raised by [`PersistentMetadataStore`] implementations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MetadataStoreError {
+    /// Underlying I/O or storage failure (sqlite open, schema, query, ...).
+    Io(String),
+    /// A persisted value couldn't be parsed back into the typed shape — the
+    /// store was probably written by a future mobkit version.
+    Decode(String),
+}
+
+impl std::fmt::Display for MetadataStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(msg) => write!(f, "metadata store io: {msg}"),
+            Self::Decode(msg) => write!(f, "metadata store decode: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for MetadataStoreError {}
+
+/// Persistent storage for mobkit runtime metadata that must survive a
+/// gateway restart — currently the structural-events subscription cursor.
+///
+/// Two impls live in this module: [`InMemoryMetadataStore`] (no
+/// persistence; used when no SQLite mob storage is configured) and
+/// [`SqliteMetadataStore`] (writes a small `mobkit_metadata` table next
+/// to the mob's own SQLite store). The `UnifiedRuntime` builder picks
+/// the impl based on the configured `MobBootstrapSpec`.
+#[async_trait]
+pub trait PersistentMetadataStore: Send + Sync {
+    /// Read the last-projected mob events cursor for `mob_id`. Returns
+    /// `Ok(None)` when no cursor has been written yet (fresh deploy or
+    /// in-memory deployment that just started).
+    async fn get_subscription_cursor(
+        &self,
+        mob_id: &str,
+    ) -> Result<Option<u64>, MetadataStoreError>;
+
+    /// Persist the last-projected mob events cursor for `mob_id`.
+    async fn set_subscription_cursor(
+        &self,
+        mob_id: &str,
+        cursor: u64,
+    ) -> Result<(), MetadataStoreError>;
+}
+
+/// In-memory persistent metadata store.
+///
+/// "Persistent" is aspirational here — the values survive `Arc<...>` clones
+/// but reset to empty on process restart. Used when no SQLite mob storage
+/// is configured. The structural-events subscription falls back to "start
+/// at latest" on restart in this case, which is the right behaviour:
+/// in-memory deployments don't have a persistent ledger to replay against
+/// either.
+#[derive(Debug, Default)]
+pub struct InMemoryMetadataStore {
+    cursors: RwLock<BTreeMap<String, u64>>,
+}
+
+impl InMemoryMetadataStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+#[async_trait]
+impl PersistentMetadataStore for InMemoryMetadataStore {
+    async fn get_subscription_cursor(
+        &self,
+        mob_id: &str,
+    ) -> Result<Option<u64>, MetadataStoreError> {
+        Ok(self.cursors.read().await.get(mob_id).copied())
+    }
+
+    async fn set_subscription_cursor(
+        &self,
+        mob_id: &str,
+        cursor: u64,
+    ) -> Result<(), MetadataStoreError> {
+        self.cursors
+            .write()
+            .await
+            .insert(mob_id.to_string(), cursor);
+        Ok(())
+    }
+}
+
+/// SQLite-backed persistent metadata store.
+///
+/// Opens its own `rusqlite::Connection` to the supplied database path —
+/// the same path the mob's `MobStorage` uses, but with a separate handle.
+/// Cross-handle access is safe; meerkat #445's `notify`-based event-store
+/// watcher already runs in this configuration. The `mobkit_metadata`
+/// table is created on init and is independent of meerkat-mob's own
+/// schema, so opening order doesn't matter.
+///
+/// Schema:
+/// ```text
+/// CREATE TABLE mobkit_metadata (
+///     mob_id  TEXT NOT NULL,
+///     key     TEXT NOT NULL,
+///     value   TEXT NOT NULL,
+///     PRIMARY KEY (mob_id, key)
+/// )
+/// ```
+///
+/// The subscription cursor lives at `key = "subscription_cursor"`,
+/// stored as a base-10 string for simple human inspection. Future
+/// metadata fields land here under their own keys.
+pub struct SqliteMetadataStore {
+    conn: Mutex<Connection>,
+}
+
+const SUBSCRIPTION_CURSOR_KEY: &str = "subscription_cursor";
+
+impl SqliteMetadataStore {
+    /// Open (or create) a SQLite metadata store at `path`.
+    ///
+    /// `path` should typically be the same database the mob's `MobStorage`
+    /// uses; the table is `mobkit_metadata` and won't collide with
+    /// meerkat-mob's own tables.
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, MetadataStoreError> {
+        let conn =
+            Connection::open(path).map_err(|err| MetadataStoreError::Io(format!("open: {err}")))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .map_err(|err| MetadataStoreError::Io(format!("pragma: {err}")))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mobkit_metadata (
+                mob_id TEXT NOT NULL,
+                key    TEXT NOT NULL,
+                value  TEXT NOT NULL,
+                PRIMARY KEY (mob_id, key)
+            );",
+        )
+        .map_err(|err| MetadataStoreError::Io(format!("schema: {err}")))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    /// Open an in-memory SQLite store (for tests).
+    pub fn in_memory() -> Result<Self, MetadataStoreError> {
+        let conn = Connection::open_in_memory()
+            .map_err(|err| MetadataStoreError::Io(format!("in-memory open: {err}")))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS mobkit_metadata (
+                mob_id TEXT NOT NULL,
+                key    TEXT NOT NULL,
+                value  TEXT NOT NULL,
+                PRIMARY KEY (mob_id, key)
+            );",
+        )
+        .map_err(|err| MetadataStoreError::Io(format!("schema: {err}")))?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>, MetadataStoreError> {
+        self.conn
+            .lock()
+            .map_err(|err| MetadataStoreError::Io(format!("connection mutex poisoned: {err}")))
+    }
+}
+
+#[async_trait]
+impl PersistentMetadataStore for SqliteMetadataStore {
+    async fn get_subscription_cursor(
+        &self,
+        mob_id: &str,
+    ) -> Result<Option<u64>, MetadataStoreError> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT value FROM mobkit_metadata WHERE mob_id = ?1 AND key = ?2 LIMIT 1",
+            )
+            .map_err(|err| MetadataStoreError::Io(format!("prepare: {err}")))?;
+        let value: Option<String> = stmt
+            .query_row(rusqlite::params![mob_id, SUBSCRIPTION_CURSOR_KEY], |row| {
+                row.get::<_, String>(0)
+            })
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(MetadataStoreError::Io(format!("query: {other}"))),
+            })?;
+        match value {
+            Some(s) => s
+                .parse::<u64>()
+                .map(Some)
+                .map_err(|err| MetadataStoreError::Decode(format!("cursor parse: {err}"))),
+            None => Ok(None),
+        }
+    }
+
+    async fn set_subscription_cursor(
+        &self,
+        mob_id: &str,
+        cursor: u64,
+    ) -> Result<(), MetadataStoreError> {
+        let conn = self.lock_conn()?;
+        conn.execute(
+            "INSERT INTO mobkit_metadata (mob_id, key, value) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(mob_id, key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![mob_id, SUBSCRIPTION_CURSOR_KEY, cursor.to_string()],
+        )
+        .map_err(|err| MetadataStoreError::Io(format!("upsert: {err}")))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -253,6 +478,81 @@ mod tests {
         let scopes: Vec<&MetadataScope> = entries.iter().map(|(s, _)| s).collect();
         assert!(scopes.contains(&&mob_scope));
         assert!(scopes.contains(&&run_scope));
+    }
+
+    // ----- PersistentMetadataStore tests --------------------------------
+
+    #[tokio::test]
+    async fn in_memory_persistent_store_round_trip() {
+        let store = InMemoryMetadataStore::new();
+        assert_eq!(
+            store.get_subscription_cursor("mob-a").await.unwrap(),
+            None,
+            "fresh store should have no cursor",
+        );
+        store.set_subscription_cursor("mob-a", 42).await.unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-a").await.unwrap(),
+            Some(42),
+        );
+        // Per-mob isolation.
+        assert_eq!(store.get_subscription_cursor("mob-b").await.unwrap(), None,);
+    }
+
+    #[tokio::test]
+    async fn in_memory_persistent_store_overwrite() {
+        let store = InMemoryMetadataStore::new();
+        store.set_subscription_cursor("m", 1).await.unwrap();
+        store.set_subscription_cursor("m", 2).await.unwrap();
+        assert_eq!(store.get_subscription_cursor("m").await.unwrap(), Some(2),);
+    }
+
+    #[tokio::test]
+    async fn sqlite_persistent_store_round_trip() {
+        let store = SqliteMetadataStore::in_memory().unwrap();
+        assert_eq!(store.get_subscription_cursor("mob-a").await.unwrap(), None,);
+        store.set_subscription_cursor("mob-a", 1234).await.unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-a").await.unwrap(),
+            Some(1234),
+        );
+        // Overwrite via UPSERT.
+        store.set_subscription_cursor("mob-a", 9999).await.unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-a").await.unwrap(),
+            Some(9999),
+        );
+        // Per-mob isolation.
+        store.set_subscription_cursor("mob-b", 5).await.unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-a").await.unwrap(),
+            Some(9999),
+        );
+        assert_eq!(
+            store.get_subscription_cursor("mob-b").await.unwrap(),
+            Some(5),
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_store_persists_across_handles() {
+        // The whole point of SQLite-backed persistence: a fresh handle to
+        // the same DB sees writes from the previous handle. We can't drop
+        // and reopen an in-memory DB (it disappears with the connection),
+        // so write to a tempfile, drop, reopen.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mobkit-metadata.sqlite");
+        {
+            let store = SqliteMetadataStore::open(&path).unwrap();
+            store.set_subscription_cursor("mob-x", 7777).await.unwrap();
+        }
+        // Reopen.
+        let store = SqliteMetadataStore::open(&path).unwrap();
+        assert_eq!(
+            store.get_subscription_cursor("mob-x").await.unwrap(),
+            Some(7777),
+            "cursor should survive handle drop",
+        );
     }
 
     #[tokio::test]
