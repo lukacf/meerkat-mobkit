@@ -325,7 +325,14 @@ function summarizeFrameData(data: unknown): string {
     const record = data as Record<string, unknown>;
     if (typeof record.delta === "string") return record.delta;
     if (typeof record.text === "string" && record.text.trim()) return record.text;
-    if (typeof record.result === "string" && record.result.trim()) return record.result;
+    // For canonical text-bearing frames (`interaction_complete`,
+    // `tool_execution_completed`, etc.) `record.result` IS the
+    // canonical text. Return it verbatim — including the empty
+    // string. Pre-fix the `.trim()` guard skipped empty results and
+    // we fell through to `JSON.stringify(record)`, which dumped the
+    // whole envelope (`session_id`, `type`, `usage`, ...) into the
+    // assistant's chat bubble.
+    if (typeof record.result === "string") return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
     if (typeof record.reason === "string" && record.reason.trim()) return record.reason;
@@ -519,10 +526,38 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
 function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichToolCallBlock> {
   const toolCalls = new Map<string, ConversationRichToolCallBlock>();
   const pendingResults = new Map<string, { result?: string; status: "success" | "error" }>();
+  // Peer registry built from `peers` tool results: peer_id (uuid) -> name.
+  // The LLM-supplied `display_name` field on send_* args is unreliable
+  // (agents have been observed filling it with their own name on every
+  // call), so we derive the recipient label from the canonical `peers`
+  // listing whenever possible. The list is ordered, so by the time a
+  // send_request appears the relevant peers result has already been
+  // processed.
+  const peerRegistry = new Map<string, string>();
+  const lastSegment = (s: string): string => s.split("/").pop() || s;
 
   for (const frame of frames) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       const toolCallId = parseToolCallId(frame);
+      const data = frame.data as Record<string, unknown> | undefined;
+      // Capture peer registry from the `peers` tool result.
+      if (data && (data.name === "peers" || data.tool_name === "peers")) {
+        const rawResult = typeof data.result === "string" ? data.result : null;
+        if (rawResult) {
+          try {
+            const parsed = JSON.parse(rawResult) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
+            if (Array.isArray(parsed.peers)) {
+              for (const p of parsed.peers) {
+                if (typeof p.peer_id === "string" && typeof p.name === "string") {
+                  peerRegistry.set(p.peer_id, p.name);
+                }
+              }
+            }
+          } catch {
+            // ignore non-JSON peers payloads
+          }
+        }
+      }
       if (!toolCallId) continue;
       const parsed = parseToolResult(frame);
       if (toolCalls.has(toolCallId)) {
@@ -545,11 +580,29 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       const args = frame.data && typeof frame.data === "object" ? (frame.data as Record<string, unknown>).args : null;
       const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : null;
 
-      // Extract peer comms metadata for send_* tools
+      // Extract peer comms metadata for send_* tools.
+      //
+      // Wire shape: send_* tools take `peer_id` (UUID, authoritative) +
+      // an optional `display_name` hint. The hint is LLM-controlled and
+      // has been observed to be wrong (agents fill it with their own
+      // name), so we resolve `peer_id` against the peer registry built
+      // from the most recent `peers` tool result. Fall back order:
+      // registry → display_name → short peer_id → legacy `to` field.
       const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
-      const peerTarget = isPeerTool && typeof argsRecord?.to === "string"
-        ? argsRecord.to.split("/").pop() || argsRecord.to as string
+      const registryName = isPeerTool && typeof argsRecord?.peer_id === "string"
+        ? peerRegistry.get(argsRecord.peer_id.trim())
         : undefined;
+      const peerTarget = !isPeerTool
+        ? undefined
+        : registryName
+          ? lastSegment(registryName)
+          : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim()
+            ? lastSegment(argsRecord.display_name.trim())
+            : typeof argsRecord?.peer_id === "string" && argsRecord.peer_id.trim()
+              ? argsRecord.peer_id.trim().slice(0, 8)
+              : typeof argsRecord?.to === "string"
+                ? lastSegment(argsRecord.to)
+                : undefined;
       const peerIntent = isPeerTool && typeof argsRecord?.intent === "string"
         ? argsRecord.intent as string
         : undefined;
@@ -742,7 +795,7 @@ function renderRunStartedPromptEntries(
     });
   }
 
-  if (prompt.startsWith("[COMMS")) {
+  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
     const incomingBlocks = parseIncomingCommsBlocks(prompt);
     if (incomingBlocks.length > 0) {
       // All blocks from a single prompt go into one entry (they're batched)
@@ -854,12 +907,47 @@ function summarizeCommsTransport(text: string): string {
   return text;
 }
 
+/// Recognize the start of a peer-comms section in a run prompt.
+/// Supports both the legacy projection header `[COMMS REQUEST/MESSAGE/RESPONSE`
+/// and the newer system-notice shape minted by `meerkat-core/handles.rs`:
+/// `[SYSTEM NOTICE][PEER_REQUEST]`, `[SYSTEM NOTICE][PEER_RESPONSE_TERMINAL]`,
+/// `[SYSTEM NOTICE][PEER_RESPONSE_PROGRESS]`, `[SYSTEM NOTICE][PEER_MESSAGE]`.
+function isCommsHeaderLine(line: string): boolean {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("[COMMS ")) return true;
+  if (trimmed.startsWith("[SYSTEM NOTICE][PEER_")) return true;
+  return false;
+}
+
+/// Pull a `display_name: <name>` segment out of the new system-notice
+/// shape. Falls back to a shortened `peer_id` if no display name was
+/// supplied. Returns `null` if neither is present.
+function extractSystemNoticeSender(header: string, body: string[]): string | null {
+  // The whole prompt for a single section is one header line followed by
+  // body lines, but the new format crams everything onto one line:
+  //   `... from peer_id <uuid>(display_name: <name>). Intent: ping. ...`
+  // So we search both the header and body for `display_name:` / `peer_id`.
+  const merged = [header, ...body].join(" ");
+  const displayMatch = merged.match(/display_name:\s*([^).]+?)(?=\)|\.|$)/i);
+  if (displayMatch) {
+    const raw = displayMatch[1].trim();
+    // Display names may be comms paths like `mob/role/agent` — keep the
+    // last segment for the bubble label, mirroring the legacy parser.
+    const last = raw.split("/").pop() || raw;
+    if (last) return last;
+  }
+  const peerIdMatch = merged.match(/peer_id\s+([0-9a-f-]{6,})/i);
+  if (peerIdMatch) return peerIdMatch[1].slice(0, 8);
+  return null;
+}
+
 function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock[] {
-  // Split prompt into individual [COMMS ...] sections
+  // Split prompt into individual sections. A new section begins at the
+  // first comms-header line we recognize.
   const sections: string[] = [];
   let current = "";
   for (const line of prompt.split("\n")) {
-    if (line.trimStart().startsWith("[COMMS ") && current) {
+    if (isCommsHeaderLine(line) && current) {
       sections.push(current);
       current = line + "\n";
     } else {
@@ -874,34 +962,53 @@ function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock
   for (const section of sections) {
     const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
     const header = lines[0] || "";
-    if (!header.startsWith("[COMMS")) continue;
+    if (!isCommsHeaderLine(header)) continue;
 
-    const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
-    const sender = senderMatch ? senderMatch[1] : null;
+    const isLegacy = header.startsWith("[COMMS");
+    let sender: string | null;
+    if (isLegacy) {
+      const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
+      sender = senderMatch ? senderMatch[1] : null;
+    } else {
+      sender = extractSystemNoticeSender(header, lines.slice(1));
+    }
     if (!sender) continue;
 
-    const body = lines.slice(1).filter((l) => !l.startsWith("[COMMS ") && !l.startsWith("[EVENT via rpc]"));
+    const body = lines.slice(1).filter((l) => !isCommsHeaderLine(l) && !l.startsWith("[EVENT via rpc]"));
     counter++;
 
-    if (header.startsWith("[COMMS RESPONSE")) {
-      const statusLine = body.find((l) => l.startsWith("Status:"));
-      const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
-      const resultIndex = body.findIndex((l) => l.startsWith("Result:"));
+    // Classify the section. Both shapes carry the same semantics; we
+    // collapse them to one of: response (terminal+progress), request,
+    // or message.
+    const isResponse =
+      header.startsWith("[COMMS RESPONSE") ||
+      header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_TERMINAL]") ||
+      header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_PROGRESS]");
+    const isRequest =
+      header.startsWith("[COMMS REQUEST") ||
+      header.startsWith("[SYSTEM NOTICE][PEER_REQUEST]");
+    const isMessage =
+      header.startsWith("[COMMS MESSAGE") ||
+      header.startsWith("[SYSTEM NOTICE][PEER_MESSAGE]");
+
+    if (isResponse) {
+      // Status / Result might be on the header line (new shape) or on
+      // body lines (legacy). Search both.
+      const haystack = [header, ...body].join("\n");
+      const statusMatch = haystack.match(/Status:\s*([A-Za-z_]+)/);
+      const status = statusMatch ? statusMatch[1].trim() : "";
+      const resultMatch = haystack.match(/Result:\s*([\s\S]+?)(?:\n\[|\.\s*$|$)/);
       let resultSummary = "";
-      if (resultIndex >= 0) {
-        const resultLines: string[] = [];
-        for (let i = resultIndex; i < body.length; i++) {
-          if (i > resultIndex && (body[i].startsWith("Status:") || body[i].startsWith("[COMMS "))) break;
-          resultLines.push(body[i]);
-        }
-        const raw = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
+      if (resultMatch) {
+        const raw = resultMatch[1].trim().replace(/\.$/, "");
         try {
           const parsed = JSON.parse(raw);
           if (typeof parsed === "string") {
             resultSummary = parsed;
           } else if (typeof parsed === "object" && parsed !== null) {
-            // Try common result field names
-            const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
+            const val =
+              parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ??
+              parsed.reply ?? parsed.result ?? parsed.content;
             resultSummary = typeof val === "string" ? val : raw;
           } else { resultSummary = raw; }
         } catch { resultSummary = raw; }
@@ -916,21 +1023,45 @@ function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock
         peerIntent: resultSummary || status || "response",
         peerIncoming: true,
       });
-    } else if (header.startsWith("[COMMS REQUEST")) {
-      const intentLine = body.find((l) => l.startsWith("Intent:"));
-      const intent = intentLine ? intentLine.replace(/^Intent:\s*/, "").trim() : "";
+    } else if (isRequest) {
+      const haystack = [header, ...body].join("\n");
+      const intentMatch = haystack.match(/Intent:\s*([^.\n]+?)(?:\.\s|\n|$)/);
+      const intent = intentMatch ? intentMatch[1].trim() : "";
       if (intent === "mob.peer_added" || intent === "mob.peer_removed") continue;
+      // Pull Params + Request ID into peerBody so the PeerToolGroup
+      // expanded row shows the actual content of the request, not
+      // just the intent/status.
+      const requestIdMatch = haystack.match(/Request ID:\s*([0-9a-fA-F-]+)/);
+      const paramsMatch = haystack.match(/Params:\s*(\{[\s\S]*?\}|"[^"]*"|[^.\n]+)/);
+      const requestId = requestIdMatch ? requestIdMatch[1].trim() : "";
+      let paramsBody = "";
+      if (paramsMatch) {
+        const raw = paramsMatch[1].trim();
+        try {
+          const parsed = JSON.parse(raw);
+          paramsBody = typeof parsed === "object" && parsed !== null
+            ? JSON.stringify(parsed)
+            : raw;
+        } catch {
+          paramsBody = raw;
+        }
+      }
+      const peerBody = [
+        paramsBody,
+        requestId ? `(req: ${requestId.slice(0, 8)})` : "",
+      ].filter(Boolean).join(" ").trim();
       blocks.push({
         type: "tool-call",
         toolCallId: `incoming-${sender}-${counter}`,
         name: "request",
-        arguments: "",
+        arguments: paramsBody,
         status: "success",
         peerTarget: sender,
         peerIntent: intent || "request",
+        ...(peerBody ? { peerBody } : {}),
         peerIncoming: true,
       });
-    } else if (header.startsWith("[COMMS MESSAGE")) {
+    } else if (isMessage) {
       const joined = body.join(" ").trim();
       blocks.push({
         type: "tool-call",
@@ -1178,17 +1309,27 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const block = toolBlocks.get(toolCallId);
       if (block) {
-        // Group consecutive peer tool calls into one entry
+        // Group consecutive peer tool calls of the SAME direction into
+        // one entry. Outgoing (`peerIncoming` undef) and incoming
+        // (`peerIncoming === true`) must NOT fold together — pre-fix
+        // a fresh outgoing `send_response` was appended onto the entry
+        // holding an incoming `[PEER_REQUEST]` block, and the merged
+        // group rendered as one "Received from a, b" blob with the
+        // outgoing peer's full comms-name path stuck at the end.
         const isPeer = block.peerTarget !== undefined;
+        const newIncoming = block.peerIncoming === true;
         const lastEntry = entries[entries.length - 1];
         const lastIsPeerGroup = lastEntry
           && lastEntry.variant === "rich"
           && Array.isArray(lastEntry.blocks)
           && lastEntry.blocks.length > 0
           && lastEntry.blocks.every((b: Record<string, unknown>) => b.type === "tool-call" && b.peerTarget);
+        const lastIncoming = lastIsPeerGroup
+          ? (lastEntry.blocks as Array<Record<string, unknown>>)[0].peerIncoming === true
+          : false;
 
-        if (isPeer && lastIsPeerGroup) {
-          // Append to existing peer group
+        if (isPeer && lastIsPeerGroup && newIncoming === lastIncoming) {
+          // Append to existing peer group of the same direction
           (lastEntry.blocks as unknown[]).push(block);
         } else {
           entries.push({

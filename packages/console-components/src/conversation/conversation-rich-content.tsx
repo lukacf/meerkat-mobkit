@@ -215,6 +215,26 @@ function copyText(text: string) {
   navigator.clipboard?.writeText(text).catch(() => {});
 }
 
+/// Pretty-print JSON-shaped strings into a 2-space-indented form so
+/// the expanded peer/tool body shows readable params instead of one
+/// long line. Non-JSON strings pass through unchanged.
+function formatJsonIfPossible(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return text;
+  if (
+    !((trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]")))
+  ) {
+    return text;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
+}
+
 function toolBlockCopyText(block: ConversationRichToolCallBlock): string {
   if (block.peerTarget) {
     const dir = block.peerIncoming ? "← from" : "→ to";
@@ -255,6 +275,15 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
     const target = block.peerTarget || "peer";
     const content = block.peerBody || block.peerIntent || "";
     const arrow = block.peerIncoming ? "↙" : "↗";
+    // Prefer the structured `arguments` (raw JSON) for the expanded
+    // Input section if it carries more than what the header preview
+    // already shows; fall back to the trimmed body. For incoming
+    // requests the parser stuffs `arguments = paramsBody` so this
+    // reads back the params; for outgoing peer tools `arguments` is
+    // the full tool-call args (peer_id, in_reply_to, params, ...).
+    const inputDetail = block.arguments && block.arguments.trim()
+      ? formatJsonIfPossible(block.arguments)
+      : content;
     return (
       <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass)}>
         <button
@@ -266,13 +295,35 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
           <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
           <span className="cc-tool-call__icon">{arrow}</span>
           <span className="cc-tool-call__name">{block.peerIncoming ? `Received from ${target}` : target}</span>
+          {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
           {content && <span className="cc-tool-call__preview">{content}</span>}
           <span className="cc-tool-call__status">{statusIcon}</span>
           <CopyBtn text={toolBlockCopyText(block)} />
         </button>
-        {expanded && block.result && (
+        {expanded && (
           <div className="cc-tool-call__body">
-            <pre className="cc-tool-call__pre">{block.result}</pre>
+            <div className="cc-tool-call__section">
+              <div className="cc-tool-call__section-label">Tool</div>
+              <pre className="cc-tool-call__pre">{block.name}</pre>
+            </div>
+            {block.peerIntent && (
+              <div className="cc-tool-call__section">
+                <div className="cc-tool-call__section-label">Intent</div>
+                <pre className="cc-tool-call__pre">{block.peerIntent}</pre>
+              </div>
+            )}
+            {inputDetail && (
+              <div className="cc-tool-call__section">
+                <div className="cc-tool-call__section-label">{block.peerIncoming ? "Params" : "Input"}</div>
+                <pre className="cc-tool-call__pre">{inputDetail}</pre>
+              </div>
+            )}
+            {block.result && (
+              <div className="cc-tool-call__section">
+                <div className="cc-tool-call__section-label">Result</div>
+                <pre className="cc-tool-call__pre">{formatJsonIfPossible(block.result)}</pre>
+              </div>
+            )}
           </div>
         )}
       </section>

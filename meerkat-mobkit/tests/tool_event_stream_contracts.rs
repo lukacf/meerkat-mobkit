@@ -29,13 +29,17 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn phase0_contract_007_tool_events_stream_with_tool_call_id() {
+    // Upstream LUC-* removed `has_images` from
+    // `AgentEvent::ToolExecutionCompleted`; the canonical typed
+    // tool-result content lives in `content: Vec<ContentBlock>`
+    // (default empty when there's only a text projection in `result`).
     let agent_event = AgentEvent::ToolExecutionCompleted {
         id: "tool-1".to_string(),
         name: "search".to_string(),
         result: "done".to_string(),
+        content: Vec::new(),
         is_error: false,
         duration_ms: 12,
-        has_images: false,
     };
     let app = agent_events_sse_router(
         Arc::new(move |_agent_id| {
