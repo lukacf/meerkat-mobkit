@@ -1206,31 +1206,35 @@ svg[data-svg="fit"],
   position: relative;
 }
 
-/* Collapse chevron — same look as `.tweaks__toggle`, anchored top-right
-   of the sidebar (inner edge near the resizer) so the affordance lives
-   where the user reaches when they want to dismiss the panel. */
+/* Collapse chevron — borderless ghost glyph that sits next to the
+   inner edge of the sidebar. Default state is just the chevron in a
+   muted ink; hover lifts it without adding a box. The Tweaks toggle
+   uses the same "no border in repose, hover-fills" idiom so this
+   reads as part of the same control vocabulary. */
 .sidebar__collapse {
   position: absolute;
-  top: 8px;
-  right: 6px;
+  top: 12px;
+  right: 8px;
   width: 22px;
   height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink-muted);
+  border: none;
+  padding: 0;
+  color: var(--ink-faint);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   border-radius: var(--r-sm);
   cursor: pointer;
   z-index: 5;
+  transition: color 120ms ease, background 120ms ease;
 }
 .sidebar__collapse:hover {
   color: var(--ink);
-  background: var(--bg-elev-2);
+  background: var(--bg-elev-1);
 }
 .sidebar__collapse:focus-visible {
   outline: 1.5px solid var(--focus);
@@ -1248,11 +1252,11 @@ svg[data-svg="fit"],
 }
 .sidebar--collapsed .sidebar__collapse {
   position: static;
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 .sidebar__search {
-  padding: 12px 36px 10px 12px; /* room for the collapse chevron */
+  padding: 12px 38px 10px 12px; /* right room reserved for the chevron */
   border-bottom: 1px solid var(--line);
 }
 .sidebar__search input {
@@ -1392,29 +1396,31 @@ svg[data-svg="fit"],
 }
 
 /* Collapse chevron — same idiom as `.sidebar__collapse`, mirrored to
-   the inner (left) edge of the rail. */
+   the inner (left) edge of the rail. Borderless until hover. */
 .rail__collapse {
   position: absolute;
-  top: 8px;
-  left: 6px;
+  top: 12px;
+  left: 8px;
   width: 22px;
   height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
-  border: 1px solid var(--line);
-  color: var(--ink-muted);
+  border: none;
+  padding: 0;
+  color: var(--ink-faint);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1;
   border-radius: var(--r-sm);
   cursor: pointer;
   z-index: 5;
+  transition: color 120ms ease, background 120ms ease;
 }
 .rail__collapse:hover {
   color: var(--ink);
-  background: var(--bg-elev-2);
+  background: var(--bg-elev-1);
 }
 .rail__collapse:focus-visible {
   outline: 1.5px solid var(--focus);
@@ -1430,11 +1436,11 @@ svg[data-svg="fit"],
 }
 .rail--collapsed .rail__collapse {
   position: static;
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 .rail__head {
-  padding: 14px 16px 8px 36px; /* room for the collapse chevron */
+  padding: 14px 16px 8px 38px; /* left room reserved for the chevron */
   display: flex; align-items: baseline; gap: 10px;
   border-bottom: 1px solid var(--line);
   min-height: 44px;
