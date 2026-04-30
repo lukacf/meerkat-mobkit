@@ -73,6 +73,16 @@ interface OptimisticUserMessage {
   sentAtMs: number;
 }
 
+interface IdentityLog {
+  events: ConsoleFrame[];
+  byKey: Map<string, number>;
+  /// `null` while we haven't asked the server yet; `true` if the
+  /// runtime has an EventLogStore (we'll fetch backfill); `false`
+  /// once we've observed `available: false` (SSE is the only source).
+  hasServerLog: boolean | null;
+  optimisticUser: OptimisticUserMessage | null;
+}
+
 // --- Visibility helpers (unchanged) ---
 
 function richBlockHasVisibleContent(block: unknown): boolean {
@@ -160,27 +170,106 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const forceRender = React.useCallback(() => setRenderTick((n) => n + 1), []);
 
   // =========================================================================
-  // NEW DATA MODEL — 3 identity-keyed refs
-  // =========================================================================
+  // DATA MODEL — single canonical event log per identity
+  //
+  // The previous design split state across `serverHistoryRef`,
+  // `liveOverlayRef`, `serverHasEventLogRef`, and `optimisticUserRef`.
+  // Two adapter passes ran independently (one per side); their outputs
+  // were concatenated at render time. Same logical event arriving via
+  // RPC and SSE produced different keys depending on which path
+  // normalized it, so cross-store dedup was unreliable, tool-call
+  // grouping fragmented across the boundary, and refetches racing the
+  // SSE handler caused entries to vanish or duplicate.
+  //
+  // We now keep a single sorted, deduped log per identity. SSE appends
+  // into it. Server fetches reconcile into it (insert-by-key, no
+  // wholesale replacement, no live-overlay wipe). The renderer makes
+  // exactly one adapter pass over the merged log.
+  const identityLogRef = React.useRef<Record<string, IdentityLog>>({});
 
-  // 1. Server history: last queryEvents result per identity. REPLACED wholesale on fetch.
-  const serverHistoryRef = React.useRef<Record<string, ConsoleFrame[]>>({});
+  function getOrCreateLog(identity: string): IdentityLog {
+    let log = identityLogRef.current[identity];
+    if (!log) {
+      log = {
+        events: [],
+        byKey: new Map(),
+        hasServerLog: null,
+        optimisticUser: null,
+      };
+      identityLogRef.current[identity] = log;
+    }
+    return log;
+  }
 
-  // 1b. Per-identity flag: has the server told us its EventLogStore is
-  // unavailable? Once we observe `available: false` from queryEvents,
-  // we never refetch (it would always return empty) and we never wipe
-  // the live overlay (it's the only source of truth in that case).
-  // Pre-fix the panel-open effect re-fired on every dock-state change
-  // and unconditionally cleared the overlay before refetching, which
-  // made the rich transcript flicker out as soon as anything else
-  // re-rendered.
-  const serverHasEventLogRef = React.useRef<Record<string, boolean>>({});
+  /// Stable identity for a frame across RPC and SSE pipelines. Both
+  /// produce `event_id`-shaped IDs (e.g. `evt-agent-019dde54-…`) for
+  /// the same logical event, so `frame.id` is the primary key. The
+  /// fallback only fires for synthetic frames without an id; including
+  /// `interactionId` keeps interaction-bound events from colliding.
+  function frameKey(frame: ConsoleFrame): string {
+    if (frame.id) return frame.id;
+    return `${frame.event}:${frame.identity || ""}:${frame.interactionId || ""}:${frame.timestampMs || 0}`;
+  }
 
-  // 2. Live overlay: SSE frames since last server fetch. CLEARED on server fetch.
-  const liveOverlayRef = React.useRef<Record<string, ConsoleFrame[]>>({});
+  /// Append one frame to the identity log, deduped by key. Appended
+  /// frames are kept in insertion order; the read-side sorts by
+  /// timestamp at render time. If the appended frame is an
+  /// `interaction_started` whose interaction_id matches a pending
+  /// optimistic user message, drop the optimistic — the server is now
+  /// rendering the user turn itself.
+  function appendFrame(identity: string, frame: ConsoleFrame): boolean {
+    const log = getOrCreateLog(identity);
+    const key = frameKey(frame);
+    if (log.byKey.has(key)) return false;
+    log.byKey.set(key, log.events.length);
+    log.events.push(frame);
+    if (
+      frame.event === "interaction_started"
+      && log.optimisticUser
+      && log.optimisticUser.interactionId
+      && frame.interactionId === log.optimisticUser.interactionId
+    ) {
+      log.optimisticUser = null;
+    }
+    return true;
+  }
 
-  // 3. Optimistic user message: at most one per identity. Reconciled by interaction_id.
-  const optimisticUserRef = React.useRef<Record<string, OptimisticUserMessage | null>>({});
+  /// Reconcile a server-history fetch into the identity log. Frames
+  /// already present (by key) are skipped; new frames are appended.
+  /// The live overlay is preserved — both sides feed the same log now.
+  ///
+  /// `available: false` means the runtime has no `EventLogStore`
+  /// configured — the response is the in-memory recent buffer rather
+  /// than authoritative replay. We still ingest those frames (they're
+  /// the only backfill we'll ever get for this identity) and just
+  /// remember that a refetch wouldn't get anything more, so SSE is the
+  /// going-forward source of truth.
+  function reconcileServerLog(
+    identity: string,
+    frames: ConsoleFrame[],
+    available: boolean,
+  ): void {
+    const log = getOrCreateLog(identity);
+    log.hasServerLog = available;
+    for (const frame of frames) appendFrame(identity, frame);
+  }
+
+  /// Render-time view: frames sorted ascending by `timestampMs`, with
+  /// insertion order as a stable tiebreaker (preserves intra-tick
+  /// ordering as the server emitted them).
+  function getSortedFrames(identity: string): ConsoleFrame[] {
+    const log = identityLogRef.current[identity];
+    if (!log) return [];
+    return log.events
+      .map((frame, index) => ({ frame, index }))
+      .sort((a, b) => {
+        const ta = a.frame.timestampMs || 0;
+        const tb = b.frame.timestampMs || 0;
+        if (ta !== tb) return ta - tb;
+        return a.index - b.index;
+      })
+      .map((entry) => entry.frame);
+  }
 
   // Activity rail (global, unchanged)
   const activityRef = React.useRef<ConsoleFrame[]>([]);
@@ -214,22 +303,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       mode: "console" as const,
     }),
   });
-
-  // =========================================================================
-  // FRAME DEDUP HELPER
-  // =========================================================================
-
-  function dedupeFrames(frames: ConsoleFrame[]): ConsoleFrame[] {
-    const seen = new Set<string>();
-    const result: ConsoleFrame[] = [];
-    for (const frame of frames) {
-      const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      result.push(frame);
-    }
-    return result;
-  }
 
   // =========================================================================
   // PHASE TRACKING (unchanged logic)
@@ -383,42 +456,22 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const scheduleHistoryRefresh = React.useCallback((identity: string) => {
     clearTimeout(refreshTimersRef.current[identity]);
     refreshTimersRef.current[identity] = window.setTimeout(async () => {
-      // If we already know there's no event log, skip the round trip
-      // entirely. Calling queryEvents would just return empty + the
-      // available=false flag we already cached.
-      if (serverHasEventLogRef.current[identity] === false) {
+      const log = getOrCreateLog(identity);
+      // No event log on this runtime — SSE is the canonical source,
+      // there's nothing to backfill.
+      if (log.hasServerLog === false) {
         clearPhaseForIdentity(identity);
         forceRender();
         return;
       }
       try {
         const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
-        serverHasEventLogRef.current[identity] = available;
-        if (available) {
-          // Server has authoritative history — replace local state and
-          // drop the live overlay (it's now redundant / a possible
-          // duplicate source).
-          serverHistoryRef.current[identity] = frames;
-          liveOverlayRef.current[identity] = [];
-
-          // Reconcile optimistic user message by interaction_id.
-          const optimistic = optimisticUserRef.current[identity];
-          if (optimistic && optimistic.interactionId) {
-            const found = frames.some((f) =>
-              f.event === "interaction_started" && f.interactionId === optimistic.interactionId
-            );
-            if (found) optimisticUserRef.current[identity] = null;
-          }
-        }
-        // No `else` clear: when the runtime has no event log
-        // configured, the live overlay IS the only source of truth.
-        // Wiping it on every terminal event was the old bug — the
-        // rich transcript flickered into a near-empty replay because
-        // server frames were always [] and the overlay got cleared.
+        reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
       } catch { /* silent — will retry on next terminal event */ }
     }, 200);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, forceRender]);
 
   // =========================================================================
@@ -430,40 +483,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       const identity = target.identity || target.memberId;
-
-      // If we already know the runtime has no event log, the live
-      // overlay IS the source of truth. Never refetch (would return
-      // empty), never wipe the overlay (would lose every event since
-      // the panel opened). Pre-fix the panel-open effect re-fired on
-      // every dock-state change, cleared the overlay, refetched, got
-      // available=false, didn't restore — the rich transcript
-      // disappeared after the first turn.
-      if (serverHasEventLogRef.current[identity] === false) continue;
-
-      // If history exists and no stale live overlay, skip fetch
-      const hasHistory = Boolean(serverHistoryRef.current[identity]);
-      const hasStaleOverlay = (liveOverlayRef.current[identity]?.length || 0) > 0;
-      if (hasHistory && !hasStaleOverlay) continue;
-
-      // Clear live overlay immediately to prevent stale frames flashing
-      liveOverlayRef.current[identity] = [];
-
+      const log = getOrCreateLog(identity);
+      // Only fetch backfill once per identity — when we don't yet
+      // know whether the runtime has an event log. Subsequent panel
+      // re-opens reuse the existing log; we never wipe it.
+      if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
           const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
-          serverHasEventLogRef.current[identity] = available;
-          if (available) {
-            serverHistoryRef.current[identity] = frames;
-            liveOverlayRef.current[identity] = [];
-          } else {
-            // No event log → don't wipe the overlay on initial open;
-            // mark history as "fetched but empty" so we don't re-fetch.
-            serverHistoryRef.current[identity] = [];
-          }
+          reconcileServerLog(identity, frames, available);
           forceRender();
         } catch { /* silent */ }
       })();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, dock.viewState.panels, forceRender]);
 
   // =========================================================================
@@ -477,35 +510,43 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
 
   React.useEffect(() => {
-    // Seed activity with recent history (only on mount) — apply same filter as SSE
+    // Seed activity with recent history (only on mount) — apply same
+    // filter as SSE. The activity rail is its own concern; it doesn't
+    // share state with the per-identity logs.
     void queryEvents(baseUrl, {}, 200)
       .then(({ frames }) => {
-        const filtered = dedupeFrames(frames).filter((f) => !ACTIVITY_SKIP_EVENTS.has(f.event));
+        const seen = new Set<string>();
+        const filtered: ConsoleFrame[] = [];
+        for (const frame of frames) {
+          if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
+          const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          filtered.push(frame);
+        }
         activityRef.current = filtered.slice(-200).reverse();
         forceRender();
       })
       .catch(() => {});
 
     const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
-      // 1. Activity rail — only buffer events that pass the display filter
+      // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
       }
 
-      // 2. Live overlay — append by identity with event_id dedup
+      // Identity log (single canonical store)
       const identity = frame.identity?.trim();
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
-        const existing = liveOverlayRef.current[identity] || [];
-        if (!existing.some((f) => f.id === frame.id)) {
-          liveOverlayRef.current[identity] = [...existing, frame];
-        }
+        appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
       }
 
-      // 3. Force render
       forceRender();
 
-      // 4. Terminal events → refetch server history
+      // Terminal events → reconcile server backfill (idempotent — keys
+      // already seen via SSE are skipped). If hasServerLog is false,
+      // scheduleHistoryRefresh short-circuits.
       if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }
@@ -551,8 +592,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
     setSendingPanels((c) => new Set(c).add(panelKey));
 
-    // Optimistic: store user message (reconciled by interaction_id later)
-    optimisticUserRef.current[identity] = {
+    // Optimistic: store user message on the identity log. Cleared
+    // when an interaction_started frame with matching interaction_id
+    // is appended (see appendFrame).
+    const log = getOrCreateLog(identity);
+    log.optimisticUser = {
       interactionId: "",
       entry: userEntry,
       sentAtMs: Date.now(),
@@ -564,17 +608,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const id = target.identity?.trim();
       if (id) {
         const result = await sendInteractRpc(baseUrl, id, text, `console:${panelId}`);
-        // Attach interaction_id for reconciliation
-        if (optimisticUserRef.current[identity]) {
-          optimisticUserRef.current[identity]!.interactionId = result.interaction_id;
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id;
+          // The interaction_started frame may have arrived between
+          // the send and the RPC response — reconcile retroactively.
+          const matched = log.events.some(
+            (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
+          );
+          if (matched) log.optimisticUser = null;
         }
       } else {
         await sendMessage(baseUrl, target.memberId, text);
       }
-      // Response events arrive via SSE → terminal event → scheduleHistoryRefresh
-      // → serverHistoryRef updated → optimistic cleared by interaction_id
     } catch (submitError) {
-      optimisticUserRef.current[identity] = null;
+      log.optimisticUser = null;
       phaseRef.current[panelKey] = null;
       setError(errorMessage(submitError));
       forceRender();
@@ -668,48 +715,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const identity = target.identity || target.memberId;
     const agent = agents.find((c) => c.member_id === target.memberId) || null;
 
-    // 1. Server history → timeline entries (authoritative, server-ordered)
-    const serverFrames = serverHistoryRef.current[identity] || [];
-    const serverEntries = mapFramesToTimelineEntries(agent, serverFrames, {
+    // Single adapter pass over the canonical sorted log. No more
+    // server/live split, no cross-store dedup, no duplicate grouping.
+    // Text deltas are rendered as the interaction streams; the
+    // adapter's `streamedText === terminalText` check suppresses the
+    // duplicate when text_complete/interaction_complete arrives.
+    const sortedFrames = getSortedFrames(identity);
+    const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
-      renderTextDeltas: false,
+      renderTextDeltas: true,
     });
 
-    // 2. Live overlay → timeline entries (only frames not in server history)
-    const liveFrames = liveOverlayRef.current[identity] || [];
-    const serverIds = new Set(serverFrames.map((f) => f.id));
-    const newLiveFrames = liveFrames.filter((f) => !serverIds.has(f.id));
-    // Render text deltas on the live path so the assistant message grows
-    // token-by-token while the interaction is in flight. Server history keeps
-    // `renderTextDeltas: false` because `interaction_complete.data.result`
-    // already carries the final text and repeating the deltas would be noise.
-    // Duplicate suppression when the interaction finally completes is handled
-    // by the `streamedText === terminalText` check in `renderTerminalEntry`.
-    const liveEntries = mapFramesToTimelineEntries(agent, newLiveFrames, {
-      renderInteractionStartsAsUser: false,
-      suppressEmbeddedRunStartedPrompt: true,
-    });
+    // Optimistic user message: rendered until an interaction_started
+    // with the matching interaction_id is appended to the log (which
+    // clears it via appendFrame). Until then, it sits at the tail of
+    // the conversation as a synthetic entry.
+    const log = getOrCreateLog(identity);
+    const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
 
-    // 3. Optimistic user message (if not yet reconciled against SERVER history)
-    // Only reconcile against serverHistoryRef — never against live overlay.
-    // The optimistic stays visible until the server confirms the interaction.
-    const optimistic = optimisticUserRef.current[identity];
-    let optimisticEntry: ConversationTimelineEntry | null = null;
-    if (optimistic) {
-      const reconciled = optimistic.interactionId &&
-        serverFrames.some((f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId);
-      if (reconciled) {
-        optimisticUserRef.current[identity] = null;
-      } else {
-        optimisticEntry = optimistic.entry;
-      }
-    }
-
-    // 4. Merge: server + optimistic + live (all in natural order, no sorting)
     const entries = sanitizeConversationEntries([
-      ...serverEntries,
+      ...conversationEntries,
       ...(optimisticEntry ? [optimisticEntry] : []),
-      ...liveEntries,
     ]);
 
     const conversation = buildConversationViewState({
