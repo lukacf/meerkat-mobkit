@@ -3105,16 +3105,20 @@ async function queryEvents(baseUrl, target, limit = 40) {
     ...identity ? {} : memberId ? { member_id: memberId } : {}
   });
   let events = result;
+  let available = true;
   if (typeof result === "object" && result !== null) {
     const record = result;
     if (record.status === "no_event_log_configured") {
       events = Array.isArray(record.events) ? record.events : [];
+      available = false;
+    } else if (Array.isArray(record.events)) {
+      events = record.events;
     }
   }
   if (!Array.isArray(events)) {
-    return [];
+    return { frames: [], available };
   }
-  return events.filter((raw) => {
+  const frames = events.filter((raw) => {
     if (typeof raw !== "object" || raw === null) return true;
     const ev = raw.event;
     if (typeof ev !== "object" || ev === null) return true;
@@ -3122,6 +3126,7 @@ async function queryEvents(baseUrl, target, limit = 40) {
     if (eventRecord.kind !== "agent") return true;
     return typeof eventRecord.payload === "object" && eventRecord.payload !== null;
   }).map((event, index) => persistedEventToFrame(event, index));
+  return { frames, available };
 }
 async function sendInteract(baseUrl, identity, content, origin) {
   const accepted = await rpc(baseUrl, "mobkit/interact", {
@@ -5483,15 +5488,17 @@ function ConsoleApp({ baseUrl }) {
     clearTimeout(refreshTimersRef.current[identity]);
     refreshTimersRef.current[identity] = window.setTimeout(async () => {
       try {
-        const frames = await queryEvents(baseUrl, { identity }, 400);
-        serverHistoryRef.current[identity] = frames;
-        liveOverlayRef.current[identity] = [];
-        const optimistic = optimisticUserRef.current[identity];
-        if (optimistic && optimistic.interactionId) {
-          const found = frames.some(
-            (f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId
-          );
-          if (found) optimisticUserRef.current[identity] = null;
+        const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        if (available) {
+          serverHistoryRef.current[identity] = frames;
+          liveOverlayRef.current[identity] = [];
+          const optimistic = optimisticUserRef.current[identity];
+          if (optimistic && optimistic.interactionId) {
+            const found = frames.some(
+              (f) => f.event === "interaction_started" && f.interactionId === optimistic.interactionId
+            );
+            if (found) optimisticUserRef.current[identity] = null;
+          }
         }
         clearPhaseForIdentity(identity);
         forceRender();
@@ -5510,9 +5517,13 @@ function ConsoleApp({ baseUrl }) {
       liveOverlayRef.current[identity] = [];
       void (async () => {
         try {
-          const frames = await queryEvents(baseUrl, { identity }, 400);
-          serverHistoryRef.current[identity] = frames;
-          liveOverlayRef.current[identity] = [];
+          const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          if (available) {
+            serverHistoryRef.current[identity] = frames;
+            liveOverlayRef.current[identity] = [];
+          } else {
+            serverHistoryRef.current[identity] = [];
+          }
           forceRender();
         } catch {
         }
@@ -5524,7 +5535,7 @@ function ConsoleApp({ baseUrl }) {
   const scheduleExperienceRefreshRef = import_react19.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
   import_react19.default.useEffect(() => {
-    void queryEvents(baseUrl, {}, 200).then((frames) => {
+    void queryEvents(baseUrl, {}, 200).then(({ frames }) => {
       const filtered = dedupeFrames(frames).filter((f) => !ACTIVITY_SKIP_EVENTS.has(f.event));
       activityRef.current = filtered.slice(-200).reverse();
       forceRender();

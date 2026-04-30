@@ -427,11 +427,26 @@ function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
   };
 }
 
+/**
+ * Result of a `mobkit/query_events` call.
+ *
+ * `available: false` means the runtime has no `EventLogStore`
+ * configured — the server has nothing to replay. Callers MUST NOT
+ * use this as a signal to clear local live-overlay state, because
+ * the overlay is the only source of truth in that case. Pre-fix the
+ * caller wiped the overlay on every terminal event and the rich
+ * transcript flickered into a near-empty replay.
+ */
+export interface QueryEventsResult {
+  readonly frames: ConsoleFrame[];
+  readonly available: boolean;
+}
+
 export async function queryEvents(
   baseUrl: string,
   target: { memberId?: string; identity?: string },
   limit = 40
-): Promise<ConsoleFrame[]> {
+): Promise<QueryEventsResult> {
   const identity = target.identity?.trim();
   const memberId = target.memberId?.trim();
   const result = await rpc<unknown>(baseUrl, "mobkit/query_events", {
@@ -441,18 +456,22 @@ export async function queryEvents(
   });
 
   let events = result;
+  let available = true;
   if (typeof result === "object" && result !== null) {
     const record = result as Record<string, unknown>;
     if (record.status === "no_event_log_configured") {
       events = Array.isArray(record.events) ? record.events : [];
+      available = false;
+    } else if (Array.isArray(record.events)) {
+      events = record.events;
     }
   }
 
   if (!Array.isArray(events)) {
-    return [];
+    return { frames: [], available };
   }
 
-  return events
+  const frames = events
     .filter((raw) => {
       if (typeof raw !== "object" || raw === null) return true;
       const ev = (raw as Record<string, unknown>).event;
@@ -462,6 +481,7 @@ export async function queryEvents(
       return typeof eventRecord.payload === "object" && eventRecord.payload !== null;
     })
     .map((event, index) => persistedEventToFrame(event, index));
+  return { frames, available };
 }
 
 export async function readSessionHistory(
