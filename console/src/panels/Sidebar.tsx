@@ -6,7 +6,6 @@ interface SidebarProps {
   selectedMemberId: string;
   recentActivity: ConsoleFrame[];
   collapsed: boolean;
-  onToggleCollapsed: () => void;
   onSelect: (agent: ConsoleAgent) => void;
   onInspect: (agent: ConsoleAgent) => void;
   onOpenControl: (kind: "routing" | "gating" | "topology" | "timeline" | "roster" | "gates" | "logs") => void;
@@ -60,7 +59,6 @@ export function Sidebar({
   selectedMemberId,
   recentActivity,
   collapsed,
-  onToggleCollapsed,
   onSelect,
   onInspect,
   onOpenControl,
@@ -95,32 +93,13 @@ export function Sidebar({
         data-collapsed="true"
         data-testid="sidebar-root"
       >
-        <button
-          type="button"
-          className="sidebar__collapse"
-          aria-label="Expand sidebar"
-          title="Expand sidebar"
-          onClick={onToggleCollapsed}
-          data-testid="sidebar-collapse-toggle"
-        >
-          ›
-        </button>
+        <i className="sidebar__grip" aria-hidden="true" />
       </aside>
     );
   }
 
   return (
     <aside className="sidebar" data-testid="sidebar-root">
-      <button
-        type="button"
-        className="sidebar__collapse"
-        aria-label="Collapse sidebar"
-        title="Collapse sidebar"
-        onClick={onToggleCollapsed}
-        data-testid="sidebar-collapse-toggle"
-      >
-        ‹
-      </button>
       <div className="sidebar__search">
         <input
           placeholder="Search agents, profiles, ids…"

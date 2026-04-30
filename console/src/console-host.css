@@ -104,18 +104,60 @@ svg[data-svg="fit"],
 /* ── Topbar ────────────────────────────────────────────────────── */
 
 .mobkit-topbar {
-  display: flex; align-items: center; gap: 0;
-  padding: 0 14px;
+  display: flex; align-items: stretch; gap: 0;
   min-height: 40px;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
   font-family: var(--disp);
   flex: none;
 }
+
+/* Topbar collapse toggle — sits flush at the leftmost (sidebar) and
+   rightmost (rail) cells, with a vertical divider matching the
+   topbar's other cell separators. The Lucide-style "panel + chevron"
+   SVG inside reads as "this panel collapses/expands"; chevron points
+   inward when open, outward when collapsed. */
+.mobkit-topbar__toggle {
+  width: 40px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-faint);
+  align-self: stretch;
+  transition: color 120ms ease, background 120ms ease;
+}
+.mobkit-topbar__toggle--left {
+  border-right: 1px solid var(--line);
+}
+.mobkit-topbar__toggle--right {
+  border-left: 1px solid var(--line);
+}
+.mobkit-topbar__toggle:hover {
+  color: var(--ink);
+  background: var(--bg-elev-1);
+}
+.mobkit-topbar__toggle:focus-visible {
+  outline: 1.5px solid var(--focus);
+  outline-offset: -2px;
+}
+.mobkit-topbar__toggle[aria-pressed="false"] {
+  color: var(--ink-dim);
+}
+.mobkit-topbar__toggle svg {
+  width: 16px; height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .mobkit-topbar__brand {
   display: flex; align-items: center; gap: 8px;
   font-size: 12.5px; font-weight: 600; letter-spacing: -0.005em;
-  padding-right: 14px;
+  padding: 0 14px;
   border-right: 1px solid var(--line);
   align-self: stretch;
   color: var(--ink);
@@ -1206,57 +1248,28 @@ svg[data-svg="fit"],
   position: relative;
 }
 
-/* Collapse chevron — borderless ghost glyph that sits next to the
-   inner edge of the sidebar. Default state is just the chevron in a
-   muted ink; hover lifts it without adding a box. The Tweaks toggle
-   uses the same "no border in repose, hover-fills" idiom so this
-   reads as part of the same control vocabulary. */
-.sidebar__collapse {
-  position: absolute;
-  top: 12px;
-  right: 8px;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  padding: 0;
-  color: var(--ink-faint);
-  font-family: var(--mono);
-  font-size: 14px;
-  line-height: 1;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  z-index: 5;
-  transition: color 120ms ease, background 120ms ease;
-}
-.sidebar__collapse:hover {
-  color: var(--ink);
-  background: var(--bg-elev-1);
-}
-.sidebar__collapse:focus-visible {
-  outline: 1.5px solid var(--focus);
-  outline-offset: 1px;
-}
-
-/* Collapsed rail variant — only the chevron is visible, vertically
-   pinned near the top of the column to mirror the expanded layout. */
+/* Collapsed sidebar — content is fully replaced by a thin vertical
+   "grip" bar centered in the rail. The actual collapse toggle lives
+   in the topbar; this is just a visual signal that the column has
+   content waiting behind it. */
 .sidebar--collapsed {
   padding: 0;
   overflow: hidden;
   display: flex;
-  flex-direction: column;
   align-items: center;
+  justify-content: center;
 }
-.sidebar--collapsed .sidebar__collapse {
-  position: static;
-  margin-top: 12px;
+.sidebar__grip {
+  width: 2px;
+  height: 28px;
+  background: var(--line-strong);
+  border-radius: 1px;
+  opacity: 0.7;
+  display: block;
 }
 
 .sidebar__search {
-  padding: 12px 38px 10px 12px; /* right room reserved for the chevron */
+  padding: 12px;
   border-bottom: 1px solid var(--line);
 }
 .sidebar__search input {
@@ -1395,52 +1408,25 @@ svg[data-svg="fit"],
   position: relative;
 }
 
-/* Collapse chevron — same idiom as `.sidebar__collapse`, mirrored to
-   the inner (left) edge of the rail. Borderless until hover. */
-.rail__collapse {
-  position: absolute;
-  top: 12px;
-  left: 8px;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  padding: 0;
-  color: var(--ink-faint);
-  font-family: var(--mono);
-  font-size: 14px;
-  line-height: 1;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  z-index: 5;
-  transition: color 120ms ease, background 120ms ease;
-}
-.rail__collapse:hover {
-  color: var(--ink);
-  background: var(--bg-elev-1);
-}
-.rail__collapse:focus-visible {
-  outline: 1.5px solid var(--focus);
-  outline-offset: 1px;
-}
-
+/* Collapsed signals rail — same grip pattern as the sidebar. */
 .rail--collapsed {
   padding: 0;
   overflow: hidden;
   display: flex;
-  flex-direction: column;
   align-items: center;
+  justify-content: center;
 }
-.rail--collapsed .rail__collapse {
-  position: static;
-  margin-top: 12px;
+.rail__grip {
+  width: 2px;
+  height: 28px;
+  background: var(--line-strong);
+  border-radius: 1px;
+  opacity: 0.7;
+  display: block;
 }
 
 .rail__head {
-  padding: 14px 16px 8px 38px; /* left room reserved for the chevron */
+  padding: 14px 16px 8px;
   display: flex; align-items: baseline; gap: 10px;
   border-bottom: 1px solid var(--line);
   min-height: 44px;
