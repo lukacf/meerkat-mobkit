@@ -64,6 +64,7 @@ svg[data-svg="fit"],
 .cc-theme-scope {
   --cc-workbench-sidebar-width: 260px;
   --cc-workbench-activity-width: 300px;
+  --cc-workbench-collapsed-rail-width: 28px;
   --cc-sidebar-safe-top: 6px;
   --cc-sidebar-pad-left: 0;
   --cc-sidebar-pad-right: 0;
@@ -176,6 +177,36 @@ svg[data-svg="fit"],
   background: var(--bg);
   position: relative;
 }
+
+/* Collapsed sidebars: shrink the column to a thin rail and hide the
+   adjacent resizer. The sidebar/rail components render only their
+   expand chevron when `data-collapsed="true"`. */
+.shell[data-sidebar-collapsed="true"] {
+  grid-template-columns:
+    var(--cc-workbench-collapsed-rail-width, 28px)
+    0
+    minmax(0, 1fr)
+    1px
+    var(--cc-workbench-activity-width, 300px);
+}
+.shell[data-rail-collapsed="true"] {
+  grid-template-columns:
+    var(--cc-workbench-sidebar-width, 260px)
+    1px
+    minmax(0, 1fr)
+    0
+    var(--cc-workbench-collapsed-rail-width, 28px);
+}
+.shell[data-sidebar-collapsed="true"][data-rail-collapsed="true"] {
+  grid-template-columns:
+    var(--cc-workbench-collapsed-rail-width, 28px)
+    0
+    minmax(0, 1fr)
+    0
+    var(--cc-workbench-collapsed-rail-width, 28px);
+}
+.shell[data-sidebar-collapsed="true"] .pane-resizer:not(.pane-resizer--activity) { display: none; }
+.shell[data-rail-collapsed="true"] .pane-resizer--activity { display: none; }
 
 .shell > .sidebar { grid-area: sidebar; }
 .shell > .main { grid-area: main; }
@@ -1172,9 +1203,56 @@ svg[data-svg="fit"],
   font-family: var(--sans);
   padding-bottom: 30px;
   min-width: 0;
+  position: relative;
 }
+
+/* Collapse chevron — same look as `.tweaks__toggle`, anchored top-right
+   of the sidebar (inner edge near the resizer) so the affordance lives
+   where the user reaches when they want to dismiss the panel. */
+.sidebar__collapse {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  z-index: 5;
+}
+.sidebar__collapse:hover {
+  color: var(--ink);
+  background: var(--bg-elev-2);
+}
+.sidebar__collapse:focus-visible {
+  outline: 1.5px solid var(--focus);
+  outline-offset: 1px;
+}
+
+/* Collapsed rail variant — only the chevron is visible, vertically
+   pinned near the top of the column to mirror the expanded layout. */
+.sidebar--collapsed {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.sidebar--collapsed .sidebar__collapse {
+  position: static;
+  margin-top: 8px;
+}
+
 .sidebar__search {
-  padding: 12px 12px 10px;
+  padding: 12px 36px 10px 12px; /* room for the collapse chevron */
   border-bottom: 1px solid var(--line);
 }
 .sidebar__search input {
@@ -1310,9 +1388,53 @@ svg[data-svg="fit"],
   display: flex; flex-direction: column;
   min-height: 0;
   min-width: 0;
+  position: relative;
 }
+
+/* Collapse chevron — same idiom as `.sidebar__collapse`, mirrored to
+   the inner (left) edge of the rail. */
+.rail__collapse {
+  position: absolute;
+  top: 8px;
+  left: 6px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink-muted);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  z-index: 5;
+}
+.rail__collapse:hover {
+  color: var(--ink);
+  background: var(--bg-elev-2);
+}
+.rail__collapse:focus-visible {
+  outline: 1.5px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.rail--collapsed {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.rail--collapsed .rail__collapse {
+  position: static;
+  margin-top: 8px;
+}
+
 .rail__head {
-  padding: 14px 16px 8px;
+  padding: 14px 16px 8px 36px; /* room for the collapse chevron */
   display: flex; align-items: baseline; gap: 10px;
   border-bottom: 1px solid var(--line);
   min-height: 44px;

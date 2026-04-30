@@ -165,6 +165,28 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   });
   const [variant, setVariant] = useConsoleVariant();
 
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(() => {
+    try { return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1"; } catch { return false; }
+  });
+  const toggleSidebarCollapsed = React.useCallback(() => {
+    setSidebarCollapsed((c) => {
+      const next = !c;
+      try { localStorage.setItem("mobkit-console-sidebar-collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
+  const [railCollapsed, setRailCollapsed] = React.useState<boolean>(() => {
+    try { return localStorage.getItem("mobkit-console-rail-collapsed") === "1"; } catch { return false; }
+  });
+  const toggleRailCollapsed = React.useCallback(() => {
+    setRailCollapsed((c) => {
+      const next = !c;
+      try { localStorage.setItem("mobkit-console-rail-collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
   const forceRender = React.useCallback(() => setRenderTick((n) => n + 1), []);
@@ -892,11 +914,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         theme={theme}
         onToggleTheme={toggleTheme}
       />
-      <div className="shell">
+      <div
+        className="shell"
+        data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
+        data-rail-collapsed={railCollapsed ? "true" : "false"}
+      >
         <DesignSidebar
           agents={agents}
           selectedMemberId={focusedMemberId}
           recentActivity={activityRef.current}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={toggleSidebarCollapsed}
           onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
           onInspect={(a) => dock.openTarget(buildInspectTarget(a), "replace_focused")}
           onOpenControl={(kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")}
@@ -923,6 +951,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         <div className="pane-resizer pane-resizer--activity" aria-hidden="true" data-testid="resize:activity" onPointerDown={handleActivityResize} />
         <SignalsRail
           frames={activityRef.current}
+          collapsed={railCollapsed}
+          onToggleCollapsed={toggleRailCollapsed}
         />
       </div>
       <Tweaks
