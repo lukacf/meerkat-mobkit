@@ -374,19 +374,28 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     clearTimeout(refreshTimersRef.current[identity]);
     refreshTimersRef.current[identity] = window.setTimeout(async () => {
       try {
-        const frames = await queryEvents(baseUrl, { identity }, 400);
-        serverHistoryRef.current[identity] = frames;  // REPLACE
-        liveOverlayRef.current[identity] = [];        // CLEAR overlay
+        const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        if (available) {
+          // Server has authoritative history — replace local state and
+          // drop the live overlay (it's now redundant / a possible
+          // duplicate source).
+          serverHistoryRef.current[identity] = frames;
+          liveOverlayRef.current[identity] = [];
 
-        // Reconcile optimistic user message by interaction_id
-        const optimistic = optimisticUserRef.current[identity];
-        if (optimistic && optimistic.interactionId) {
-          const found = frames.some((f) =>
-            f.event === "interaction_started" && f.interactionId === optimistic.interactionId
-          );
-          if (found) optimisticUserRef.current[identity] = null;
+          // Reconcile optimistic user message by interaction_id.
+          const optimistic = optimisticUserRef.current[identity];
+          if (optimistic && optimistic.interactionId) {
+            const found = frames.some((f) =>
+              f.event === "interaction_started" && f.interactionId === optimistic.interactionId
+            );
+            if (found) optimisticUserRef.current[identity] = null;
+          }
         }
-
+        // No `else` clear: when the runtime has no event log
+        // configured, the live overlay IS the only source of truth.
+        // Wiping it on every terminal event was the old bug — the
+        // rich transcript flickered into a near-empty replay because
+        // server frames were always [] and the overlay got cleared.
         clearPhaseForIdentity(identity);
         forceRender();
       } catch { /* silent — will retry on next terminal event */ }
@@ -413,9 +422,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
       void (async () => {
         try {
-          const frames = await queryEvents(baseUrl, { identity }, 400);
-          serverHistoryRef.current[identity] = frames;
-          liveOverlayRef.current[identity] = [];
+          const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          if (available) {
+            serverHistoryRef.current[identity] = frames;
+            liveOverlayRef.current[identity] = [];
+          } else {
+            // No event log → don't wipe the overlay on initial open;
+            // mark history as "fetched but empty" so we don't re-fetch.
+            serverHistoryRef.current[identity] = [];
+          }
           forceRender();
         } catch { /* silent */ }
       })();
@@ -435,7 +450,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   React.useEffect(() => {
     // Seed activity with recent history (only on mount) — apply same filter as SSE
     void queryEvents(baseUrl, {}, 200)
-      .then((frames) => {
+      .then(({ frames }) => {
         const filtered = dedupeFrames(frames).filter((f) => !ACTIVITY_SKIP_EVENTS.has(f.event));
         activityRef.current = filtered.slice(-200).reverse();
         forceRender();

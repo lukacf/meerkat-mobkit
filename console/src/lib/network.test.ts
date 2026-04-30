@@ -30,13 +30,47 @@ test("queryEvents uses fallback events from no_event_log_configured envelopes", 
   })) as typeof fetch;
 
   try {
-    const frames = await queryEvents("http://127.0.0.1:7000", { identity: "identity:luka" }, 10);
-    assert.equal(frames.length, 1);
-    assert.equal(frames[0]?.id, "evt-1");
-    assert.equal(frames[0]?.event, "interaction_started");
-    assert.equal(frames[0]?.identity, "identity:luka");
-    assert.equal(frames[0]?.interactionId, "turn-1");
-    assert.deepEqual(frames[0]?.data, { content: "hello" });
+    const result = await queryEvents("http://127.0.0.1:7000", { identity: "identity:luka" }, 10);
+    assert.equal(result.available, false, "no_event_log_configured must signal available=false");
+    assert.equal(result.frames.length, 1);
+    assert.equal(result.frames[0]?.id, "evt-1");
+    assert.equal(result.frames[0]?.event, "interaction_started");
+    assert.equal(result.frames[0]?.identity, "identity:luka");
+    assert.equal(result.frames[0]?.interactionId, "turn-1");
+    assert.deepEqual(result.frames[0]?.data, { content: "hello" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("queryEvents reports available=true for normal event-log envelopes", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id: "mobkit/query_events:1",
+    result: {
+      events: [
+        {
+          event_id: "evt-2",
+          identity: "identity:luka",
+          interaction_id: "turn-1",
+          event_type: "text_complete",
+          timestamp_ms: 5,
+          data: { text: "hi" },
+        },
+      ],
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+
+  try {
+    const result = await queryEvents("http://127.0.0.1:7000", { identity: "identity:luka" }, 10);
+    assert.equal(result.available, true);
+    assert.equal(result.frames.length, 1);
+    assert.equal(result.frames[0]?.id, "evt-2");
   } finally {
     globalThis.fetch = originalFetch;
   }
