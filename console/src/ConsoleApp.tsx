@@ -166,6 +166,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // 1. Server history: last queryEvents result per identity. REPLACED wholesale on fetch.
   const serverHistoryRef = React.useRef<Record<string, ConsoleFrame[]>>({});
 
+  // 1b. Per-identity flag: has the server told us its EventLogStore is
+  // unavailable? Once we observe `available: false` from queryEvents,
+  // we never refetch (it would always return empty) and we never wipe
+  // the live overlay (it's the only source of truth in that case).
+  // Pre-fix the panel-open effect re-fired on every dock-state change
+  // and unconditionally cleared the overlay before refetching, which
+  // made the rich transcript flicker out as soon as anything else
+  // re-rendered.
+  const serverHasEventLogRef = React.useRef<Record<string, boolean>>({});
+
   // 2. Live overlay: SSE frames since last server fetch. CLEARED on server fetch.
   const liveOverlayRef = React.useRef<Record<string, ConsoleFrame[]>>({});
 
@@ -373,8 +383,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const scheduleHistoryRefresh = React.useCallback((identity: string) => {
     clearTimeout(refreshTimersRef.current[identity]);
     refreshTimersRef.current[identity] = window.setTimeout(async () => {
+      // If we already know there's no event log, skip the round trip
+      // entirely. Calling queryEvents would just return empty + the
+      // available=false flag we already cached.
+      if (serverHasEventLogRef.current[identity] === false) {
+        clearPhaseForIdentity(identity);
+        forceRender();
+        return;
+      }
       try {
         const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        serverHasEventLogRef.current[identity] = available;
         if (available) {
           // Server has authoritative history — replace local state and
           // drop the live overlay (it's now redundant / a possible
@@ -412,6 +431,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (!target || target.kind !== "agent-chat") continue;
       const identity = target.identity || target.memberId;
 
+      // If we already know the runtime has no event log, the live
+      // overlay IS the source of truth. Never refetch (would return
+      // empty), never wipe the overlay (would lose every event since
+      // the panel opened). Pre-fix the panel-open effect re-fired on
+      // every dock-state change, cleared the overlay, refetched, got
+      // available=false, didn't restore — the rich transcript
+      // disappeared after the first turn.
+      if (serverHasEventLogRef.current[identity] === false) continue;
+
       // If history exists and no stale live overlay, skip fetch
       const hasHistory = Boolean(serverHistoryRef.current[identity]);
       const hasStaleOverlay = (liveOverlayRef.current[identity]?.length || 0) > 0;
@@ -423,6 +451,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       void (async () => {
         try {
           const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          serverHasEventLogRef.current[identity] = available;
           if (available) {
             serverHistoryRef.current[identity] = frames;
             liveOverlayRef.current[identity] = [];

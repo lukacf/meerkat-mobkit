@@ -1602,6 +1602,19 @@ function copyText(text) {
   navigator.clipboard?.writeText(text).catch(() => {
   });
 }
+function formatJsonIfPossible(text) {
+  const trimmed = text.trim();
+  if (!trimmed) return text;
+  if (!(trimmed.startsWith("{") && trimmed.endsWith("}") || trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+    return text;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
+}
 function toolBlockCopyText(block) {
   if (block.peerTarget) {
     const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
@@ -1644,6 +1657,7 @@ function ToolCallBlock({ block }) {
     const target = block.peerTarget || "peer";
     const content = block.peerBody || block.peerIntent || "";
     const arrow = block.peerIncoming ? "\u2199" : "\u2197";
+    const inputDetail = block.arguments && block.arguments.trim() ? formatJsonIfPossible(block.arguments) : content;
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass), children: [
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
         "button",
@@ -1656,13 +1670,31 @@ function ToolCallBlock({ block }) {
             /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__chevron", children: expanded ? "\u25BE" : "\u25B8" }),
             /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__icon", children: arrow }),
             /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: block.peerIncoming ? `Received from ${target}` : target }),
+            block.peerIntent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-intent", children: block.peerIntent }),
             content && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: content }),
             /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__status", children: statusIcon }),
             /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(CopyBtn, { text: toolBlockCopyText(block) })
           ]
         }
       ),
-      expanded && block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.result }) })
+      expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__body", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Tool" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.name })
+        ] }),
+        block.peerIntent && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Intent" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: block.peerIntent })
+        ] }),
+        inputDetail && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: block.peerIncoming ? "Params" : "Input" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: inputDetail })
+        ] }),
+        block.result && /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__section", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__section-label", children: "Result" }),
+          /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("pre", { className: "cc-tool-call__pre", children: formatJsonIfPossible(block.result) })
+        ] })
+      ] })
     ] });
   }
   let argsPreview = block.arguments || "";
@@ -2165,7 +2197,7 @@ function summarizeFrameData(data) {
     const record = data;
     if (typeof record.delta === "string") return record.delta;
     if (typeof record.text === "string" && record.text.trim()) return record.text;
-    if (typeof record.result === "string" && record.result.trim()) return record.result;
+    if (typeof record.result === "string") return record.result;
     if (typeof record.message === "string" && record.message.trim()) return record.message;
     if (typeof record.error === "string" && record.error.trim()) return record.error;
     if (typeof record.reason === "string" && record.reason.trim()) return record.reason;
@@ -2258,9 +2290,28 @@ function parseToolResult(frame) {
 function buildToolBlocks(frames) {
   const toolCalls = /* @__PURE__ */ new Map();
   const pendingResults = /* @__PURE__ */ new Map();
+  const peerRegistry = /* @__PURE__ */ new Map();
+  const lastSegment = (s) => s.split("/").pop() || s;
   for (const frame of frames) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       const toolCallId = parseToolCallId(frame);
+      const data = frame.data;
+      if (data && (data.name === "peers" || data.tool_name === "peers")) {
+        const rawResult = typeof data.result === "string" ? data.result : null;
+        if (rawResult) {
+          try {
+            const parsed2 = JSON.parse(rawResult);
+            if (Array.isArray(parsed2.peers)) {
+              for (const p of parsed2.peers) {
+                if (typeof p.peer_id === "string" && typeof p.name === "string") {
+                  peerRegistry.set(p.peer_id, p.name);
+                }
+              }
+            }
+          } catch {
+          }
+        }
+      }
       if (!toolCallId) continue;
       const parsed = parseToolResult(frame);
       if (toolCalls.has(toolCallId)) {
@@ -2282,7 +2333,8 @@ function buildToolBlocks(frames) {
       const args = frame.data && typeof frame.data === "object" ? frame.data.args : null;
       const argsRecord = args && typeof args === "object" ? args : null;
       const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
-      const peerTarget = isPeerTool && typeof argsRecord?.to === "string" ? argsRecord.to.split("/").pop() || argsRecord.to : void 0;
+      const registryName = isPeerTool && typeof argsRecord?.peer_id === "string" ? peerRegistry.get(argsRecord.peer_id.trim()) : void 0;
+      const peerTarget = !isPeerTool ? void 0 : registryName ? lastSegment(registryName) : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim() ? lastSegment(argsRecord.display_name.trim()) : typeof argsRecord?.peer_id === "string" && argsRecord.peer_id.trim() ? argsRecord.peer_id.trim().slice(0, 8) : typeof argsRecord?.to === "string" ? lastSegment(argsRecord.to) : void 0;
       const peerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
       const peerBody = isPeerTool ? typeof argsRecord?.body === "string" ? argsRecord.body : typeof argsRecord?.params === "object" && argsRecord.params !== null ? JSON.stringify(argsRecord.params) : void 0 : void 0;
       toolCalls.set(toolCallId, {
@@ -2431,7 +2483,7 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
       text: embeddedPrompt
     });
   }
-  if (prompt.startsWith("[COMMS")) {
+  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
     const incomingBlocks = parseIncomingCommsBlocks(prompt);
     if (incomingBlocks.length > 0) {
       entries.push({
@@ -2511,11 +2563,29 @@ function summarizeCommsTransport(text) {
   }
   return text;
 }
+function isCommsHeaderLine(line) {
+  const trimmed = line.trimStart();
+  if (trimmed.startsWith("[COMMS ")) return true;
+  if (trimmed.startsWith("[SYSTEM NOTICE][PEER_")) return true;
+  return false;
+}
+function extractSystemNoticeSender(header, body) {
+  const merged = [header, ...body].join(" ");
+  const displayMatch = merged.match(/display_name:\s*([^).]+?)(?=\)|\.|$)/i);
+  if (displayMatch) {
+    const raw = displayMatch[1].trim();
+    const last = raw.split("/").pop() || raw;
+    if (last) return last;
+  }
+  const peerIdMatch = merged.match(/peer_id\s+([0-9a-f-]{6,})/i);
+  if (peerIdMatch) return peerIdMatch[1].slice(0, 8);
+  return null;
+}
 function parseIncomingCommsBlocks(prompt) {
   const sections = [];
   let current = "";
   for (const line of prompt.split("\n")) {
-    if (line.trimStart().startsWith("[COMMS ") && current) {
+    if (isCommsHeaderLine(line) && current) {
       sections.push(current);
       current = line + "\n";
     } else {
@@ -2528,24 +2598,29 @@ function parseIncomingCommsBlocks(prompt) {
   for (const section of sections) {
     const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
     const header = lines[0] || "";
-    if (!header.startsWith("[COMMS")) continue;
-    const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
-    const sender = senderMatch ? senderMatch[1] : null;
+    if (!isCommsHeaderLine(header)) continue;
+    const isLegacy = header.startsWith("[COMMS");
+    let sender;
+    if (isLegacy) {
+      const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
+      sender = senderMatch ? senderMatch[1] : null;
+    } else {
+      sender = extractSystemNoticeSender(header, lines.slice(1));
+    }
     if (!sender) continue;
-    const body = lines.slice(1).filter((l) => !l.startsWith("[COMMS ") && !l.startsWith("[EVENT via rpc]"));
+    const body = lines.slice(1).filter((l) => !isCommsHeaderLine(l) && !l.startsWith("[EVENT via rpc]"));
     counter++;
-    if (header.startsWith("[COMMS RESPONSE")) {
-      const statusLine = body.find((l) => l.startsWith("Status:"));
-      const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
-      const resultIndex = body.findIndex((l) => l.startsWith("Result:"));
+    const isResponse = header.startsWith("[COMMS RESPONSE") || header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_TERMINAL]") || header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_PROGRESS]");
+    const isRequest = header.startsWith("[COMMS REQUEST") || header.startsWith("[SYSTEM NOTICE][PEER_REQUEST]");
+    const isMessage = header.startsWith("[COMMS MESSAGE") || header.startsWith("[SYSTEM NOTICE][PEER_MESSAGE]");
+    if (isResponse) {
+      const haystack = [header, ...body].join("\n");
+      const statusMatch = haystack.match(/Status:\s*([A-Za-z_]+)/);
+      const status = statusMatch ? statusMatch[1].trim() : "";
+      const resultMatch = haystack.match(/Result:\s*([\s\S]+?)(?:\n\[|\.\s*$|$)/);
       let resultSummary = "";
-      if (resultIndex >= 0) {
-        const resultLines = [];
-        for (let i = resultIndex; i < body.length; i++) {
-          if (i > resultIndex && (body[i].startsWith("Status:") || body[i].startsWith("[COMMS "))) break;
-          resultLines.push(body[i]);
-        }
-        const raw = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
+      if (resultMatch) {
+        const raw = resultMatch[1].trim().replace(/\.$/, "");
         try {
           const parsed = JSON.parse(raw);
           if (typeof parsed === "string") {
@@ -2570,21 +2645,40 @@ function parseIncomingCommsBlocks(prompt) {
         peerIntent: resultSummary || status || "response",
         peerIncoming: true
       });
-    } else if (header.startsWith("[COMMS REQUEST")) {
-      const intentLine = body.find((l) => l.startsWith("Intent:"));
-      const intent = intentLine ? intentLine.replace(/^Intent:\s*/, "").trim() : "";
+    } else if (isRequest) {
+      const haystack = [header, ...body].join("\n");
+      const intentMatch = haystack.match(/Intent:\s*([^.\n]+?)(?:\.\s|\n|$)/);
+      const intent = intentMatch ? intentMatch[1].trim() : "";
       if (intent === "mob.peer_added" || intent === "mob.peer_removed") continue;
+      const requestIdMatch = haystack.match(/Request ID:\s*([0-9a-fA-F-]+)/);
+      const paramsMatch = haystack.match(/Params:\s*(\{[\s\S]*?\}|"[^"]*"|[^.\n]+)/);
+      const requestId = requestIdMatch ? requestIdMatch[1].trim() : "";
+      let paramsBody = "";
+      if (paramsMatch) {
+        const raw = paramsMatch[1].trim();
+        try {
+          const parsed = JSON.parse(raw);
+          paramsBody = typeof parsed === "object" && parsed !== null ? JSON.stringify(parsed) : raw;
+        } catch {
+          paramsBody = raw;
+        }
+      }
+      const peerBody = [
+        paramsBody,
+        requestId ? `(req: ${requestId.slice(0, 8)})` : ""
+      ].filter(Boolean).join(" ").trim();
       blocks.push({
         type: "tool-call",
         toolCallId: `incoming-${sender}-${counter}`,
         name: "request",
-        arguments: "",
+        arguments: paramsBody,
         status: "success",
         peerTarget: sender,
         peerIntent: intent || "request",
+        ...peerBody ? { peerBody } : {},
         peerIncoming: true
       });
-    } else if (header.startsWith("[COMMS MESSAGE")) {
+    } else if (isMessage) {
       const joined = body.join(" ").trim();
       blocks.push({
         type: "tool-call",
@@ -2647,9 +2741,11 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       const block = toolBlocks.get(toolCallId);
       if (block) {
         const isPeer = block.peerTarget !== void 0;
+        const newIncoming = block.peerIncoming === true;
         const lastEntry = entries[entries.length - 1];
         const lastIsPeerGroup = lastEntry && lastEntry.variant === "rich" && Array.isArray(lastEntry.blocks) && lastEntry.blocks.length > 0 && lastEntry.blocks.every((b) => b.type === "tool-call" && b.peerTarget);
-        if (isPeer && lastIsPeerGroup) {
+        const lastIncoming = lastIsPeerGroup ? lastEntry.blocks[0].peerIncoming === true : false;
+        if (isPeer && lastIsPeerGroup && newIncoming === lastIncoming) {
           lastEntry.blocks.push(block);
         } else {
           entries.push({
@@ -5301,6 +5397,7 @@ function ConsoleApp({ baseUrl }) {
   const [, setRenderTick] = import_react19.default.useState(0);
   const forceRender = import_react19.default.useCallback(() => setRenderTick((n) => n + 1), []);
   const serverHistoryRef = import_react19.default.useRef({});
+  const serverHasEventLogRef = import_react19.default.useRef({});
   const liveOverlayRef = import_react19.default.useRef({});
   const optimisticUserRef = import_react19.default.useRef({});
   const activityRef = import_react19.default.useRef([]);
@@ -5487,8 +5584,14 @@ function ConsoleApp({ baseUrl }) {
   const scheduleHistoryRefresh = import_react19.default.useCallback((identity) => {
     clearTimeout(refreshTimersRef.current[identity]);
     refreshTimersRef.current[identity] = window.setTimeout(async () => {
+      if (serverHasEventLogRef.current[identity] === false) {
+        clearPhaseForIdentity(identity);
+        forceRender();
+        return;
+      }
       try {
         const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        serverHasEventLogRef.current[identity] = available;
         if (available) {
           serverHistoryRef.current[identity] = frames;
           liveOverlayRef.current[identity] = [];
@@ -5511,6 +5614,7 @@ function ConsoleApp({ baseUrl }) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
       const identity = target.identity || target.memberId;
+      if (serverHasEventLogRef.current[identity] === false) continue;
       const hasHistory = Boolean(serverHistoryRef.current[identity]);
       const hasStaleOverlay = (liveOverlayRef.current[identity]?.length || 0) > 0;
       if (hasHistory && !hasStaleOverlay) continue;
@@ -5518,6 +5622,7 @@ function ConsoleApp({ baseUrl }) {
       void (async () => {
         try {
           const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          serverHasEventLogRef.current[identity] = available;
           if (available) {
             serverHistoryRef.current[identity] = frames;
             liveOverlayRef.current[identity] = [];
