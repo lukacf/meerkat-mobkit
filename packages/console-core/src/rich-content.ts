@@ -112,13 +112,19 @@ function escapeHtml(value: string): string {
 }
 
 export function renderConversationInlineMarkdown(text: string): string {
+  // Order: code spans first (mask their contents from later passes),
+  // then bold (`**x**`), then italic (single `*x*`). Bold must come
+  // before italic — otherwise the italic regex would consume one
+  // asterisk from each `**` pair.
   const codeTokens: string[] = [];
   const escaped = escapeHtml(text || "")
     .replace(/`([^`]+)`/g, (_match, code) => {
       const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
       return `@@CODE_${index}@@`;
     })
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
     .replace(/\n/g, "<br />");
 

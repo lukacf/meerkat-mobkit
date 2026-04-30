@@ -229,12 +229,6 @@ export function ChatPane({
             </div>
           </div>
         ))}
-        {phase && (
-          <div className="msg msg--origin" data-testid={`chat-phase:${phase}`}>
-            <div className="msg__time" />
-            <div className="msg__bubble"><span className="msg__text">{agentLabel} is {phase.replace("-", " ")}…</span></div>
-          </div>
-        )}
       </div>
       <div className="composer">
         <div className="composer__shell">
