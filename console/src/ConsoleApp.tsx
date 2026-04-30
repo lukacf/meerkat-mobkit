@@ -913,6 +913,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         mobStatus={mobStatus}
         theme={theme}
         onToggleTheme={toggleTheme}
+        sidebarCollapsed={sidebarCollapsed}
+        railCollapsed={railCollapsed}
+        onToggleSidebar={toggleSidebarCollapsed}
+        onToggleRail={toggleRailCollapsed}
       />
       <div
         className="shell"
@@ -924,7 +928,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           selectedMemberId={focusedMemberId}
           recentActivity={activityRef.current}
           collapsed={sidebarCollapsed}
-          onToggleCollapsed={toggleSidebarCollapsed}
           onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
           onInspect={(a) => dock.openTarget(buildInspectTarget(a), "replace_focused")}
           onOpenControl={(kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")}
@@ -952,7 +955,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         <SignalsRail
           frames={activityRef.current}
           collapsed={railCollapsed}
-          onToggleCollapsed={toggleRailCollapsed}
         />
       </div>
       <Tweaks

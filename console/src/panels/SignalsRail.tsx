@@ -4,7 +4,6 @@ import type { ConsoleFrame } from "../types";
 interface SignalsRailProps {
   frames: ConsoleFrame[];
   collapsed: boolean;
-  onToggleCollapsed: () => void;
   onSelect?: (frame: ConsoleFrame) => void;
 }
 
@@ -62,7 +61,7 @@ function timeFor(tsMs?: number): string {
   return `${Math.floor(diff / 3_600_000)}h`;
 }
 
-export function SignalsRail({ frames, collapsed, onToggleCollapsed, onSelect }: SignalsRailProps): React.JSX.Element {
+export function SignalsRail({ frames, collapsed, onSelect }: SignalsRailProps): React.JSX.Element {
   const [filter, setFilter] = React.useState<"all" | "warning" | "critical">("all");
 
   const signals: Signal[] = React.useMemo(() => {
@@ -98,32 +97,13 @@ export function SignalsRail({ frames, collapsed, onToggleCollapsed, onSelect }: 
         data-collapsed="true"
         data-testid="signals-rail"
       >
-        <button
-          type="button"
-          className="rail__collapse"
-          aria-label="Expand signals rail"
-          title="Expand signals rail"
-          onClick={onToggleCollapsed}
-          data-testid="signals-rail-collapse-toggle"
-        >
-          ‹
-        </button>
+        <i className="rail__grip" aria-hidden="true" />
       </aside>
     );
   }
 
   return (
     <aside className="rail" data-testid="signals-rail">
-      <button
-        type="button"
-        className="rail__collapse"
-        aria-label="Collapse signals rail"
-        title="Collapse signals rail"
-        onClick={onToggleCollapsed}
-        data-testid="signals-rail-collapse-toggle"
-      >
-        ›
-      </button>
       <div className="rail__head">
         <span className="rail__title">Signals</span>
         <span className="rail__sub">{recent15m} in 15m</span>

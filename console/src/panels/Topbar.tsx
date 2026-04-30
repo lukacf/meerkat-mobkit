@@ -6,11 +6,59 @@ interface TopbarProps {
   environment?: string;
   theme: "dark" | "light";
   onToggleTheme: () => void;
+  sidebarCollapsed: boolean;
+  railCollapsed: boolean;
+  onToggleSidebar: () => void;
+  onToggleRail: () => void;
 }
 
-export function Topbar({ mobName, mobStatus = "idle", environment = "dev", theme, onToggleTheme }: TopbarProps): React.JSX.Element {
+/// Lucide-style "panel" glyph: a rounded rectangle with an inner
+/// divider on the side that owns the toggle, and a chevron pointing
+/// inward when the panel is open (about to collapse) or outward when
+/// the panel is collapsed (about to expand).
+function PanelGlyph({ side, open }: { side: "left" | "right"; open: boolean }): React.JSX.Element {
+  const dividerLeft = side === "left";
+  const cx = dividerLeft ? 16.5 : 7.5;
+  const point = open ? (dividerLeft ? 1 : -1) : (dividerLeft ? -1 : 1);
+  const x1 = cx + point * 1.6;
+  const x2 = cx - point * 1.6;
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <rect x="3" y="5" width="18" height="14" rx="1.5" />
+      <path d={dividerLeft ? "M9 5 L9 19" : "M15 5 L15 19"} />
+      <path d={`M${x1} 9.5 L${x2} 12 L${x1} 14.5`} />
+    </svg>
+  );
+}
+
+export function Topbar({
+  mobName,
+  mobStatus = "idle",
+  environment = "dev",
+  theme,
+  onToggleTheme,
+  sidebarCollapsed,
+  railCollapsed,
+  onToggleSidebar,
+  onToggleRail,
+}: TopbarProps): React.JSX.Element {
   return (
     <div className="mobkit-topbar" data-testid="mobkit-topbar">
+      <button
+        type="button"
+        className="mobkit-topbar__toggle mobkit-topbar__toggle--left"
+        onClick={onToggleSidebar}
+        aria-pressed={!sidebarCollapsed}
+        aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        data-testid="sidebar-collapse-toggle"
+      >
+        <PanelGlyph side="left" open={!sidebarCollapsed} />
+      </button>
       <div className="mobkit-topbar__brand">
         <span className="mobkit-topbar__brand-mark" />
         <span>MobKit</span>
@@ -35,6 +83,17 @@ export function Topbar({ mobName, mobStatus = "idle", environment = "dev", theme
           {theme === "dark" ? "☀ light" : "☾ dark"}
         </button>
       </div>
+      <button
+        type="button"
+        className="mobkit-topbar__toggle mobkit-topbar__toggle--right"
+        onClick={onToggleRail}
+        aria-pressed={!railCollapsed}
+        aria-label={railCollapsed ? "Expand signals rail" : "Collapse signals rail"}
+        title={railCollapsed ? "Expand signals rail" : "Collapse signals rail"}
+        data-testid="signals-rail-collapse-toggle"
+      >
+        <PanelGlyph side="right" open={!railCollapsed} />
+      </button>
     </div>
   );
 }
