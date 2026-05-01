@@ -898,6 +898,12 @@ svg[data-svg="fit"],
 }
 .topo__legend-item { display: flex; align-items: center; gap: 6px; }
 .topo__legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+.topo__legend-count {
+  margin-left: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
 [data-cc-variant="terminal"] .topo__legend-dot { border-radius: 0; }
 
 /* ── Timeline panel ─────────────────────────────────────────── */
