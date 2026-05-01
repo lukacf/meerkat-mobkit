@@ -376,6 +376,76 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
   );
 }
 
+/// Group of N tool calls of the same `name` that aren't peer tools.
+/// Renders one collapsible card with `<icon> <name> ×N <status>` in
+/// the header; expanded body lists each call's input + result. The
+/// status icon is composite — success only when every call succeeded.
+function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const allSuccess = blocks.every((b) => b.status === "success");
+  const anyError = blocks.some((b) => b.status === "error");
+  const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";
+  const statusLabel = anyError ? "Failed" : allSuccess ? "Success" : "Running";
+  const statusClass = anyError
+    ? "cc-tool-call--error"
+    : allSuccess
+      ? "cc-tool-call--success"
+      : "cc-tool-call--pending";
+  const name = blocks[0]?.name || "tool";
+
+  return (
+    <section className={clsx("cc-tool-call cc-tool-call--group", statusClass)}>
+      <button
+        className="cc-tool-call__header"
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        aria-expanded={expanded}
+      >
+        <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
+        <span className="cc-tool-call__icon">⚙</span>
+        <span className="cc-tool-call__name">{name}</span>
+        <span className="cc-tool-call__count">×{blocks.length}</span>
+        <span className="cc-tool-call__status">{statusIcon} {statusLabel}</span>
+        <CopyBtn text={blocks.map((b) => toolBlockCopyText(b)).join("\n")} />
+      </button>
+      {expanded && (
+        <div className="cc-tool-call__body">
+          {blocks.map((block, i) => {
+            const args = block.arguments
+              ? formatJsonIfPossible(block.arguments)
+              : "";
+            const result = block.result
+              ? formatJsonIfPossible(block.result)
+              : "";
+            return (
+              <div className="cc-tool-call__sub" key={block.toolCallId || i}>
+                <div className="cc-tool-call__sub-head">
+                  <span className="cc-tool-call__sub-index">#{i + 1}</span>
+                  <span className={`cc-tool-call__peer-status cc-tool-call__peer-status--${block.status}`}>
+                    {block.status === "success" ? "✓" : block.status === "error" ? "✗" : "⋯"}
+                  </span>
+                </div>
+                {args && (
+                  <div className="cc-tool-call__section">
+                    <div className="cc-tool-call__section-label">Input</div>
+                    <pre className="cc-tool-call__pre">{args}</pre>
+                  </div>
+                )}
+                {result && (
+                  <div className="cc-tool-call__section">
+                    <div className="cc-tool-call__section-label">Result</div>
+                    <pre className="cc-tool-call__pre">{result}</pre>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
   const [expanded, setExpanded] = useState(false);
   const targets = blocks.map((b) => b.peerTarget || "peer");
@@ -426,16 +496,23 @@ export function ConversationRichContent({
   richStyle = "default",
   Icon,
 }: ConversationRichContentProps) {
-  // Check if all blocks are peer tool calls — render as grouped blob
-  const allPeerTools = blocks.length > 1
-    && blocks.every((b) => {
-      if (b.type !== "tool-call") return false;
-      const tc = b as ConversationRichToolCallBlock;
-      return PEER_TOOL_NAMES.has(tc.name) || tc.peerIncoming;
-    });
-
-  if (allPeerTools) {
-    return <PeerToolGroup blocks={blocks as ConversationRichToolCallBlock[]} />;
+  // Render multi-block tool runs as a single collapsible group:
+  // peer tools get the `Sent to a, b, c` blob, generic same-name
+  // tool runs get the `<name> ×N` blob. The adapter (and ChatPane's
+  // defensive merge) only puts blocks in the same array when they
+  // share a `name` and, for peer tools, the same direction — so
+  // detection here is just a "are they all tool-call and same-name"
+  // check.
+  if (blocks.length > 1 && blocks.every((b) => b.type === "tool-call")) {
+    const tools = blocks as ConversationRichToolCallBlock[];
+    const firstName = tools[0].name;
+    if (tools.every((b) => b.name === firstName)) {
+      const allPeer = tools.every((b) => PEER_TOOL_NAMES.has(b.name) || b.peerIncoming);
+      if (allPeer) {
+        return <PeerToolGroup blocks={tools} />;
+      }
+      return <ToolCallGroup blocks={tools} />;
+    }
   }
 
   const body = blocks

@@ -151,37 +151,40 @@ export function ChatPane({
   }, [entries.length, phase]);
 
   const messages = React.useMemo(() => {
-    // Defensive cross-entry merge: the adapter groups consecutive
-    // peer tool calls into one entry only when the previous entry is
-    // already a peer group. Any interleaved frame (a text delta, a
-    // module event, a non-peer tool) breaks the chain — leaving us
-    // with N adjacent rich entries each holding one peer tool block.
-    // Re-merge them at the message level so `ConversationRichContent`
-    // sees `blocks.length > 1` and renders `PeerToolGroup`.
+    // Defensive cross-entry merge: the adapter already groups
+    // consecutive same-name tool calls into one entry, but the
+    // merge breaks if a non-tool entry slips between adjacent tool
+    // entries (e.g., a meta event the adapter rendered as its own
+    // bubble). Walk the flattened message list and fold neighbouring
+    // tool messages whose blocks all share the same tool `name` —
+    // and, for peer tools, the same direction.
     const flat = entries.flatMap(flattenEntry);
     const merged: Msg[] = [];
     for (const m of flat) {
       const last = merged[merged.length - 1];
-      const canMerge =
-        last &&
-        last.kind === "tool" &&
-        m.kind === "tool" &&
-        Array.isArray(last.blocks) &&
-        Array.isArray(m.blocks) &&
-        // Only fold blocks that are all peer tool calls (regardless
-        // of direction). Generic tool calls keep their own row.
-        last.blocks.every(
-          (b) => b.type === "tool-call" && (b.peerTarget !== undefined || b.peerIncoming === true),
-        ) &&
-        m.blocks.every(
-          (b) => b.type === "tool-call" && (b.peerTarget !== undefined || b.peerIncoming === true),
-        ) &&
-        // Don't fold incoming + outgoing into the same group.
-        last.blocks[0].type === "tool-call" &&
-        m.blocks[0].type === "tool-call" &&
-        Boolean((last.blocks[0]).peerIncoming) === Boolean((m.blocks[0]).peerIncoming);
-      if (canMerge && last && last.blocks && m.blocks) {
-        last.blocks = [...last.blocks, ...m.blocks];
+      const lastBlocks = last?.blocks;
+      const mBlocks = m.blocks;
+      const sameName = !!(
+        last
+        && last.kind === "tool"
+        && m.kind === "tool"
+        && Array.isArray(lastBlocks) && lastBlocks.length > 0
+        && Array.isArray(mBlocks) && mBlocks.length > 0
+        && lastBlocks.every((b) => b.type === "tool-call")
+        && mBlocks.every((b) => b.type === "tool-call")
+        && lastBlocks[0].type === "tool-call"
+        && mBlocks[0].type === "tool-call"
+        && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+        && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+      );
+      const peerCompatible = !sameName
+        ? false
+        : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
+          ? true
+          : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
+            === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
+      if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
+        last.blocks = [...lastBlocks, ...mBlocks];
         last.id = `${last.id}+${m.id}`;
       } else {
         merged.push({ ...m });
