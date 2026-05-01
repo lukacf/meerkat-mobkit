@@ -1113,6 +1113,38 @@
   min-width: 0;
 }
 
+/* Generic same-name tool group */
+.cc-tool-call--group .cc-tool-call__name {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-weight: 500;
+}
+.cc-tool-call__count {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  color: var(--_cc-foreground-muted, rgba(177,184,193,0.58));
+  margin-left: 6px;
+}
+.cc-tool-call__sub {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--_cc-border-soft, rgba(255,255,255,0.05));
+}
+.cc-tool-call__sub:first-child { padding-top: 0; }
+.cc-tool-call__sub:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.cc-tool-call__sub-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.cc-tool-call__sub-index {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  color: var(--_cc-foreground-subtle, rgba(177,184,193,0.38));
+}
+
 /* Peer tool group */
 .cc-tool-call--peer-group .cc-tool-call__name {
   font-family: inherit;

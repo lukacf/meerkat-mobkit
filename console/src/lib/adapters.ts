@@ -1309,27 +1309,33 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const block = toolBlocks.get(toolCallId);
       if (block) {
-        // Group consecutive peer tool calls of the SAME direction into
-        // one entry. Outgoing (`peerIncoming` undef) and incoming
-        // (`peerIncoming === true`) must NOT fold together — pre-fix
-        // a fresh outgoing `send_response` was appended onto the entry
-        // holding an incoming `[PEER_REQUEST]` block, and the merged
-        // group rendered as one "Received from a, b" blob with the
-        // outgoing peer's full comms-name path stuck at the end.
-        const isPeer = block.peerTarget !== undefined;
-        const newIncoming = block.peerIncoming === true;
+        // Group consecutive tool calls of the same `name` into one
+        // rich entry. Any frame that produces its own visible entry
+        // (text bubble, user message, system notice) lands between
+        // the tool entries in `entries[]` and breaks this match — so
+        // grouping naturally fires only for runs of same-tool calls
+        // with no user-facing output between them. Peer tools have
+        // an extra direction constraint (incoming vs outgoing) so a
+        // fresh `send_response` doesn't fold into a `send_request`
+        // group.
         const lastEntry = entries[entries.length - 1];
-        const lastIsPeerGroup = lastEntry
+        const lastBlocks = lastEntry
+          && lastEntry.kind === "message"
           && lastEntry.variant === "rich"
           && Array.isArray(lastEntry.blocks)
-          && lastEntry.blocks.length > 0
-          && lastEntry.blocks.every((b: Record<string, unknown>) => b.type === "tool-call" && b.peerTarget);
-        const lastIncoming = lastIsPeerGroup
-          ? (lastEntry.blocks as Array<Record<string, unknown>>)[0].peerIncoming === true
-          : false;
+          ? lastEntry.blocks as Array<Record<string, unknown>>
+          : null;
+        const lastIsToolGroup = !!(lastBlocks
+          && lastBlocks.length > 0
+          && lastBlocks.every((b) => b.type === "tool-call"));
+        const lastSameName = lastIsToolGroup
+          && lastBlocks!.every((b) => b.name === block.name);
+        const newIncoming = block.peerIncoming === true;
+        const peerCompatible = !block.peerTarget
+          || (lastIsToolGroup
+              && lastBlocks!.every((b) => Boolean(b.peerIncoming) === newIncoming));
 
-        if (isPeer && lastIsPeerGroup && newIncoming === lastIncoming) {
-          // Append to existing peer group of the same direction
+        if (lastSameName && peerCompatible) {
           (lastEntry.blocks as unknown[]).push(block);
         } else {
           entries.push({
