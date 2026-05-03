@@ -870,31 +870,76 @@ svg[data-svg="fit"],
   background: var(--bg-elev-1);
   overflow: hidden;
   min-height: 0;
+  display: flex; flex-direction: column;
 }
 .topo__head {
-  padding: 14px 24px 12px;
+  padding: 10px 18px;
   border-bottom: 1px solid var(--line);
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 14px;
   background: var(--bg-elev-1);
   position: relative; z-index: 2;
   flex: none;
 }
 .topo__head h2 {
-  margin: 0; font-size: 14px; font-weight: 600;
+  margin: 0; font-size: 13px; font-weight: 600;
   letter-spacing: -0.008em; color: var(--ink);
   font-family: var(--disp);
 }
-.topo__head p {
-  margin: 0; font-size: 11.5px; color: var(--ink-dim);
+.topo__head-meta {
+  font-size: 11px;
+  color: var(--ink-dim);
   font-family: var(--mono);
 }
-.topo__svg { position: absolute; inset: 48px 0 0 0; }
+.topo__viewbar {
+  margin-left: auto;
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+.topo__viewbtn {
+  padding: 4px 12px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--line);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.topo__viewbtn:last-child { border-right: none; }
+.topo__viewbtn:hover { color: var(--ink); background: var(--bg-elev-2); }
+.topo__viewbtn.is-active {
+  color: var(--ink);
+  background: var(--bg);
+}
+.topo__body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: auto;
+}
+.topo__svg-board {
+  width: 100%; height: 100%;
+  display: block;
+}
+.topo__ring-label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  fill: var(--ink-faint);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
 .topo__legend {
-  position: absolute; bottom: 16px; left: 24px;
-  display: flex; gap: 16px;
+  position: absolute; bottom: 12px; left: 18px;
+  display: flex; gap: 14px;
   font-size: 11px; color: var(--ink-muted);
   font-family: var(--disp);
   flex-wrap: wrap;
+  pointer-events: none;
 }
 .topo__legend-item { display: flex; align-items: center; gap: 6px; }
 .topo__legend-dot { width: 8px; height: 8px; border-radius: 50%; }
@@ -905,6 +950,92 @@ svg[data-svg="fit"],
   color: var(--ink-faint);
 }
 [data-cc-variant="terminal"] .topo__legend-dot { border-radius: 0; }
+
+/* ── Role tree (flat mob, agents grouped by role) ───────────── */
+.topo-roletree {
+  padding: 14px 18px;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+.topo-roletree__row { display: flex; flex-direction: column; }
+.topo-roletree__mob,
+.topo-roletree__role {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px 5px 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  transition: background 120ms ease;
+}
+.topo-roletree__mob:hover,
+.topo-roletree__role:hover { background: var(--bg-elev-2); }
+.topo-roletree__mob.is-hot .topo-roletree__dot,
+.topo-roletree__role.is-hot .topo-roletree__dot {
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--ok) 22%, transparent);
+}
+.topo-roletree__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  transition: transform 150ms ease;
+}
+.topo-roletree__dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.topo-roletree__label {
+  font-weight: 500;
+  color: var(--ink);
+}
+.topo-roletree__count {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.topo-roletree__section {
+  display: flex;
+  flex-direction: column;
+  padding-left: 18px;
+}
+.topo-roletree__pod {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 8px 30px;
+}
+.topo-roletree__agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.topo-roletree__agent.is-hot {
+  border-color: var(--ok);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--ok) 18%, transparent);
+}
+.topo-roletree__agent-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+.topo-roletree__agent-label {
+  font-size: 11.5px;
+  color: var(--ink);
+}
 
 /* ── Timeline panel ─────────────────────────────────────────── */
 .tl { flex: 1; overflow-y: auto; background: var(--bg-elev-1); }

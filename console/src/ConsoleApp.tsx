@@ -295,6 +295,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   // Activity rail (global, unchanged)
   const activityRef = React.useRef<ConsoleFrame[]>([]);
+  // Unfiltered recent-frames ring for topology-class panels that need to
+  // see tool calls (peer-comms send_*, etc.) in addition to interaction
+  // lifecycle. The activity rail filters tool events out; this buffer
+  // doesn't.
+  const liveFramesRef = React.useRef<ConsoleFrame[]>([]);
 
   // Phase tracking (per-panel, unchanged)
   const phaseRef = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
@@ -555,6 +560,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
+      }
+
+      // Topology-class buffer keeps tool events (peer-comms etc.) which
+      // the activity rail filters out. Capped at 300; older frames roll
+      // off naturally as live pulses age past their lifetime.
+      if (PANEL_ROUTABLE_EVENTS.has(frame.event)) {
+        liveFramesRef.current = [frame, ...liveFramesRef.current].slice(0, 300);
       }
 
       // Identity log (single canonical store)
@@ -883,6 +895,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       <TopologyPanel
         nodes={experience?.topology?.live_snapshot?.nodes || []}
         agents={agents}
+        activity={liveFramesRef.current}
       />
     );
     if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
