@@ -1,9 +1,9 @@
 // Force-directed layout — physics sim with role colour and degree-scaled
-// node radius. Continuous animation so the graph keeps a faint breathing
-// motion; alpha decays so it settles instead of oscillating forever.
+// node radius. Visual weight scales with graph size: chunky nodes +
+// inline labels for small graphs, tiny dots for dense ones.
 //
-// Edges: thin, low-opacity. Real pulses dot along them when the activity
-// stream carries a resolvable send_* tool call.
+// Edges: real `wired_to` pairs. Real pulses dot along them when the
+// activity stream carries a resolvable send_* tool call.
 
 import React from "react";
 import {
@@ -32,6 +32,20 @@ interface ForceDirectedProps {
   height: number;
 }
 
+interface VisualScale {
+  nodeMin: number;
+  nodeMax: number;
+  showLabels: boolean;
+  edgeWidth: number;
+  idealEdgeLen: number;
+}
+
+function visualScale(N: number): VisualScale {
+  if (N <= 20) return { nodeMin: 5, nodeMax: 12, showLabels: true,  edgeWidth: 1.0, idealEdgeLen: 110 };
+  if (N <= 80) return { nodeMin: 3.5, nodeMax: 9, showLabels: false, edgeWidth: 0.7, idealEdgeLen: 80 };
+  return { nodeMin: 2.4, nodeMax: 7, showLabels: false, edgeWidth: 0.5, idealEdgeLen: 60 };
+}
+
 export function ForceDirected({
   nodes,
   agents,
@@ -42,6 +56,7 @@ export function ForceDirected({
   const graph = React.useMemo(() => buildGraph(nodes, agents), [nodes, agents]);
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const liveActivity: TopoActivity = useTopologyActivity(activity, graph, { life: 900 });
+  const scale = visualScale(graph.agents.length);
 
   // Sim state lives in a ref so React render cadence doesn't throttle
   // the integrator. We schedule a re-render every 2 frames.
@@ -100,7 +115,8 @@ export function ForceDirected({
           nj.vy -= uy * f;
         }
       }
-      // Edge spring (ideal length 60).
+      // Edge spring — ideal length scales with the graph so a small
+      // graph spreads out and a dense one stays compact.
       for (const e of graph.edges) {
         const a = sim.byId.get(e.from);
         const b = sim.byId.get(e.to);
@@ -108,7 +124,7 @@ export function ForceDirected({
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-        const f = 0.025 * (d - 60);
+        const f = 0.025 * (d - scale.idealEdgeLen);
         const ux = dx / d;
         const uy = dy / d;
         a.vx += ux * f;
@@ -168,8 +184,8 @@ export function ForceDirected({
                   x1={a.x} y1={a.y}
                   x2={b.x} y2={b.y}
                   stroke={hot ? "var(--ok)" : "var(--ink-faint)"}
-                  strokeWidth={hot ? 0.9 : 0.5}
-                  opacity={hot ? 0.85 : 0.32}
+                  strokeWidth={hot ? scale.edgeWidth + 0.5 : scale.edgeWidth}
+                  opacity={hot ? 0.85 : 0.5}
                 />
               );
             })}
@@ -186,7 +202,7 @@ export function ForceDirected({
               return (
                 <circle
                   key={p.id}
-                  cx={x} cy={y} r={2.6}
+                  cx={x} cy={y} r={3}
                   fill="var(--ok)"
                   opacity={1 - age}
                   style={{ pointerEvents: "none" }}
@@ -199,20 +215,44 @@ export function ForceDirected({
               const n = sim.byId.get(agent.id);
               if (!n) return null;
               const deg = graph.degree[agent.id] || 0;
-              const r = Math.max(2.2, Math.min(8, 1.6 + Math.sqrt(deg) * 1.2));
+              const t = Math.sqrt(deg) / 4;
+              const r = scale.nodeMin + Math.min(1, t) * (scale.nodeMax - scale.nodeMin);
               const isHot = !!liveActivity.active[agent.id];
               const colour = colourForRole(agent.role, roleIndex);
               return (
                 <g
                   key={agent.id}
-                  transform={`translate(${n.x},${n.y})`}
                   data-testid={`topology-node:${agent.id}`}
                 >
                   <title>{`${agent.label} · ${agent.role} · degree ${deg}${agent.state ? " · " + agent.state : ""}`}</title>
                   {isHot && (
-                    <circle r={r + 4} fill="none" stroke={colour} strokeWidth="1" opacity="0.45" style={{ pointerEvents: "none" }} />
+                    <circle
+                      cx={n.x} cy={n.y}
+                      r={r + 5}
+                      fill="none"
+                      stroke={colour}
+                      strokeWidth="1.5"
+                      opacity="0.5"
+                      style={{ pointerEvents: "none" }}
+                    />
                   )}
-                  <circle r={r} fill={colour} stroke="var(--bg)" strokeWidth="1" />
+                  <circle
+                    cx={n.x} cy={n.y}
+                    r={r}
+                    fill={colour}
+                    stroke="var(--bg)"
+                    strokeWidth="1.5"
+                  />
+                  {scale.showLabels && (
+                    <text
+                      x={n.x}
+                      y={n.y + r + 12}
+                      textAnchor="middle"
+                      className="topo__node-label"
+                    >
+                      {agent.label}
+                    </text>
+                  )}
                 </g>
               );
             })}

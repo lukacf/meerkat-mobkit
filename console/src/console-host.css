@@ -926,8 +926,23 @@ svg[data-svg="fit"],
 }
 .topo__ring-label {
   font-family: var(--mono);
-  font-size: 9.5px;
-  fill: var(--ink-faint);
+  font-size: 10.5px;
+  fill: var(--ink-muted);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+.topo__center-label {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  fill: var(--ink-muted);
+}
+.topo__node-label {
+  font-family: var(--disp);
+  font-size: 11px;
+  fill: var(--ink);
   paint-order: stroke;
   stroke: var(--bg);
   stroke-width: 3px;
