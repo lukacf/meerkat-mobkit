@@ -2523,7 +2523,8 @@ fn build_models_catalog_result() -> Value {
         .iter()
         .filter_map(|e| {
             let mut val = serde_json::to_value(e).ok()?;
-            if let Some(profile) = meerkat_models::profile_for(e.provider, e.id)
+            if let Some(provider) = meerkat_core::Provider::parse_strict(e.provider)
+                && let Some(profile) = meerkat_models::profile_for(provider, e.id)
                 && let Ok(p) = serde_json::to_value(&profile)
             {
                 val["profile"] = p;

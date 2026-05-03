@@ -1,6 +1,8 @@
 import React from "react";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
+type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "gates" | "logs";
+
 interface SidebarProps {
   agents: ConsoleAgent[];
   selectedMemberId: string;
@@ -8,7 +10,46 @@ interface SidebarProps {
   collapsed: boolean;
   onSelect: (agent: ConsoleAgent) => void;
   onInspect: (agent: ConsoleAgent) => void;
-  onOpenControl: (kind: "routing" | "gating" | "topology" | "timeline" | "roster" | "gates" | "logs") => void;
+  onOpenControl: (kind: NavKind) => void;
+}
+
+/// Nav-item visibility configuration via URL query params:
+///
+///   ?hide_nav=timeline,gating          ⇒ hide listed kinds (others visible)
+///   ?show_nav=topology,roster          ⇒ show only listed kinds
+///   ?show_nav=topology&hide_nav=...    ⇒ whitelist wins; hide_nav ignored
+///
+/// Embedders can drop the query string into the iframe URL without
+/// touching the React tree. Reads once on mount; reload to change.
+const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "gates", "logs"];
+const NAV_LABEL: Record<NavKind, string> = {
+  topology: "Topology",
+  timeline: "Today",
+  gating: "Gating",
+  roster: "Roster",
+  routing: "Routing",
+  gates: "Gates",
+  logs: "Logs",
+};
+
+function parseNavList(raw: string | null): Set<NavKind> {
+  const out = new Set<NavKind>();
+  if (!raw) return out;
+  for (const token of raw.split(",")) {
+    const trimmed = token.trim();
+    if (ALL_NAV.includes(trimmed as NavKind)) out.add(trimmed as NavKind);
+  }
+  return out;
+}
+
+function visibleNavKinds(): NavKind[] {
+  if (typeof window === "undefined") return ALL_NAV;
+  const params = new URLSearchParams(window.location.search);
+  const show = parseNavList(params.get("show_nav"));
+  if (show.size > 0) return ALL_NAV.filter((k) => show.has(k));
+  const hide = parseNavList(params.get("hide_nav"));
+  if (hide.size > 0) return ALL_NAV.filter((k) => !hide.has(k));
+  return ALL_NAV;
 }
 
 type Bucket = "Personal" | "Coordinators" | "Domains" | "Internal" | "Other";
@@ -64,6 +105,8 @@ export function Sidebar({
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
+  // Computed once; URL-driven config doesn't change without a reload.
+  const navKinds = React.useMemo(() => visibleNavKinds(), []);
 
   const filtered = React.useMemo(() => {
     if (!q) return agents;
@@ -109,18 +152,23 @@ export function Sidebar({
         />
       </div>
 
-      <div className="sidebar__section sidebar__section--nav">
-        <div className="sidebar__sec-head">
-          <span className="sidebar__sec-label">Views</span>
+      {navKinds.length > 0 && (
+        <div className="sidebar__section sidebar__section--nav">
+          <div className="sidebar__sec-head">
+            <span className="sidebar__sec-label">Views</span>
+          </div>
+          {navKinds.map((kind) => (
+            <button
+              key={kind}
+              className="sidebar__navitem"
+              onClick={() => onOpenControl(kind)}
+              data-testid={`nav:${kind}`}
+            >
+              {NAV_LABEL[kind]}
+            </button>
+          ))}
         </div>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("topology")} data-testid="nav:topology">Topology</button>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("timeline")} data-testid="nav:timeline">Today</button>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("gating")} data-testid="nav:gating">Gating</button>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("roster")} data-testid="nav:roster">Roster</button>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("routing")} data-testid="nav:routing">Routing</button>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("gates")} data-testid="nav:gates">Gates</button>
-        <button className="sidebar__navitem" onClick={() => onOpenControl("logs")} data-testid="nav:logs">Logs</button>
-      </div>
+      )}
 
       {SECTION_ORDER.map((bucket) => {
         const list = grouped.get(bucket);

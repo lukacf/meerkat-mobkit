@@ -737,6 +737,14 @@ mod tests {
     /// Non-zero placeholder pubkey for the trust-required tests.
     const TEST_PUBKEY: [u8; 32] = [42u8; 32];
 
+    /// `TrustedPeerDescriptor::validate_pubkey_for_peer_id` (post-LUC-*)
+    /// requires the descriptor's `peer_id` to be UUIDv5-derived from its
+    /// pubkey. Tests that pass a non-zero pubkey must therefore use the
+    /// derived id, not an arbitrary placeholder.
+    fn derived_peer_id() -> String {
+        meerkat_core::comms::PeerId::from_ed25519_pubkey(&TEST_PUBKEY).to_string()
+    }
+
     #[test]
     fn peer_spec_inproc_uses_comms_name_address() {
         let spec = build_peer_spec(
@@ -751,9 +759,10 @@ mod tests {
 
     #[test]
     fn peer_spec_tcp_uses_tcp_scheme() {
+        let id = derived_peer_id();
         let spec = build_peer_spec(
             "authors/coordinator/alice",
-            "00000000-0000-4000-8000-000000000001",
+            &id,
             &MobTransport::Tcp("127.0.0.1:9001".to_string()),
             Some(TEST_PUBKEY),
         )
@@ -763,9 +772,10 @@ mod tests {
 
     #[test]
     fn peer_spec_uds_uses_uds_scheme() {
+        let id = derived_peer_id();
         let spec = build_peer_spec(
             "authors/coordinator/alice",
-            "00000000-0000-4000-8000-000000000001",
+            &id,
             &MobTransport::Uds("/tmp/x.sock".to_string()),
             Some(TEST_PUBKEY),
         )
