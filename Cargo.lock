@@ -1557,7 +1557,6 @@ version = "0.6.0"
 dependencies = [
  "indexmap",
  "meerkat-core",
- "meerkat-machine-dsl",
  "meerkat-machine-schema",
  "serde",
  "thiserror 2.0.18",
@@ -1720,7 +1719,6 @@ name = "meerkat-runtime"
 version = "0.6.0"
 dependencies = [
  "async-trait",
- "base64",
  "chrono",
  "indexmap",
  "meerkat-auth-core",
@@ -1751,7 +1749,6 @@ dependencies = [
  "futures",
  "indexmap",
  "meerkat-core",
- "meerkat-machine-dsl",
  "meerkat-machine-schema",
  "schemars",
  "serde",
