@@ -176,6 +176,7 @@ fn all_mob_event_kinds_project_with_kind_label() {
     let m = project(MobEventKind::FlowCompleted {
         run_id: run_id.clone(),
         flow_id: flow_id.clone(),
+        structured_output: None,
     });
     assert_eq!(m.kind, "flow_completed");
     assert_eq!(m.run_id.as_deref(), Some(run_id.to_string().as_str()));
@@ -290,4 +291,59 @@ fn cursor_propagates_from_upstream_event_and_data_preserves_kind_payload() {
     assert_eq!(first.data["type"], "flow_started");
     assert_eq!(first.data["params"], serde_json::json!({"k": "v"}));
     assert_eq!(second.data["type"], "mob_completed");
+}
+
+/// Regression for meerkat #627: `MobEventKind::FlowCompleted` carries an
+/// optional `structured_output` field. The mobkit projection serializes
+/// the entire kind into the envelope's `data` field, so this is a
+/// pass-through guarantee — but pin it explicitly so a future projector
+/// rewrite (e.g. moving to a hand-rolled per-variant emitter) can't
+/// silently drop the field. The shape mirrors the canonical Fugue flow
+/// output: a `steps` map keyed by step id with the per-step payload as
+/// value.
+#[test]
+fn flow_completed_preserves_structured_output_through_projection() {
+    let run_id = run();
+    let flow_id = FlowId::from("flow-a");
+    let payload = serde_json::json!({
+        "steps": {
+            "planner": { "summary": "spec drafted", "tokens": 412 },
+            "coder": { "files_changed": 3 },
+            "reviewer": { "approved": true }
+        }
+    });
+
+    let envelope = project(MobEventKind::FlowCompleted {
+        run_id: run_id.clone(),
+        flow_id: flow_id.clone(),
+        structured_output: Some(payload.clone()),
+    });
+
+    assert_eq!(envelope.kind, "flow_completed");
+    assert_eq!(
+        envelope.run_id.as_deref(),
+        Some(run_id.to_string().as_str())
+    );
+    assert_eq!(
+        envelope.data["structured_output"], payload,
+        "flow_completed envelope must carry structured_output verbatim",
+    );
+
+    // None-case: the field is `skip_serializing_if = "Option::is_none"`
+    // upstream, so a missing structured_output stays missing rather
+    // than appearing as JSON `null`. Operators rely on key-presence as
+    // a "schema extraction ran" signal.
+    let absent = project(MobEventKind::FlowCompleted {
+        run_id,
+        flow_id,
+        structured_output: None,
+    });
+    assert!(
+        !absent
+            .data
+            .as_object()
+            .unwrap()
+            .contains_key("structured_output"),
+        "absent structured_output must not materialise as null in projection",
+    );
 }

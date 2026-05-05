@@ -832,13 +832,28 @@ svg[data-svg="fit"],
   white-space: pre;
   display: flex; flex-direction: column;
 }
-.logline {
+.logline { display: flex; flex-direction: column; }
+.logline.is-open { background: var(--bg-elev-1); }
+.logline__row {
   display: grid;
-  grid-template-columns: 100px 44px 160px 140px 180px 1fr;
+  grid-template-columns: 14px 100px 44px 160px 140px 180px 1fr auto;
   gap: 10px; padding: 1px 0;
   white-space: nowrap;
+  align-items: baseline;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
 }
-.logline:hover { background: var(--bg-elev-2); }
+.logline__row:hover { background: var(--bg-elev-2); }
+.logline.is-open .logline__row { background: var(--bg-elev-2); }
+.logline__chevron {
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-align: center;
+}
 .logline__t   { color: var(--ink-dim); }
 .logline__lvl { font-weight: 600; font-size: 10px; padding-top: 1px; }
 .logline__lvl--info  { color: var(--ink-muted); }
@@ -850,6 +865,29 @@ svg[data-svg="fit"],
 .logline__evt { color: var(--ink-muted); }
 .logline__ctx { font-size: 10.5px; }
 .logline__msg { color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.logline__badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.logline__detail {
+  margin: 4px 0 8px 24px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
 
 /* Pane overrides so views still breathe in narrow panes */
 .cc-dock-panel__content .view__head { padding: 10px 14px; gap: 10px; }
@@ -860,9 +898,11 @@ svg[data-svg="fit"],
 .cc-dock-panel__content .roster__detail,
 .cc-dock-panel__content .routing__flow,
 .cc-dock-panel__content .gates__detail { display: none; }
-.cc-dock-panel__content .logline { grid-template-columns: 90px 36px 130px 1fr; }
-.cc-dock-panel__content .logline > :nth-child(4),
-.cc-dock-panel__content .logline > :nth-child(5) { display: none; }
+.cc-dock-panel__content .logline__row {
+  grid-template-columns: 14px 90px 36px 130px 1fr auto;
+}
+.cc-dock-panel__content .logline__row > :nth-child(5),
+.cc-dock-panel__content .logline__row > :nth-child(6) { display: none; }
 
 /* ── Topology panel ─────────────────────────────────────────── */
 .topo {
