@@ -424,6 +424,8 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
     match kind {
         MobEventKind::MobCreated { .. } => "mob_created",
         MobEventKind::MobCompleted => "mob_completed",
+        MobEventKind::MobDestroying => "mob_destroying",
+        MobEventKind::MobDestroyStorageFinalizing => "mob_destroy_storage_finalizing",
         MobEventKind::MobReset => "mob_reset",
         MobEventKind::MemberSpawned(_) => "member_spawned",
         MobEventKind::MemberRetired { .. } => "member_retired",
@@ -524,6 +526,8 @@ pub(crate) fn extract_structural_fields(
         }
         MobEventKind::MobCreated { .. }
         | MobEventKind::MobCompleted
+        | MobEventKind::MobDestroying
+        | MobEventKind::MobDestroyStorageFinalizing
         | MobEventKind::MobReset
         | MobEventKind::MembersWired { .. }
         | MobEventKind::MembersUnwired { .. }
