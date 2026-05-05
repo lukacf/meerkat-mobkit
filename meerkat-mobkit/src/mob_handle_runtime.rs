@@ -1210,6 +1210,26 @@ pub async fn send_message_on_mob(
     member_id: &str,
     content: impl Into<meerkat_core::ContentInput>,
 ) -> Result<String, MobRuntimeError> {
+    send_message_on_mob_with_mode(
+        handle,
+        member_id,
+        content,
+        meerkat_core::types::HandlingMode::Queue,
+    )
+    .await
+}
+
+/// Variant that lets the caller pick `Queue` (next-turn boundary) vs
+/// `Steer` (interrupt at the earliest cooperative pause). The console
+/// uses this to power the "Steer" affordance on its client-side
+/// pending-message stack — every other path keeps the historical
+/// `Queue` default by going through `send_message_on_mob` above.
+pub async fn send_message_on_mob_with_mode(
+    handle: &MobHandle,
+    member_id: &str,
+    content: impl Into<meerkat_core::ContentInput>,
+    handling_mode: meerkat_core::types::HandlingMode,
+) -> Result<String, MobRuntimeError> {
     if member_id.trim().is_empty() {
         return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
     }
@@ -1225,7 +1245,7 @@ pub async fn send_message_on_mob(
     let _receipt = handle
         .member(&mid)
         .await?
-        .send(content, meerkat_core::types::HandlingMode::Queue)
+        .send(content, handling_mode)
         .await?;
     let session_id = handle
         .resolve_bridge_session_id(&mid)

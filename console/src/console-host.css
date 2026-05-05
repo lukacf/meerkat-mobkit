@@ -3,6 +3,7 @@
    rams (default), terminal, graphite. */
 
 @import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap");
+@import url("./pending-stack.css");
 
 /* ── Reset ─────────────────────────────────────────────────────── */
 
@@ -89,7 +90,9 @@ svg[data-svg="fit"],
   --ok:          var(--_cc-positive);
   --warn:        var(--_cc-warning);
   --crit:        var(--_cc-negative);
+  --danger:      var(--_cc-negative);
   --focus:       var(--_cc-link);
+  --motion-hover: 120ms ease;
   --sans:        var(--_cc-font-display);
   --mono:        var(--_cc-font-mono);
   --disp:        var(--_cc-font-display);

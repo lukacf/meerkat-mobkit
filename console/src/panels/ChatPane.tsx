@@ -19,6 +19,10 @@ interface ChatPaneProps {
   onInspect: () => void;
   onRespawn: () => void;
   onRetire: () => void;
+  /// Pending-message stack rendered between conversation body and
+  /// composer. ConsoleApp owns the state + handlers; ChatPane just
+  /// reserves the slot. Pass `null` (or omit) to suppress.
+  stackSlot?: React.ReactNode;
 }
 
 type MsgKind = "origin" | "user" | "agent" | "tool" | "thought" | "gate";
@@ -144,6 +148,7 @@ export function ChatPane({
   onInspect,
   onRespawn,
   onRetire,
+  stackSlot,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
@@ -233,6 +238,7 @@ export function ChatPane({
           </div>
         ))}
       </div>
+      {stackSlot}
       <div className="composer">
         <div className="composer__shell">
           <textarea

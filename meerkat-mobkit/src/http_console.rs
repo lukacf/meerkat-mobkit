@@ -16,7 +16,7 @@ use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
-use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob};
+use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob_with_mode};
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -709,6 +709,24 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
     )
 }
 
+/// Optional JSON-RPC param `handling_mode: "queue" | "steer"`. Anything
+/// else (missing, null, unknown string) maps to `Queue` so the default
+/// stays untouched. The console's pending-message stack uses `"steer"`
+/// to power its "cut the line" affordance; everything else stays Queue.
+fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
+    let Some(raw) = params.get("handling_mode") else {
+        return Ok(meerkat_core::types::HandlingMode::Queue);
+    };
+    if raw.is_null() {
+        return Ok(meerkat_core::types::HandlingMode::Queue);
+    }
+    match raw.as_str() {
+        Some("queue") => Ok(meerkat_core::types::HandlingMode::Queue),
+        Some("steer") => Ok(meerkat_core::types::HandlingMode::Steer),
+        _ => Err("handling_mode must be \"queue\" or \"steer\""),
+    }
+}
+
 fn parse_console_helper_options(
     options_val: Option<&Value>,
 ) -> Result<meerkat_mob::HelperOptions, String> {
@@ -973,7 +991,18 @@ async fn handle_console_runtime_rpc(
                 } else {
                     return invalid_params(response_id, "message or content required");
                 };
-            match send_message_on_mob(&runtime.handle(), member_id, content).await {
+            let handling_mode = match parse_handling_mode(&request.params) {
+                Ok(mode) => mode,
+                Err(message) => return invalid_params(response_id, message),
+            };
+            match send_message_on_mob_with_mode(
+                &runtime.handle(),
+                member_id,
+                content,
+                handling_mode,
+            )
+            .await
+            {
                 Ok(session_id) => response_value(
                     response_id,
                     Some(serde_json::json!({
@@ -1067,10 +1096,19 @@ async fn handle_console_runtime_rpc(
                 store.accept_interaction(identity, &interaction_id).await;
             }
 
-            match send_message_on_mob(
+            // `handling_mode` is read off the raw params rather than added
+            // to `ConsoleInteractionRequest` so the contract struct stays
+            // stable for callers that don't care which mode they sent in.
+            let handling_mode = match parse_handling_mode(&request.params) {
+                Ok(mode) => mode,
+                Err(message) => return invalid_params(response_id, message),
+            };
+
+            match send_message_on_mob_with_mode(
                 &handle,
                 identity,
                 ContentInput::Text(request_params.content.clone()),
+                handling_mode,
             )
             .await
             {

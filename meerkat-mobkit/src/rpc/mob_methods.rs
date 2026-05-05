@@ -7,7 +7,7 @@ use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{HelperOptions, MobBackendKind, MobRuntimeMode, ProfileName, SpawnMemberSpec};
 use serde_json::Value;
 
-use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob};
+use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob_with_mode};
 use crate::unified_runtime::UnifiedRuntime;
 
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
@@ -60,6 +60,24 @@ fn extract_content(params: &Value) -> Option<ContentInput> {
     None
 }
 
+/// Optional `handling_mode: "queue" | "steer"` JSON-RPC parameter.
+/// Defaults to `Queue` when missing or null. Used by the console's
+/// pending-message stack to power its "Steer" affordance; everything
+/// else stays on the historical queue path.
+fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
+    let Some(raw) = params.get("handling_mode") else {
+        return Ok(meerkat_core::types::HandlingMode::Queue);
+    };
+    if raw.is_null() {
+        return Ok(meerkat_core::types::HandlingMode::Queue);
+    }
+    match raw.as_str() {
+        Some("queue") => Ok(meerkat_core::types::HandlingMode::Queue),
+        Some("steer") => Ok(meerkat_core::types::HandlingMode::Steer),
+        _ => Err("handling_mode must be \"queue\" or \"steer\""),
+    }
+}
+
 pub(super) async fn handle_send_message(
     runtime: &UnifiedRuntime,
     response_id: Value,
@@ -67,10 +85,32 @@ pub(super) async fn handle_send_message(
 ) -> JsonRpcResponse {
     let member_id = params.get("member_id").and_then(Value::as_str);
     let content = extract_content(params);
+    let handling_mode = match parse_handling_mode(params) {
+        Ok(mode) => mode,
+        Err(message) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message: message.to_string(),
+                    data: None,
+                }),
+            };
+        }
+    };
 
     match (member_id, content) {
         (Some(member_id), Some(content)) if !member_id.is_empty() => {
-            match send_message_on_mob(&runtime.mob_handle(), member_id, content).await {
+            match send_message_on_mob_with_mode(
+                &runtime.mob_handle(),
+                member_id,
+                content,
+                handling_mode,
+            )
+            .await
+            {
                 Ok(session_id) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
