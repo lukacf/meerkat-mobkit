@@ -225,10 +225,45 @@ export function parseConversationSummary(content: string): ConversationParsedSum
   };
 }
 
+/// Heuristic JSON detector + parser. Returns the parsed value if the
+/// trimmed string starts with `{`/`[` and ends with the matching brace
+/// AND parses as JSON. Schema-agnostic — we don't care what the JSON
+/// is, only that it shouldn't be re-flowed through the markdown
+/// inline regexes (which would italicise stray `*` / `_` characters
+/// inside string values and produce a wall of mush).
+function tryParseJson(source: string): unknown | null {
+  const trimmed = source.trim();
+  if (trimmed.length < 2) return null;
+  const first = trimmed[0];
+  const last = trimmed[trimmed.length - 1];
+  const looksObj = first === "{" && last === "}";
+  const looksArr = first === "[" && last === "]";
+  if (!looksObj && !looksArr) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
 export function parseConversationRichBlocks(content: string): ConversationRichBlock[] {
   const source = String(content || "").trim();
   if (!source) {
     return [];
+  }
+
+  // Whole-message JSON: structured-output extraction (e.g. a Fugue
+  // gate-schema reviewer) ships the agent's run result as a JSON
+  // string verbatim. Render as a code block instead of running it
+  // through the prose / markdown pipeline. Mid-message JSON is also
+  // handled per-section in `parseConversationTextBlocks`.
+  const wholeJson = tryParseJson(source);
+  if (wholeJson !== null) {
+    return [{
+      type: "code",
+      language: "json",
+      body: JSON.stringify(wholeJson, null, 2),
+    }];
   }
 
   const blocks: ConversationRichBlock[] = [];
@@ -264,6 +299,19 @@ function parseConversationTextBlocks(fragment: string): ConversationRichBlock[] 
   const blocks: ConversationRichBlock[] = [];
 
   for (const section of sections) {
+    // Per-section JSON: the section is one paragraph (split on `\n\n`).
+    // A section that parses as JSON renders as a code block rather
+    // than getting fed through the markdown inline regexes.
+    const sectionJson = tryParseJson(section);
+    if (sectionJson !== null) {
+      blocks.push({
+        type: "code",
+        language: "json",
+        body: JSON.stringify(sectionJson, null, 2),
+      });
+      continue;
+    }
+
     const heading = parseConversationHeadingBlock(section);
     if (heading) {
       blocks.push(...heading);
