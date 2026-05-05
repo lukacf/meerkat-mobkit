@@ -59,6 +59,7 @@ import { Sidebar as DesignSidebar } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
+import { PendingStack, type PendingItem } from "./panels/PendingStack";
 
 interface ConsoleAppProps {
   baseUrl: string;
@@ -300,6 +301,98 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // lifecycle. The activity rail filters tool events out; this buffer
   // doesn't.
   const liveFramesRef = React.useRef<ConsoleFrame[]>([]);
+
+  // ──────────────────────────────────────────────────────────────
+  // Pending message stack (per-identity, persisted, cross-tab synced)
+  //
+  // Codex-style queue: when the user sends while an agent is busy,
+  // the message lands here instead of going straight to the wire.
+  // The stack drains FIFO on busy→idle. Each item supports Steer
+  // (cut the line, sends immediately with HandlingMode::Steer),
+  // Trash (client-side delete, never sent), Edit (in-place text
+  // mutation), and Reorder (drag-and-drop or keyboard).
+  //
+  // Persistence: localStorage under `mobkit-pending-stack:<identity>`.
+  // Cross-tab sync: a `storage` event listener mirrors changes from
+  // other tabs into the in-memory ref. Items in transient animation
+  // states (entering/promoting/trashing/draining) are stripped before
+  // persisting so the next reload doesn't render mid-animation rows.
+  // ──────────────────────────────────────────────────────────────
+  const pendingStackRef = React.useRef<Record<string, PendingItem[]>>({});
+  const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
+  const stackKeyFor = (identity: string) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
+
+  function loadPendingStack(identity: string): PendingItem[] {
+    try {
+      const raw = localStorage.getItem(stackKeyFor(identity));
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((it): it is PendingItem => {
+          if (!it || typeof it !== "object") return false;
+          const r = it as Record<string, unknown>;
+          return typeof r.id === "string" && typeof r.text === "string" && typeof r.addedAt === "number";
+        })
+        .map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+    } catch { return []; }
+  }
+
+  function persistPendingStack(identity: string, items: PendingItem[]) {
+    try {
+      // Strip transient animation flags before persisting — the next
+      // reload would otherwise paint a row mid-fade.
+      const clean = items
+        .filter((it) => it.status !== "trashing" && it.status !== "draining" && it.status !== "promoting")
+        .map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+      if (clean.length === 0) {
+        localStorage.removeItem(stackKeyFor(identity));
+      } else {
+        localStorage.setItem(stackKeyFor(identity), JSON.stringify(clean));
+      }
+    } catch { /* quota / private mode — silently degrade */ }
+  }
+
+  function getPendingStack(identity: string): PendingItem[] {
+    if (!pendingStackRef.current[identity]) {
+      pendingStackRef.current[identity] = loadPendingStack(identity);
+    }
+    return pendingStackRef.current[identity];
+  }
+
+  function setPendingStack(
+    identity: string,
+    update: (prev: PendingItem[]) => PendingItem[],
+  ) {
+    const prev = getPendingStack(identity);
+    const next = update(prev);
+    pendingStackRef.current[identity] = next;
+    persistPendingStack(identity, next);
+    forceRender();
+  }
+
+  // Cross-tab sync: a write to `mobkit-pending-stack:<identity>` in
+  // another tab fires a `storage` event here. Reload the affected
+  // stack into the ref and re-render. Same-tab writes don't fire
+  // `storage` so this is one-way only — the sender does its own update.
+  React.useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
+      const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
+      pendingStackRef.current[identity] = loadPendingStack(identity);
+      forceRender();
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Per-identity busy state — driven by interaction lifecycle events on
+  // the SSE stream. Used both for the stack's "agent busy" indicator
+  // and to decide whether a fresh Send should bypass the stack
+  // (idle + empty stack) or push to it (anything else).
+  const identityBusyRef = React.useRef<Record<string, boolean>>({});
+  const isIdentityBusy = (identity: string) => identityBusyRef.current[identity] === true;
 
   // Phase tracking (per-panel, unchanged)
   const phaseRef = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
@@ -574,6 +667,24 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
         appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
+
+        // Per-identity busy tracking. Used by the pending-stack
+        // auto-drain hook + by the Send handler to decide whether
+        // to bypass the stack (idle + empty) or push to it.
+        const wasBusy = identityBusyRef.current[identity] === true;
+        if (frame.event === "interaction_started" || frame.event === "run_started") {
+          identityBusyRef.current[identity] = true;
+        } else if (
+          frame.event === "interaction_complete"
+          || frame.event === "interaction_failed"
+          || frame.event === "run_completed"
+          || frame.event === "run_failed"
+        ) {
+          identityBusyRef.current[identity] = false;
+          // busy → idle transition: drain the head item if the
+          // user has stacked something while we were busy.
+          if (wasBusy) maybeDrainHead(identity);
+        }
       }
 
       forceRender();
@@ -615,20 +726,24 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // SEND MESSAGE — optimistic + interaction_id reconciliation
   // =========================================================================
 
-  async function onSendMessage(panelId: string, target: MobKitDockTarget | null) {
-    if (!target || target.kind !== "agent-chat") return;
+  /// Inner "actually fire the message at the wire" step. Used both by
+  /// `onSendMessage` (idle-bypass path), by the stack auto-drain hook,
+  /// and by the Steer button (which passes `handlingMode = "steer"`).
+  /// Marks the identity as busy optimistically so a Steer click that
+  /// races with the wire response doesn't accidentally bypass the
+  /// stack on the very next Send.
+  async function submitMessageNow(
+    panelId: string,
+    target: MobKitDockTarget,
+    text: string,
+    handlingMode: "queue" | "steer",
+  ) {
+    if (target.kind !== "agent-chat") return;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
-    const text = (draftByKey[panelKey] || "").trim();
-    if (!text) return;
 
     const userEntry = createUserEntry(text);
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
     setSendingPanels((c) => new Set(c).add(panelKey));
-
-    // Optimistic: store user message on the identity log. Cleared
-    // when an interaction_started frame with matching interaction_id
-    // is appended (see appendFrame).
     const log = getOrCreateLog(identity);
     log.optimisticUser = {
       interactionId: "",
@@ -636,12 +751,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       sentAtMs: Date.now(),
     };
     phaseRef.current[panelKey] = "waiting";
+    identityBusyRef.current[identity] = true;
     forceRender();
 
     try {
       const id = target.identity?.trim();
       if (id) {
-        const result = await sendInteractRpc(baseUrl, id, text, `console:${panelId}`);
+        const result = await sendInteractRpc(baseUrl, id, text, `console:${panelId}`, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id;
           // The interaction_started frame may have arrived between
@@ -652,16 +768,171 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           if (matched) log.optimisticUser = null;
         }
       } else {
-        await sendMessage(baseUrl, target.memberId, text);
+        await sendMessage(baseUrl, target.memberId, text, handlingMode);
       }
     } catch (submitError) {
       log.optimisticUser = null;
       phaseRef.current[panelKey] = null;
+      identityBusyRef.current[identity] = false;
       setError(errorMessage(submitError));
       forceRender();
     } finally {
       setSendingPanels((c) => { const n = new Set(c); n.delete(panelKey); return n; });
     }
+  }
+
+  async function onSendMessage(panelId: string, target: MobKitDockTarget | null) {
+    if (!target || target.kind !== "agent-chat") return;
+    const panelKey = buildPanelConversationKey(panelId, target);
+    const identity = target.identity || target.memberId;
+    const text = (draftByKey[panelKey] || "").trim();
+    if (!text) return;
+    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+
+    const stack = getPendingStack(identity);
+    const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
+
+    if (!shouldQueue) {
+      // Idle + empty stack: bypass straight to the wire.
+      await submitMessageNow(panelId, target, text, "queue");
+      return;
+    }
+
+    // Push onto the stack instead. The animation flag clears itself
+    // shortly after so subsequent reorders/edits don't see an
+    // is-entering ghost.
+    const newId = `pmsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    setPendingStack(identity, (prev) => [
+      ...prev,
+      { id: newId, text, addedAt: Date.now(), status: "entering" },
+    ]);
+    window.setTimeout(() => {
+      setPendingStack(identity, (prev) =>
+        prev.map((it) => (it.id === newId && it.status === "entering" ? { ...it, status: null } : it)),
+      );
+    }, 240);
+  }
+
+  // ── Pending-stack action handlers ────────────────────────────────
+  //
+  // Each handler that ends with "send to wire" (Steer, auto-drain)
+  // first marks the item with the corresponding animation flag, then
+  // — after the animation duration — removes the item and calls
+  // `submitMessageNow`. The animation timing matches `pending-stack.css`
+  // (steer 360ms, drain 420ms, trash 320ms). `reduced-motion` collapses
+  // these to 0 so the item leaves the DOM immediately.
+  const reducedMotion = typeof window !== "undefined"
+    ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+    : false;
+  const animMs = (ms: number) => reducedMotion ? 0 : ms;
+
+  function findChatTargetFor(identity: string): { panelId: string; target: MobKitDockTarget } | null {
+    for (const panel of dock.viewState.panels) {
+      const t = panel.target as MobKitDockTarget | null;
+      if (!t || t.kind !== "agent-chat") continue;
+      if ((t.identity || t.memberId) === identity) {
+        return { panelId: panel.id, target: t };
+      }
+    }
+    return null;
+  }
+
+  function onStackSteer(identity: string, id: string) {
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === id ? { ...it, status: "promoting", editing: false } : it)),
+    );
+    window.setTimeout(() => {
+      const stack = getPendingStack(identity);
+      const item = stack.find((it) => it.id === id);
+      if (!item) return;
+      setPendingStack(identity, (prev) => prev.filter((it) => it.id !== id));
+      const target = findChatTargetFor(identity);
+      if (target) {
+        void submitMessageNow(target.panelId, target.target, item.text, "steer");
+      }
+    }, animMs(360));
+  }
+
+  function onStackTrash(identity: string, id: string) {
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === id ? { ...it, status: "trashing", editing: false } : it)),
+    );
+    window.setTimeout(() => {
+      setPendingStack(identity, (prev) => prev.filter((it) => it.id !== id));
+    }, animMs(320));
+  }
+
+  function onStackEdit(identity: string, id: string) {
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === id ? { ...it, editing: true } : { ...it, editing: false })),
+    );
+  }
+
+  function onStackCommitEdit(identity: string, id: string, text: string) {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === id ? { ...it, text: trimmed, editing: false, addedAt: Date.now() } : it)),
+    );
+  }
+
+  function onStackCancelEdit(identity: string, id: string) {
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === id ? { ...it, editing: false } : it)),
+    );
+  }
+
+  function onStackReorder(identity: string, dragId: string, dropId: string, where: "above" | "below") {
+    setPendingStack(identity, (prev) => {
+      const fromIdx = prev.findIndex((it) => it.id === dragId);
+      const toIdx = prev.findIndex((it) => it.id === dropId);
+      if (fromIdx === -1 || toIdx === -1) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      let insertAt = next.findIndex((it) => it.id === dropId);
+      if (where === "below") insertAt += 1;
+      next.splice(insertAt, 0, moved);
+      return next;
+    });
+  }
+
+  function onStackClearAll(identity: string) {
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => ({ ...it, status: "trashing", editing: false })),
+    );
+    window.setTimeout(() => {
+      setPendingStack(identity, () => []);
+    }, animMs(320));
+  }
+
+  function onStackToggleExpand(identity: string, id: string) {
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === id ? { ...it, expanded: !it.expanded } : it)),
+    );
+  }
+
+  /// Auto-drain hook — fires when an identity transitions busy→idle
+  /// AND has pending items. Pops the head, plays the drain animation,
+  /// then submits via `submitMessageNow` with mode `Queue`. The next
+  /// `interaction_started` will flip identityBusyRef back to true,
+  /// so the remaining queue waits for the next idle window.
+  function maybeDrainHead(identity: string) {
+    const stack = getPendingStack(identity);
+    if (stack.length === 0) return;
+    // Only drain if no item is already mid-drain or mid-promotion.
+    if (stack.some((it) => it.status === "draining" || it.status === "promoting")) return;
+    const head = stack.find((it) => !it.status || it.status === "entering");
+    if (!head) return;
+    setPendingStack(identity, (prev) =>
+      prev.map((it) => (it.id === head.id ? { ...it, status: "draining" } : it)),
+    );
+    window.setTimeout(() => {
+      setPendingStack(identity, (prev) => prev.filter((it) => it.id !== head.id));
+      const target = findChatTargetFor(identity);
+      if (target) {
+        void submitMessageNow(target.panelId, target.target, head.text, "queue");
+      }
+    }, animMs(420));
   }
 
   // =========================================================================
@@ -795,6 +1066,24 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       { id: "state", kind: "sub-pill" as const, label: agent?.state || "unknown", iconName: "i-dot" },
     ];
 
+    const stackItems = getPendingStack(identity);
+    const agentBusy = isIdentityBusy(identity);
+    const stackSlot = stackItems.length > 0 ? (
+      <PendingStack
+        items={stackItems}
+        agentBusy={agentBusy}
+        reducedMotion={reducedMotion}
+        onSteer={(itemId) => onStackSteer(identity, itemId)}
+        onTrash={(itemId) => onStackTrash(identity, itemId)}
+        onEdit={(itemId) => onStackEdit(identity, itemId)}
+        onCommitEdit={(itemId, t) => onStackCommitEdit(identity, itemId, t)}
+        onCancelEdit={(itemId) => onStackCancelEdit(identity, itemId)}
+        onReorder={(dragId, dropId, where) => onStackReorder(identity, dragId, dropId, where)}
+        onClearAll={() => onStackClearAll(identity)}
+        onToggleExpand={(itemId) => onStackToggleExpand(identity, itemId)}
+      />
+    ) : null;
+
     return (
       <ChatPane
         agent={agent}
@@ -809,6 +1098,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onInspect={() => { if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab"); }}
         onRespawn={() => void onLifecycleAction(identity, "mobkit/respawn")}
         onRetire={() => void onLifecycleAction(identity, "mobkit/retire")}
+        stackSlot={stackSlot}
       />
     );
   }

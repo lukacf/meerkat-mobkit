@@ -143,11 +143,13 @@ async function rpc<T>(
 export async function sendMessage(
   baseUrl: string,
   memberId: string,
-  message: string
+  message: string,
+  handlingMode: "queue" | "steer" = "queue",
 ): Promise<ConsoleSendMessageResult> {
   return rpc<ConsoleSendMessageResult>(baseUrl, "mobkit/send_message", {
     member_id: memberId,
     message,
+    handling_mode: handlingMode,
   });
 }
 
@@ -554,11 +556,13 @@ export async function sendInteract(
   identity: string,
   content: string,
   origin: string,
+  handlingMode: "queue" | "steer" = "queue",
 ): Promise<ConsoleInteractAccepted> {
   const accepted = await rpc<unknown>(baseUrl, "mobkit/interact", {
     identity,
     content,
     origin,
+    handling_mode: handlingMode,
   });
   const normalized = normalizeConsoleInteractionAccepted(accepted);
   if (!normalized) {
