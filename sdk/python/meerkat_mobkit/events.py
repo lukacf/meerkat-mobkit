@@ -51,9 +51,17 @@ class RunStarted(Event):
 
 @dataclass(frozen=True, slots=True)
 class RunCompleted(Event):
-    """Agent run completed successfully."""
+    """Agent run completed successfully.
+
+    ``structured_output`` is populated when the run was launched with a
+    response schema and extraction succeeded; it carries the typed
+    value parsed from ``result``. Absent (``None``) when the run had no
+    schema, or schema extraction failed (in which case ``result`` is
+    still the raw text).
+    """
     session_id: str = ""
     result: str = ""
+    structured_output: Any = None
 
 
 @dataclass(frozen=True, slots=True)

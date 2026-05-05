@@ -37,9 +37,43 @@ function summary(frame: ConsoleFrame): string {
   return bits.join(" ");
 }
 
+/// Pretty-print a frame's `data` field for the expanded row. JSON
+/// stringify with 2-space indent, but cap at ~10 KB so a giant tool
+/// result doesn't blow up the panel.
+function formatFrameData(frame: ConsoleFrame): string {
+  const data = frame.data ?? null;
+  if (data === null || data === undefined) return "(no data)";
+  try {
+    const out = JSON.stringify(data, null, 2);
+    if (out.length > 10_000) return out.slice(0, 10_000) + "\n… (truncated)";
+    return out;
+  } catch {
+    return String(data);
+  }
+}
+
+/// Heuristic: does this frame carry a `structured_output` field worth
+/// flagging in the row summary so operators notice it without having
+/// to expand every row? Surfaces the new schema-extraction result on
+/// `interaction_complete` / `run_completed` / `flow_completed` events.
+function hasStructuredOutput(frame: ConsoleFrame): boolean {
+  const d = frame.data;
+  if (!d || typeof d !== "object") return false;
+  return (d as Record<string, unknown>).structured_output != null;
+}
+
 export function LogsPanel({ frames }: LogsPanelProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
   const [lvl, setLvl] = React.useState<"all" | Level>("all");
+  const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+
+  const toggle = (key: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
 
   const rows = React.useMemo(() => {
     return frames
@@ -89,23 +123,49 @@ export function LogsPanel({ frames }: LogsPanelProps): React.JSX.Element {
         </div>
       </div>
       <div className="logs__body">
-        <pre className="logs__stream">
-          {rows.map(({ f, level }, i) => (
-            <div key={f.id || i} className={`logline logline--${level}`} data-testid={`log-line:${f.id || i}`}>
-              <span className="logline__t">{formatTime(f.timestampMs)}</span>
-              <span className={`logline__lvl logline__lvl--${level}`}>{level.toUpperCase()}</span>
-              <span className="logline__src">{f.identity || "_system"}</span>
-              <span className="logline__evt">{f.event}</span>
-              <span className="logline__ctx dim">{f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : ""}</span>
-              <span className="logline__msg">{summary(f)}</span>
-            </div>
-          ))}
+        <div className="logs__stream">
+          {rows.map(({ f, level }, i) => {
+            const key = f.id || `${f.event}:${f.timestampMs}:${i}`;
+            const isOpen = expanded.has(key);
+            const hasStructured = hasStructuredOutput(f);
+            return (
+              <div
+                key={key}
+                className={`logline logline--${level}${isOpen ? " is-open" : ""}`}
+                data-testid={`log-line:${f.id || i}`}
+              >
+                <button
+                  type="button"
+                  className="logline__row"
+                  onClick={() => toggle(key)}
+                  aria-expanded={isOpen}
+                  data-testid={`log-line:${f.id || i}:toggle`}
+                >
+                  <span className="logline__chevron">{isOpen ? "▾" : "▸"}</span>
+                  <span className="logline__t">{formatTime(f.timestampMs)}</span>
+                  <span className={`logline__lvl logline__lvl--${level}`}>{level.toUpperCase()}</span>
+                  <span className="logline__src">{f.identity || "_system"}</span>
+                  <span className="logline__evt">{f.event}</span>
+                  <span className="logline__ctx dim">{f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : ""}</span>
+                  <span className="logline__msg">{summary(f)}</span>
+                  {hasStructured && (
+                    <span className="logline__badge" title="Carries structured_output">↳ struct</span>
+                  )}
+                </button>
+                {isOpen && (
+                  <pre className="logline__detail" data-testid={`log-line:${f.id || i}:detail`}>
+                    {formatFrameData(f)}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
           {rows.length === 0 && (
             <div style={{ padding: 24, color: "var(--ink-dim)", fontFamily: "var(--mono)", fontSize: 12 }}>
               No matching events.
             </div>
           )}
-        </pre>
+        </div>
       </div>
     </div>
   );

@@ -35,6 +35,13 @@ export interface RunCompletedEvent {
   readonly type: "run_completed";
   readonly sessionId: string;
   readonly result: string;
+  /**
+   * Typed value produced by schema extraction when the run was
+   * launched with a response schema. Absent (`undefined`) when the
+   * run had no schema, or extraction failed (in which case `result`
+   * is still the raw text).
+   */
+  readonly structuredOutput?: unknown;
 }
 
 export interface RunFailedEvent {
@@ -139,11 +146,21 @@ const EVENT_MAP: Record<string, EventFactory> = {
     sessionId: String(raw.session_id ?? ""),
     prompt: String(raw.prompt ?? ""),
   }),
-  run_completed: (raw) => ({
-    type: "run_completed",
-    sessionId: String(raw.session_id ?? ""),
-    result: String(raw.result ?? ""),
-  }),
+  run_completed: (raw) => {
+    // `structured_output` is `skip_serializing_if = "Option::is_none"`
+    // upstream, so the field is absent (not `null`) when there's no
+    // schema-extracted value. Mirror that on the TS side: undefined
+    // when missing, pass-through value otherwise.
+    const evt: RunCompletedEvent = {
+      type: "run_completed",
+      sessionId: String(raw.session_id ?? ""),
+      result: String(raw.result ?? ""),
+    };
+    if (raw.structured_output !== undefined) {
+      return { ...evt, structuredOutput: raw.structured_output };
+    }
+    return evt;
+  },
   run_failed: (raw) => ({
     type: "run_failed",
     sessionId: String(raw.session_id ?? ""),
