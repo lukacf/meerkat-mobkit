@@ -1,6 +1,6 @@
 //! Mob member lifecycle management — bootstrap, spawn, reconcile, and roster queries.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -96,6 +96,31 @@ pub(crate) struct RuntimeTurnTrace {
     pub(crate) boundary: String,
     pub(crate) contributing_input_count: usize,
     pub(crate) outcome: String,
+}
+
+/// Open the persistent runtime store that holds the authoritative
+/// session snapshot used by `load_persisted_session` (resume path) and
+/// `load_persisted_session_for_control` (archive/retire path). Lives at
+/// `<store_path>/runtime.sqlite` — separate file from the session
+/// store so we don't depend on the session_store's concrete type. If
+/// the SQLite open fails (rare: disk full, permissions), fall back to
+/// `InMemoryRuntimeStore` so the runtime can still bootstrap. In that
+/// degraded mode resume across restart and archive operations will
+/// fail; the warning makes the cause visible in operator logs.
+fn build_persistent_runtime_store(store_path: &Path) -> Arc<dyn meerkat_runtime::RuntimeStore> {
+    let runtime_db = store_path.join("runtime.sqlite");
+    match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db) {
+        Ok(store) => Arc::new(store),
+        Err(err) => {
+            tracing::warn!(
+                path = %runtime_db.display(),
+                error = %err,
+                "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
+                 Sessions will not survive process restart and archive operations may fail.",
+            );
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -819,17 +844,19 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
-        // Keep the session service's `runtime_store` at `None` so meerkat's
-        // StoreCheckpointer stays enabled — that's what writes the
-        // authoritative `Session` snapshot into `session_store` after each
-        // turn, so `load_persisted_session(sid)` (the resume path used by
-        // `with_resume_bridge_session_id`) can resolve it after a process
-        // restart. Wire the runtime adapter explicitly via
-        // `spec.runtime_adapter` instead, mirroring the standalone gateway.
+        // Use a SQLite-backed runtime store so we get BOTH durability across
+        // process restart AND control-op authority (archive/retire). The
+        // earlier 0.6.1 wiring used `Some(InMemoryRuntimeStore)`, which was
+        // a half-fix: it kept the session-service's runtime_store path on
+        // (so `load_authoritative_session` resolved through runtime_store —
+        // good for control ops), but the in-memory store died on restart so
+        // resume failed. Switching the in-memory store for a persistent one
+        // satisfies both. The store lives at `store_path/runtime.sqlite`,
+        // sibling to whatever path the caller's `session_store` uses.
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+            build_persistent_runtime_store(&store_path);
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            runtime_store,
+            Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         ));
         let session_service: Arc<dyn MobSessionService> =
@@ -837,7 +864,7 @@ impl MobBootstrapSpec {
                 builder,
                 max_sessions,
                 session_store,
-                None,
+                Some(runtime_store),
                 blob_store,
             ));
         let hook = hook.unwrap_or_else(|| {
@@ -875,13 +902,16 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
-        // See `persistent_inner` for the rationale: runtime_store stays None
-        // on the session service so the StoreCheckpointer writes snapshots
-        // into `session_store`. The runtime adapter is provided separately.
+        // Ephemeral mode: an in-memory runtime_store is fine — there is no
+        // restart to survive. But it MUST be passed as `Some(...)` to the
+        // session service so meerkat's `load_persisted_session_for_control`
+        // resolves through the runtime authority and archive/retire control
+        // ops succeed within the session lifetime. See `persistent_inner`
+        // for the durable counterpart.
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            runtime_store,
+            Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         ));
         let session_service: Arc<dyn MobSessionService> =
@@ -889,7 +919,7 @@ impl MobBootstrapSpec {
                 builder,
                 max_sessions,
                 session_store,
-                None,
+                Some(runtime_store),
                 blob_store,
             ));
         let hook = hook.unwrap_or_else(|| {
@@ -1306,7 +1336,7 @@ mod tests {
         let spec = MobBootstrapSpec::persistent_with_hook(
             definition,
             meerkat_mob::MobStorage::in_memory(),
-            store_path,
+            store_path.clone(),
             4,
             session_store,
             move |_req: &mut CreateSessionRequest| {
@@ -1315,19 +1345,25 @@ mod tests {
             },
         );
 
-        // Adapter is wired via spec.runtime_adapter (gateway pattern). The
-        // session service must NOT carry its own runtime_store, otherwise
-        // meerkat's StoreCheckpointer is disabled and session snapshots are
-        // never written to `session_store` — see the
-        // `persistent_inner_keeps_store_checkpointer_enabled` regression
-        // test below for the full failure mode.
+        // The session service is wired with a SqliteRuntimeStore so that
+        // both `load_persisted_session` (resume) and
+        // `load_persisted_session_for_control` (archive/retire) succeed
+        // across process restart. spec.runtime_adapter is also set
+        // explicitly so the bootstrap path uses the same store. See
+        // `persistent_bootstrap_uses_sqlite_runtime_store` for the full
+        // regression coverage.
         assert!(
             spec.runtime_adapter.is_some(),
             "persistent_with_hook must provide a runtime adapter via spec.runtime_adapter"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_none(),
-            "session service must not own the runtime adapter; that disables the StoreCheckpointer"
+            spec.session_service.runtime_adapter().is_some(),
+            "session service must own a runtime_store so archive/retire don't \
+             hit the store-only-projection rejection in meerkat-session"
+        );
+        assert!(
+            store_path.join("runtime.sqlite").exists(),
+            "persistent_inner must open a SqliteRuntimeStore at <store_path>/runtime.sqlite"
         );
 
         // The hook isn't called until create_session — verify the wrapper exists
@@ -1441,25 +1477,27 @@ mod tests {
         );
     }
 
-    /// Regression for "missing durable session snapshot" (mobkit 0.6.0).
+    /// Regression for two compounding bugs in the persistent wiring:
     ///
-    /// `persistent_inner` previously handed the `PersistentSessionService` an
-    /// `InMemoryRuntimeStore`. That had two consequences inside meerkat:
-    ///   1. The `StoreCheckpointer` is gated on `runtime_store.is_none()`
-    ///      (`meerkat-session/src/persistent.rs:2130`), so it was disabled —
-    ///      no `Session` snapshot was ever written into the session store.
-    ///   2. `load_authoritative_session_base` consults `runtime_store` first
-    ///      and only falls back to `self.store.load(id)` when it's None.
+    /// 1. **0.6.0**: `persistent_inner` handed the
+    ///    `PersistentSessionService` an `InMemoryRuntimeStore`. With the
+    ///    runtime_store path active the `StoreCheckpointer` was disabled
+    ///    (it's gated on `runtime_store.is_none()`), and the in-memory
+    ///    store didn't survive process restart. Resume raised "missing
+    ///    durable session snapshot for '<sid>'".
     ///
-    /// On process restart the in-memory store was empty, the SQLite store had
-    /// no snapshot to fall back to, and `with_resume_bridge_session_id` raised
-    /// "missing durable session snapshot for '<sid>'".
+    /// 2. **0.6.1**: switching the session service to `runtime_store=None`
+    ///    re-enabled the checkpointer (fixing #1) but broke archive/retire,
+    ///    because `load_persisted_session_for_control` rejects mutations
+    ///    when runtime_store is None and the session exists in the store
+    ///    (the "store-only compatibility projection" error from
+    ///    meerkat-session/src/persistent.rs:786).
     ///
-    /// The fix keeps `runtime_store` at `None` on the session service
-    /// (re-enabling the checkpointer) and wires the runtime adapter via
-    /// `spec.runtime_adapter` instead.
+    /// The 0.6.3 fix uses a **persistent** SqliteRuntimeStore — durable
+    /// across restart AND control-op authoritative — at
+    /// `<store_path>/runtime.sqlite`.
     #[test]
-    fn persistent_bootstrap_keeps_store_checkpointer_enabled() {
+    fn persistent_bootstrap_uses_sqlite_runtime_store() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(sqlite) = meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
@@ -1473,7 +1511,7 @@ mod tests {
         let spec = MobBootstrapSpec::persistent(
             definition,
             meerkat_mob::MobStorage::in_memory(),
-            store_path,
+            store_path.clone(),
             4,
             session_store,
         );
@@ -1482,16 +1520,22 @@ mod tests {
             "persistent bootstrap must provide its own runtime adapter via spec.runtime_adapter"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_none(),
-            "session service must not own a runtime_store; that disables the StoreCheckpointer \
-             and breaks `with_resume_bridge_session_id` after process restart"
+            spec.session_service.runtime_adapter().is_some(),
+            "session service must own a runtime_store so archive/retire don't \
+             hit the store-only-projection rejection"
+        );
+        assert!(
+            store_path.join("runtime.sqlite").exists(),
+            "persistent_inner must open a SqliteRuntimeStore at <store_path>/runtime.sqlite"
         );
     }
 
-    /// Sibling to `persistent_bootstrap_keeps_store_checkpointer_enabled`:
-    /// the runtime-backed ephemeral path must wire the adapter the same way.
+    /// Ephemeral counterpart: an in-memory runtime_store is fine (no
+    /// restart to survive) but it MUST be `Some(...)` on the session
+    /// service so archive/retire control ops succeed within the session
+    /// lifetime.
     #[test]
-    fn ephemeral_runtime_backed_keeps_store_checkpointer_enabled() {
+    fn ephemeral_runtime_backed_passes_runtime_store_to_session_service() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n") else {
@@ -1511,8 +1555,9 @@ mod tests {
             "ephemeral_runtime_backed_inner must provide a runtime adapter via spec.runtime_adapter"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_none(),
-            "session service must not own a runtime_store; that disables the StoreCheckpointer"
+            spec.session_service.runtime_adapter().is_some(),
+            "session service must own a runtime_store (in-memory is fine here) \
+             so archive/retire control ops succeed in-session"
         );
     }
 

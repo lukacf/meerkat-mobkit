@@ -799,16 +799,32 @@ external_addressable = true
         };
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(state_path.join("blobs")));
+        // Persistent runtime store at <state_path>/runtime.sqlite — must
+        // be Some() on the session service so archive/retire can mutate
+        // the authoritative session, and must be persistent so resume
+        // works across gateway restart.
+        let runtime_db_path = state_path.join("runtime.sqlite");
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
+                Ok(store) => Arc::new(store),
+                Err(err) => {
+                    tracing::warn!(
+                        path = %runtime_db_path.display(),
+                        error = %err,
+                        "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
+                         Sessions will not survive process restart and archive operations may fail.",
+                    );
+                    Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
+                }
+            };
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 callback_builder,
                 16,
                 session_store,
-                None,
+                Some(Arc::clone(&runtime_store)),
                 blob_store.clone(),
             ));
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             runtime_store,
             blob_store,
