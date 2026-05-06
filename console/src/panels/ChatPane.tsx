@@ -36,6 +36,13 @@ interface Msg {
   blocks?: ConversationRichBlock[];
 }
 
+function phaseLabel(_phase: "waiting" | "tool-executing" | "generating"): string {
+  // Single label across all phases. The phase distinction is still
+  // surfaced in the composer footer chip; the inline typing indicator
+  // just signals "this agent is currently working".
+  return "working";
+}
+
 function formatTime(iso?: string): string {
   if (!iso) return "";
   const d = new Date(iso);
@@ -237,6 +244,24 @@ export function ChatPane({
             </div>
           </div>
         ))}
+        {phase && (
+          <div
+            className="msg msg--typing"
+            data-testid={`chat-typing:${identity}`}
+            aria-live="polite"
+            aria-label={`${agentLabel} is ${phaseLabel(phase)}`}
+          >
+            <div className="msg__time" />
+            <div className="msg__bubble">
+              <span className="msg__typing">
+                <span className="msg__typing-dots" aria-hidden="true">
+                  <span /><span /><span />
+                </span>
+                <span className="msg__typing-label">{phaseLabel(phase)}</span>
+              </span>
+            </div>
+          </div>
+        )}
       </div>
       {stackSlot}
       <div className="composer">

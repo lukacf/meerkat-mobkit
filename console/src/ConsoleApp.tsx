@@ -472,9 +472,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
+  // The SSE handler runs from inside an effect with `[baseUrl]` deps so its
+  // closure captures `dock` from the first render — when panels[] was empty.
+  // Route panel-iterating phase updates through a ref so they always see the
+  // current panel set; otherwise interaction_started/text_delta/
+  // interaction_complete arrive at panel:none and the typing indicator
+  // sticks at "waiting" indefinitely (and the "still busy" perception breaks
+  // the pending-stack auto-queue, which depends on `identityBusyRef`).
+  const dockRef = React.useRef(dock);
+  dockRef.current = dock;
+
   // Helper: update phase for ALL panels showing a given identity
   function updatePhaseForIdentity(identity: string, frame: ConsoleFrame) {
-    for (const panel of dock.viewState.panels) {
+    for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
@@ -484,7 +494,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   // Helper: clear phase for all panels showing a given identity
   function clearPhaseForIdentity(identity: string) {
-    for (const panel of dock.viewState.panels) {
+    for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
@@ -750,7 +760,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       entry: userEntry,
       sentAtMs: Date.now(),
     };
-    phaseRef.current[panelKey] = "waiting";
+    // Use commitPanelPhase (not bare phaseRef assignment) so the
+    // value/since bookkeeping is consistent with what
+    // `updatePanelPhaseFromFrame` reads — otherwise the next text_delta's
+    // "elapsedMs since waiting" check is computed against `since=0`,
+    // which we want anyway, but `currentPhase` would read undefined.
+    commitPanelPhase(panelKey, "waiting");
     identityBusyRef.current[identity] = true;
     forceRender();
 
@@ -772,7 +787,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
     } catch (submitError) {
       log.optimisticUser = null;
-      phaseRef.current[panelKey] = null;
+      commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
       setError(errorMessage(submitError));
       forceRender();

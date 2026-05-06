@@ -16,12 +16,15 @@ import {
 } from "./data";
 import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "../../types";
 
+type LabelsMode = "auto" | "on" | "off";
+
 interface BullseyeProps {
   nodes: ConsoleTopologyNode[];
   agents: ConsoleAgent[];
   activity: ConsoleFrame[];
   width: number;
   height: number;
+  labelsMode?: LabelsMode;
 }
 
 const RINGS = 5;
@@ -31,14 +34,19 @@ interface Pos { x: number; y: number; ringIdx: number }
 interface VisualScale {
   nodeMin: number;
   nodeMax: number;
-  showLabels: boolean;
   edgeWidth: number;
 }
 
 function visualScale(N: number): VisualScale {
-  if (N <= 20) return { nodeMin: 5, nodeMax: 12, showLabels: true, edgeWidth: 1.0 };
-  if (N <= 80) return { nodeMin: 3.5, nodeMax: 9, showLabels: false, edgeWidth: 0.7 };
-  return { nodeMin: 2.4, nodeMax: 7, showLabels: false, edgeWidth: 0.5 };
+  if (N <= 20) return { nodeMin: 5, nodeMax: 12, edgeWidth: 1.0 };
+  if (N <= 80) return { nodeMin: 3.5, nodeMax: 9, edgeWidth: 0.7 };
+  return { nodeMin: 2.4, nodeMax: 7, edgeWidth: 0.5 };
+}
+
+function resolveLabelMode(N: number, mode: LabelsMode): "on" | "hover" {
+  if (mode === "off") return "hover";
+  if (mode === "on") return N <= 60 ? "on" : "hover";
+  return N <= 20 ? "on" : "hover";
 }
 
 function layout(graph: ReturnType<typeof buildGraph>, width: number, height: number) {
@@ -82,11 +90,14 @@ export function Bullseye({
   activity,
   width,
   height,
+  labelsMode = "auto",
 }: BullseyeProps): React.JSX.Element {
   const graph = React.useMemo(() => buildGraph(nodes, agents), [nodes, agents]);
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const live = useTopologyActivity(activity, graph, { life: 1100 });
   const scale = visualScale(graph.agents.length);
+  const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
+  const [hoverId, setHoverId] = React.useState<string | null>(null);
   const { pos, ringR, cx, cy, buckets } = React.useMemo(
     () => layout(graph, width, height),
     [graph, width, height],
@@ -213,7 +224,7 @@ export function Bullseye({
         })}
       </g>
 
-      {/* Nodes + optional inline labels. */}
+      {/* Nodes + labels (inline or hover-revealed). */}
       <g>
         {graph.agents.map((agent) => {
           const p = pos[agent.id];
@@ -221,6 +232,7 @@ export function Bullseye({
           const deg = graph.degree[agent.id] || 0;
           const r = radiusOf(deg);
           const isHot = !!live.active[agent.id];
+          const isBusy = !!live.busy[agent.id];
           const colour = colourForRole(agent.role, roleIndex);
           // Label placement: outward along the radial direction so
           // labels naturally fan out instead of stacking under the node
@@ -233,20 +245,38 @@ export function Bullseye({
           const labelX = p.x + ux * (r + 8);
           const labelY = p.y + uy * (r + 8);
           const anchor = ux > 0.25 ? "start" : ux < -0.25 ? "end" : "middle";
+          const showInlineLabel = labelMode === "on";
+          const isHovered = hoverId === agent.id;
           return (
             <g
               key={agent.id}
               data-testid={`topology-node:${agent.id}`}
+              className={`topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}`}
+              onMouseEnter={() => setHoverId(agent.id)}
+              onMouseLeave={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
+              onFocus={() => setHoverId(agent.id)}
+              onBlur={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
+              tabIndex={0}
             >
-              <title>{`${agent.label} · ${agent.role} · degree ${deg}${agent.state ? " · " + agent.state : ""}`}</title>
+              {isBusy && (
+                <circle
+                  className="topo__busy-ring"
+                  cx={p.x} cy={p.y}
+                  r={r + 6}
+                  fill="none"
+                  stroke="var(--accent)"
+                  strokeWidth="1.5"
+                  style={{ pointerEvents: "none" }}
+                />
+              )}
               {isHot && (
                 <circle
                   cx={p.x} cy={p.y}
-                  r={r + 5}
+                  r={r + 4}
                   fill="none"
                   stroke={colour}
-                  strokeWidth="1.5"
-                  opacity="0.5"
+                  strokeWidth="1"
+                  opacity="0.35"
                   style={{ pointerEvents: "none" }}
                 />
               )}
@@ -257,7 +287,7 @@ export function Bullseye({
                 stroke="var(--bg)"
                 strokeWidth="1.5"
               />
-              {scale.showLabels && (
+              {showInlineLabel && (
                 <text
                   x={labelX}
                   y={labelY + 4}
@@ -267,10 +297,39 @@ export function Bullseye({
                   {agent.label}
                 </text>
               )}
+              {!showInlineLabel && isHovered && (
+                <BullseyeLabelPill
+                  x={p.x}
+                  y={p.y + r + 8}
+                  text={agent.label}
+                  sub={`${agent.role}${agent.state ? " · " + agent.state : ""}${isBusy ? " · working" : ""}`}
+                />
+              )}
             </g>
           );
         })}
       </g>
     </svg>
+  );
+}
+
+interface PillProps { x: number; y: number; text: string; sub?: string }
+
+function BullseyeLabelPill({ x, y, text, sub }: PillProps): React.JSX.Element {
+  const W = 180;
+  const H = sub ? 32 : 18;
+  return (
+    <foreignObject
+      x={x - W / 2}
+      y={y}
+      width={W}
+      height={H}
+      style={{ pointerEvents: "none", overflow: "visible" }}
+    >
+      <div className="topo__node-pill" role="tooltip">
+        <span className="topo__node-pill-label">{text}</span>
+        {sub && <span className="topo__node-pill-sub">{sub}</span>}
+      </div>
+    </foreignObject>
   );
 }

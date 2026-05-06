@@ -24,26 +24,37 @@ interface SimNode {
   vy: number;
 }
 
+type LabelsMode = "auto" | "on" | "off";
+
 interface ForceDirectedProps {
   nodes: ConsoleTopologyNode[];
   agents: ConsoleAgent[];
   activity: ConsoleFrame[];
   width: number;
   height: number;
+  labelsMode?: LabelsMode;
 }
 
 interface VisualScale {
   nodeMin: number;
   nodeMax: number;
-  showLabels: boolean;
   edgeWidth: number;
   idealEdgeLen: number;
 }
 
 function visualScale(N: number): VisualScale {
-  if (N <= 20) return { nodeMin: 5, nodeMax: 12, showLabels: true,  edgeWidth: 1.0, idealEdgeLen: 110 };
-  if (N <= 80) return { nodeMin: 3.5, nodeMax: 9, showLabels: false, edgeWidth: 0.7, idealEdgeLen: 80 };
-  return { nodeMin: 2.4, nodeMax: 7, showLabels: false, edgeWidth: 0.5, idealEdgeLen: 60 };
+  if (N <= 20) return { nodeMin: 5, nodeMax: 12, edgeWidth: 1.0, idealEdgeLen: 110 };
+  if (N <= 80) return { nodeMin: 3.5, nodeMax: 9, edgeWidth: 0.7, idealEdgeLen: 80 };
+  return { nodeMin: 2.4, nodeMax: 7, edgeWidth: 0.5, idealEdgeLen: 60 };
+}
+
+/// Decide whether labels should be inline ("on" — drawn for every node)
+/// or only on hover/focus ("hover"). Hard-cap "on" at 60 nodes so a user
+/// who flips the toggle on a 200-agent graph doesn't crash the renderer.
+function resolveLabelMode(N: number, mode: LabelsMode): "on" | "hover" {
+  if (mode === "off") return "hover";
+  if (mode === "on") return N <= 60 ? "on" : "hover";
+  return N <= 20 ? "on" : "hover";
 }
 
 export function ForceDirected({
@@ -52,11 +63,14 @@ export function ForceDirected({
   activity,
   width,
   height,
+  labelsMode = "auto",
 }: ForceDirectedProps): React.JSX.Element {
   const graph = React.useMemo(() => buildGraph(nodes, agents), [nodes, agents]);
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const liveActivity: TopoActivity = useTopologyActivity(activity, graph, { life: 900 });
   const scale = visualScale(graph.agents.length);
+  const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
+  const [hoverId, setHoverId] = React.useState<string | null>(null);
 
   // Sim state lives in a ref so React render cadence doesn't throttle
   // the integrator. We schedule a re-render every 2 frames.
@@ -218,21 +232,44 @@ export function ForceDirected({
               const t = Math.sqrt(deg) / 4;
               const r = scale.nodeMin + Math.min(1, t) * (scale.nodeMax - scale.nodeMin);
               const isHot = !!liveActivity.active[agent.id];
+              const isBusy = !!liveActivity.busy[agent.id];
               const colour = colourForRole(agent.role, roleIndex);
+              const showInlineLabel = labelMode === "on";
+              const isHovered = hoverId === agent.id;
               return (
                 <g
                   key={agent.id}
                   data-testid={`topology-node:${agent.id}`}
+                  className={`topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}`}
+                  onMouseEnter={() => setHoverId(agent.id)}
+                  onMouseLeave={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
+                  onFocus={() => setHoverId(agent.id)}
+                  onBlur={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
+                  tabIndex={0}
                 >
-                  <title>{`${agent.label} · ${agent.role} · degree ${deg}${agent.state ? " · " + agent.state : ""}`}</title>
+                  {/* Persistent "working" ring — runs whenever an
+                      interaction/run is in flight for this identity.
+                      Drawn behind the recent-activity halo so the two
+                      readings stack rather than fight. */}
+                  {isBusy && (
+                    <circle
+                      className="topo__busy-ring"
+                      cx={n.x} cy={n.y}
+                      r={r + 6}
+                      fill="none"
+                      stroke="var(--accent)"
+                      strokeWidth="1.5"
+                      style={{ pointerEvents: "none" }}
+                    />
+                  )}
                   {isHot && (
                     <circle
                       cx={n.x} cy={n.y}
-                      r={r + 5}
+                      r={r + 4}
                       fill="none"
                       stroke={colour}
-                      strokeWidth="1.5"
-                      opacity="0.5"
+                      strokeWidth="1"
+                      opacity="0.35"
                       style={{ pointerEvents: "none" }}
                     />
                   )}
@@ -243,7 +280,7 @@ export function ForceDirected({
                     stroke="var(--bg)"
                     strokeWidth="1.5"
                   />
-                  {scale.showLabels && (
+                  {showInlineLabel && (
                     <text
                       x={n.x}
                       y={n.y + r + 12}
@@ -253,6 +290,14 @@ export function ForceDirected({
                       {agent.label}
                     </text>
                   )}
+                  {!showInlineLabel && isHovered && (
+                    <NodeLabelPill
+                      x={n.x}
+                      y={n.y + r + 8}
+                      text={agent.label}
+                      sub={`${agent.role}${agent.state ? " · " + agent.state : ""}${isBusy ? " · working" : ""}`}
+                    />
+                  )}
                 </g>
               );
             })}
@@ -260,5 +305,35 @@ export function ForceDirected({
         </>
       )}
     </svg>
+  );
+}
+
+interface NodeLabelPillProps {
+  x: number;
+  y: number;
+  text: string;
+  sub?: string;
+}
+
+/// Hover-revealed label pill. Drawn as foreignObject so we get real CSS
+/// box-model + auto-sizing instead of fighting SVG <text> measurement.
+/// Width is bounded so a long label doesn't sprawl across half the
+/// canvas; CSS truncates with an ellipsis.
+function NodeLabelPill({ x, y, text, sub }: NodeLabelPillProps): React.JSX.Element {
+  const W = 180;
+  const H = sub ? 32 : 18;
+  return (
+    <foreignObject
+      x={x - W / 2}
+      y={y}
+      width={W}
+      height={H}
+      style={{ pointerEvents: "none", overflow: "visible" }}
+    >
+      <div className="topo__node-pill" role="tooltip">
+        <span className="topo__node-pill-label">{text}</span>
+        {sub && <span className="topo__node-pill-sub">{sub}</span>}
+      </div>
+    </foreignObject>
   );
 }
