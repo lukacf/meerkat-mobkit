@@ -1009,6 +1009,112 @@ svg[data-svg="fit"],
 }
 [data-cc-variant="terminal"] .topo__legend-dot { border-radius: 0; }
 
+/* ── Labels-mode toggle: a second three-state segmented control
+   sitting before the view picker, only visible on graph layouts. */
+.topo__viewbar--labels {
+  margin-left: auto;
+  margin-right: 8px;
+  align-items: stretch;
+}
+.topo__viewbar--labels + .topo__viewbar { margin-left: 0; }
+.topo__viewbar-tag {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  border-right: 1px solid var(--line);
+  background: var(--bg-elev-1);
+}
+
+/* ── Topology nodes (graph layouts) ──────────────────────────── */
+/* Edges, ring guides, and pulses are decorative — they should never
+   intercept hover events that belong to a node. The node circle owns
+   pointer events; everything else stays out of the way. */
+.topo__svg-board line,
+.topo__svg-board > g > circle:not([class]) {
+  pointer-events: none;
+}
+.topo__node { cursor: default; outline: none; pointer-events: bounding-box; }
+.topo__node circle { pointer-events: auto; }
+.topo__node:focus-visible > circle:not(.topo__busy-ring) {
+  stroke: var(--focus);
+  stroke-width: 2px;
+}
+
+/* Persistent "this agent is currently running a turn" ring.
+   Spinner-style: short dashed arc that rotates around the node.
+   Distinct from the soft activity halo so the two readings stack
+   instead of fight. Reduced-motion clients get a static dim ring. */
+@keyframes topo-busy-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.topo__busy-ring {
+  stroke-dasharray: 5 9;
+  stroke-linecap: round;
+  opacity: 0.85;
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: topo-busy-spin 1.6s linear infinite;
+}
+.reduced-motion .topo__busy-ring {
+  animation: none;
+  stroke-dasharray: none;
+  opacity: 0.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .topo__busy-ring {
+    animation: none;
+    stroke-dasharray: none;
+    opacity: 0.5;
+  }
+}
+
+/* Hover-revealed label pill. Rendered via <foreignObject> so we get
+   real CSS box model + auto-sizing. The fade-in is intentionally
+   short so a sweep over many nodes doesn't strobe. */
+@keyframes topo-pill-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.topo__node-pill {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 180px;
+  margin: 0 auto;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elev-1);
+  box-shadow: 0 4px 14px color-mix(in oklch, var(--bg) 70%, transparent);
+  font-family: var(--disp);
+  animation: topo-pill-in 90ms ease-out;
+}
+.topo__node-pill-label {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.topo__node-pill-sub {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
 /* ── Role tree (flat mob, agents grouped by role) ───────────── */
 .topo-roletree {
   padding: 14px 18px;
@@ -1086,6 +1192,10 @@ svg[data-svg="fit"],
   border-color: var(--ok);
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--ok) 18%, transparent);
 }
+.topo-roletree__agent.is-busy {
+  border-color: color-mix(in oklch, var(--accent) 50%, var(--line));
+  background: color-mix(in oklch, var(--accent) 5%, var(--bg));
+}
 .topo-roletree__agent-dot {
   width: 6px; height: 6px;
   border-radius: 50%;
@@ -1093,6 +1203,54 @@ svg[data-svg="fit"],
 .topo-roletree__agent-label {
   font-size: 11.5px;
   color: var(--ink);
+}
+
+/* Busy badge: a small spinning ring used in three places —
+   - role-tree mob row (rootBusy)        : counts hidden, ring only
+   - role-tree role section (sectionBusy): ring + count of working
+   - role-tree agent chip (isBusy)       : ring only, replaces tooltip
+   The spin is the same iconography as the SVG busy ring on graph
+   layouts so the reading is consistent across views. */
+@keyframes topo-busy-rotate {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.topo-roletree__busy {
+  position: relative;
+  width: 12px;
+  height: 12px;
+  margin-left: 4px;
+  flex: none;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in oklch, var(--accent) 60%, transparent);
+  border-top-color: var(--accent);
+  border-right-color: var(--accent);
+  animation: topo-busy-rotate 1.4s linear infinite;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.topo-roletree__busy-count {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+.reduced-motion .topo-roletree__busy {
+  animation: none;
+  border-color: var(--accent);
+  opacity: 0.7;
+}
+@media (prefers-reduced-motion: reduce) {
+  .topo-roletree__busy {
+    animation: none;
+    border-color: var(--accent);
+    opacity: 0.7;
+  }
 }
 
 /* ── Timeline panel ─────────────────────────────────────────── */
@@ -1827,6 +1985,59 @@ svg[data-svg="fit"],
 .msg--gate .msg__bubble::before {
   content: "GATE  "; color: var(--warn); letter-spacing: 0.1em;
   font-size: 10px; font-weight: 700;
+}
+
+/* ── Typing / "agent is working" indicator ──────────────────── */
+@keyframes chat-typing-bounce {
+  0%, 60%, 100% { transform: translateY(0);   opacity: 0.45; }
+  30%           { transform: translateY(-3px); opacity: 1; }
+}
+.msg--typing .msg__bubble {
+  align-self: flex-start;
+  padding: 0;
+  gap: 0;
+}
+.msg__typing {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  align-self: flex-start;
+}
+.msg__typing-dots {
+  display: inline-flex;
+  align-items: end;
+  gap: 3px;
+  height: 10px;
+}
+.msg__typing-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  display: inline-block;
+  animation: chat-typing-bounce 1.1s ease-in-out infinite;
+}
+.msg__typing-dots span:nth-child(2) { animation-delay: 0.18s; }
+.msg__typing-dots span:nth-child(3) { animation-delay: 0.36s; }
+.msg__typing-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-dim);
+  letter-spacing: 0.02em;
+}
+.msg__typing-label::after { content: "…"; opacity: 0.6; margin-left: 1px; }
+.reduced-motion .msg__typing-dots span {
+  animation: none;
+  opacity: 0.7;
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg__typing-dots span {
+    animation: none;
+    opacity: 0.7;
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════

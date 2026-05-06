@@ -49,8 +49,15 @@ export interface TopoPulse {
 }
 
 export interface TopoActivity {
+  /// identity → most-recent-frame ts (any frame). Decays over `life` ms.
+  /// Used to draw the soft "recent activity" halo.
   active: Record<string, number>;
   pulses: TopoPulse[];
+  /// identity → currently-running-a-turn boolean. Sticky between
+  /// `interaction_started`/`run_started` and the matching
+  /// `interaction_complete`/`interaction_failed`/`run_completed`/`run_failed`/
+  /// `run_canceled`. Drives the persistent "working" spinner ring.
+  busy: Record<string, boolean>;
 }
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
@@ -205,6 +212,7 @@ export function useTopologyActivity(
     const active: Record<string, number> = {};
     const pulses: TopoPulse[] = [];
     const peerRegistry = new Map<string, string>();
+    const busy: Record<string, boolean> = {};
 
     // Walk frames oldest → newest so the peers-tool registry is populated
     // before any send_* call that depends on it. The activity buffer is
@@ -217,6 +225,20 @@ export function useTopologyActivity(
       const identity = frame.identity?.trim();
       if (identity && graph.byId.has(identity)) {
         if ((active[identity] || 0) < ts) active[identity] = ts;
+        // Sticky busy: flip true on interaction/run start, false on any
+        // terminal lifecycle event. Same signal that drives the
+        // pending-stack auto-drain in ConsoleApp.
+        if (frame.event === "interaction_started" || frame.event === "run_started") {
+          busy[identity] = true;
+        } else if (
+          frame.event === "interaction_complete"
+          || frame.event === "interaction_failed"
+          || frame.event === "run_completed"
+          || frame.event === "run_failed"
+          || frame.event === "run_canceled"
+        ) {
+          busy[identity] = false;
+        }
       }
 
       const data = frame.data as Record<string, unknown> | undefined;
@@ -272,7 +294,7 @@ export function useTopologyActivity(
     }
     const live = pulses.filter((p) => p.ts >= cutoff);
 
-    return { active, pulses: live };
+    return { active, pulses: live, busy };
   // `now` triggers re-fade; `frames`/`graph` trigger re-derivation.
   }, [frames, graph, life, now]);
 }

@@ -12,11 +12,18 @@ interface TopologyPanelProps {
 }
 
 type View = "force" | "bullseye" | "roles";
+type LabelsMode = "auto" | "on" | "off";
 const VIEW_STORAGE = "mobkit-console-topology-view";
+const LABELS_STORAGE = "mobkit-console-topology-labels";
 const VIEWS: Array<{ id: View; label: string; help: string }> = [
   { id: "force", label: "Force", help: "Physics sim · communities + hubs emerge" },
   { id: "bullseye", label: "Bullseye", help: "Degree-ranked rings · hubs at centre" },
   { id: "roles", label: "Roles", help: "Flat mob · agents grouped by role" },
+];
+const LABEL_MODES: Array<{ id: LabelsMode; label: string; help: string }> = [
+  { id: "auto", label: "Auto",  help: "Always-on for ≤20 agents · hover for denser graphs" },
+  { id: "on",   label: "All",   help: "Force labels on regardless of density" },
+  { id: "off",  label: "Hover", help: "Hidden until hovered or focused" },
 ];
 
 const W = 980;
@@ -39,11 +46,24 @@ export function TopologyPanel({
     try { localStorage.setItem(VIEW_STORAGE, next); } catch { /* ignore */ }
   };
 
+  const [labelsMode, setLabelsMode] = React.useState<LabelsMode>(() => {
+    try {
+      const stored = localStorage.getItem(LABELS_STORAGE);
+      if (stored === "auto" || stored === "on" || stored === "off") return stored;
+    } catch { /* ignore */ }
+    return "auto";
+  });
+  const pickLabelsMode = (next: LabelsMode) => {
+    setLabelsMode(next);
+    try { localStorage.setItem(LABELS_STORAGE, next); } catch { /* ignore */ }
+  };
+
   const graph = React.useMemo(() => buildGraph(nodes, agents), [nodes, agents]);
   const live = useTopologyActivity(activity, graph, { life: 1500 });
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
 
   const liveCount = Object.keys(live.active).length;
+  const busyCount = Object.values(live.busy).filter(Boolean).length;
 
   return (
     <div className="topo" data-testid="topology-panel">
@@ -51,8 +71,26 @@ export function TopologyPanel({
         <h2>Topology</h2>
         <span className="topo__head-meta">
           {graph.agents.length} agents · {graph.edges.length} edges
-          {liveCount > 0 ? ` · ${liveCount} live` : ""}
+          {busyCount > 0 ? ` · ${busyCount} working` : ""}
+          {liveCount > 0 && busyCount === 0 ? ` · ${liveCount} live` : ""}
         </span>
+        {view !== "roles" && (
+          <div className="topo__viewbar topo__viewbar--labels" role="group" aria-label="Labels">
+            <span className="topo__viewbar-tag">Labels</span>
+            {LABEL_MODES.map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                className={`topo__viewbtn ${labelsMode === m.id ? "is-active" : ""}`}
+                onClick={() => pickLabelsMode(m.id)}
+                title={m.help}
+                data-testid={`topology-labels:${m.id}`}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="topo__viewbar">
           {VIEWS.map((v) => (
             <button
@@ -76,6 +114,7 @@ export function TopologyPanel({
             activity={activity}
             width={W}
             height={H}
+            labelsMode={labelsMode}
           />
         )}
         {view === "bullseye" && (
@@ -85,6 +124,7 @@ export function TopologyPanel({
             activity={activity}
             width={W}
             height={H}
+            labelsMode={labelsMode}
           />
         )}
         {view === "roles" && (
