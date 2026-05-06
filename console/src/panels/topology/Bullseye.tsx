@@ -14,6 +14,7 @@ import {
   useTopologyActivity,
   type TopoAgent,
 } from "./data";
+import { useZoomPan, viewportTransform } from "./zoom-pan";
 import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "../../types";
 
 type LabelsMode = "auto" | "on" | "off";
@@ -98,6 +99,7 @@ export function Bullseye({
   const scale = visualScale(graph.agents.length);
   const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
+  const zoom = useZoomPan(width, height);
   const { pos, ringR, cx, cy, buckets } = React.useMemo(
     () => layout(graph, width, height),
     [graph, width, height],
@@ -116,12 +118,57 @@ export function Bullseye({
 
   const innerR = ringR(0);
 
+  // Pre-compute per-agent geometry once — feeds both the node circle
+  // layer and the trailing label layer (so labels sit above all
+  // circles, not just their own group).
+  const renderItems = graph.agents.flatMap((agent) => {
+    const p = pos[agent.id];
+    if (!p) return [];
+    const deg = graph.degree[agent.id] || 0;
+    const r = radiusOf(deg);
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    const d = Math.hypot(dx, dy) || 1;
+    const ux = dx / d;
+    const uy = dy / d;
+    const labelX = p.x + ux * (r + 8);
+    const labelY = p.y + uy * (r + 8);
+    const anchor: "start" | "end" | "middle" = ux > 0.25 ? "start" : ux < -0.25 ? "end" : "middle";
+    return [{
+      agent, p, r, labelX, labelY, anchor,
+      isHot: !!live.active[agent.id],
+      isBusy: !!live.busy[agent.id],
+      colour: colourForRole(agent.role, roleIndex),
+    }];
+  });
+  const showInlineLabel = labelMode === "on";
+  const hoveredItem = hoverId ? renderItems.find((it) => it.agent.id === hoverId) : null;
+
   return (
-    <svg
-      className="topo__svg-board"
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="xMidYMid meet"
-    >
+    <div className="topo__board">
+      <div className="topo__zoombar" data-testid="topology-zoombar">
+        <span className="topo__zoom-pct">{Math.round(zoom.viewport.scale * 100)}%</span>
+        <button
+          type="button"
+          className="topo__zoom-reset"
+          onClick={zoom.reset}
+          title="Reset zoom and pan"
+          data-testid="topology-zoom-reset"
+        >
+          Reset
+        </button>
+      </div>
+      <svg
+        ref={zoom.svgRef}
+        className={`topo__svg-board${zoom.isDragging ? " is-panning" : ""}`}
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="xMidYMid meet"
+        onPointerDown={zoom.onPointerDown}
+        onPointerMove={zoom.onPointerMove}
+        onPointerUp={zoom.onPointerUp}
+        onPointerCancel={zoom.onPointerUp}
+      >
+        <g transform={viewportTransform(zoom.viewport)}>
       {/* Ring guides: alternate solid + dashed so the rhythm is legible
           even with sparse populations. Both use line-strong on a low
           opacity so they read on light and dark themes. */}
@@ -224,92 +271,80 @@ export function Bullseye({
         })}
       </g>
 
-      {/* Nodes + labels (inline or hover-revealed). */}
+      {/* Nodes (circles, halos, busy rings) — labels live in the
+          trailing layer below so they sit above all circles. */}
       <g>
-        {graph.agents.map((agent) => {
-          const p = pos[agent.id];
-          if (!p) return null;
-          const deg = graph.degree[agent.id] || 0;
-          const r = radiusOf(deg);
-          const isHot = !!live.active[agent.id];
-          const isBusy = !!live.busy[agent.id];
-          const colour = colourForRole(agent.role, roleIndex);
-          // Label placement: outward along the radial direction so
-          // labels naturally fan out instead of stacking under the node
-          // dots near the centre.
-          const dx = p.x - cx;
-          const dy = p.y - cy;
-          const d = Math.hypot(dx, dy) || 1;
-          const ux = dx / d;
-          const uy = dy / d;
-          const labelX = p.x + ux * (r + 8);
-          const labelY = p.y + uy * (r + 8);
-          const anchor = ux > 0.25 ? "start" : ux < -0.25 ? "end" : "middle";
-          const showInlineLabel = labelMode === "on";
-          const isHovered = hoverId === agent.id;
-          return (
-            <g
-              key={agent.id}
-              data-testid={`topology-node:${agent.id}`}
-              className={`topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}`}
-              onMouseEnter={() => setHoverId(agent.id)}
-              onMouseLeave={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
-              onFocus={() => setHoverId(agent.id)}
-              onBlur={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
-              tabIndex={0}
-            >
-              {isBusy && (
-                <circle
-                  className="topo__busy-ring"
-                  cx={p.x} cy={p.y}
-                  r={r + 6}
-                  fill="none"
-                  stroke="var(--accent)"
-                  strokeWidth="1.5"
-                  style={{ pointerEvents: "none" }}
-                />
-              )}
-              {isHot && (
-                <circle
-                  cx={p.x} cy={p.y}
-                  r={r + 4}
-                  fill="none"
-                  stroke={colour}
-                  strokeWidth="1"
-                  opacity="0.35"
-                  style={{ pointerEvents: "none" }}
-                />
-              )}
+        {renderItems.map(({ agent, p, r, isHot, isBusy, colour }) => (
+          <g
+            key={agent.id}
+            data-testid={`topology-node:${agent.id}`}
+            className={`topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}`}
+            onMouseEnter={() => setHoverId(agent.id)}
+            onMouseLeave={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
+            onFocus={() => setHoverId(agent.id)}
+            onBlur={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
+            tabIndex={0}
+          >
+            {isBusy && (
+              <circle
+                className="topo__busy-ring"
+                cx={p.x} cy={p.y}
+                r={r + 6}
+                fill="none"
+                stroke="var(--accent)"
+                strokeWidth="1.5"
+                style={{ pointerEvents: "none" }}
+              />
+            )}
+            {isHot && (
               <circle
                 cx={p.x} cy={p.y}
-                r={r}
-                fill={colour}
-                stroke="var(--bg)"
-                strokeWidth="1.5"
+                r={r + 4}
+                fill="none"
+                stroke={colour}
+                strokeWidth="1"
+                opacity="0.35"
+                style={{ pointerEvents: "none" }}
               />
-              {showInlineLabel && (
-                <text
-                  x={labelX}
-                  y={labelY + 4}
-                  textAnchor={anchor}
-                  className="topo__node-label"
-                >
-                  {agent.label}
-                </text>
-              )}
-              {!showInlineLabel && isHovered && (
-                <BullseyeLabelPill
-                  x={p.x}
-                  y={p.y + r + 8}
-                  text={agent.label}
-                  sub={`${agent.role}${agent.state ? " · " + agent.state : ""}${isBusy ? " · working" : ""}`}
-                />
-              )}
-            </g>
-          );
-        })}
+            )}
+            <circle
+              cx={p.x} cy={p.y}
+              r={r}
+              fill={colour}
+              stroke="var(--bg)"
+              strokeWidth="1.5"
+            />
+          </g>
+        ))}
       </g>
-    </svg>
+      {/* Inline labels — trailing layer above all circles. */}
+      {showInlineLabel && (
+        <g style={{ pointerEvents: "none" }}>
+          {renderItems.map(({ agent, labelX, labelY, anchor }) => (
+            <text
+              key={agent.id}
+              x={labelX}
+              y={labelY + 4}
+              textAnchor={anchor}
+              className="topo__node-label"
+            >
+              {agent.label}
+            </text>
+          ))}
+        </g>
+      )}
+      {/* Hover pill — final, single layer. */}
+      {!showInlineLabel && hoveredItem && (
+        <BullseyeLabelPill
+          x={hoveredItem.p.x}
+          y={hoveredItem.p.y + hoveredItem.r + 8}
+          text={hoveredItem.agent.label}
+          sub={`${hoveredItem.agent.role}${hoveredItem.agent.state ? " · " + hoveredItem.agent.state : ""}${hoveredItem.isBusy ? " · working" : ""}`}
+        />
+      )}
+        </g>
+      </svg>
+    </div>
   );
 }
 

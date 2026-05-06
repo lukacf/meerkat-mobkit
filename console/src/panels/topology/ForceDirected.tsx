@@ -14,6 +14,7 @@ import {
   useTopologyActivity,
   type TopoActivity,
 } from "./data";
+import { useZoomPan, viewportTransform } from "./zoom-pan";
 import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "../../types";
 
 interface SimNode {
@@ -71,6 +72,7 @@ export function ForceDirected({
   const scale = visualScale(graph.agents.length);
   const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
+  const zoom = useZoomPan(width, height);
 
   // Sim state lives in a ref so React render cadence doesn't throttle
   // the integrator. We schedule a re-render every 2 frames.
@@ -80,6 +82,19 @@ export function ForceDirected({
     () => `${graph.agents.map((a) => a.id).join(",")}|${graph.edges.map((e) => `${e.from}-${e.to}`).join(",")}|${width}x${height}`,
     [graph, width, height],
   );
+  const showLabelsInSim = labelMode === "on";
+  // Approximate label rendered width — used by the label-vs-neighbour
+  // repulsion. SVG text doesn't measure-pre-render in the layout pass, so
+  // we estimate from glyph count (display font is ~6.5px per char at our
+  // size) and clamp to a sensible max.
+  const labelWidthCache = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const a of graph.agents) {
+      const chars = (a.label || a.id).length;
+      m.set(a.id, Math.min(140, Math.max(40, chars * 6.5)));
+    }
+    return m;
+  }, [graph.agents]);
 
   React.useEffect(() => {
     const N = graph.agents.length;
@@ -146,6 +161,39 @@ export function ForceDirected({
         b.vx -= ux * f;
         b.vy -= uy * f;
       }
+      // Label-vs-neighbour repulsion. When inline labels are showing,
+      // nudge nodes so each label's footprint (sits below the node, ~6px
+      // tall, ~14*char-count wide capped at 120) doesn't overlap a
+      // neighbour's circle. Without this, dense graphs squash labels
+      // onto adjacent dots even when nodes themselves are well-spaced.
+      // Skipped when labels are hover-only (no inline footprint to
+      // protect) and when the sim is past warm-up to avoid jitter.
+      if (showLabelsInSim && sim.alpha > 0.12) {
+        for (const a of sim.nodes) {
+          const labelW = labelWidthCache.get(a.id) ?? 60;
+          const halfW = labelW / 2;
+          const labelTop = a.y + scale.nodeMax + 4;
+          const labelBot = labelTop + 14;
+          for (const b of sim.nodes) {
+            if (a === b) continue;
+            // AABB test: does b's centre fall inside a's label box?
+            const overlapX = b.x > a.x - halfW - scale.nodeMax
+              && b.x < a.x + halfW + scale.nodeMax;
+            const overlapY = b.y > labelTop - scale.nodeMax
+              && b.y < labelBot + scale.nodeMax;
+            if (!overlapX || !overlapY) continue;
+            // Push b away from the label centre. Mostly downward kicks
+            // labels apart vertically; a small lateral component breaks
+            // symmetric stalemates.
+            const dx = (b.x - a.x) * 0.04;
+            const dy = (b.y - (labelTop + labelBot) / 2) * 0.18;
+            b.vx += dx;
+            b.vy += dy;
+            a.vx -= dx * 0.5;
+            a.vy -= dy * 0.5;
+          }
+        }
+      }
       // Centring pull + damping.
       for (const n of sim.nodes) {
         n.vx += (cx - n.x) * 0.0035;
@@ -178,65 +226,96 @@ export function ForceDirected({
     return set;
   }, [liveActivity.pulses]);
 
+  // Per-agent geometry computed once per render — feeds both the node
+  // circle layer and the trailing label layer (so labels sit above all
+  // circles, not just their own group).
+  const renderItems = sim
+    ? graph.agents.flatMap((agent) => {
+        const n = sim.byId.get(agent.id);
+        if (!n) return [];
+        const deg = graph.degree[agent.id] || 0;
+        const t = Math.sqrt(deg) / 4;
+        const r = scale.nodeMin + Math.min(1, t) * (scale.nodeMax - scale.nodeMin);
+        return [{
+          agent, n, r,
+          isHot: !!liveActivity.active[agent.id],
+          isBusy: !!liveActivity.busy[agent.id],
+          colour: colourForRole(agent.role, roleIndex),
+        }];
+      })
+    : [];
+  const showInlineLabel = labelMode === "on";
+  const hoveredItem = hoverId ? renderItems.find((it) => it.agent.id === hoverId) : null;
+
   return (
-    <svg
-      className="topo__svg-board"
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="xMidYMid meet"
-    >
-      {sim && (
-        <>
-          <g>
-            {graph.edges.map((e, i) => {
-              const a = sim.byId.get(e.from);
-              const b = sim.byId.get(e.to);
-              if (!a || !b) return null;
-              const hot = hotEdges.has(edgeKey(e.from, e.to));
-              return (
-                <line
-                  key={i}
-                  x1={a.x} y1={a.y}
-                  x2={b.x} y2={b.y}
-                  stroke={hot ? "var(--ok)" : "var(--ink-faint)"}
-                  strokeWidth={hot ? scale.edgeWidth + 0.5 : scale.edgeWidth}
-                  opacity={hot ? 0.85 : 0.5}
-                />
-              );
-            })}
-          </g>
-          <g>
-            {liveActivity.pulses.map((p) => {
-              const a = sim.byId.get(p.from);
-              const b = sim.byId.get(p.to);
-              if (!a || !b) return null;
-              const age = (Date.now() - p.ts) / 900;
-              if (age > 1) return null;
-              const x = a.x + (b.x - a.x) * age;
-              const y = a.y + (b.y - a.y) * age;
-              return (
-                <circle
-                  key={p.id}
-                  cx={x} cy={y} r={3}
-                  fill="var(--ok)"
-                  opacity={1 - age}
-                  style={{ pointerEvents: "none" }}
-                />
-              );
-            })}
-          </g>
-          <g>
-            {graph.agents.map((agent) => {
-              const n = sim.byId.get(agent.id);
-              if (!n) return null;
-              const deg = graph.degree[agent.id] || 0;
-              const t = Math.sqrt(deg) / 4;
-              const r = scale.nodeMin + Math.min(1, t) * (scale.nodeMax - scale.nodeMin);
-              const isHot = !!liveActivity.active[agent.id];
-              const isBusy = !!liveActivity.busy[agent.id];
-              const colour = colourForRole(agent.role, roleIndex);
-              const showInlineLabel = labelMode === "on";
-              const isHovered = hoverId === agent.id;
-              return (
+    <div className="topo__board">
+      <div className="topo__zoombar" data-testid="topology-zoombar">
+        <span className="topo__zoom-pct">{Math.round(zoom.viewport.scale * 100)}%</span>
+        <button
+          type="button"
+          className="topo__zoom-reset"
+          onClick={zoom.reset}
+          title="Reset zoom and pan"
+          data-testid="topology-zoom-reset"
+        >
+          Reset
+        </button>
+      </div>
+      <svg
+        ref={zoom.svgRef}
+        className={`topo__svg-board${zoom.isDragging ? " is-panning" : ""}`}
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="xMidYMid meet"
+        onPointerDown={zoom.onPointerDown}
+        onPointerMove={zoom.onPointerMove}
+        onPointerUp={zoom.onPointerUp}
+        onPointerCancel={zoom.onPointerUp}
+      >
+        {sim && (
+          <g transform={viewportTransform(zoom.viewport)}>
+            {/* 1. Edges */}
+            <g>
+              {graph.edges.map((e, i) => {
+                const a = sim.byId.get(e.from);
+                const b = sim.byId.get(e.to);
+                if (!a || !b) return null;
+                const hot = hotEdges.has(edgeKey(e.from, e.to));
+                return (
+                  <line
+                    key={i}
+                    x1={a.x} y1={a.y}
+                    x2={b.x} y2={b.y}
+                    stroke={hot ? "var(--ok)" : "var(--ink-faint)"}
+                    strokeWidth={hot ? scale.edgeWidth + 0.5 : scale.edgeWidth}
+                    opacity={hot ? 0.85 : 0.5}
+                  />
+                );
+              })}
+            </g>
+            {/* 2. Pulses */}
+            <g>
+              {liveActivity.pulses.map((p) => {
+                const a = sim.byId.get(p.from);
+                const b = sim.byId.get(p.to);
+                if (!a || !b) return null;
+                const age = (Date.now() - p.ts) / 900;
+                if (age > 1) return null;
+                const x = a.x + (b.x - a.x) * age;
+                const y = a.y + (b.y - a.y) * age;
+                return (
+                  <circle
+                    key={p.id}
+                    cx={x} cy={y} r={3}
+                    fill="var(--ok)"
+                    opacity={1 - age}
+                    style={{ pointerEvents: "none" }}
+                  />
+                );
+              })}
+            </g>
+            {/* 3. Halos (recent activity) + busy rings + node circles */}
+            <g>
+              {renderItems.map(({ agent, n, r, isHot, isBusy, colour }) => (
                 <g
                   key={agent.id}
                   data-testid={`topology-node:${agent.id}`}
@@ -247,10 +326,6 @@ export function ForceDirected({
                   onBlur={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
                   tabIndex={0}
                 >
-                  {/* Persistent "working" ring — runs whenever an
-                      interaction/run is in flight for this identity.
-                      Drawn behind the recent-activity halo so the two
-                      readings stack rather than fight. */}
                   {isBusy && (
                     <circle
                       className="topo__busy-ring"
@@ -280,31 +355,41 @@ export function ForceDirected({
                     stroke="var(--bg)"
                     strokeWidth="1.5"
                   />
-                  {showInlineLabel && (
-                    <text
-                      x={n.x}
-                      y={n.y + r + 12}
-                      textAnchor="middle"
-                      className="topo__node-label"
-                    >
-                      {agent.label}
-                    </text>
-                  )}
-                  {!showInlineLabel && isHovered && (
-                    <NodeLabelPill
-                      x={n.x}
-                      y={n.y + r + 8}
-                      text={agent.label}
-                      sub={`${agent.role}${agent.state ? " · " + agent.state : ""}${isBusy ? " · working" : ""}`}
-                    />
-                  )}
                 </g>
-              );
-            })}
+              ))}
+            </g>
+            {/* 4. Inline labels (always-on mode) — separate trailing
+                 layer so they sit above all node circles, not just their
+                 own group's. */}
+            {showInlineLabel && (
+              <g style={{ pointerEvents: "none" }}>
+                {renderItems.map(({ agent, n, r }) => (
+                  <text
+                    key={agent.id}
+                    x={n.x}
+                    y={n.y + r + 12}
+                    textAnchor="middle"
+                    className="topo__node-label"
+                  >
+                    {agent.label}
+                  </text>
+                ))}
+              </g>
+            )}
+            {/* 5. Hover pill — final layer, single instance, always
+                 painted last so it never disappears under another node. */}
+            {!showInlineLabel && hoveredItem && (
+              <NodeLabelPill
+                x={hoveredItem.n.x}
+                y={hoveredItem.n.y + hoveredItem.r + 8}
+                text={hoveredItem.agent.label}
+                sub={`${hoveredItem.agent.role}${hoveredItem.agent.state ? " · " + hoveredItem.agent.state : ""}${hoveredItem.isBusy ? " · working" : ""}`}
+              />
+            )}
           </g>
-        </>
-      )}
-    </svg>
+        )}
+      </svg>
+    </div>
   );
 }
 
