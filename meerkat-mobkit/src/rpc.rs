@@ -1049,6 +1049,7 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/gating/audit",
                 "mobkit/call_tool",
                 "mobkit/models/catalog",
+                "mobkit/blob/get",
                 "mobkit/send_message",
                 "mobkit/find_members",
                 "mobkit/ensure_member",
@@ -1091,6 +1092,7 @@ pub async fn handle_unified_rpc_json(
                     "mobkit/interact",
                     "mobkit/send",
                     "mobkit/dispatch",
+                    "mobkit/subscribe",
                     "mobkit/status_identity",
                     "mobkit/respawn",
                     "mobkit/retire",
@@ -1803,6 +1805,9 @@ pub async fn handle_unified_rpc_json(
             result: Some(build_models_catalog_result()),
             error: None,
         },
+        "mobkit/blob/get" => {
+            mob_methods::handle_blob_get(runtime, response_id, &request.params).await
+        }
         "mobkit/send_message" => {
             mob_methods::handle_send_message(runtime, response_id, &request.params).await
         }
@@ -2045,10 +2050,11 @@ pub async fn handle_unified_rpc_json(
                 .get("content")
                 .cloned()
                 .unwrap_or(Value::Null);
-            let content = if let Some(s) = content_val.as_str() {
-                meerkat_core::ContentInput::Text(s.to_string())
-            } else {
-                meerkat_core::ContentInput::Text(content_val.to_string())
+            let content = match serde_json::from_value::<meerkat_core::ContentInput>(content_val) {
+                Ok(content) => content,
+                Err(err) => {
+                    return error_response(response_id, -32602, format!("invalid content: {err}"));
+                }
             };
             match identity_rt.send(&identity, &content).await {
                 Ok(token) => JsonRpcResponse {
@@ -2081,11 +2087,20 @@ pub async fn handle_unified_rpc_json(
                 .get("dispatch_input")
                 .cloned()
                 .unwrap_or(Value::Null);
-            let content_text = di_val
+            let content_val = di_val
                 .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            let content = match serde_json::from_value::<meerkat_core::ContentInput>(content_val) {
+                Ok(content) => content,
+                Err(err) => {
+                    return error_response(
+                        response_id,
+                        -32602,
+                        format!("invalid dispatch_input.content: {err}"),
+                    );
+                }
+            };
             let origin_str = di_val
                 .get("origin")
                 .and_then(|v| v.as_str())
@@ -2102,7 +2117,7 @@ pub async fn handle_unified_rpc_json(
                 .and_then(|v| v.as_str())
                 .map(crate::identity_first::CorrelationId::new);
             let dispatch_input = crate::identity_first::DispatchInput {
-                content: meerkat_core::ContentInput::Text(content_text),
+                content,
                 origin,
                 correlation_id,
                 idempotency_key: None,
@@ -2114,6 +2129,36 @@ pub async fn handle_unified_rpc_json(
                     result: Some(
                         serde_json::json!({ "fencing_token": token.get(), "durable": durable }),
                     ),
+                    error: None,
+                },
+                Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/subscribe" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            match identity_rt.subscribe(&identity).await {
+                Ok(_receiver) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "identity": identity.as_str(),
+                        "stream_id": identity.as_str(),
+                        "subscribed": true,
+                    })),
                     error: None,
                 },
                 Err(e) => identity_error_response(response_id, &e),

@@ -14,6 +14,7 @@ use crate::mob_handle_runtime::{
 use crate::runtime::{
     InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions, SqliteMetadataStore,
 };
+use crate::tool_overlay::validate_mobkit_tool_overlay_from_toml;
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -93,9 +94,9 @@ impl UnifiedRuntimeBuilder {
     }
 
     /// Enable persistent state at the given path. When set, the builder
-    /// creates a `SqliteSessionStore`, `FsBlobStore`, and `MobStorage::redb()`
-    /// under this directory. When not set, the builder uses an ephemeral
-    /// session service with an auto-created temp directory.
+    /// creates a `SqliteSessionStore`, binary blob store, and
+    /// `MobStorage::redb()` under this directory. When not set, the builder
+    /// uses an ephemeral session service with an auto-created temp directory.
     pub fn persistent_state(mut self, path: impl Into<PathBuf>) -> Self {
         self.persistent_state_path = Some(path.into());
         self
@@ -205,6 +206,15 @@ impl UnifiedRuntimeBuilder {
     /// Enable or disable memory tools (default: true).
     pub fn memory(mut self, enabled: bool) -> Self {
         self.capability_flags.memory = enabled;
+        self
+    }
+
+    /// Enable or disable the temporary MobKit image-generation bridge.
+    ///
+    /// This is default-off because Meerkat 0.6 exposes image generation as a
+    /// factory-wide machine rather than a profile-level tool override.
+    pub fn image_generation(mut self, enabled: bool) -> Self {
+        self.capability_flags.image_generation = enabled;
         self
     }
 
@@ -471,6 +481,7 @@ impl UnifiedRuntimeBuilder {
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
+        let mut caps = self.capability_flags;
         let definition = match self.definition_source {
             Some(DefinitionSource::Inline(ref def)) => *def.clone(),
             Some(DefinitionSource::TomlPath(ref path)) => {
@@ -480,12 +491,23 @@ impl UnifiedRuntimeBuilder {
                         path.display()
                     ))
                 })?;
-                MobDefinition::from_toml(&toml_content).map_err(|e| {
+                let definition = MobDefinition::from_toml(&toml_content).map_err(|e| {
                     UnifiedRuntimeBuilderError::DefinitionLoad(format!(
                         "failed to parse definition TOML at {}: {e}",
                         path.display()
                     ))
-                })?
+                })?;
+                let overlay_config =
+                    validate_mobkit_tool_overlay_from_toml(&definition, &toml_content).map_err(
+                        |e| {
+                            UnifiedRuntimeBuilderError::DefinitionLoad(format!(
+                                "invalid MobKit tool overlay at {}: {e}",
+                                path.display()
+                            ))
+                        },
+                    )?;
+                caps.image_generation |= overlay_config.image_generation;
+                definition
             }
             None => {
                 return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
@@ -519,8 +541,6 @@ impl UnifiedRuntimeBuilder {
                     })
                 })
             });
-
-        let caps = self.capability_flags;
 
         // Note: blocking I/O (fs, SQLite, redb) — acceptable at startup.
         let mut spec = if let Some(ref state_path) = self.persistent_state_path {

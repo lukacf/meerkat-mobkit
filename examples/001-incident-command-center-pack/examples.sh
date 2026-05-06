@@ -6,7 +6,7 @@ PACK_DIR="$ROOT/examples/001-incident-command-center-pack"
 SCENARIO="$PACK_DIR/scenario.yaml"
 
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY to run the live incident command center pack}"
-export RKAT_INCIDENT_MODEL="${RKAT_INCIDENT_MODEL:-gpt-4.1-mini}"
+export RKAT_INCIDENT_MODEL="${RKAT_INCIDENT_MODEL:-gpt-5.5}"
 LISTEN_ADDR="$(python3 - <<'PY'
 import socket
 s = socket.socket()

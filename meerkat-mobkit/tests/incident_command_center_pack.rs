@@ -18,11 +18,51 @@
 
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
+use futures::{Stream, stream};
+use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_core::StopReason;
 use meerkat_mobkit::example_support::incident_command_center::{
-    build_runtime_bundle, scenario_path,
+    build_runtime_bundle_with_default_client, scenario_path,
 };
 use serde_json::{Value, json};
+use std::pin::Pin;
+use std::sync::Arc;
 use tower::ServiceExt;
+
+struct IncidentPackTestClient;
+
+impl meerkat_client::LlmClient for IncidentPackTestClient {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a LlmRequest,
+    ) -> Pin<Box<dyn Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        Box::pin(stream::iter([
+            Ok(LlmEvent::TextDelta {
+                delta: "ok".to_string(),
+                meta: None,
+            }),
+            Ok(LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success {
+                    stop_reason: StopReason::EndTurn,
+                },
+            }),
+        ]))
+    }
+
+    fn provider(&self) -> &'static str {
+        "incident-pack-test"
+    }
+
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 async fn json_response(app: axum::Router, request: Request<Body>) -> Value {
     let response = app.oneshot(request).await.expect("router response");
@@ -35,9 +75,12 @@ async fn json_response(app: axum::Router, request: Request<Body>) -> Value {
 
 #[tokio::test]
 async fn incident_pack_exposes_seeded_stock_console_state() {
-    let bundle = build_runtime_bundle(&scenario_path().expect("incident scenario path"))
-        .await
-        .expect("incident runtime bundle");
+    let bundle = build_runtime_bundle_with_default_client(
+        &scenario_path().expect("incident scenario path"),
+        Arc::new(IncidentPackTestClient),
+    )
+    .await
+    .expect("incident runtime bundle");
     let app = bundle
         .runtime
         .build_reference_app_router(bundle.decisions.clone());

@@ -77,8 +77,8 @@ fn phase5_json_store_recovers_stale_lock_and_persists_rows() {
 fn phase5_json_store_blocks_on_fresh_lock() {
     let temp = tempdir().expect("tempdir");
     let sessions_path = temp.path().join("sessions.json");
-    let store = JsonFileSessionStore::new(&sessions_path)
-        .with_stale_lock_threshold(Duration::from_secs(60));
+    let store =
+        JsonFileSessionStore::new(&sessions_path).with_stale_lock_threshold(Duration::from_mins(1));
 
     let fresh_record = JsonStoreLockRecord {
         owner_pid: std::process::id(),

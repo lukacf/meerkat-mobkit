@@ -128,7 +128,7 @@ async fn interaction_stream_handler(
 
         let mut seq = 0_u64;
         loop {
-            let next = tokio::time::timeout(Duration::from_secs(300), event_stream.next()).await;
+            let next = tokio::time::timeout(Duration::from_mins(5), event_stream.next()).await;
             let Some(envelope) = next.unwrap_or_default() else {
                 break;
             };

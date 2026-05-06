@@ -29,6 +29,7 @@
 export { MobKit, MobKitBuilder } from "./builder.js";
 export type { MobKitBuilderConfig } from "./builder.js";
 export { MobKitRuntime, MobHandle, ToolCaller, SseBridge } from "./runtime.js";
+export type { BlobUploadInput, BlobUploadSource, SendMessageOptions } from "./runtime.js";
 
 // -- Data models ----------------------------------------------------------
 
@@ -128,6 +129,7 @@ export {
   leaseGrantToDict,
   parseLeaseAcquireResult,
   parseLeaseRenewResult,
+  parseBlobUploadResult,
 } from "./types.js";
 
 export type {
@@ -177,6 +179,10 @@ export type {
   DispatchContentBlock,
   TextContentBlock,
   ImageContentBlock,
+  InlineImageContentBlock,
+  BlobImageContentBlock,
+  BlobGetResult,
+  BlobUploadResult,
   DispatchOrigin,
   ManagedPeerEdge,
   ExternalToolDef,

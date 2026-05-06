@@ -8,9 +8,13 @@ import hmac
 import itertools
 import json
 import logging
+import mimetypes
+import uuid
+from pathlib import Path
 import time
 from typing import Any, AsyncIterator
 from urllib import request as urllib_request
+from urllib.error import HTTPError, URLError
 
 _log = logging.getLogger("meerkat_mobkit")
 
@@ -59,6 +63,48 @@ _request_counter = itertools.count(1)
 
 def _next_request_id(method: str) -> str:
     return f"{method}:{next(_request_counter)}"
+
+
+def _read_upload_source(
+    source: bytes | bytearray | memoryview | str | Path,
+    *,
+    media_type: str | None = None,
+    filename: str | None = None,
+) -> tuple[bytes, str, str]:
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        data = path.read_bytes()
+        resolved_filename = filename or path.name or "attachment"
+        resolved_media_type = media_type or mimetypes.guess_type(resolved_filename)[0]
+    else:
+        data = bytes(source)
+        resolved_filename = filename or "attachment.bin"
+        resolved_media_type = media_type or mimetypes.guess_type(resolved_filename)[0]
+    return data, resolved_media_type or "application/octet-stream", resolved_filename
+
+
+def _normalize_upload_item(
+    item: Any,
+    index: int,
+) -> tuple[bytes, str, str]:
+    if isinstance(item, dict):
+        source = item.get("data", item.get("bytes", item.get("path", item.get("file"))))
+        if source is None:
+            raise ValueError("attachment dict requires data, bytes, path, or file")
+        return _read_upload_source(
+            source,
+            media_type=item.get("media_type"),
+            filename=item.get("filename"),
+        )
+    if isinstance(item, tuple) and len(item) in (2, 3):
+        source = item[0]
+        media_type = str(item[1]) if item[1] is not None else None
+        filename = str(item[2]) if len(item) == 3 and item[2] is not None else None
+        return _read_upload_source(source, media_type=media_type, filename=filename)
+    if isinstance(item, (str, Path)):
+        return _read_upload_source(item)
+    filename = f"attachment-{index + 1}.png"
+    return _read_upload_source(item, media_type="image/png", filename=filename)
 
 
 class MobKitRuntime:
@@ -689,6 +735,8 @@ class MobHandle:
         message: str | None = None,
         *,
         content: list[dict[str, Any]] | None = None,
+        attachments: list[Any] | None = None,
+        handling_mode: str | None = None,
     ) -> SendMessageResult:
         """Send a message to a mob member and return the accepting session.
 
@@ -697,20 +745,160 @@ class MobHandle:
             message: Plain text message (simple path).
             content: Multimodal content blocks, e.g.
                 ``[{"type": "text", "text": "describe this"},
-                  {"type": "image", "media_type": "image/png", "data": "<base64>"}]``
+                  {"type": "image", "media_type": "image/png",
+                   "source": "inline", "data": "<base64>"}]``
 
         Either ``message`` or ``content`` must be provided. If both are given,
-        ``message`` takes precedence.
+        ``content`` takes precedence so multimodal callers are not shadowed by
+        stale text.
         """
         params: dict[str, Any] = {"member_id": member_id}
-        if message is not None:
-            params["message"] = message
-        elif content is not None:
-            params["content"] = content
+        if handling_mode is not None:
+            params["handling_mode"] = handling_mode
+        uploads = [_normalize_upload_item(item, idx) for idx, item in enumerate(attachments or [])]
+        if content is not None:
+            blocks: list[dict[str, Any]] = list(content)
+        elif message is not None:
+            blocks = [{"type": "text", "text": message}] if uploads else []
+            if not uploads:
+                params["message"] = message
         else:
-            raise ValueError("either message or content must be provided")
-        raw = await self._runtime._rpc("mobkit/send_message", params)
+            if not uploads:
+                raise ValueError("message, content, or attachments must be provided")
+            blocks = []
+        if uploads:
+            for idx, (_data, media_type, _filename) in enumerate(uploads):
+                blocks.append(
+                    {
+                        "type": "image_upload",
+                        "upload_id": f"upload-{idx + 1}",
+                        "media_type": media_type,
+                    }
+                )
+            params["content"] = blocks
+            raw = await self._multipart_rpc("mobkit/send_message", params, uploads)
+        else:
+            raw = await self._runtime._rpc("mobkit/send_message", params)
         return SendMessageResult.from_dict(raw)
+
+    async def get_blob(self, blob_id: str) -> dict[str, Any]:
+        """Fetch a blob through the JSON-RPC compatibility boundary.
+
+        The returned ``data`` field is base64 because JSON-RPC is not binary;
+        MobKit stores and serves the blob internally as raw bytes.
+        """
+        raw = await self._runtime._rpc("mobkit/blob/get", {"blob_id": blob_id})
+        return raw if isinstance(raw, dict) else {}
+
+    async def upload_blob(
+        self,
+        file: bytes | bytearray | memoryview | str | Path,
+        *,
+        media_type: str | None = None,
+        filename: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload one image blob through the multipart console route.
+
+        Returns ``{"blob_id", "media_type", "size"}``.
+        """
+        data, resolved_media_type, resolved_filename = _read_upload_source(
+            file,
+            media_type=media_type,
+            filename=filename,
+        )
+        raw = await self._multipart_rpc(
+            "mobkit/blob/upload",
+            {
+                "upload": {
+                    "type": "image_upload",
+                    "upload_id": "upload-1",
+                    "media_type": resolved_media_type,
+                }
+            },
+            [(data, resolved_media_type, resolved_filename)],
+        )
+        return raw if isinstance(raw, dict) else {}
+
+    async def _multipart_rpc(
+        self,
+        method: str,
+        params: dict[str, Any],
+        uploads: list[tuple[bytes, str, str]],
+    ) -> Any:
+        base = self._runtime.rust_http_base_url
+        if not base:
+            raise NotConnectedError(
+                "multipart RPC requires rust_http_base_url; start the gateway or call "
+                "runtime.set_rust_http_base('http://127.0.0.1:8081')"
+            )
+        request_id = _next_request_id(method)
+        payload = _rpc_request(request_id, method, params)
+        boundary = f"mobkit-{uuid.uuid4().hex}"
+        body = self._encode_multipart_body(boundary, payload, uploads)
+        req = urllib_request.Request(
+            base.rstrip("/") + "/console/rpc/multipart",
+            data=body,
+            method="POST",
+            headers={
+                "content-type": f"multipart/form-data; boundary={boundary}",
+                "accept": "application/json",
+            },
+        )
+        try:
+            response_text = await asyncio.to_thread(self._post_multipart_request, req)
+        except HTTPError as exc:
+            response_text = exc.read().decode("utf-8", errors="replace")
+            raise TransportError(
+                f"multipart RPC failed (status={exc.code}): {response_text}"
+            ) from exc
+        except URLError as exc:
+            raise TransportError(f"multipart RPC failed: {exc.reason}") from exc
+        response = json.loads(response_text)
+        if "error" in response:
+            err = response["error"]
+            raise RpcError(
+                code=err.get("code", -1),
+                message=err.get("message", str(err)),
+                request_id=request_id,
+                method=method,
+                data=err.get("data"),
+            )
+        return response.get("result")
+
+    @staticmethod
+    def _encode_multipart_body(
+        boundary: str,
+        payload: dict[str, Any],
+        uploads: list[tuple[bytes, str, str]],
+    ) -> bytes:
+        lines: list[bytes] = []
+
+        def add(value: str | bytes) -> None:
+            lines.append(value if isinstance(value, bytes) else value.encode("utf-8"))
+
+        add(f"--{boundary}\r\n")
+        add('Content-Disposition: form-data; name="payload"\r\n')
+        add("Content-Type: application/json\r\n\r\n")
+        add(json.dumps(payload))
+        add("\r\n")
+        for idx, (data, media_type, filename) in enumerate(uploads):
+            upload_id = f"upload-{idx + 1}"
+            safe_filename = filename.replace('"', "")
+            add(f"--{boundary}\r\n")
+            add(
+                f'Content-Disposition: form-data; name="file:{upload_id}"; '
+                f'filename="{safe_filename}"\r\n'
+            )
+            add(f"Content-Type: {media_type}\r\n\r\n")
+            add(data)
+            add("\r\n")
+        add(f"--{boundary}--\r\n")
+        return b"".join(lines)
+
+    @staticmethod
+    def _post_multipart_request(req: urllib_request.Request) -> str:
+        with urllib_request.urlopen(req, timeout=60) as response:
+            return response.read().decode("utf-8")
 
     async def query_events(
         self,

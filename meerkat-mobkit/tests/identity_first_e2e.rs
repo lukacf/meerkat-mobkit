@@ -82,7 +82,7 @@ fn make_grant(name: &str, token: u64) -> LeaseGrant {
     LeaseGrant {
         identity: make_identity(name),
         fencing_token: FencingToken::new(token),
-        ttl: Duration::from_secs(300),
+        ttl: Duration::from_mins(5),
     }
 }
 

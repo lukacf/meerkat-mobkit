@@ -21,7 +21,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::body::to_bytes;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
@@ -400,6 +400,118 @@ async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ
     );
 
     let shutdown = fixture.runtime.shutdown().await;
+    assert!(shutdown.mob_stop.is_ok());
+}
+
+#[tokio::test]
+async fn multipart_blob_upload_round_trips_through_reference_router() {
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "multipart-console-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+"#,
+    )
+    .expect("parse multipart mob definition");
+    let runtime = UnifiedRuntime::builder()
+        .definition(definition)
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "multipart-console".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        })
+        .default_llm_client(Arc::new(TestClient::default()))
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build multipart runtime");
+
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let boundary = "mobkit-test-boundary";
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": "upload-1",
+        "method": "mobkit/blob/upload",
+        "params": {
+            "upload": {
+                "type": "image_upload",
+                "upload_id": "upload-1",
+                "media_type": "image/png"
+            }
+        }
+    });
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"payload\"\r\n");
+    body.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    body.extend_from_slice(payload.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file:upload-1\"; filename=\"tiny.png\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(b"tiny-png");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let upload_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc/multipart")
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("multipart request"),
+        )
+        .await
+        .expect("multipart response");
+    assert_eq!(upload_response.status(), StatusCode::OK);
+    let upload_body = to_bytes(upload_response.into_body(), 1024 * 1024)
+        .await
+        .expect("multipart body");
+    let upload_json: Value = serde_json::from_slice(&upload_body).expect("upload json");
+    let blob_id = upload_json["result"]["blob_id"]
+        .as_str()
+        .expect("blob id")
+        .to_string();
+    assert_eq!(upload_json["result"]["media_type"], json!("image/png"));
+    assert_eq!(upload_json["result"]["size"], json!(8));
+
+    let blob_response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/blobs/{blob_id}"))
+                .body(Body::empty())
+                .expect("blob request"),
+        )
+        .await
+        .expect("blob response");
+    assert_eq!(blob_response.status(), StatusCode::OK);
+    assert_eq!(
+        blob_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/png")
+    );
+    let blob_body = to_bytes(blob_response.into_body(), 1024 * 1024)
+        .await
+        .expect("blob body");
+    assert_eq!(blob_body.as_ref(), b"tiny-png");
+
+    let shutdown = runtime.shutdown().await;
     assert!(shutdown.mob_stop.is_ok());
 }
 

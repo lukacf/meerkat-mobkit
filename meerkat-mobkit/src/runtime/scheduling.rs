@@ -254,7 +254,7 @@ impl MobkitRuntimeHandle {
 
             let event_sequence = self.next_scheduling_dispatch_sequence();
             let event_id =
-                format!("evt-schedule-{canonical_schedule_id}-{due_tick_ms}-{event_sequence}",);
+                format!("evt-schedule-{canonical_schedule_id}-{due_tick_ms}-{event_sequence}");
             insert_event_sorted(
                 &mut self.merged_events,
                 EventEnvelope {
@@ -284,7 +284,7 @@ impl MobkitRuntimeHandle {
                 insert_event_sorted(
                     &mut self.merged_events,
                     EventEnvelope {
-                        event_id: format!("evt-scheduling-supervisor-{tick_ms}-{event_sequence}",),
+                        event_id: format!("evt-scheduling-supervisor-{tick_ms}-{event_sequence}"),
                         source: "module".to_string(),
                         timestamp_ms: tick_ms,
                         event: UnifiedEvent::Module(ModuleEvent {

@@ -8,6 +8,8 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::{MobHandle, SpawnMemberSpec};
 
+use crate::mob_handle_runtime::{content_input_has_images, model_capabilities_for_role};
+
 use super::types::{
     AgentBuildDraft, AgentIdentity, AgentRuntimeId, DurableAgentSpec, SessionSnapshot,
 };
@@ -243,6 +245,18 @@ impl SessionBridge for MobSessionBridge {
             .member(&mid)
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
+        if content_input_has_images(content) {
+            let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
+                BridgeError::Mob("member not found while checking image capability".to_string())
+            })?;
+            let caps =
+                model_capabilities_for_role(self.handle.definition(), member_entry.role.as_str());
+            if !caps.image_input {
+                return Err(BridgeError::InvalidInput(
+                    "target member model cannot accept image input".to_string(),
+                ));
+            }
+        }
 
         // Use internal_turn() to bypass the mob-layer external_addressable
         // check. The identity layer owns addressability enforcement — the

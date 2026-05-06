@@ -6,6 +6,7 @@ import {
   type ConversationRichCodeBlock,
   type ConversationRichCommandBlock,
   type ConversationRichFileChangeBlock,
+  type ConversationRichImageBlock,
   type ConversationRichToolCallBlock,
   type ConversationTableAlignment,
   type ConversationRichThinkingBlock,
@@ -195,6 +196,27 @@ function renderBlock(
         <span className="cc-rich-divider__label">{block.text}</span>
         <span className="cc-rich-divider__line" />
       </div>
+    );
+  }
+
+  if (block.type === "image") {
+    const image = block as ConversationRichImageBlock;
+    return (
+      <button
+        className="cc-rich-image-button"
+        key={`image-${index}`}
+        onClick={() => window.open(image.src, "_blank", "noopener,noreferrer")}
+        type="button"
+      >
+        <img
+          alt={image.alt || ""}
+          className="cc-rich-image"
+          height={image.height}
+          loading="lazy"
+          src={image.src}
+          width={image.width}
+        />
+      </button>
     );
   }
 

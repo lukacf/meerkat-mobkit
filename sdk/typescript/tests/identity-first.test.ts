@@ -116,10 +116,38 @@ describe("DispatchInput + DispatchContentBlock (REQ-49)", () => {
     assert.equal((blocks[0] as { text: string }).text, "Describe this.");
     assert.equal(blocks[1].type, "image");
     assert.equal((blocks[1] as { mediaType: string }).mediaType, "image/png");
+    assert.equal((blocks[1] as { source: string }).source, "inline");
 
     const wire = dispatchInputToDict(input);
     const wireBlocks = wire.content as Array<Record<string, unknown>>;
     assert.equal(wireBlocks[1].media_type, "image/png");
+    assert.equal(wireBlocks[1].source, "inline");
+    assert.equal(wireBlocks[1].data, "base64data");
+  });
+
+  it("blob-backed image dispatch blocks round-trip", async () => {
+    const { parseDispatchInput, dispatchInputToDict } = await import("../src/types.js");
+    const blobId = `sha256:${"a".repeat(64)}`;
+    const input = parseDispatchInput({
+      content: [
+        { type: "image", media_type: "image/png", source: "blob", blob_id: blobId },
+      ],
+      origin: "system",
+    });
+    assert.ok(Array.isArray(input.content));
+    const blocks = input.content as Array<Record<string, unknown>>;
+    assert.equal(blocks[0].type, "image");
+    assert.equal(blocks[0].source, "blob");
+    assert.equal(blocks[0].blobId, blobId);
+
+    const wire = dispatchInputToDict(input);
+    const wireBlocks = wire.content as Array<Record<string, unknown>>;
+    assert.deepEqual(wireBlocks[0], {
+      type: "image",
+      media_type: "image/png",
+      source: "blob",
+      blob_id: blobId,
+    });
   });
 
   it("all five origin values accepted", async () => {
@@ -497,7 +525,7 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
     ) => {
       calls.push({ method, params: params ?? {} });
       // Return type-appropriate stubs
-      if (method === "mobkit/identity/status") {
+      if (method === "mobkit/status_identity") {
         return {
           identity: params?.identity ?? "x:1",
           state: "active",
@@ -512,9 +540,6 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
           continuity_health: null,
         };
       }
-      if (method === "mobkit/identity/agent") {
-        return { identity: params?.identity ?? "x:1", agent_identity: "mk-1", role: "worker", state: "Active", wired_to: [], labels: {} };
-      }
       return { accepted: true };
     };
     (rt as unknown as Record<string, unknown>)._running = true;
@@ -525,7 +550,7 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
     const { rt, calls } = await makeRuntime();
     await rt.send("triage:main", "Hello!");
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].method, "mobkit/identity/send");
+    assert.equal(calls[0].method, "mobkit/send");
     assert.equal(calls[0].params.identity, "triage:main");
     assert.equal(calls[0].params.content, "Hello!");
   });
@@ -537,13 +562,28 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
     assert.ok(Array.isArray(calls[0].params.content));
   });
 
+  it("send(identity, image block) sends strict image source shape", async () => {
+    const { rt, calls } = await makeRuntime();
+    await rt.send("triage:main", [
+      { type: "image", mediaType: "image/png", data: "abc" },
+    ]);
+    assert.deepEqual(calls[0].params.content, [
+      {
+        type: "image",
+        media_type: "image/png",
+        source: "inline",
+        data: "abc",
+      },
+    ]);
+  });
+
   it("dispatch(identity, dispatchInput)", async () => {
     const { rt, calls } = await makeRuntime();
     await rt.dispatch("triage:main", {
       content: "Hello",
       origin: "connector",
     });
-    assert.equal(calls[0].method, "mobkit/identity/dispatch");
+    assert.equal(calls[0].method, "mobkit/dispatch");
     assert.equal(calls[0].params.identity, "triage:main");
     assert.equal((calls[0].params.dispatch_input as Record<string, unknown>).origin, "connector");
   });
@@ -551,22 +591,23 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
   it("agent(identity)", async () => {
     const { rt, calls } = await makeRuntime();
     const snap = await rt.agent("lead:main");
-    assert.equal(calls[0].method, "mobkit/identity/agent");
+    assert.equal(calls[0].method, "mobkit/status_identity");
     assert.equal(calls[0].params.identity, "lead:main");
-    assert.ok(snap);
+    assert.equal(snap.agentIdentity, "rt-1");
+    assert.equal(snap.role, "worker");
   });
 
   it("subscribe(identity)", async () => {
     const { rt, calls } = await makeRuntime();
     await rt.subscribe("worker:1");
-    assert.equal(calls[0].method, "mobkit/identity/subscribe");
+    assert.equal(calls[0].method, "mobkit/subscribe");
     assert.equal(calls[0].params.identity, "worker:1");
   });
 
   it("status(identity) returns parsed IdentityStatus", async () => {
     const { rt, calls } = await makeRuntime();
     const status = await rt.status("triage:main");
-    assert.equal(calls[0].method, "mobkit/identity/status");
+    assert.equal(calls[0].method, "mobkit/status_identity");
     assert.equal(status.identity, "triage:main");
     assert.equal(status.lifecycleState, "active");
   });
@@ -574,28 +615,28 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
   it("respawn(identity)", async () => {
     const { rt, calls } = await makeRuntime();
     await rt.respawn("worker:1");
-    assert.equal(calls[0].method, "mobkit/identity/respawn");
+    assert.equal(calls[0].method, "mobkit/respawn");
     assert.equal(calls[0].params.identity, "worker:1");
   });
 
   it("retire(identity)", async () => {
     const { rt, calls } = await makeRuntime();
     await rt.retire("worker:1");
-    assert.equal(calls[0].method, "mobkit/identity/retire");
+    assert.equal(calls[0].method, "mobkit/retire");
     assert.equal(calls[0].params.identity, "worker:1");
   });
 
   it("reset(identity)", async () => {
     const { rt, calls } = await makeRuntime();
     await rt.reset("worker:1");
-    assert.equal(calls[0].method, "mobkit/identity/reset");
+    assert.equal(calls[0].method, "mobkit/reset");
     assert.equal(calls[0].params.identity, "worker:1");
   });
 
   it("deleteIdentity(identity)", async () => {
     const { rt, calls } = await makeRuntime();
     await rt.deleteIdentity("worker:1");
-    assert.equal(calls[0].method, "mobkit/identity/delete");
+    assert.equal(calls[0].method, "mobkit/delete_identity");
     assert.equal(calls[0].params.identity, "worker:1");
   });
 });

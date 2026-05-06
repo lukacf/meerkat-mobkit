@@ -141,11 +141,32 @@ class TestContentBlock:
         block = ImageBlock(media_type="image/png", data="base64data")
         assert block.media_type == "image/png"
         assert block.data == "base64data"
+        assert block.source == "inline"
+        assert block.blob_id is None
 
     def test_image_block_to_dict(self):
         block = ImageBlock(media_type="image/jpeg", data="abc123")
         d = block.to_dict()
-        assert d == {"type": "image", "media_type": "image/jpeg", "data": "abc123"}
+        assert d == {
+            "type": "image",
+            "media_type": "image/jpeg",
+            "source": "inline",
+            "data": "abc123",
+        }
+
+    def test_blob_image_block_to_dict(self):
+        block = ImageBlock(
+            media_type="image/png",
+            source="blob",
+            blob_id="sha256:" + "a" * 64,
+        )
+        d = block.to_dict()
+        assert d == {
+            "type": "image",
+            "media_type": "image/png",
+            "source": "blob",
+            "blob_id": "sha256:" + "a" * 64,
+        }
 
     def test_image_block_from_dict(self):
         block = ContentBlock.from_dict(
@@ -154,6 +175,32 @@ class TestContentBlock:
         assert isinstance(block, ImageBlock)
         assert block.media_type == "image/png"
         assert block.data == "xyz"
+        assert block.source == "inline"
+
+    def test_blob_image_block_from_dict(self):
+        block = ContentBlock.from_dict(
+            {
+                "type": "image",
+                "media_type": "image/webp",
+                "source": "blob",
+                "blob_id": "sha256:" + "b" * 64,
+            }
+        )
+        assert isinstance(block, ImageBlock)
+        assert block.media_type == "image/webp"
+        assert block.source == "blob"
+        assert block.blob_id == "sha256:" + "b" * 64
+
+    def test_unknown_image_source_raises(self):
+        with pytest.raises(ValueError, match="image source"):
+            ContentBlock.from_dict(
+                {
+                    "type": "image",
+                    "media_type": "image/png",
+                    "source": "remote_url",
+                    "data": "abc",
+                }
+            )
 
     def test_unknown_type_raises(self):
         with pytest.raises(ValueError, match="unknown content block type"):
@@ -206,10 +253,18 @@ class TestDispatchInput:
         assert "idempotency_key" not in d
 
     def test_to_dict_block_content(self):
-        blocks = [TextBlock(text="Hi")]
+        blocks = [TextBlock(text="Hi"), ImageBlock(media_type="image/png", data="abc")]
         di = DispatchInput(content=blocks, origin="system")
         d = di.to_dict()
-        assert d["content"] == [{"type": "text", "text": "Hi"}]
+        assert d["content"] == [
+            {"type": "text", "text": "Hi"},
+            {
+                "type": "image",
+                "media_type": "image/png",
+                "source": "inline",
+                "data": "abc",
+            },
+        ]
 
     def test_to_dict_with_optional_fields(self):
         di = DispatchInput(

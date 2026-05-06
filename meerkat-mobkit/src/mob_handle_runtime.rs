@@ -12,8 +12,12 @@ use meerkat_core::service::{
     CreateSessionRequest, SessionError, SessionHistoryPage, SessionHistoryQuery,
     SessionServiceHistoryExt,
 };
-use meerkat_mob::{MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage};
+use meerkat_mob::{
+    MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage, ProfileName,
+};
 use meerkat_store::StoreAdapter;
+
+use crate::blob_store::{Base64BlobStoreAdapter, BinaryBlobStore, ObjectStoreBlobStore};
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -630,6 +634,7 @@ pub struct MobBootstrapSpec {
     pub definition: MobDefinition,
     pub storage: MobStorage,
     pub session_service: Arc<dyn MobSessionService>,
+    pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -652,6 +657,7 @@ impl MobBootstrapSpec {
             definition,
             storage,
             session_service,
+            binary_blob_store: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -743,14 +749,31 @@ impl MobBootstrapSpec {
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path)
+        let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+        let image_generation_machine = if caps.image_generation {
+            let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+            Some(Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+                runtime_store,
+                Arc::clone(&blob_store),
+            )))
+        } else {
+            None
+        };
+        let mut factory = AgentFactory::new(&store_path)
             .builtins(caps.builtins)
             .shell(caps.shell)
             .mob(caps.mob)
             .comms(caps.comms)
             .memory(caps.memory);
+        if let Some(machine) = image_generation_machine {
+            factory = factory.with_image_generation_machine(machine);
+        }
         let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
+        builder.default_blob_store = Some(blob_store);
         if let Some(store) = session_store {
             builder.default_session_store = Some(store);
         }
@@ -765,7 +788,9 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook,
         }) as Arc<dyn MobSessionService>;
-        Self::new(definition, storage, session_service)
+        let mut spec = Self::new(definition, storage, session_service);
+        spec.binary_blob_store = Some(binary_blob_store);
+        spec
     }
 
     /// Build a persistent session service with a correctly wired `AgentFactory`.
@@ -833,17 +858,20 @@ impl MobBootstrapSpec {
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path)
-            .builtins(caps.builtins)
-            .shell(caps.shell)
-            .mob(caps.mob)
-            .comms(caps.comms)
-            .memory(caps.memory);
-        let config = Config::default();
-        let mut builder = FactoryAgentBuilder::new(factory, config);
-        builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        let binary_blob_store: Arc<dyn BinaryBlobStore> = match ObjectStoreBlobStore::local(
+            store_path.join("blobs"),
+        ) {
+            Ok(store) => Arc::new(store),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to initialize persistent binary blob store; falling back to in-memory blobs"
+                );
+                Arc::new(ObjectStoreBlobStore::memory())
+            }
+        };
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
+            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
         // Use a SQLite-backed runtime store so we get BOTH durability across
         // process restart AND control-op authority (archive/retire). The
         // earlier 0.6.1 wiring used `Some(InMemoryRuntimeStore)`, which was
@@ -859,6 +887,19 @@ impl MobBootstrapSpec {
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         ));
+        let mut factory = AgentFactory::new(&store_path)
+            .builtins(caps.builtins)
+            .shell(caps.shell)
+            .mob(caps.mob)
+            .comms(caps.comms)
+            .memory(caps.memory);
+        if caps.image_generation {
+            factory = factory.with_image_generation_machine(runtime_adapter.clone());
+        }
+        let config = Config::default();
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        builder.default_blob_store = Some(blob_store.clone());
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -877,6 +918,7 @@ impl MobBootstrapSpec {
         }) as Arc<dyn MobSessionService>;
         let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_adapter = Some(runtime_adapter);
+        spec.binary_blob_store = Some(binary_blob_store);
         spec
     }
 
@@ -890,18 +932,11 @@ impl MobBootstrapSpec {
         caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
-        let factory = AgentFactory::new(&store_path)
-            .builtins(caps.builtins)
-            .shell(caps.shell)
-            .mob(caps.mob)
-            .comms(caps.comms)
-            .memory(caps.memory);
         let config = Config::default();
         let session_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
-        let mut builder = FactoryAgentBuilder::new(factory, config);
-        builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
+            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
         // Ephemeral mode: an in-memory runtime_store is fine — there is no
         // restart to survive. But it MUST be passed as `Some(...)` to the
         // session service so meerkat's `load_persisted_session_for_control`
@@ -914,6 +949,18 @@ impl MobBootstrapSpec {
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         ));
+        let mut factory = AgentFactory::new(&store_path)
+            .builtins(caps.builtins)
+            .shell(caps.shell)
+            .mob(caps.mob)
+            .comms(caps.comms)
+            .memory(caps.memory);
+        if caps.image_generation {
+            factory = factory.with_image_generation_machine(runtime_adapter.clone());
+        }
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
+        builder.default_blob_store = Some(blob_store.clone());
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -932,6 +979,7 @@ impl MobBootstrapSpec {
         }) as Arc<dyn MobSessionService>;
         let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_adapter = Some(runtime_adapter);
+        spec.binary_blob_store = Some(binary_blob_store);
         spec
     }
 }
@@ -1008,6 +1056,7 @@ pub struct CapabilityFlags {
     pub mob: bool,
     pub comms: bool,
     pub memory: bool,
+    pub image_generation: bool,
 }
 
 impl Default for CapabilityFlags {
@@ -1018,6 +1067,7 @@ impl Default for CapabilityFlags {
             mob: true,
             comms: true,
             memory: true,
+            image_generation: false,
         }
     }
 }
@@ -1030,6 +1080,7 @@ pub type RealMobRuntime = MobRuntime;
 pub struct MobRuntime {
     handle: MobHandle,
     session_service: Option<Arc<dyn MobSessionService>>,
+    binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -1039,6 +1090,7 @@ impl MobRuntime {
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
+        let binary_blob_store = spec.binary_blob_store.clone();
         let effective_runtime_adapter = spec
             .runtime_adapter
             .clone()
@@ -1057,7 +1109,7 @@ impl MobRuntime {
         }
 
         builder = builder
-            .with_session_service(spec.session_service)
+            .with_session_service(session_service.clone())
             .allow_ephemeral_sessions(spec.options.allow_ephemeral_sessions)
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
 
@@ -1069,6 +1121,7 @@ impl MobRuntime {
         Ok(Self {
             handle,
             session_service: Some(session_service),
+            binary_blob_store,
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -1077,6 +1130,7 @@ impl MobRuntime {
         Self {
             handle,
             session_service: None,
+            binary_blob_store: None,
             _ephemeral_dir: None,
         }
     }
@@ -1236,6 +1290,10 @@ impl MobRuntime {
     pub fn session_service(&self) -> Option<&Arc<dyn MobSessionService>> {
         self.session_service.as_ref()
     }
+
+    pub fn binary_blob_store(&self) -> Option<Arc<dyn BinaryBlobStore>> {
+        self.binary_blob_store.clone()
+    }
 }
 
 /// Project a meerkat `MobMemberListEntry` into mobkit's HTTP JSON shape.
@@ -1246,6 +1304,54 @@ impl MobRuntime {
 /// `MobMemberSnapshot.current_session_id` natively.
 pub fn member_entry_to_json(entry: &meerkat_mob::runtime::MobMemberListEntry) -> serde_json::Value {
     serde_json::to_value(entry).unwrap_or(serde_json::Value::Null)
+}
+
+pub fn content_input_has_images(content: &meerkat_core::ContentInput) -> bool {
+    match content {
+        meerkat_core::ContentInput::Text(_) => false,
+        meerkat_core::ContentInput::Blocks(blocks) => blocks
+            .iter()
+            .any(|block| matches!(block, meerkat_core::ContentBlock::Image { .. })),
+    }
+}
+
+pub fn model_capabilities_for_role(
+    definition: &MobDefinition,
+    role: &str,
+) -> crate::runtime::ConsoleModelCapabilities {
+    let profile_name = ProfileName::from(role);
+    let image_input = definition
+        .resolve_inline_profile(&profile_name)
+        .and_then(|profile| {
+            meerkat_core::Provider::infer_from_model(&profile.model).and_then(|provider| {
+                meerkat_core::model_profile::profile_for(provider, &profile.model)
+            })
+        })
+        .map(|profile| profile.vision)
+        .unwrap_or(false);
+    crate::runtime::ConsoleModelCapabilities { image_input }
+}
+
+pub async fn assert_member_accepts_images(
+    handle: &MobHandle,
+    member_id: &str,
+    content: &meerkat_core::ContentInput,
+) -> Result<(), MobRuntimeError> {
+    if !content_input_has_images(content) {
+        return Ok(());
+    }
+    let mid = meerkat_mob::ids::MeerkatId::from(member_id);
+    let Some(member) = handle.get_member(&mid).await else {
+        return Err(MobRuntimeError::InvalidInput("member not found"));
+    };
+    let caps = model_capabilities_for_role(handle.definition(), member.role.as_str());
+    if caps.image_input {
+        Ok(())
+    } else {
+        Err(MobRuntimeError::InvalidInput(
+            "target member model cannot accept image input",
+        ))
+    }
 }
 
 /// Send content to a mob member and return the bridge session id that

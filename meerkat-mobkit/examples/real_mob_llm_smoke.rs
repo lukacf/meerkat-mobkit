@@ -103,7 +103,7 @@ comms = true
     println!("REAL_SMOKE: message sent to lead-1");
 
     let mut final_result: Option<String> = None;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(2);
 
     while tokio::time::Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());

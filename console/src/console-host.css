@@ -2032,6 +2032,41 @@ svg[data-svg="fit"],
   display: flex; flex-direction: column; gap: 8px;
 }
 .composer__shell:focus-within { border-color: var(--line-strong); }
+.composer__shell.is-drag-active { border-color: var(--accent); }
+.composer__attachments {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+}
+.composer__attachment {
+  position: relative;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--bg-elev-1);
+}
+.composer__attachment img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.composer__attachment button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ink) 84%, transparent);
+  color: var(--bg);
+  line-height: 18px;
+  cursor: pointer;
+}
 .composer textarea {
   width: 100%;
   border: none;
@@ -2055,6 +2090,11 @@ svg[data-svg="fit"],
   font-family: var(--disp);
   display: flex; align-items: center; gap: 4px;
   line-height: 1.3;
+}
+.composer__chip--button {
+  min-width: 26px;
+  justify-content: center;
+  cursor: pointer;
 }
 .composer__chip .k { color: var(--ink-dim); font-family: var(--mono); }
 .composer__chip.mono { font-family: var(--mono); font-size: 11px; }

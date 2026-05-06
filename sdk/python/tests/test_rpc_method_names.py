@@ -6,9 +6,11 @@ and the Rust RPC dispatch table.
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from meerkat_mobkit.errors import NotConnectedError, RpcError
 
 
 def make_mock_mob_handle(rpc_responses=None):
@@ -30,6 +32,30 @@ def make_mock_mob_handle(rpc_responses=None):
     return handle, calls
 
 
+def make_http_mob_handle():
+    from meerkat_mobkit.runtime import MobHandle
+
+    runtime = MagicMock()
+    runtime.rust_http_base_url = "http://127.0.0.1:8765"
+    handle = MobHandle.__new__(MobHandle)
+    handle._runtime = runtime
+    return handle
+
+
+class FakeHttpResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return json.dumps(self.payload).encode("utf-8")
+
+
 @pytest.mark.asyncio
 async def test_attach_session_rpc_name():
     """P1 regression: attach_session must call mobkit/attach_existing_session."""
@@ -42,6 +68,125 @@ async def test_attach_session_rpc_name():
     })
     await handle.attach_session("worker", "w1", "sid_abc123")
     assert calls[0][0] == "mobkit/attach_existing_session"
+
+
+@pytest.mark.asyncio
+async def test_send_with_attachments_uses_multipart(monkeypatch):
+    from meerkat_mobkit import runtime as runtime_module
+
+    captured = {}
+
+    def fake_urlopen(req, timeout=60):
+        captured["url"] = req.full_url
+        body = req.data.decode("utf-8", errors="replace")
+        captured["body"] = body
+        assert 'name="payload"' in body
+        assert 'name="file:upload-1"' in body
+        assert '"method": "mobkit/send_message"' in body
+        assert '"type": "image_upload"' in body
+        return FakeHttpResponse({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "result": {"accepted": True, "member_id": "m-1", "session_id": "s-1"},
+        })
+
+    monkeypatch.setattr(runtime_module.urllib_request, "urlopen", fake_urlopen)
+    handle = make_http_mob_handle()
+    result = await handle.send("m-1", "look", attachments=[b"png"])
+    assert captured["url"] == "http://127.0.0.1:8765/console/rpc/multipart"
+    assert result.accepted is True
+    assert result.session_id == "s-1"
+
+
+@pytest.mark.asyncio
+async def test_send_with_structured_content_and_attachment_forwards_mode(monkeypatch):
+    from meerkat_mobkit import runtime as runtime_module
+
+    def fake_urlopen(req, timeout=60):
+        body = req.data.decode("utf-8", errors="replace")
+        assert '"handling_mode": "steer"' in body
+        assert '"type": "text"' in body
+        assert '"type": "image_upload"' in body
+        assert '"media_type": "image/jpeg"' in body
+        return FakeHttpResponse({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "result": {"accepted": True, "member_id": "m-1", "session_id": "s-2"},
+        })
+
+    monkeypatch.setattr(runtime_module.urllib_request, "urlopen", fake_urlopen)
+    handle = make_http_mob_handle()
+    result = await handle.send(
+        "m-1",
+        content=[{"type": "text", "text": "hello"}],
+        attachments=[(b"jpg", "image/jpeg", "photo.jpg")],
+        handling_mode="steer",
+    )
+    assert result.session_id == "s-2"
+
+
+@pytest.mark.asyncio
+async def test_send_attachment_requires_http_base():
+    from meerkat_mobkit.runtime import MobHandle
+
+    runtime = MagicMock()
+    runtime.rust_http_base_url = None
+    handle = MobHandle.__new__(MobHandle)
+    handle._runtime = runtime
+    with pytest.raises(NotConnectedError):
+        await handle.send("m-1", "x", attachments=[b"png"])
+
+
+@pytest.mark.asyncio
+async def test_upload_blob_uses_multipart(monkeypatch):
+    from meerkat_mobkit import runtime as runtime_module
+
+    def fake_urlopen(req, timeout=60):
+        body = req.data.decode("utf-8", errors="replace")
+        assert '"method": "mobkit/blob/upload"' in body
+        assert '"media_type": "image/png"' in body
+        return FakeHttpResponse({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "result": {"blob_id": "sha256:abc", "media_type": "image/png", "size": 3},
+        })
+
+    monkeypatch.setattr(runtime_module.urllib_request, "urlopen", fake_urlopen)
+    handle = make_http_mob_handle()
+    result = await handle.upload_blob(b"png", media_type="image/png", filename="a.png")
+    assert result["blob_id"] == "sha256:abc"
+    assert result["size"] == 3
+
+
+@pytest.mark.asyncio
+async def test_upload_blob_raises_rpc_error(monkeypatch):
+    from meerkat_mobkit import runtime as runtime_module
+
+    def fake_urlopen(req, timeout=60):
+        return FakeHttpResponse({
+            "jsonrpc": "2.0",
+            "id": "test",
+            "error": {"code": -32602, "message": "bad upload", "data": {"reason": "unit"}},
+        })
+
+    monkeypatch.setattr(runtime_module.urllib_request, "urlopen", fake_urlopen)
+    handle = make_http_mob_handle()
+    with pytest.raises(RpcError) as exc:
+        await handle.upload_blob(b"png", media_type="image/png")
+    assert exc.value.code == -32602
+    assert exc.value.method == "mobkit/blob/upload"
+
+
+@pytest.mark.asyncio
+async def test_upload_blob_requires_http_base():
+    from meerkat_mobkit.runtime import MobHandle
+
+    runtime = MagicMock()
+    runtime.rust_http_base_url = None
+    handle = MobHandle.__new__(MobHandle)
+    handle._runtime = runtime
+    with pytest.raises(NotConnectedError):
+        await handle.upload_blob(b"png", media_type="image/png")
 
 
 @pytest.mark.asyncio

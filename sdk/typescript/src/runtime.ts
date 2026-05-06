@@ -64,7 +64,10 @@ import {
   parseMobRun,
   eventQueryToDict,
   parseIdentityStatus,
+  parseBlobGetResult,
+  parseBlobUploadResult,
   dispatchInputToDict,
+  contentBlockToDict,
   type StatusResult,
   type CapabilitiesResult,
   type ReconcileResult,
@@ -91,6 +94,8 @@ import {
   type MobRun,
   type EventQuery,
   type IdentityStatus,
+  type BlobGetResult,
+  type BlobUploadResult,
   type DispatchInput,
   type DispatchContentBlock,
 } from "./types.js";
@@ -146,6 +151,42 @@ function serializeConfig(
     result[k] = serializeConfig(v, seen);
   }
   return result;
+}
+
+export interface BlobUploadInput {
+  readonly blob: Blob;
+  readonly mediaType?: string;
+  readonly filename?: string;
+  readonly alt?: string;
+}
+
+export type BlobUploadSource = Blob | BlobUploadInput;
+
+export interface SendMessageOptions {
+  readonly attachments?: readonly BlobUploadSource[];
+  readonly handlingMode?: "queue" | "steer";
+}
+
+interface NormalizedBlobUpload {
+  readonly uploadId: string;
+  readonly blob: Blob;
+  readonly mediaType: string;
+  readonly filename: string;
+  readonly alt?: string;
+}
+
+function normalizeBlobUpload(input: BlobUploadSource, index: number): NormalizedBlobUpload {
+  const record = input instanceof Blob ? { blob: input } : input;
+  const blob = record.blob;
+  const mediaType = record.mediaType || blob.type || "application/octet-stream";
+  const extension = mediaType.includes("/") ? mediaType.split("/")[1] : "bin";
+  return {
+    uploadId: `upload-${index + 1}`,
+    blob,
+    mediaType,
+    filename: record.filename || `attachment-${index + 1}.${extension}`,
+    alt: record.alt,
+  };
 }
 
 // -- MobKitRuntime --------------------------------------------------------
@@ -344,9 +385,16 @@ export class MobKitRuntime {
 
   /** Get agent snapshot by identity. */
   async agent(identity: string): Promise<MemberSnapshot> {
-    return parseMemberSnapshot(
-      await this._rpc("mobkit/identity/agent", { identity }),
+    const status = parseIdentityStatus(
+      await this._rpc("mobkit/status_identity", { identity }),
     );
+    return {
+      agentIdentity: status.agentRuntimeId || status.identity,
+      role: status.profile,
+      state: status.lifecycleState,
+      wiredTo: [],
+      labels: status.labels,
+    };
   }
 
   /** Send content to an identity. Content can be a string or content blocks. */
@@ -358,14 +406,9 @@ export class MobKitRuntime {
     if (typeof content === "string") {
       params.content = content;
     } else {
-      params.content = content.map((b) => {
-        if (b.type === "image") {
-          return { type: "image", media_type: b.mediaType, data: b.data };
-        }
-        return { type: "text", text: b.text };
-      });
+      params.content = content.map(contentBlockToDict);
     }
-    return this._rpc("mobkit/identity/send", params);
+    return this._rpc("mobkit/send", params);
   }
 
   /** Dispatch structured input to an identity. */
@@ -373,7 +416,7 @@ export class MobKitRuntime {
     identity: string,
     input: DispatchInput,
   ): Promise<unknown> {
-    return this._rpc("mobkit/identity/dispatch", {
+    return this._rpc("mobkit/dispatch", {
       identity,
       dispatch_input: dispatchInputToDict(input),
     });
@@ -381,34 +424,34 @@ export class MobKitRuntime {
 
   /** Subscribe to events for an identity. */
   async subscribe(identity: string): Promise<unknown> {
-    return this._rpc("mobkit/identity/subscribe", { identity });
+    return this._rpc("mobkit/subscribe", { identity });
   }
 
   /** Get identity status. */
   async status(identity: string): Promise<IdentityStatus> {
     return parseIdentityStatus(
-      await this._rpc("mobkit/identity/status", { identity }),
+      await this._rpc("mobkit/status_identity", { identity }),
     );
   }
 
   /** Respawn an identity (non-destructive recovery). */
   async respawn(identity: string): Promise<unknown> {
-    return this._rpc("mobkit/identity/respawn", { identity });
+    return this._rpc("mobkit/respawn", { identity });
   }
 
   /** Retire an identity. */
   async retire(identity: string): Promise<unknown> {
-    return this._rpc("mobkit/identity/retire", { identity });
+    return this._rpc("mobkit/retire", { identity });
   }
 
   /** Reset an identity (destructive continuity reset). */
   async reset(identity: string): Promise<unknown> {
-    return this._rpc("mobkit/identity/reset", { identity });
+    return this._rpc("mobkit/reset", { identity });
   }
 
   /** Delete an identity permanently. */
   async deleteIdentity(identity: string): Promise<unknown> {
-    return this._rpc("mobkit/identity/delete", { identity });
+    return this._rpc("mobkit/delete_identity", { identity });
   }
 }
 
@@ -559,17 +602,117 @@ export class MobHandle {
 
   // -- Messaging ----------------------------------------------------------
 
-  async send(memberId: string, message: string): Promise<SendMessageResult> {
-    return parseSendMessageResult(
-      await this._runtime._rpc("mobkit/send_message", {
-        member_id: memberId,
-        message,
-      }),
-    );
+  async send(
+    memberId: string,
+    message: string | DispatchContentBlock[],
+    options?: SendMessageOptions,
+  ): Promise<SendMessageResult> {
+    const params: Record<string, unknown> = { member_id: memberId };
+    if (options?.handlingMode) {
+      params.handling_mode = options.handlingMode;
+    }
+    const uploads = options?.attachments?.map(normalizeBlobUpload) ?? [];
+    if (typeof message === "string") {
+      if (uploads.length > 0) {
+        params.content = [
+          ...(message.trim() ? [{ type: "text", text: message }] : []),
+          ...uploads.map((upload) => ({
+            type: "image_upload",
+            upload_id: upload.uploadId,
+            media_type: upload.mediaType,
+            ...(upload.alt ? { alt: upload.alt } : {}),
+          })),
+        ];
+      } else {
+        params.message = message;
+      }
+    } else {
+      params.content = [
+        ...message.map(contentBlockToDict),
+        ...uploads.map((upload) => ({
+          type: "image_upload",
+          upload_id: upload.uploadId,
+          media_type: upload.mediaType,
+          ...(upload.alt ? { alt: upload.alt } : {}),
+        })),
+      ];
+    }
+    if (uploads.length > 0) {
+      return parseSendMessageResult(
+        await this._multipartRpc("mobkit/send_message", params, uploads),
+      );
+    }
+    return parseSendMessageResult(await this._runtime._rpc("mobkit/send_message", params));
   }
 
   /** Alias for {@link send}. */
   sendMessage = this.send.bind(this);
+
+  async getBlob(blobId: string): Promise<BlobGetResult> {
+    return parseBlobGetResult(
+      await this._runtime._rpc("mobkit/blob/get", { blob_id: blobId }),
+    );
+  }
+
+  async uploadBlob(file: BlobUploadSource): Promise<BlobUploadResult> {
+    const upload = normalizeBlobUpload(file, 0);
+    return parseBlobUploadResult(
+      await this._multipartRpc(
+        "mobkit/blob/upload",
+        {
+          upload: {
+            type: "image_upload",
+            upload_id: upload.uploadId,
+            media_type: upload.mediaType,
+            ...(upload.alt ? { alt: upload.alt } : {}),
+          },
+        },
+        [upload],
+      ),
+    );
+  }
+
+  async upload_blob(file: BlobUploadSource): Promise<BlobUploadResult> {
+    return this.uploadBlob(file);
+  }
+
+  private async _multipartRpc(
+    method: string,
+    params: Record<string, unknown>,
+    uploads: readonly NormalizedBlobUpload[],
+  ): Promise<unknown> {
+    const baseUrl = this._runtime.rustHttpBaseUrl;
+    if (baseUrl === null) {
+      throw new NotConnectedError(
+        "multipart RPC requires rustHttpBaseUrl — start the gateway or call runtime.setRustHttpBase(...)",
+      );
+    }
+    const id = nextRequestId(method);
+    const form = new FormData();
+    form.append("payload", JSON.stringify(buildJsonRpcRequest(id, method, params)));
+    for (const upload of uploads) {
+      const blob = upload.blob.type === upload.mediaType
+        ? upload.blob
+        : upload.blob.slice(0, upload.blob.size, upload.mediaType);
+      form.append(`file:${upload.uploadId}`, blob, upload.filename);
+    }
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/console/rpc/multipart`, {
+      method: "POST",
+      body: form,
+    });
+    const body = await response.json() as Record<string, unknown>;
+    if ("error" in body) {
+      const err = body.error as Record<string, unknown>;
+      throw new RpcError(
+        Number(err.code ?? -1),
+        String(err.message ?? String(err)),
+        id,
+        method,
+        err.data,
+      );
+    }
+    return body.result;
+  }
 
   async ensureMember(
     memberId: string,

@@ -5,6 +5,14 @@ import {
 } from "@console-core";
 import type { ConsoleAgent, ConsoleExperience, ConsoleExperienceAgentSnapshotRow } from "../types";
 
+function normalizeModelCapabilities(entry: unknown): { image_input: boolean } {
+  const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
+  const caps = record.model_capabilities && typeof record.model_capabilities === "object"
+    ? record.model_capabilities as Record<string, unknown>
+    : {};
+  return { image_input: caps.image_input === true };
+}
+
 export function normalizeAgents(
   experience: ConsoleExperience | null,
   modules: unknown[]
@@ -30,6 +38,7 @@ export function normalizeAgents(
         normalizeIdentityStatusRow(entry);
       const watchFields = normalizeSidebarWatchFields(entry);
       const responsePhase = normalizeResponsePhase(entry.response_phase);
+      const modelCapabilities = normalizeModelCapabilities(entry);
 
       return {
         ...(statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {}),
@@ -66,6 +75,7 @@ export function normalizeAgents(
             ? { addressable: statusRow.addressability === "addressable" }
             : {}),
         ...(entry.affordances !== undefined && { affordances: entry.affordances }),
+        model_capabilities: modelCapabilities,
         ...watchFields,
       };
     });
@@ -92,6 +102,7 @@ export function normalizeAgents(
         ...(statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {}),
         addressable: false,
         affordances: { can_send_message: false },
+        model_capabilities: { image_input: false },
       };
     });
   }
@@ -102,6 +113,7 @@ export function normalizeAgents(
       member_id: String(moduleId),
       label: String(moduleId),
       kind: "module_agent",
+      model_capabilities: { image_input: false },
     }));
   }
 

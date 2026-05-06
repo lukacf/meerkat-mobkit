@@ -179,6 +179,14 @@ pub async fn build_runtime_bundle(path: &Path) -> Result<IncidentRuntimeBundle> 
     build_runtime_bundle_with_client(&scenario, None).await
 }
 
+pub async fn build_runtime_bundle_with_default_client(
+    path: &Path,
+    default_llm_client: Arc<dyn LlmClient>,
+) -> Result<IncidentRuntimeBundle> {
+    let scenario = load_scenario(path)?;
+    build_runtime_bundle_with_client(&scenario, Some(default_llm_client)).await
+}
+
 async fn build_runtime_bundle_with_client(
     scenario: &IncidentScenario,
     default_llm_client: Option<Arc<dyn LlmClient>>,
@@ -186,10 +194,11 @@ async fn build_runtime_bundle_with_client(
     let definition = incident_definition()?;
     let mut builder = UnifiedRuntime::builder()
         .definition(definition)
+        .image_generation(true)
         .session_hook(Arc::new(IncidentSessionHook))
         .module_config(example_module_config(scenario)?)
         .edge_discovery(ScenarioEdgeDiscovery::new(scenario.links.clone()))
-        .timeout(Duration::from_secs(60));
+        .timeout(Duration::from_mins(1));
     if let Some(client) = default_llm_client {
         builder = builder.default_llm_client(client);
     }
@@ -468,7 +477,9 @@ skills = ["comms_protocol", "commander_role"]
 peer_description = "Incident commander coordinating the CardinalPay outage response"
 
 [profiles.commander.tools]
+builtins = true
 comms = true
+image_generation = true
 
 [profiles.payments_sre]
 model = "{model}"

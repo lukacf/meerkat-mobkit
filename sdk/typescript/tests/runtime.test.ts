@@ -5,7 +5,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { MobKitRuntime, MobHandle, ToolCaller } from "../dist/index.js";
+import { MobKitRuntime, MobHandle, ToolCaller, NotConnectedError, RpcError } from "../dist/index.js";
 
 // ---------------------------------------------------------------------------
 // Mock RPC helper
@@ -254,6 +254,109 @@ describe("MobHandle.send()", () => {
     assert.equal(result.memberId, "m-1");
     assert.equal(result.sessionId, "sess-1");
   });
+
+  it("sends image content blocks with strict source shape", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({
+      accepted: true,
+      member_id: "m-1",
+      session_id: "sess-1",
+    }));
+
+    await handle.send("m-1", [
+      { type: "image", mediaType: "image/png", data: "abc" },
+    ]);
+
+    assert.deepEqual(calls[0].params, {
+      member_id: "m-1",
+      content: [
+        {
+          type: "image",
+          media_type: "image/png",
+          source: "inline",
+          data: "abc",
+        },
+      ],
+    });
+  });
+
+  it("uses multipart RPC for attachments", async () => {
+    const { rt, handle } = createMockRuntime();
+    rt.setRustHttpBase("http://127.0.0.1:8765");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        assert.equal(String(url), "http://127.0.0.1:8765/console/rpc/multipart");
+        const form = init?.body as FormData;
+        const payload = JSON.parse(String(form.get("payload"))) as Record<string, any>;
+        assert.equal(payload.method, "mobkit/send_message");
+        assert.deepEqual(payload.params, {
+          member_id: "m-1",
+          content: [
+            { type: "text", text: "See attached" },
+            { type: "image_upload", upload_id: "upload-1", media_type: "image/png" },
+          ],
+        });
+        const file = form.get("file:upload-1") as Blob;
+        assert.equal(file.type, "image/png");
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { accepted: true, member_id: "m-1", session_id: "sess-1" },
+        }), { headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+
+      const result = await handle.send("m-1", "See attached", {
+        attachments: [new Blob(["png"], { type: "image/png" })],
+      });
+      assert.equal(result.accepted, true);
+      assert.equal(result.sessionId, "sess-1");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("appends attachments after structured content and forwards handling mode", async () => {
+    const { rt, handle } = createMockRuntime();
+    rt.setRustHttpBase("http://127.0.0.1:8765");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const form = init?.body as FormData;
+        const payload = JSON.parse(String(form.get("payload"))) as Record<string, any>;
+        assert.equal(payload.params.handling_mode, "steer");
+        assert.deepEqual(payload.params.content, [
+          { type: "text", text: "first" },
+          { type: "image_upload", upload_id: "upload-1", media_type: "image/jpeg", alt: "photo" },
+        ]);
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { accepted: true, member_id: "m-1", session_id: "sess-2" },
+        }), { headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+
+      const result = await handle.send("m-1", [{ type: "text", text: "first" }], {
+        handlingMode: "steer",
+        attachments: [{
+          blob: new Blob(["jpg"], { type: "image/jpeg" }),
+          alt: "photo",
+          filename: "photo.jpg",
+        }],
+      });
+      assert.equal(result.sessionId, "sess-2");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("requires rustHttpBaseUrl before multipart send", async () => {
+    const { handle } = createMockRuntime();
+    await assert.rejects(
+      () => handle.send("m-1", "x", { attachments: [new Blob(["x"], { type: "image/png" })] }),
+      NotConnectedError,
+    );
+  });
 });
 
 describe("MobHandle.sendMessage()", () => {
@@ -270,6 +373,90 @@ describe("MobHandle.sendMessage()", () => {
     assert.deepEqual(calls[0].params, { member_id: "m-2", message: "Hi" });
     assert.equal(result.accepted, true);
     assert.equal(result.memberId, "m-2");
+  });
+});
+
+describe("MobHandle.uploadBlob()", () => {
+  it("uploads one blob through multipart RPC", async () => {
+    const { rt, handle } = createMockRuntime();
+    rt.setRustHttpBase("http://127.0.0.1:8765/");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const form = init?.body as FormData;
+        const payload = JSON.parse(String(form.get("payload"))) as Record<string, any>;
+        assert.equal(payload.method, "mobkit/blob/upload");
+        assert.deepEqual(payload.params, {
+          upload: { type: "image_upload", upload_id: "upload-1", media_type: "image/webp" },
+        });
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: { blob_id: "sha256:abc", media_type: "image/webp", size: 3 },
+        }), { headers: { "content-type": "application/json" } });
+      }) as typeof fetch;
+
+      const result = await handle.uploadBlob(new Blob(["web"], { type: "image/webp" }));
+      assert.equal(result.blobId, "sha256:abc");
+      assert.equal(result.mediaType, "image/webp");
+      assert.equal(result.size, 3);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("exposes upload_blob alias", async () => {
+    const { rt, handle } = createMockRuntime();
+    rt.setRustHttpBase("http://127.0.0.1:8765");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: string | URL | Request) =>
+        new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: "upload",
+          result: { blob_id: "sha256:def", media_type: "image/png", size: 1 },
+        }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+
+      const result = await handle.upload_blob(new Blob(["x"], { type: "image/png" }));
+      assert.equal(result.blobId, "sha256:def");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("maps multipart JSON-RPC errors to RpcError", async () => {
+    const { rt, handle } = createMockRuntime();
+    rt.setRustHttpBase("http://127.0.0.1:8765");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async (_url: string | URL | Request) =>
+        new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: "upload",
+          error: {
+            code: -32602,
+            message: "bad upload",
+            data: { reason: "test" },
+          },
+        }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+
+      await assert.rejects(
+        () => handle.uploadBlob(new Blob(["x"], { type: "image/png" })),
+        (err: unknown) => err instanceof RpcError
+          && err.code === -32602
+          && err.method === "mobkit/blob/upload",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("requires rustHttpBaseUrl before upload", async () => {
+    const { handle } = createMockRuntime();
+    await assert.rejects(
+      () => handle.uploadBlob(new Blob(["x"], { type: "image/png" })),
+      NotConnectedError,
+    );
   });
 });
 

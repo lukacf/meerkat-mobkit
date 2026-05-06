@@ -281,7 +281,7 @@ fn identity_first_types_lease_grant_ttl_as_ms() {
     let grant = LeaseGrant {
         identity: AgentIdentity::parse("agent:a").expect("parse"),
         fencing_token: FencingToken::new(1),
-        ttl: std::time::Duration::from_millis(30_000),
+        ttl: std::time::Duration::from_secs(30),
     };
     let json = serde_json::to_value(&grant).expect("serialize");
     assert_eq!(json["ttl"], 30_000);
@@ -297,7 +297,7 @@ fn identity_first_types_lease_acquire_result_roundtrip() {
     let grant = LeaseGrant {
         identity: AgentIdentity::parse("agent:a").expect("parse"),
         fencing_token: FencingToken::new(1),
-        ttl: std::time::Duration::from_millis(5000),
+        ttl: std::time::Duration::from_secs(5),
     };
     let acquired = LeaseAcquireResult::Acquired(grant.clone());
     let json = serde_json::to_string(&acquired).expect("serialize");
@@ -318,7 +318,7 @@ fn identity_first_types_lease_renew_result_roundtrip() {
     let grant = LeaseGrant {
         identity: AgentIdentity::parse("agent:b").expect("parse"),
         fencing_token: FencingToken::new(2),
-        ttl: std::time::Duration::from_millis(10_000),
+        ttl: std::time::Duration::from_secs(10),
     };
     let renewed = LeaseRenewResult::Renewed(grant);
     let json = serde_json::to_string(&renewed).expect("serialize");
@@ -516,7 +516,7 @@ fn identity_first_types_identity_status_full_roundtrip() {
         checkpoint_version: Some(CheckpointVersion::new(15)),
         lease: Some(LeaseInfo {
             fencing_token: FencingToken::new(42),
-            ttl_remaining: std::time::Duration::from_millis(25_000),
+            ttl_remaining: std::time::Duration::from_secs(25),
             healthy: true,
         }),
         continuity_health: Some(ContinuityHealth {

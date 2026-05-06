@@ -36,6 +36,7 @@ export interface ConsoleSendMessageResult {
   accepted?: boolean;
   member_id?: string;
   session_id?: string;
+  interaction_id?: string;
 }
 
 export type ConsoleGatewayInteractionRejectedError = ConsoleInteractionRejectedError;
@@ -46,6 +47,10 @@ export interface ConsoleAgentAffordances {
   can_retire?: boolean;
   can_respawn?: boolean;
   runtime_mode?: string;
+}
+
+export interface ConsoleModelCapabilities {
+  image_input?: boolean;
 }
 
 export interface ConsoleAgent extends SidebarWatchFields {
@@ -67,6 +72,7 @@ export interface ConsoleAgent extends SidebarWatchFields {
   group?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
+  model_capabilities?: ConsoleModelCapabilities;
 }
 
 export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatusRow>, SidebarWatchFields {
@@ -85,6 +91,7 @@ export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatu
   group?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
+  model_capabilities?: ConsoleModelCapabilities;
 }
 
 export interface ConsoleTopologyNode {

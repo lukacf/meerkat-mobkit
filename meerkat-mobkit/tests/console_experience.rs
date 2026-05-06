@@ -332,6 +332,7 @@ fn phase0_contract_010_console_experience_preserves_watch_and_degraded_fields() 
             state: Some("running".to_string()),
             session_id: Some("sess-1".to_string()),
             response_phase: Some("waiting".to_string()),
+            model_capabilities: meerkat_mobkit::ConsoleModelCapabilities { image_input: false },
             watched: Some(true),
             alert_level: Some("critical".to_string()),
             degraded: Some(true),
@@ -365,6 +366,9 @@ fn phase0_contract_010_console_experience_preserves_watch_and_degraded_fields() 
                 "state":"running",
                 "session_id":"sess-1",
                 "response_phase":"waiting",
+                "model_capabilities": {
+                    "image_input": false
+                },
                 "watched": true,
                 "alertLevel":"critical",
                 "degraded": true,
