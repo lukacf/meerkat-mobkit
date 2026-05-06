@@ -616,17 +616,17 @@ comms = true
 
         let builder = UnifiedRuntimeBuilder::default().definition(definition);
         let spec = builder.resolve_mob_spec().await.expect("spec resolves");
-        // Adapter is wired explicitly via spec.runtime_adapter so that
-        // PersistentSessionService keeps its `runtime_store` at None and the
-        // StoreCheckpointer stays enabled. Anything else and resume after a
-        // process restart raises "missing durable session snapshot".
+        // Adapter is wired both via spec.runtime_adapter (explicit gateway
+        // pattern) AND via the session service's runtime_store (so
+        // archive/retire control ops succeed). Both ride a persistent
+        // SqliteRuntimeStore at <store_path>/runtime.sqlite.
         assert!(
             spec.runtime_adapter.is_some(),
             "definition-based ephemeral specs must provide spec.runtime_adapter directly",
         );
         assert!(
-            spec.session_service.runtime_adapter().is_none(),
-            "session service must not own the runtime adapter; that disables the StoreCheckpointer",
+            spec.session_service.runtime_adapter().is_some(),
+            "session service must own a runtime_store so archive/retire control ops succeed",
         );
     }
 }

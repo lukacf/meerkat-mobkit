@@ -388,15 +388,33 @@ fn build_persistent_session_service(
     let builder = FactoryAgentBuilder::new(factory, config);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
         Arc::new(meerkat_store::FsBlobStore::new(blob_dir));
+    // Persistent runtime store at <store_dir>/runtime.sqlite — same path
+    // chosen by `MobBootstrapSpec::persistent_inner`, so a gateway and a
+    // library-mode runtime pointed at the same dir share state.
+    let runtime_db_path = sqlite_path
+        .parent()
+        .map(|p| p.join("runtime.sqlite"))
+        .unwrap_or_else(|| std::path::PathBuf::from("runtime.sqlite"));
+    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        match meerkat_runtime::store::SqliteRuntimeStore::new(&runtime_db_path) {
+            Ok(store) => Arc::new(store),
+            Err(err) => {
+                tracing::warn!(
+                    path = %runtime_db_path.display(),
+                    error = %err,
+                    "failed to open SqliteRuntimeStore; falling back to InMemoryRuntimeStore. \
+                     Sessions will not survive process restart and archive operations may fail.",
+                );
+                Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
+            }
+        };
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
         session_store,
-        None,
+        Some(Arc::clone(&runtime_store)),
         blob_store.clone(),
     ));
-    let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
-        Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
     let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
         runtime_store,
         blob_store,

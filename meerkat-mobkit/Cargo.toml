@@ -48,7 +48,7 @@ meerkat-mob = "0.6.0"
 meerkat-mcp = "0.6.0"
 meerkat-models = "0.6.0"
 meerkat = { version = "0.6.0", features = ["comms", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }
-meerkat-runtime = "0.6.0"
+meerkat-runtime = { version = "0.6.0", features = ["sqlite-store"] }
 meerkat-session = { version = "0.6.0", features = ["session-store"] }
 meerkat-store = { version = "0.6.0", features = ["sqlite"] }
 meerkat-tools = "0.6.0"
