@@ -819,15 +819,26 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
+        // Keep the session service's `runtime_store` at `None` so meerkat's
+        // StoreCheckpointer stays enabled — that's what writes the
+        // authoritative `Session` snapshot into `session_store` after each
+        // turn, so `load_persisted_session(sid)` (the resume path used by
+        // `with_resume_bridge_session_id`) can resolve it after a process
+        // restart. Wire the runtime adapter explicitly via
+        // `spec.runtime_adapter` instead, mirroring the standalone gateway.
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            runtime_store,
+            Arc::clone(&blob_store),
+        ));
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
                 max_sessions,
                 session_store,
-                Some(runtime_store),
-                blob_store.clone(),
+                None,
+                blob_store,
             ));
         let hook = hook.unwrap_or_else(|| {
             Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
@@ -837,7 +848,9 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook,
         }) as Arc<dyn MobSessionService>;
-        Self::new(definition, storage, session_service)
+        let mut spec = Self::new(definition, storage, session_service);
+        spec.runtime_adapter = Some(runtime_adapter);
+        spec
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -862,14 +875,21 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(meerkat_store::FsBlobStore::new(store_path.join("blobs")));
+        // See `persistent_inner` for the rationale: runtime_store stays None
+        // on the session service so the StoreCheckpointer writes snapshots
+        // into `session_store`. The runtime adapter is provided separately.
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            runtime_store,
+            Arc::clone(&blob_store),
+        ));
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
                 max_sessions,
                 session_store,
-                Some(runtime_store),
+                None,
                 blob_store,
             ));
         let hook = hook.unwrap_or_else(|| {
@@ -880,7 +900,9 @@ impl MobBootstrapSpec {
             hook,
             after_create_hook,
         }) as Arc<dyn MobSessionService>;
-        Self::new(definition, storage, session_service)
+        let mut spec = Self::new(definition, storage, session_service);
+        spec.runtime_adapter = Some(runtime_adapter);
+        spec
     }
 }
 
@@ -1293,12 +1315,19 @@ mod tests {
             },
         );
 
-        // The spec carries a session service that provides a runtime adapter.
-        // The adapter is resolved lazily via session_service.runtime_adapter()
-        // rather than being set directly on spec.runtime_adapter.
+        // Adapter is wired via spec.runtime_adapter (gateway pattern). The
+        // session service must NOT carry its own runtime_store, otherwise
+        // meerkat's StoreCheckpointer is disabled and session snapshots are
+        // never written to `session_store` — see the
+        // `persistent_inner_keeps_store_checkpointer_enabled` regression
+        // test below for the full failure mode.
         assert!(
-            spec.session_service.runtime_adapter().is_some() || spec.runtime_adapter.is_some(),
-            "persistent_with_hook must provide a runtime adapter (directly or via session service)"
+            spec.runtime_adapter.is_some(),
+            "persistent_with_hook must provide a runtime adapter via spec.runtime_adapter"
+        );
+        assert!(
+            spec.session_service.runtime_adapter().is_none(),
+            "session service must not own the runtime adapter; that disables the StoreCheckpointer"
         );
 
         // The hook isn't called until create_session — verify the wrapper exists
@@ -1412,11 +1441,25 @@ mod tests {
         );
     }
 
-    /// Regression: persistent bootstrap must use a runtime-backed session
-    /// service so comms/runtime work resolves through the canonical runtime
-    /// path instead of a split external adapter.
+    /// Regression for "missing durable session snapshot" (mobkit 0.6.0).
+    ///
+    /// `persistent_inner` previously handed the `PersistentSessionService` an
+    /// `InMemoryRuntimeStore`. That had two consequences inside meerkat:
+    ///   1. The `StoreCheckpointer` is gated on `runtime_store.is_none()`
+    ///      (`meerkat-session/src/persistent.rs:2130`), so it was disabled —
+    ///      no `Session` snapshot was ever written into the session store.
+    ///   2. `load_authoritative_session_base` consults `runtime_store` first
+    ///      and only falls back to `self.store.load(id)` when it's None.
+    ///
+    /// On process restart the in-memory store was empty, the SQLite store had
+    /// no snapshot to fall back to, and `with_resume_bridge_session_id` raised
+    /// "missing durable session snapshot for '<sid>'".
+    ///
+    /// The fix keeps `runtime_store` at `None` on the session service
+    /// (re-enabling the checkpointer) and wires the runtime adapter via
+    /// `spec.runtime_adapter` instead.
     #[test]
-    fn persistent_bootstrap_provides_runtime_adapter() {
+    fn persistent_bootstrap_keeps_store_checkpointer_enabled() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(sqlite) = meerkat_store::SqliteSessionStore::open(store_path.join("sessions.db"))
@@ -1435,12 +1478,41 @@ mod tests {
             session_store,
         );
         assert!(
-            spec.runtime_adapter.is_none(),
-            "persistent bootstrap should not bolt on a separate runtime adapter"
+            spec.runtime_adapter.is_some(),
+            "persistent bootstrap must provide its own runtime adapter via spec.runtime_adapter"
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
-            "persistent bootstrap must be backed by a runtime-capable session service"
+            spec.session_service.runtime_adapter().is_none(),
+            "session service must not own a runtime_store; that disables the StoreCheckpointer \
+             and breaks `with_resume_bridge_session_id` after process restart"
+        );
+    }
+
+    /// Sibling to `persistent_bootstrap_keeps_store_checkpointer_enabled`:
+    /// the runtime-backed ephemeral path must wire the adapter the same way.
+    #[test]
+    fn ephemeral_runtime_backed_keeps_store_checkpointer_enabled() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n") else {
+            panic!("failed to parse minimal mob definition");
+        };
+        let spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        assert!(
+            spec.runtime_adapter.is_some(),
+            "ephemeral_runtime_backed_inner must provide a runtime adapter via spec.runtime_adapter"
+        );
+        assert!(
+            spec.session_service.runtime_adapter().is_none(),
+            "session service must not own a runtime_store; that disables the StoreCheckpointer"
         );
     }
 

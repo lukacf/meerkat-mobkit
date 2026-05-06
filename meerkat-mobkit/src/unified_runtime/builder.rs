@@ -616,13 +616,17 @@ comms = true
 
         let builder = UnifiedRuntimeBuilder::default().definition(definition);
         let spec = builder.resolve_mob_spec().await.expect("spec resolves");
+        // Adapter is wired explicitly via spec.runtime_adapter so that
+        // PersistentSessionService keeps its `runtime_store` at None and the
+        // StoreCheckpointer stays enabled. Anything else and resume after a
+        // process restart raises "missing durable session snapshot".
         assert!(
-            spec.runtime_adapter.is_none(),
-            "definition-based ephemeral specs should rely on the session service's runtime adapter",
+            spec.runtime_adapter.is_some(),
+            "definition-based ephemeral specs must provide spec.runtime_adapter directly",
         );
         assert!(
-            spec.session_service.runtime_adapter().is_some(),
-            "definition-based ephemeral specs must be backed by a runtime-capable session service",
+            spec.session_service.runtime_adapter().is_none(),
+            "session service must not own the runtime adapter; that disables the StoreCheckpointer",
         );
     }
 }
