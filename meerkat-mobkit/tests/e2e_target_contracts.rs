@@ -243,7 +243,7 @@ fn subscribed_event_frames(response: &Value) -> Vec<String> {
 }
 
 fn release_json() -> String {
-    include_str!("../../docs/rct/release-targets.json").to_string()
+    include_str!("../assets/release-targets.json").to_string()
 }
 
 fn sign_hs256(payload: Value, secret: &str, kid: &str) -> String {

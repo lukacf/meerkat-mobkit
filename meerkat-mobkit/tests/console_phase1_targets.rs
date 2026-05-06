@@ -116,7 +116,7 @@ impl SessionBridge for MockSessionBridge {
 }
 
 fn release_json() -> String {
-    include_str!("../../docs/rct/release-targets.json").to_string()
+    include_str!("../assets/release-targets.json").to_string()
 }
 
 fn trusted_toml() -> String {
