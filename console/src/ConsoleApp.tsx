@@ -54,7 +54,7 @@ import { RoutingPanel } from "./panels/RoutingPanel";
 import { GatesPanel } from "./panels/GatesPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
-import { Tweaks, useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
+import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
 import { Sidebar as DesignSidebar } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane } from "./panels/ChatPane";
@@ -1275,12 +1275,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           collapsed={railCollapsed}
         />
       </div>
-      <Tweaks
-        variant={variant}
-        theme={theme}
-        onVariant={setVariant}
-        onTheme={(t) => { setTheme(t); try { localStorage.setItem("mobkit-console-theme", t); } catch { /* ignore */ } }}
-      />
     </div>
   );
 }
