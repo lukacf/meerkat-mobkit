@@ -283,7 +283,7 @@ fn reference_runtime_decision_state() -> meerkat_mobkit::RuntimeDecisionState {
             require_app_auth: false,
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../docs/rct/release-targets.json").to_string(),
+        release_metadata_json: include_str!("../assets/release-targets.json").to_string(),
     })
     .expect("build decision state")
 }

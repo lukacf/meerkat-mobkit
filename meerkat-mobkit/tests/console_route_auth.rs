@@ -23,7 +23,7 @@ use meerkat_mobkit::{
 use serde_json::{Value, json};
 
 fn release_json() -> String {
-    include_str!("../../docs/rct/release-targets.json").to_string()
+    include_str!("../assets/release-targets.json").to_string()
 }
 
 fn trusted_oidc() -> TrustedOidcRuntimeConfig {

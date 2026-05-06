@@ -209,7 +209,7 @@ async fn build_runtime_bundle_with_client(
             require_app_auth: false,
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../../docs/rct/release-targets.json").to_string(),
+        release_metadata_json: include_str!("../../assets/release-targets.json").to_string(),
     })
     .map_err(|err| anyhow!("failed to build incident console decisions: {err:?}"))?;
 

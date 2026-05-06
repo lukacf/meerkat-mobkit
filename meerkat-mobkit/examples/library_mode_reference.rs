@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             require_app_auth: false,
         },
         ops: RuntimeOpsPolicy::default(),
-        release_metadata_json: include_str!("../../docs/rct/release-targets.json").to_string(),
+        release_metadata_json: include_str!("../assets/release-targets.json").to_string(),
     })
     .map_err(|err| std::io::Error::other(format!("failed to build console decisions: {err:?}")))?;
     let _console_ingress_preview = handle_console_ingress_json(

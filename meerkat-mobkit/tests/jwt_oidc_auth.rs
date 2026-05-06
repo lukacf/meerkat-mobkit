@@ -49,7 +49,7 @@ restart_policy = "on_failure"
 }
 
 fn release_json() -> String {
-    include_str!("../../docs/rct/release-targets.json").to_string()
+    include_str!("../assets/release-targets.json").to_string()
 }
 
 fn decision_state() -> meerkat_mobkit::RuntimeDecisionState {
