@@ -52,11 +52,16 @@ struct RuntimeEntry {
     runtime_key: String,
     identity_namespace: String,
     runtime: MobRuntime,
+    console_events: ConsoleEventStore,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
 }
 
 pub trait ConsoleVisibilityPolicy: Send + Sync {
     fn identity_visible(&self, _record: &ConsoleIdentityRecord) -> bool {
+        true
+    }
+
+    fn frame_visible(&self, _frame: &ConsoleFrame) -> bool {
         true
     }
 
@@ -152,6 +157,7 @@ impl MobKitConsoleAggregator {
             runtime_key: runtime_key.clone(),
             identity_namespace,
             runtime,
+            console_events: console_events.clone(),
             visibility_policy,
         };
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
@@ -162,6 +168,7 @@ impl MobKitConsoleAggregator {
         let runtime_key_for_task = runtime_key;
         tokio::spawn(async move {
             let mut ingestion_state = SourceIngestionState::Registered;
+            let mut rx = console_events.subscribe();
             if let Ok((next, _effects)) =
                 ingestion_state.apply(SourceIngestionTransition::StartBackfill)
             {
@@ -172,6 +179,7 @@ impl MobKitConsoleAggregator {
                     let _ = project_console_event(&inner, &runtime_key_for_task, envelope).await;
                 }
             }
+            let _ = backfill_session_history(&inner, &runtime_key_for_task).await;
             if let Ok((next, _effects)) =
                 ingestion_state.apply(SourceIngestionTransition::BackfillComplete)
             {
@@ -179,7 +187,6 @@ impl MobKitConsoleAggregator {
             }
             let _ = ingestion_state.apply(SourceIngestionTransition::StartLive);
 
-            let mut rx = console_events.subscribe();
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
@@ -187,7 +194,12 @@ impl MobKitConsoleAggregator {
                             project_console_event(&inner, &runtime_key_for_task, envelope).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        continue;
+                        let _ = recover_lagged_source_events(
+                            &inner,
+                            &runtime_key_for_task,
+                            &events_for_backfill,
+                        )
+                        .await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -245,11 +257,31 @@ impl MobKitConsoleAggregator {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
-        self.inner.store.query_frames(query).await
+        if self.has_registered_runtimes()
+            && let Some(identity) = query.identity.as_deref()
+            && self.inspect_identity(identity).await?.is_none()
+        {
+            return Ok(ConsoleTimelinePage {
+                frames: Vec::new(),
+                next_cursor: query.after,
+            });
+        }
+        let mut page = self.inner.store.query_frames(query).await?;
+        page.frames
+            .retain(|frame| frame_is_visible(&self.inner, frame).unwrap_or(false));
+        Ok(page)
     }
 
     pub async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
         self.inner.store.latest_cursor().await
+    }
+
+    fn has_registered_runtimes(&self) -> bool {
+        self.inner
+            .runtimes
+            .read()
+            .map(|entries| !entries.is_empty())
+            .unwrap_or(false)
     }
 
     pub async fn send(
@@ -300,7 +332,12 @@ impl MobKitConsoleAggregator {
             let same_origin = existing.payload.get("origin").and_then(Value::as_str)
                 == Some(request.origin.as_str());
             let same_content = existing.payload.get("content") == Some(&request.content);
-            if !same_origin || !same_content {
+            let same_handling_mode = existing
+                .payload
+                .get("handling_mode")
+                .and_then(Value::as_str)
+                == request.handling_mode.as_deref().or(Some("queue"));
+            if !same_origin || !same_content || !same_handling_mode {
                 return Err(ConsoleSendError::IdempotencyConflict(
                     request.idempotency_key,
                 ));
@@ -309,13 +346,29 @@ impl MobKitConsoleAggregator {
         }
 
         let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
+        entry
+            .console_events
+            .reserve_interaction_value(
+                &request.identity,
+                Some(runtime_identity.as_str()),
+                &interaction_id,
+                &request.origin,
+                request.content.clone(),
+            )
+            .await
+            .map_err(ConsoleSendError::State)?;
         let session_id = entry
             .runtime
             .handle()
             .resolve_bridge_session_id(&MeerkatId::from(runtime_identity.as_str()))
             .await
             .map(|sid| sid.to_string());
-        let new_frame = NewConsoleFrame {
+        let handling_mode_value = request
+            .handling_mode
+            .as_deref()
+            .unwrap_or("queue")
+            .to_string();
+        let mut new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
             timestamp_ms: current_time_ms(),
@@ -329,6 +382,7 @@ impl MobKitConsoleAggregator {
                 "content": request.content,
                 "origin": request.origin,
                 "idempotency_key": request.idempotency_key,
+                "handling_mode": handling_mode_value,
             }),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Send,
@@ -341,6 +395,10 @@ impl MobKitConsoleAggregator {
             parent_frame_id: None,
             caused_by_frame_id: None,
         };
+        if let Some(redacted) = entry.visibility_policy.redact_payload(&new_frame) {
+            new_frame.payload = redacted;
+            new_frame.status = ConsoleFrameStatus::Redacted;
+        }
 
         let _ = SendState::Requested
             .apply(SendTransition::PersistAccepted)
@@ -364,6 +422,10 @@ impl MobKitConsoleAggregator {
         let (dispatching, _effects) = SendState::AcceptedPersisted
             .apply(SendTransition::StartDispatch)
             .map_err(ConsoleSendError::State)?;
+        entry
+            .console_events
+            .accept_interaction(&request.identity, &interaction_id)
+            .await;
         update_frame_status_and_emit(
             &self.inner,
             &outcome.frame.id,
@@ -434,7 +496,7 @@ impl MobKitConsoleAggregator {
                     caused_by_frame_id: Some(outcome.frame.id),
                 };
                 let _ = append_and_emit(&self.inner, failure_frame).await;
-                Err(ConsoleSendError::Dispatch(err.to_string()))
+                Ok(accepted)
             }
         }
     }
@@ -495,6 +557,144 @@ impl std::fmt::Display for ConsoleSendError {
 }
 
 impl std::error::Error for ConsoleSendError {}
+
+async fn backfill_session_history(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+) -> ConsoleLogResult<()> {
+    let Some(entry) = inner
+        .runtimes
+        .read()
+        .ok()
+        .and_then(|entries| entries.get(runtime_key).cloned())
+    else {
+        return Ok(());
+    };
+    let members = entry
+        .runtime
+        .handle()
+        .list_members_including_retiring()
+        .await;
+    for member in members {
+        let Some(record) = identity_record_for_member(&entry, &member).await else {
+            continue;
+        };
+        if !entry.visibility_policy.identity_visible(&record) {
+            continue;
+        }
+        let Some(session_id) = record.session_id.clone() else {
+            continue;
+        };
+        let Ok(page) = entry
+            .runtime
+            .read_session_history(&session_id, 0, Some(1000))
+            .await
+        else {
+            continue;
+        };
+        let Ok(page_value) = serde_json::to_value(page) else {
+            continue;
+        };
+        let base_offset = page_value
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let Some(messages) = page_value.get("messages").and_then(Value::as_array) else {
+            continue;
+        };
+        for (idx, message) in messages.iter().enumerate() {
+            let absolute_offset = base_offset + idx;
+            let mut frame = frame_from_session_history_message(
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                absolute_offset,
+                message.clone(),
+            );
+            if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
+                frame.payload = redacted;
+                frame.status = ConsoleFrameStatus::Redacted;
+            }
+            append_and_emit(inner, frame).await?;
+        }
+        inner
+            .store
+            .record_source_watermark(
+                &entry.runtime_key,
+                ConsoleFrameSourceKind::SessionHistory,
+                &format!("{session_id}:{}", base_offset + messages.len()),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn recover_lagged_source_events(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    console_events: &ConsoleEventStore,
+) -> ConsoleLogResult<()> {
+    let watermark = inner
+        .store
+        .source_watermark(runtime_key, ConsoleFrameSourceKind::ConsoleEvent)
+        .await?;
+    match console_events.replay_all(watermark.as_deref()).await {
+        Ok(events) => {
+            for envelope in events {
+                project_console_event(inner, runtime_key, envelope).await?;
+            }
+        }
+        Err(err) => {
+            append_source_gap(
+                inner,
+                runtime_key,
+                format!(
+                    "{}:{}:{}",
+                    err.error, err.stream, err.requested_last_event_id
+                ),
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+async fn append_source_gap(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    reason: String,
+) -> ConsoleLogResult<()> {
+    append_and_emit(
+        inner,
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: format!("source-gap:{runtime_key}:{}", current_time_ms()),
+            timestamp_ms: current_time_ms(),
+            runtime_key: runtime_key.to_string(),
+            identity: "__console__".to_string(),
+            conversation_id: None,
+            session_id: None,
+            kind: "replay_unavailable".to_string(),
+            status: ConsoleFrameStatus::DeliveryFailed,
+            payload: json!({
+                "reason": reason,
+                "source_kind": "console_event",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Synthetic,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        },
+    )
+    .await?;
+    Ok(())
+}
 
 async fn project_console_event(
     inner: &AggregatorInner,
@@ -628,6 +828,117 @@ fn frame_from_console_event(
         parent_frame_id: None,
         caused_by_frame_id: None,
     }
+}
+
+fn frame_from_session_history_message(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    offset: usize,
+    message: Value,
+) -> NewConsoleFrame {
+    let payload_hash = hash_short(&serde_json::to_string(&message).unwrap_or_default());
+    let role = message
+        .get("role")
+        .or_else(|| message.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("message");
+    let kind = if role.contains("user") {
+        "user_input"
+    } else if role.contains("assistant") {
+        "text_complete"
+    } else {
+        "session_history_message"
+    };
+    let timestamp_ms = history_timestamp_ms(&message).unwrap_or_else(current_time_ms);
+    let payload = if kind == "text_complete" {
+        json!({
+            "text": extract_history_text(&message),
+            "message": message,
+        })
+    } else if kind == "user_input" {
+        json!({
+            "content": extract_history_content(&message),
+            "message": message,
+        })
+    } else {
+        json!({ "message": message })
+    };
+    NewConsoleFrame {
+        id: None,
+        dedupe_key: format!("session-history:{runtime_key}:{session_id}:{offset}:{payload_hash}"),
+        timestamp_ms,
+        runtime_key: runtime_key.to_string(),
+        identity: identity.to_string(),
+        conversation_id: Some(identity.to_string()),
+        session_id: Some(session_id.to_string()),
+        kind: kind.to_string(),
+        status: ConsoleFrameStatus::Completed,
+        payload,
+        source: ConsoleFrameSource {
+            kind: ConsoleFrameSourceKind::SessionHistory,
+            source_cursor: Some(format!("{session_id}:{offset}")),
+        },
+        source_event_id: None,
+        interaction_id: None,
+        turn_id: None,
+        run_id: None,
+        parent_frame_id: None,
+        caused_by_frame_id: None,
+    }
+}
+
+fn history_timestamp_ms(message: &Value) -> Option<u64> {
+    message
+        .get("timestamp_ms")
+        .or_else(|| message.get("created_at_ms"))
+        .and_then(Value::as_u64)
+}
+
+fn extract_history_content(message: &Value) -> Value {
+    message
+        .get("content")
+        .or_else(|| message.get("blocks"))
+        .cloned()
+        .unwrap_or_else(|| Value::String(extract_history_text(message)))
+}
+
+fn extract_history_text(message: &Value) -> String {
+    if let Some(text) = message.get("text").and_then(Value::as_str) {
+        return text.to_string();
+    }
+    if let Some(content) = message.get("content") {
+        if let Some(text) = content.as_str() {
+            return text.to_string();
+        }
+        if let Some(blocks) = content.as_array() {
+            return blocks
+                .iter()
+                .filter_map(|block| {
+                    block
+                        .get("text")
+                        .or_else(|| block.get("content"))
+                        .and_then(Value::as_str)
+                })
+                .collect::<Vec<_>>()
+                .join("");
+        }
+    }
+    String::new()
+}
+
+fn frame_is_visible(inner: &AggregatorInner, frame: &ConsoleFrame) -> ConsoleLogResult<bool> {
+    let entries = inner
+        .runtimes
+        .read()
+        .map_err(|_| runtime_registry_lock_error())?;
+    if entries.is_empty() {
+        return Ok(true);
+    }
+    let Some(entry) = entries.get(&frame.runtime_key) else {
+        return Ok(false);
+    };
+    Ok(entry.visibility_policy.frame_visible(frame))
 }
 
 async fn identity_record_for_member(
@@ -906,6 +1217,43 @@ mod tests {
                 .and_then(|frame| frame.get("status"))
                 .and_then(Value::as_str),
             Some("delivered")
+        );
+    }
+
+    #[test]
+    fn session_history_messages_project_to_renderable_frames() {
+        let user = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "user",
+                "content": "hello",
+                "timestamp_ms": 10
+            }),
+        );
+        let assistant = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            1,
+            json!({
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "hi there" }],
+                "timestamp_ms": 11
+            }),
+        );
+
+        assert_eq!(user.kind, "user_input");
+        assert_eq!(user.source.kind, ConsoleFrameSourceKind::SessionHistory);
+        assert_eq!(user.payload["content"], json!("hello"));
+        assert_eq!(assistant.kind, "text_complete");
+        assert_eq!(assistant.payload["text"], json!("hi there"));
+        assert!(
+            assistant
+                .dedupe_key
+                .starts_with("session-history:runtime-a:session-a:1:")
         );
     }
 }

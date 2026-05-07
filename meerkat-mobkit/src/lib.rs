@@ -72,7 +72,7 @@ pub use http_auth::{auth_middleware, with_auth_layer};
 pub use http_console::{
     ConsoleJsonState, console_frontend_app_js_handler, console_frontend_index_handler,
     console_frontend_router, console_json_handler, console_json_router,
-    console_json_router_with_runtime,
+    console_json_router_with_aggregator, console_json_router_with_runtime,
 };
 pub use http_interactions::interaction_stream_router;
 pub use http_sse::{

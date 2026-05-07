@@ -95,6 +95,25 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     })
 }
 
+pub fn console_json_router_with_aggregator(
+    decisions: RuntimeDecisionState,
+    console_aggregator: MobKitConsoleAggregator,
+) -> Router {
+    console_json_router_with_state(ConsoleJsonState {
+        decisions,
+        runtime: None,
+        module_runtime: None,
+        contact_directory: None,
+        event_log: None,
+        gateway_peer_keys: None,
+        console_events: None,
+        console_aggregator: Some(console_aggregator),
+        mob_events: None,
+        stream_routes_enabled: true,
+        metadata_table: None,
+    })
+}
+
 pub fn console_json_router_with_runtime(
     decisions: RuntimeDecisionState,
     runtime: MobRuntime,
@@ -303,25 +322,21 @@ pub async fn console_rpc_handler(
     // opted out of authentication (require_app_auth = false), so the console
     // is an open local deployment where every RPC method should work.
 
-    let Some(runtime) = &state.runtime else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json::<Value>(serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": parsed_request.id.unwrap_or(Value::Null),
-                "error": {
-                    "code": -32600,
-                    "message": "console rpc requires a unified runtime",
-                }
-            })),
-        );
-    };
-
     // By this point the request is always authorized:
     // - require_app_auth=true: an invalid token already returned 401 above.
     // - require_app_auth=false: all methods are permitted unconditionally.
     // Either way, capabilities should reflect that all methods are available.
     let is_authenticated = true;
+    let Some(runtime) = &state.runtime else {
+        let response_value = handle_console_aggregator_rpc(
+            state.console_aggregator.clone(),
+            parsed_request,
+            is_authenticated,
+        )
+        .await;
+        return (StatusCode::OK, Json::<Value>(response_value));
+    };
+
     let response_value = handle_console_runtime_rpc(
         runtime,
         state.module_runtime.clone(),
@@ -476,6 +491,7 @@ async fn console_timeline_stream_handler(
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
     let timeline_query = timeline_query_from_http(query, last_event_id);
+    let mut rx = aggregator.subscribe();
     let replay_page = match aggregator.query_timeline(timeline_query.clone()).await {
         Ok(page) => page,
         Err(_) => {
@@ -499,7 +515,6 @@ async fn console_timeline_stream_handler(
                 .into_response();
         }
     };
-    let mut rx = aggregator.subscribe();
     let identity = timeline_query.identity.clone();
     let conversation_id = timeline_query.conversation_id.clone();
     let snapshot_after = timeline_query.after.clone();
@@ -514,13 +529,22 @@ async fn console_timeline_stream_handler(
                 yield Ok::<Event, Infallible>(event);
             }
         }
-        if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::SnapshotComplete { cursor: latest_cursor }) {
+        if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::SnapshotComplete { cursor: latest_cursor.clone() }) {
             yield Ok::<Event, Infallible>(event);
         }
         loop {
             match rx.recv().await {
                 Ok(event) if timeline_event_matches(&event, identity.as_deref(), conversation_id.as_deref()) => {
+                    if let Some(event_cursor) = timeline_event_cursor(&event)
+                        && let Some(current_cursor) = latest_cursor.as_ref()
+                        && !cursor_is_after(event_cursor, current_cursor)
+                    {
+                        continue;
+                    }
                     if let Some(sse) = sse_event_from_timeline_event(&event) {
+                        if let Some(event_cursor) = timeline_event_cursor(&event) {
+                            latest_cursor = Some(event_cursor.clone());
+                        }
                         yield Ok::<Event, Infallible>(sse);
                     }
                 }
@@ -627,6 +651,23 @@ fn timeline_event_matches(
         return false;
     }
     true
+}
+
+fn timeline_event_cursor(event: &ConsoleTimelineEvent) -> Option<&ConsoleCursor> {
+    match event {
+        ConsoleTimelineEvent::ConsoleFrame { frame }
+        | ConsoleTimelineEvent::FrameUpdated { frame } => Some(&frame.cursor),
+        ConsoleTimelineEvent::SnapshotStarted { .. }
+        | ConsoleTimelineEvent::SnapshotComplete { .. }
+        | ConsoleTimelineEvent::ReplayUnavailable { .. } => None,
+    }
+}
+
+fn cursor_is_after(candidate: &ConsoleCursor, current: &ConsoleCursor) -> bool {
+    match (candidate.seq(), current.seq()) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate > current,
+    }
 }
 
 fn sse_event_from_timeline_event(event: &ConsoleTimelineEvent) -> Option<Event> {
@@ -1862,6 +1903,147 @@ async fn lookup_member_with_session(
         .await
         .map(|s| s.to_string());
     Some((entry, session_id))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_console_aggregator_rpc(
+    console_aggregator: Option<MobKitConsoleAggregator>,
+    request: JsonRpcRequest,
+    is_authenticated: bool,
+) -> Value {
+    let response_id = request.id.clone().unwrap_or(Value::Null);
+    match request.method.as_str() {
+        "mobkit/capabilities" => response_value(
+            response_id,
+            Some(json!({
+                "methods": [
+                    "mobkit/capabilities",
+                    "mobkit/console/list_identities",
+                    "mobkit/console/inspect_identity",
+                    "mobkit/console/query_timeline",
+                    "mobkit/console/send",
+                ],
+                "authenticated": is_authenticated,
+                "features": {
+                    "console_aggregator": console_aggregator.is_some(),
+                    "multi_runtime_console": console_aggregator.is_some(),
+                }
+            })),
+            None,
+        ),
+        "mobkit/console/list_identities" => {
+            let Some(aggregator) = &console_aggregator else {
+                return console_aggregator_unavailable(response_id);
+            };
+            match aggregator.list_identities().await {
+                Ok(identities) => {
+                    response_value(response_id, Some(json!({ "identities": identities })), None)
+                }
+                Err(err) => internal_error(response_id, format!("list_identities failed: {err}")),
+            }
+        }
+        "mobkit/console/inspect_identity" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            let Some(aggregator) = &console_aggregator else {
+                return console_aggregator_unavailable(response_id);
+            };
+            match aggregator.inspect_identity(identity).await {
+                Ok(Some(inspection)) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(inspection).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Ok(None) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("unknown identity: {identity}"),
+                        data: None,
+                    }),
+                ),
+                Err(err) => internal_error(response_id, format!("inspect_identity failed: {err}")),
+            }
+        }
+        "mobkit/console/query_timeline" => {
+            let query: ConsoleTimelineQuery = match serde_json::from_value(request.params.clone()) {
+                Ok(query) => query,
+                Err(err) => {
+                    return invalid_params(response_id, format!("invalid query params: {err}"));
+                }
+            };
+            let Some(aggregator) = &console_aggregator else {
+                return console_aggregator_unavailable(response_id);
+            };
+            match aggregator.query_timeline(query).await {
+                Ok(page) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(page).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32010,
+                        message: format!("query_timeline failed: {err}"),
+                        data: Some(json!({ "kind": "replay_unavailable" })),
+                    }),
+                ),
+            }
+        }
+        "mobkit/console/send" => {
+            let send_request: ConsoleSendRequest =
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid send params: {err}"));
+                    }
+                };
+            let Some(aggregator) = &console_aggregator else {
+                return console_aggregator_unavailable(response_id);
+            };
+            match aggregator.send(send_request).await {
+                Ok(accepted) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(accepted).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: console_send_rpc_code(&err),
+                        message: err.to_string(),
+                        data: None,
+                    }),
+                ),
+            }
+        }
+        _ => response_value(
+            response_id,
+            None,
+            Some(JsonRpcError {
+                code: -32601,
+                message: "Method not found".to_string(),
+                data: None,
+            }),
+        ),
+    }
+}
+
+fn console_aggregator_unavailable(response_id: Value) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: -32004,
+            message: "console aggregator unavailable".to_string(),
+            data: None,
+        }),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3652,11 +3834,12 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload,
+        MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, cursor_is_after,
         externalize_image_upload_placeholders, externalize_single_image_upload,
         mint_console_interaction_id, project_query_events_for_console,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
+    use crate::console_aggregator::ConsoleCursor;
     use crate::types::UnifiedEvent;
     use crate::unified_runtime::{EventQuery, PersistedEvent};
     use bytes::Bytes;
@@ -3676,6 +3859,18 @@ mod tests {
     fn multipart_body_limit_covers_configured_image_limit() {
         const _: () = assert!(MAX_MULTIPART_BODY_BYTES > MAX_MULTIPART_IMAGE_BYTES);
         const _: () = assert!(MAX_MULTIPART_BODY_BYTES > 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn timeline_stream_cursor_filter_uses_numeric_console_sequence() {
+        assert!(cursor_is_after(
+            &ConsoleCursor::from("console:10"),
+            &ConsoleCursor::from("console:9")
+        ));
+        assert!(!cursor_is_after(
+            &ConsoleCursor::from("console:9"),
+            &ConsoleCursor::from("console:10")
+        ));
     }
 
     #[tokio::test]
