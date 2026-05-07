@@ -25,6 +25,7 @@ impl UnifiedRuntime {
             self.event_log_store(),
             self.gateway_peer_keys().cloned(),
             Some(self.console_events()),
+            Some(self.console_log_store()),
             Some(self.mob_events_store()),
             true,
             Some(Arc::clone(self.metadata_table())),

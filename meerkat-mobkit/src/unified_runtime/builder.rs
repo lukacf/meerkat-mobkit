@@ -7,6 +7,7 @@ use std::time::Duration;
 use meerkat_client::LlmClient;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 
+use crate::console_aggregator::{ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore};
 use crate::contact_directory::ContactDirectory;
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
@@ -381,6 +382,14 @@ impl UnifiedRuntimeBuilder {
             pre_spawn: Vec::new(),
         });
         let timeout = self.timeout.unwrap_or(DEFAULT_TIMEOUT);
+        if let Some(state_path) = self.persistent_state_path.as_ref() {
+            std::fs::create_dir_all(state_path).map_err(|e| {
+                UnifiedRuntimeBuilderError::Io(format!(
+                    "failed to create state directory at {}: {e}",
+                    state_path.display()
+                ))
+            })?;
+        }
 
         // The structural-events subscription cursor lives in the
         // persistent metadata adapter. For ephemeral builds this can be
@@ -403,6 +412,18 @@ impl UnifiedRuntimeBuilder {
                 })?)
             } else {
                 Arc::new(InMemoryMetadataStore::new())
+            };
+        let console_log_store: Arc<dyn ConsoleLogStore> =
+            if let Some(state_path) = self.persistent_state_path.as_ref() {
+                let console_log_path = state_path.join("mobkit_console.sqlite");
+                Arc::new(SqliteConsoleLogStore::open(&console_log_path).map_err(|e| {
+                    UnifiedRuntimeBuilderError::Io(format!(
+                        "failed to open mobkit_console.sqlite at {}: {e}",
+                        console_log_path.display()
+                    ))
+                })?)
+            } else {
+                Arc::new(InMemoryConsoleLogStore::new())
             };
 
         let runtime = UnifiedRuntime::bootstrap_with_options(
@@ -451,6 +472,7 @@ impl UnifiedRuntimeBuilder {
             edge_discovery: self.edge_discovery,
             contact_directory: self.contact_directory,
             session_bridge,
+            console_log_store,
             ..runtime
         };
 

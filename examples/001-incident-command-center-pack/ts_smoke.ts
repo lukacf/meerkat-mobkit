@@ -11,6 +11,8 @@ type ConsoleFrame = {
   event?: string;
   identity?: string;
   interactionId?: string;
+  cursor?: string;
+  status?: string;
   data: unknown;
 };
 
@@ -142,6 +144,44 @@ async function streamInteraction(identity: string, content: string, origin: stri
   return { sendResult, frames: filtered };
 }
 
+async function streamConsoleSend(identity: string, content: string, origin: string) {
+  const idempotencyKey = `${origin}:${Date.now().toString(36)}`;
+  let acceptedInteractionId = "";
+  const streamPromise = readSseFrames(`${baseUrl}/console/timeline/stream?identity=${encodeURIComponent(identity)}`, {
+    minFrames: 2,
+    timeoutMs: 90000,
+    until: (frame) =>
+      frame.interactionId === acceptedInteractionId &&
+      (frame.event === "interaction_complete" || frame.event === "interaction_failed"),
+  });
+
+  const accepted = await callConsoleRpc<{
+    interaction_id: string;
+    identity: string;
+    input_frame_id: string;
+    cursor: string;
+    status: string;
+  }>("mobkit/console/send", {
+    identity,
+    content,
+    origin,
+    idempotency_key: idempotencyKey,
+    handling_mode: "queue",
+  });
+  acceptedInteractionId = accepted.interaction_id;
+  assert.equal(accepted.identity, identity);
+  assert.ok(accepted.input_frame_id, "canonical input frame id expected");
+  assert.ok(accepted.cursor?.startsWith("console:"), "aggregate cursor expected");
+  assert.ok(["accepted", "dispatching", "delivered"].includes(accepted.status), "send status expected");
+
+  const frames = await streamPromise;
+  const matchingFrames = frames.filter((frame) => frame.interactionId === accepted.interaction_id);
+  assert.ok(matchingFrames.some((frame) => frame.event === "user_input"), "canonical user_input frame expected");
+  assert.ok(matchingFrames.some((frame) => frame.event === "frame_updated"), "replayable frame_updated marker expected");
+  assert.ok(matchingFrames.some((frame) => frame.event === "interaction_complete"), "canonical terminal frame expected");
+  return { accepted, frames: matchingFrames };
+}
+
 async function main() {
   const experience = await fetchJson<{
     contract_version: string;
@@ -180,6 +220,24 @@ async function main() {
   assert.ok(toolResultIndex > toolCallIndex, "tool result should follow tool call");
   assert.ok(textDeltaIndex > toolResultIndex, "text generation should start after tool results");
   assert.ok(terminalIndex > textDeltaIndex, "terminal event should follow text generation");
+
+  const canonicalTurn = await streamConsoleSend(
+    "incident-commander",
+    `Console substrate canonical send smoke. Reply with exactly OK. [${Date.now().toString(36)}:canonical]`,
+    "ts-smoke:console-send",
+  );
+  const timelinePage = await callConsoleRpc<{ frames: ConsoleFrame[]; next_cursor?: string }>(
+    "mobkit/console/query_timeline",
+    {
+      identity: "incident-commander",
+      after: canonicalTurn.accepted.cursor,
+      limit: 20,
+    },
+  );
+  assert.ok(
+    timelinePage.frames.some((frame) => frame.event === "frame_updated" || frame.event === "interaction_complete"),
+    "query_timeline should replay aggregate frames after the accepted cursor",
+  );
 
   const checkpointFrame = frames.find((frame) => frame.id && frame.event === "text_delta");
   assert.ok(checkpointFrame?.id, "checkpoint frame expected");

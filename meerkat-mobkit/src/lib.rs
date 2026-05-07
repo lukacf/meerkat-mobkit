@@ -6,6 +6,7 @@ pub mod auth;
 pub mod baseline;
 pub mod blob_store;
 pub mod config_convention;
+pub mod console_aggregator;
 pub mod console_contracts;
 pub mod contact_directory;
 pub mod decisions;
@@ -39,6 +40,17 @@ pub use blob_store::{
     Base64BlobStoreAdapter, BinaryBlobPayload, BinaryBlobStore, ObjectStoreBlobStore,
 };
 pub use config_convention::ConventionalPaths;
+pub use console_aggregator::{
+    AllowAllConsoleVisibilityPolicy, AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame,
+    ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection,
+    ConsoleIdentityRecord, ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted,
+    ConsoleLogError, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
+    ConsoleRuntimeRegistration, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelinePage,
+    ConsoleTimelineQuery, ConsoleVisibility, ConsoleVisibilityPolicy, InMemoryConsoleLogStore,
+    MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect, ReplaySubscriptionState,
+    ReplaySubscriptionTransition, SendEffect, SendState, SendTransition, SourceIngestionEffect,
+    SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
+};
 pub use console_contracts::{
     ConsoleIdentityEventEnvelope, ConsoleInteractionAccepted, ConsoleInteractionRejectedError,
     ConsoleInteractionRequest, IdentityStreamRequest, ReplayUnavailableError,

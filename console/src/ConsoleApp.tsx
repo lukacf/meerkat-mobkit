@@ -25,17 +25,18 @@ import {
   buildSidebarViewState,
   createUserEntry,
   mapFramesToTimelineEntries,
+  sortConversationTimelineEntries,
   type MobKitDockTarget,
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
 import {
   callConsoleRpc,
   fetchJson,
-  queryEvents,
-  sendInteract as sendInteractRpc,
+  queryTimeline,
+  sendConsole,
   sendMessage,
   sendMessageMultipart,
-  subscribeConsoleEvents,
+  subscribeTimelineEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
 import type {
@@ -126,13 +127,32 @@ function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): Conv
 
 const DEFAULT_APPROVER_ID = "console-ops-lead";
 
+function createIdempotencyKey(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fall through to timestamp-based key.
+  }
+  return `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function cursorSeq(cursor: string | undefined): number | null {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
   "interaction_complete", "interaction_failed", "state_changed",
   "member_ready", "member_retired", "gating_decision", "route_changed",
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
-  "interaction_started", "interaction_complete", "interaction_failed",
+  "user_input", "interaction_started", "interaction_complete", "interaction_failed",
   "assistant_image",
   "text_delta", "text_complete",
   "tool_call_requested", "tool_call", "tool_result_received",
@@ -140,14 +160,14 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "run_started", "run_completed", "run_failed",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([
-  "interaction_complete", "interaction_failed", "run_completed", "run_failed",
+  "interaction_complete", "interaction_failed", "run_completed", "run_failed", "message_delivery_failed",
 ]);
 // Events filtered from the activity rail — don't buffer them
 const ACTIVITY_SKIP_EVENTS = new Set([
   "subscribed", "run_started", "run_completed", "turn_started", "turn_completed",
   "text_complete", "reasoning_delta", "reasoning_complete", "interaction_started",
   "run_failed", "keep-alive", "tool_config_changed", "tool_scope_changed",
-  "text_delta", "tool_call_requested", "tool_call", "tool_execution_started",
+  "user_input", "text_delta", "tool_call_requested", "tool_call", "tool_execution_started",
   "tool_result_received", "tool_execution_completed",
 ]);
 
@@ -262,6 +282,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   /// `interactionId` keeps interaction-bound events from colliding.
   function frameKey(frame: ConsoleFrame): string {
     if (frame.id) return frame.id;
+    if (frame.cursor) return frame.cursor;
     return `${frame.event}:${frame.identity || ""}:${frame.interactionId || ""}:${frame.timestampMs || 0}`;
   }
 
@@ -273,12 +294,26 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   /// rendering the user turn itself.
   function appendFrame(identity: string, frame: ConsoleFrame): boolean {
     const log = getOrCreateLog(identity);
+    if (frame.event === "frame_updated" && frame.data && typeof frame.data === "object") {
+      const updated = (frame.data as Record<string, unknown>).frame as ConsoleFrame | undefined;
+      if (updated && updated.id) {
+        const existingIndex = log.byKey.get(updated.id);
+        if (existingIndex !== undefined && log.events[existingIndex]) {
+          const existingVersion = log.events[existingIndex].frameVersion ?? 0;
+          const updatedVersion = updated.frameVersion ?? existingVersion;
+          if (updatedVersion < existingVersion) return false;
+          log.events[existingIndex] = { ...log.events[existingIndex], ...updated };
+          return true;
+        }
+      }
+      return false;
+    }
     const key = frameKey(frame);
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
     if (
-      frame.event === "interaction_started"
+      (frame.event === "interaction_started" || frame.event === "user_input")
       && log.optimisticUser
       && log.optimisticUser.interactionId
       && frame.interactionId === log.optimisticUser.interactionId
@@ -309,18 +344,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     for (const frame of frames) appendFrame(identity, frame);
   }
 
-  /// Render-time view: frames sorted ascending by `timestampMs`, with
-  /// insertion order as a stable tiebreaker (preserves intra-tick
-  /// ordering as the server emitted them).
+  /// Render-time chat view: frames sorted by conversational time first,
+  /// with the aggregate cursor only as a deterministic tiebreaker. The
+  /// console log remains cursor-ordered at the store/API layer, but the
+  /// transcript must not let source-event admission order place an
+  /// assistant response ahead of the user input that triggered it.
   function getSortedFrames(identity: string): ConsoleFrame[] {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events
       .map((frame, index) => ({ frame, index }))
       .sort((a, b) => {
-        const ta = a.frame.timestampMs || 0;
-        const tb = b.frame.timestampMs || 0;
+        const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+        const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
         if (ta !== tb) return ta - tb;
+        const ca = cursorSeq(a.frame.cursor);
+        const cb = cursorSeq(b.frame.cursor);
+        if (ca !== null && cb !== null && ca !== cb) return ca - cb;
         return a.index - b.index;
       })
       .map((entry) => entry.frame);
@@ -627,7 +667,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return;
       }
       try {
-        const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
         reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
@@ -652,7 +692,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
-          const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
           reconcileServerLog(identity, frames, available);
           forceRender();
         } catch { /* silent */ }
@@ -675,7 +715,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // Seed activity with recent history (only on mount) — apply same
     // filter as SSE. The activity rail is its own concern; it doesn't
     // share state with the per-identity logs.
-    void queryEvents(baseUrl, {}, 200)
+    void queryTimeline(baseUrl, {}, 200)
       .then(({ frames }) => {
         const seen = new Set<string>();
         const filtered: ConsoleFrame[] = [];
@@ -691,7 +731,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       })
       .catch(() => {});
 
-    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+    const unsubscribe = subscribeTimelineEvents(baseUrl, {}, (frame) => {
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
@@ -714,13 +754,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         // auto-drain hook + by the Send handler to decide whether
         // to bypass the stack (idle + empty) or push to it.
         const wasBusy = identityBusyRef.current[identity] === true;
-        if (frame.event === "interaction_started" || frame.event === "run_started") {
+        if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
           identityBusyRef.current[identity] = true;
         } else if (
           frame.event === "interaction_complete"
           || frame.event === "interaction_failed"
           || frame.event === "run_completed"
           || frame.event === "run_failed"
+          || frame.event === "message_delivery_failed"
         ) {
           identityBusyRef.current[identity] = false;
           // busy → idle transition: drain the head item if the
@@ -828,13 +869,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }
         }
       } else if (id) {
-        const result = await sendInteractRpc(baseUrl, id, text, `console:${panelId}`, handlingMode);
+        const result = await sendConsole(
+          baseUrl,
+          id,
+          text,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode,
+        );
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id;
           // The interaction_started frame may have arrived between
           // the send and the RPC response — reconcile retroactively.
           const matched = log.events.some(
-            (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
           );
           if (matched) {
             log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
@@ -1118,10 +1166,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const log = getOrCreateLog(identity);
     const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
 
-    const entries = sanitizeConversationEntries([
+    const entries = sanitizeConversationEntries(sortConversationTimelineEntries([
       ...conversationEntries,
       ...(optimisticEntry ? [optimisticEntry] : []),
-    ]);
+    ]));
 
     const conversation = buildConversationViewState({
       memberId: target.memberId,

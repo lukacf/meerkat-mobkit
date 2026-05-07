@@ -1,7 +1,7 @@
 //! HTTP routes for the admin console REST API.
 
 use async_stream::stream;
-use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State};
+use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -27,6 +27,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
 use crate::blob_store::is_valid_blob_id_value;
+use crate::console_aggregator::{
+    ConsoleCursor, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
+    ConsoleTimelineEvent, ConsoleTimelineQuery, MobKitConsoleAggregator,
+};
 use crate::console_contracts::{
     ALL_EVENTS_CONTROL_IDENTITY, ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope,
     IDENTITY_STREAM_NAME, IdentityStreamRequest, ReplayUnavailableError,
@@ -60,6 +64,7 @@ pub struct ConsoleJsonState {
     /// `cross_mob/wire_local` descriptors with a real pubkey.
     pub gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
     pub(crate) console_events: Option<ConsoleEventStore>,
+    pub(crate) console_aggregator: Option<MobKitConsoleAggregator>,
     pub(crate) mob_events: Option<MobEventsStore>,
     pub(crate) stream_routes_enabled: bool,
     pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
@@ -83,6 +88,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         event_log: None,
         gateway_peer_keys: None,
         console_events: None,
+        console_aggregator: None,
         mob_events: None,
         stream_routes_enabled: true,
         metadata_table: None,
@@ -104,6 +110,7 @@ pub fn console_json_router_with_runtime(
         None,
         None,
         None,
+        None,
         false,
         None,
     )
@@ -118,10 +125,20 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
     console_events: Option<ConsoleEventStore>,
+    console_log_store: Option<std::sync::Arc<dyn ConsoleLogStore>>,
     mob_events: Option<MobEventsStore>,
     stream_routes_enabled: bool,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
 ) -> Router {
+    let console_aggregator = console_events.clone().map(|events| {
+        if let Some(store) = console_log_store {
+            let aggregator = MobKitConsoleAggregator::new(store);
+            aggregator.register_runtime_handles("default", "", runtime.clone(), events);
+            aggregator
+        } else {
+            MobKitConsoleAggregator::single_runtime("default", runtime.clone(), events)
+        }
+    });
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: Some(runtime),
@@ -130,6 +147,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         event_log,
         gateway_peer_keys,
         console_events,
+        console_aggregator,
         mob_events,
         stream_routes_enabled,
         metadata_table,
@@ -154,6 +172,13 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
     let router = Router::new()
         .route("/console/experience", get(console_json_handler))
         .route("/console/modules", get(console_json_handler))
+        .route("/console/identities", get(console_identities_handler))
+        .route("/console/timeline", get(console_timeline_handler))
+        .route(
+            "/console/timeline/stream",
+            get(console_timeline_stream_handler),
+        )
+        .route("/console/send", post(console_send_handler))
         .route("/console/rpc", post(console_rpc_handler))
         .route(
             "/console/rpc/multipart",
@@ -304,6 +329,7 @@ pub async fn console_rpc_handler(
         state.event_log.clone(),
         state.gateway_peer_keys.as_ref(),
         state.console_events.clone(),
+        state.console_aggregator.clone(),
         state.metadata_table.clone(),
         state.mob_events.clone(),
         parsed_request,
@@ -311,6 +337,327 @@ pub async fn console_rpc_handler(
     )
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ConsoleTimelineHttpQuery {
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    conversation_id: Option<String>,
+    #[serde(default)]
+    after: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn console_identities_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return console_json_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "console identities require a valid auth token",
+        );
+    }
+    let Some(aggregator) = &state.console_aggregator else {
+        return console_json_error(
+            StatusCode::NOT_FOUND,
+            "unavailable",
+            "console aggregator unavailable",
+        );
+    };
+    match aggregator.list_identities().await {
+        Ok(identities) => (
+            StatusCode::OK,
+            Json::<Value>(json!({ "identities": identities })),
+        )
+            .into_response(),
+        Err(err) => console_json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal_error",
+            &err.to_string(),
+        ),
+    }
+}
+
+async fn console_timeline_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Query(query): Query<ConsoleTimelineHttpQuery>,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return console_json_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "console timeline requires a valid auth token",
+        );
+    }
+    let Some(aggregator) = &state.console_aggregator else {
+        return console_json_error(
+            StatusCode::NOT_FOUND,
+            "unavailable",
+            "console aggregator unavailable",
+        );
+    };
+    let timeline_query = timeline_query_from_http(query, None);
+    match aggregator.query_timeline(timeline_query).await {
+        Ok(page) => (
+            StatusCode::OK,
+            Json::<Value>(serde_json::to_value(page).unwrap_or_else(|_| json!({ "frames": [] }))),
+        )
+            .into_response(),
+        Err(err) => {
+            console_json_error(StatusCode::CONFLICT, "replay_unavailable", &err.to_string())
+        }
+    }
+}
+
+async fn console_send_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Json(request): Json<ConsoleSendRequest>,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return console_json_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "console send requires a valid auth token",
+        );
+    }
+    let Some(aggregator) = &state.console_aggregator else {
+        return console_json_error(
+            StatusCode::NOT_FOUND,
+            "unavailable",
+            "console aggregator unavailable",
+        );
+    };
+    match aggregator.send(request).await {
+        Ok(accepted) => (
+            StatusCode::OK,
+            Json::<Value>(
+                serde_json::to_value(accepted).unwrap_or_else(|_| json!({ "accepted": true })),
+            ),
+        )
+            .into_response(),
+        Err(err) => console_send_error_response(err),
+    }
+}
+
+async fn console_timeline_stream_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    Query(query): Query<ConsoleTimelineHttpQuery>,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return console_json_error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "console timeline stream requires a valid auth token",
+        );
+    }
+    let Some(aggregator) = &state.console_aggregator else {
+        return console_json_error(
+            StatusCode::NOT_FOUND,
+            "unavailable",
+            "console aggregator unavailable",
+        );
+    };
+    let last_event_id = headers
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let timeline_query = timeline_query_from_http(query, last_event_id);
+    let replay_page = match aggregator.query_timeline(timeline_query.clone()).await {
+        Ok(page) => page,
+        Err(_) => {
+            let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
+            let requested_cursor = timeline_query
+                .after
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default();
+            return (
+                StatusCode::CONFLICT,
+                Json::<Value>(
+                    serde_json::to_value(ConsoleReplayUnavailable {
+                        error: "replay_unavailable".to_string(),
+                        requested_cursor,
+                        latest_cursor,
+                    })
+                    .unwrap_or_else(|_| json!({ "error": "replay_unavailable" })),
+                ),
+            )
+                .into_response();
+        }
+    };
+    let mut rx = aggregator.subscribe();
+    let identity = timeline_query.identity.clone();
+    let conversation_id = timeline_query.conversation_id.clone();
+    let snapshot_after = timeline_query.after.clone();
+    let stream = stream! {
+        if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::SnapshotStarted { after: snapshot_after }) {
+            yield Ok::<Event, Infallible>(event);
+        }
+        let mut latest_cursor = replay_page.next_cursor.clone();
+        for frame in replay_page.frames {
+            latest_cursor = Some(frame.cursor.clone());
+            if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::ConsoleFrame { frame }) {
+                yield Ok::<Event, Infallible>(event);
+            }
+        }
+        if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::SnapshotComplete { cursor: latest_cursor }) {
+            yield Ok::<Event, Infallible>(event);
+        }
+        loop {
+            match rx.recv().await {
+                Ok(event) if timeline_event_matches(&event, identity.as_deref(), conversation_id.as_deref()) => {
+                    if let Some(sse) = sse_event_from_timeline_event(&event) {
+                        yield Ok::<Event, Infallible>(sse);
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    let event = ConsoleTimelineEvent::ReplayUnavailable {
+                        requested_cursor: format!("lagged:{skipped}"),
+                        latest_cursor: None,
+                    };
+                    if let Some(sse) = sse_event_from_timeline_event(&event) {
+                        yield Ok::<Event, Infallible>(sse);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
+                .text(KEEP_ALIVE_TEXT),
+        )
+        .into_response()
+}
+
+fn timeline_query_from_http(
+    query: ConsoleTimelineHttpQuery,
+    fallback_after: Option<String>,
+) -> ConsoleTimelineQuery {
+    let after = query.after.or(fallback_after).map(ConsoleCursor::from);
+    ConsoleTimelineQuery {
+        identity: query
+            .identity
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        conversation_id: query
+            .conversation_id
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        after,
+        limit: query.limit.unwrap_or(200),
+    }
+}
+
+fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::response::Response {
+    (
+        status,
+        Json::<Value>(json!({
+            "error": error,
+            "message": message,
+        })),
+    )
+        .into_response()
+}
+
+fn console_send_error_response(err: ConsoleSendError) -> axum::response::Response {
+    let (status, code) = match &err {
+        ConsoleSendError::UnknownIdentity(_) => (StatusCode::NOT_FOUND, "unknown_identity"),
+        ConsoleSendError::NotAddressable(_) => (StatusCode::CONFLICT, "not_addressable"),
+        ConsoleSendError::Retired(_) => (StatusCode::CONFLICT, "retired"),
+        ConsoleSendError::InvalidContent(_)
+        | ConsoleSendError::InvalidHandlingMode(_)
+        | ConsoleSendError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
+        ConsoleSendError::IdempotencyConflict(_) => (StatusCode::CONFLICT, "idempotency_conflict"),
+        ConsoleSendError::State(_) | ConsoleSendError::Dispatch(_) | ConsoleSendError::Log(_) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal_error")
+        }
+    };
+    console_json_error(status, code, &err.to_string())
+}
+
+fn console_send_rpc_code(err: &ConsoleSendError) -> i64 {
+    match err {
+        ConsoleSendError::UnknownIdentity(_) => -32001,
+        ConsoleSendError::NotAddressable(_) => -32002,
+        ConsoleSendError::InvalidContent(_)
+        | ConsoleSendError::InvalidHandlingMode(_)
+        | ConsoleSendError::InvalidRequest(_) => -32602,
+        ConsoleSendError::IdempotencyConflict(_) => -32009,
+        ConsoleSendError::Retired(_) => -32004,
+        ConsoleSendError::State(_) | ConsoleSendError::Dispatch(_) | ConsoleSendError::Log(_) => {
+            -32000
+        }
+    }
+}
+
+fn timeline_event_matches(
+    event: &ConsoleTimelineEvent,
+    identity: Option<&str>,
+    conversation_id: Option<&str>,
+) -> bool {
+    let frame = match event {
+        ConsoleTimelineEvent::ConsoleFrame { frame }
+        | ConsoleTimelineEvent::FrameUpdated { frame } => frame,
+        ConsoleTimelineEvent::SnapshotStarted { .. }
+        | ConsoleTimelineEvent::SnapshotComplete { .. }
+        | ConsoleTimelineEvent::ReplayUnavailable { .. } => return true,
+    };
+    if identity.is_some_and(|value| frame.identity != value) {
+        return false;
+    }
+    if conversation_id.is_some_and(|value| frame.conversation_id.as_deref() != Some(value)) {
+        return false;
+    }
+    true
+}
+
+fn sse_event_from_timeline_event(event: &ConsoleTimelineEvent) -> Option<Event> {
+    let (event_name, id) = match event {
+        ConsoleTimelineEvent::SnapshotStarted { .. } => ("snapshot_started", None),
+        ConsoleTimelineEvent::ConsoleFrame { frame } => (
+            if frame.kind == "frame_updated" {
+                "frame_updated"
+            } else {
+                "console_frame"
+            },
+            Some(frame.cursor.to_string()),
+        ),
+        ConsoleTimelineEvent::FrameUpdated { frame } => {
+            ("frame_updated", Some(frame.cursor.to_string()))
+        }
+        ConsoleTimelineEvent::SnapshotComplete { cursor } => (
+            "snapshot_complete",
+            cursor.as_ref().map(ToString::to_string),
+        ),
+        ConsoleTimelineEvent::ReplayUnavailable { .. } => ("replay_unavailable", None),
+    };
+    let data = match serde_json::to_string(event) {
+        Ok(value) => value,
+        Err(_) => return None,
+    };
+    let mut sse = Event::default().event(event_name).data(data);
+    if let Some(id) = id {
+        sse = sse.id(id);
+    }
+    Some(sse)
 }
 
 pub async fn console_rpc_multipart_handler(
@@ -569,6 +916,7 @@ pub async fn console_rpc_multipart_handler(
         state.event_log.clone(),
         state.gateway_peer_keys.as_ref(),
         state.console_events.clone(),
+        state.console_aggregator.clone(),
         state.metadata_table.clone(),
         state.mob_events.clone(),
         parsed_request,
@@ -1524,6 +1872,7 @@ async fn handle_console_runtime_rpc(
     event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     gateway_peer_keys: Option<&crate::auth::peer_keys::GatewayPeerKeys>,
     console_events: Option<ConsoleEventStore>,
+    console_aggregator: Option<MobKitConsoleAggregator>,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     mob_events: Option<MobEventsStore>,
     request: JsonRpcRequest,
@@ -1548,6 +1897,9 @@ async fn handle_console_runtime_rpc(
                 "mobkit/list_flows",
                 "mobkit/list_runs",
                 "mobkit/query_events",
+                "mobkit/console/list_identities",
+                "mobkit/console/inspect_identity",
+                "mobkit/console/query_timeline",
                 "mobkit/mob_events/query",
                 "mobkit/mob_events/subscribe",
                 "mobkit/cross_mob/peer_info",
@@ -1572,6 +1924,7 @@ async fn handle_console_runtime_rpc(
             if is_authenticated {
                 methods.extend_from_slice(&[
                     "mobkit/send_message",
+                    "mobkit/console/send",
                     "mobkit/blob/upload",
                     "mobkit/ensure_member",
                     "mobkit/retire_member",
@@ -1628,6 +1981,129 @@ async fn handle_console_runtime_rpc(
                 })),
                 None,
             )
+        }
+        "mobkit/console/list_identities" => {
+            let Some(aggregator) = &console_aggregator else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32004,
+                        message: "console aggregator unavailable".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match aggregator.list_identities().await {
+                Ok(identities) => {
+                    response_value(response_id, Some(json!({ "identities": identities })), None)
+                }
+                Err(err) => internal_error(response_id, format!("list_identities failed: {err}")),
+            }
+        }
+        "mobkit/console/inspect_identity" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            let Some(aggregator) = &console_aggregator else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32004,
+                        message: "console aggregator unavailable".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match aggregator.inspect_identity(identity).await {
+                Ok(Some(inspection)) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(inspection).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Ok(None) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("unknown identity: {identity}"),
+                        data: None,
+                    }),
+                ),
+                Err(err) => internal_error(response_id, format!("inspect_identity failed: {err}")),
+            }
+        }
+        "mobkit/console/query_timeline" => {
+            let query: ConsoleTimelineQuery = match serde_json::from_value(request.params.clone()) {
+                Ok(query) => query,
+                Err(err) => {
+                    return invalid_params(response_id, format!("invalid query params: {err}"));
+                }
+            };
+            let Some(aggregator) = &console_aggregator else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32004,
+                        message: "console aggregator unavailable".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match aggregator.query_timeline(query).await {
+                Ok(page) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(page).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32010,
+                        message: format!("query_timeline failed: {err}"),
+                        data: Some(json!({ "kind": "replay_unavailable" })),
+                    }),
+                ),
+            }
+        }
+        "mobkit/console/send" => {
+            let send_request: ConsoleSendRequest =
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(request) => request,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid send params: {err}"));
+                    }
+                };
+            let Some(aggregator) = &console_aggregator else {
+                return response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32004,
+                        message: "console aggregator unavailable".to_string(),
+                        data: None,
+                    }),
+                );
+            };
+            match aggregator.send(send_request).await {
+                Ok(accepted) => response_value(
+                    response_id,
+                    Some(serde_json::to_value(accepted).unwrap_or(Value::Null)),
+                    None,
+                ),
+                Err(err) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: console_send_rpc_code(&err),
+                        message: err.to_string(),
+                        data: None,
+                    }),
+                ),
+            }
         }
         "mobkit/blob/get" => {
             let Some(blob_id) = request

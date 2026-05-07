@@ -350,7 +350,7 @@ pub fn incident_model() -> String {
 }
 
 pub fn incident_image_model() -> String {
-    std::env::var("RKAT_INCIDENT_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".to_string())
+    std::env::var("RKAT_INCIDENT_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-2".to_string())
 }
 
 fn incident_definition() -> Result<MobDefinition> {
@@ -397,7 +397,7 @@ HOW TO OPERATE:
 - When a teammate replies with `peer_response`, read the actual answer from the response payload fields such as `result.summary`, `result.status_line`, or `result.facts`. Do not treat a completed response as empty if those fields are present.
 - Your final operator answer should be concise, operationally useful, and mention which teammates you consulted.
 - Do not pretend a peer confirmed something if they have not replied.
-- When the operator explicitly asks you to generate an image, call `generate_image` directly without consulting peers first. Include `provider: "openai"` and `model: "{image_model}"` in the image request so the example uses the configured image route instead of the provider default.
+- When the operator explicitly asks you to generate an image, call `generate_image` directly without consulting peers first. Include `provider: "openai"` and the configured image model (`model: "{image_model}"`) in the image request so the example uses the selected image route instead of the provider default. If asked why a model was used, say it came from the example's image-model configuration, not from a fixed policy preference.
 """
 
 [skills.payments_sre_role]
@@ -1029,8 +1029,9 @@ mod tests {
         };
         assert!(
             commander_skill.contains("provider: \"openai\"")
-                && commander_skill.contains("model: \"gpt-image-1\""),
-            "commander image-generation instructions should pin the configured image route"
+                && commander_skill.contains("model: \"gpt-image-2\"")
+                && commander_skill.contains("example's image-model configuration"),
+            "commander image-generation instructions should use the configured image route without implying a fixed policy preference"
         );
     }
 
