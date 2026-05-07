@@ -169,7 +169,7 @@ fn discovery_jwks_responses(base_url: &str, secret: &[u8], kid: &str) -> Vec<(u1
 fn make_cache(base_url: &str) -> JwksCache {
     let config = JwksCacheConfig {
         discovery_url: format!("{base_url}/.well-known/openid-configuration"),
-        refresh_interval: Duration::from_secs(3600),
+        refresh_interval: Duration::from_hours(1),
         http_timeout: Duration::from_secs(5),
         issuer: None,
         audience: None,
@@ -181,7 +181,7 @@ fn make_cache(base_url: &str) -> JwksCache {
 fn make_cache_with_issuer(base_url: &str, issuer: &str) -> JwksCache {
     let config = JwksCacheConfig {
         discovery_url: format!("{base_url}/.well-known/openid-configuration"),
-        refresh_interval: Duration::from_secs(3600),
+        refresh_interval: Duration::from_hours(1),
         http_timeout: Duration::from_secs(5),
         issuer: Some(issuer.to_string()),
         audience: None,

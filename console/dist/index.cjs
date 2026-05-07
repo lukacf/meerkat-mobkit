@@ -352,6 +352,8 @@ function conversationRichBlockCopyText(block) {
       return block.text.trim();
     case "thinking":
       return [block.label, block.text].filter(Boolean).join("\n").trim();
+    case "image":
+      return [block.alt || "image", block.blobId || block.src].filter(Boolean).join(" ").trim();
     case "tool-call": {
       if (block.peerTarget) {
         const dir = block.peerIncoming ? "\u2190 from" : "\u2192 to";
@@ -1619,6 +1621,29 @@ function renderBlock(block, index, Icon2) {
       /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-rich-divider__line" })
     ] }, `divider-${index}`);
   }
+  if (block.type === "image") {
+    const image = block;
+    return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+      "button",
+      {
+        className: "cc-rich-image-button",
+        onClick: () => window.open(image.src, "_blank", "noopener,noreferrer"),
+        type: "button",
+        children: /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(
+          "img",
+          {
+            alt: image.alt || "",
+            className: "cc-rich-image",
+            height: image.height,
+            loading: "lazy",
+            src: image.src,
+            width: image.width
+          }
+        )
+      },
+      `image-${index}`
+    );
+  }
   if (block.type === "tool-call") {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolCallBlock, { block }, `tool-call-${index}`);
   }
@@ -2005,6 +2030,11 @@ var import_jsx_runtime14 = require("react/jsx-runtime");
 var import_jsx_runtime15 = require("react/jsx-runtime");
 
 // src/lib/agents.ts
+function normalizeModelCapabilities(entry) {
+  const record = entry && typeof entry === "object" ? entry : {};
+  const caps = record.model_capabilities && typeof record.model_capabilities === "object" ? record.model_capabilities : {};
+  return { image_input: caps.image_input === true };
+}
 function normalizeAgents(experience, modules) {
   const identityStatusRows = Array.isArray(experience?.identity_status?.rows) ? experience.identity_status.rows : [];
   const normalizedIdentityStatusRows = identityStatusRows.map((entry) => normalizeIdentityStatusRow(entry)).filter((entry) => entry !== null);
@@ -2019,6 +2049,10 @@ function normalizeAgents(experience, modules) {
       const statusRow = identityStatusByIdentity.get(entryIdentity) || identityStatusByIdentity.get(entryMemberId) || normalizeIdentityStatusRow(entry);
       const watchFields = normalizeSidebarWatchFields(entry);
       const responsePhase = normalizeResponsePhase(entry.response_phase);
+      const modelCapabilities = entry.model_capabilities !== void 0 ? normalizeModelCapabilities(entry) : normalizeModelCapabilities(identityStatusRows.find((row) => {
+        const normalized = normalizeIdentityStatusRow(row);
+        return normalized?.identity === statusRow?.identity;
+      }));
       return {
         ...statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {},
         agent_id: String(entry.agent_id || statusRow?.identity || entry.identity || entry.member_id || ""),
@@ -2038,6 +2072,7 @@ function normalizeAgents(experience, modules) {
         ...entry.group !== void 0 && { group: String(entry.group) },
         ...entry.addressable !== void 0 ? { addressable: Boolean(entry.addressable) } : statusRow?.addressability ? { addressable: statusRow.addressability === "addressable" } : {},
         ...entry.affordances !== void 0 && { affordances: entry.affordances },
+        model_capabilities: modelCapabilities,
         ...watchFields
       };
     });
@@ -2046,6 +2081,7 @@ function normalizeAgents(experience, modules) {
     return identityStatusRows.map((entry) => {
       const statusRow = normalizeIdentityStatusRow(entry);
       const identity = statusRow?.identity || "";
+      const modelCapabilities = normalizeModelCapabilities(entry);
       return {
         identity,
         agent_id: String(identity),
@@ -2061,7 +2097,8 @@ function normalizeAgents(experience, modules) {
         ...statusRow?.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
         ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
         addressable: false,
-        affordances: { can_send_message: false }
+        affordances: { can_send_message: false },
+        model_capabilities: modelCapabilities
       };
     });
   }
@@ -2070,7 +2107,8 @@ function normalizeAgents(experience, modules) {
       agent_id: String(moduleId),
       member_id: String(moduleId),
       label: String(moduleId),
-      kind: "module_agent"
+      kind: "module_agent",
+      model_capabilities: { image_input: false }
     }));
   }
   return [];
@@ -2296,6 +2334,66 @@ function summarizeFrameData(data) {
   }
   return String(data ?? "");
 }
+function eventSortRank(event) {
+  switch (event) {
+    case "interaction_started":
+      return 0;
+    case "tool_call_requested":
+    case "tool_call":
+    case "tool_execution_started":
+      return 20;
+    case "tool_result_received":
+    case "tool_execution_completed":
+      return 30;
+    case "assistant_image":
+      return 35;
+    case "text_delta":
+      return 40;
+    case "text_complete":
+      return 45;
+    case "interaction_complete":
+    case "interaction_failed":
+    case "run_completed":
+    case "run_failed":
+      return 90;
+    default:
+      return 50;
+  }
+}
+function sortFramesForTranscript(frames) {
+  const interactionStartMs = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    const interactionId = frame.interactionId?.trim();
+    const timestampMs = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) continue;
+    const current = interactionStartMs.get(interactionId);
+    if (current === void 0 || timestampMs < current) {
+      interactionStartMs.set(interactionId, timestampMs);
+    }
+  }
+  return frames.map((frame, index) => ({ frame, index })).sort((left, right) => {
+    const leftInteraction = left.frame.interactionId?.trim() || "";
+    const rightInteraction = right.frame.interactionId?.trim() || "";
+    const leftGroupTs = (leftInteraction && interactionStartMs.get(leftInteraction)) ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+    const rightGroupTs = (rightInteraction && interactionStartMs.get(rightInteraction)) ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+    if (leftGroupTs !== rightGroupTs) {
+      return leftGroupTs - rightGroupTs;
+    }
+    if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
+      const leftRank = eventSortRank(left.frame.event);
+      const rightRank = eventSortRank(right.frame.event);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
+    }
+    const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    if (leftTs !== rightTs) {
+      return leftTs - rightTs;
+    }
+    return left.index - right.index;
+  }).map(({ frame }) => frame);
+}
 var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "subscribed",
   "run_started",
@@ -2516,6 +2614,38 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   }
   return null;
 }
+function buildBlobUrl(blobId, baseUrl) {
+  const path = `/blobs/${encodeURIComponent(blobId)}`;
+  const base = baseUrl?.trim();
+  if (!base) return path;
+  return `${base.replace(/\/+$/, "")}${path}`;
+}
+function renderAssistantImageEntry(agent, frame, entryId, blobBaseUrl) {
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const blobId = typeof data.blob_id === "string" ? data.blob_id : "";
+  if (!blobId) return null;
+  const mediaType = typeof data.media_type === "string" ? data.media_type : "image/png";
+  const width = typeof data.width === "number" ? data.width : void 0;
+  const height = typeof data.height === "number" ? data.height : void 0;
+  const imageId = typeof data.image_id === "string" ? data.image_id : void 0;
+  return {
+    kind: "message",
+    id: entryId,
+    identity: agentIdentity(agent),
+    variant: "rich",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    blocks: [{
+      type: "image",
+      src: buildBlobUrl(blobId, blobBaseUrl),
+      mediaType,
+      alt: "generated image",
+      ...width !== void 0 ? { width } : {},
+      ...height !== void 0 ? { height } : {},
+      blobId,
+      ...imageId ? { imageId } : {}
+    }]
+  };
+}
 function normalizeComparableText(value) {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -2535,20 +2665,33 @@ function buildQuickPromptSuggestions(agent) {
   }
   return suggestions;
 }
-function renderHistoryUserEntry(frame, entryId) {
+function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
   if (frame.event !== "interaction_started" || typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
   const record = frame.data;
-  const content = typeof record.content === "string" ? record.content.trim() : "";
-  if (!content) return null;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const blocks = contentToUserBlocks(content, blobBaseUrl);
+    if (blocks.length === 0) return null;
+    return {
+      kind: "message",
+      id: entryId,
+      identity: USER_IDENTITY,
+      variant: "rich",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      blocks
+    };
+  }
+  const text = extractTextFromContentBlocks(content).trim();
+  if (!text) return null;
   return {
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
     variant: "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
-    text: content
+    text
   };
 }
 function renderRunStartedPromptEntries(frame, entryId, options = {}) {
@@ -2573,7 +2716,19 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
       text: embeddedPrompt
     });
   }
-  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
+  if (prompt.startsWith("[COMMS")) {
+    const summarized = summarizeCommsTransport(prompt).trim();
+    if (summarized) {
+      entries.push({
+        kind: "message",
+        id: entryId,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        ...createdAt ? { createdAt } : {},
+        text: summarized
+      });
+    }
+  } else if (prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
     const incomingBlocks = parseIncomingCommsBlocks(prompt);
     if (incomingBlocks.length > 0) {
       entries.push({
@@ -2590,7 +2745,7 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
         entries.push({
           kind: "message",
           id: entryId,
-          identity: { id: "comms", label: "", role: "system", showLabel: false },
+          identity: SYSTEM_IDENTITY,
           variant: "meta",
           ...createdAt ? { createdAt } : {},
           text: summarized
@@ -2599,6 +2754,69 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
     }
   }
   return entries;
+}
+function extractTextFromContentBlocks(blocks) {
+  if (typeof blocks === "string") {
+    return blocks;
+  }
+  if (!Array.isArray(blocks)) {
+    return "";
+  }
+  return blocks.map((block) => {
+    if (typeof block === "string") return block;
+    if (!block || typeof block !== "object") return "";
+    const record = block;
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.content === "string") return record.content;
+    return "";
+  }).filter((value) => value.trim().length > 0).join("");
+}
+function contentToUserBlocks(content, blobBaseUrl) {
+  if (typeof content === "string") {
+    return parseConversationRichBlocks(stripRpcEventPrefix(content));
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const blocks = [];
+  for (const block of content) {
+    if (typeof block === "string") {
+      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(block)));
+      continue;
+    }
+    if (!block || typeof block !== "object") continue;
+    const record = block;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (type === "text") {
+      const text = typeof record.text === "string" ? record.text : typeof record.content === "string" ? record.content : "";
+      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(text)));
+      continue;
+    }
+    if (type === "image") {
+      const source = typeof record.source === "string" ? record.source : "";
+      const blobId = typeof record.blob_id === "string" ? record.blob_id : typeof record.blobId === "string" ? record.blobId : "";
+      const mediaType = typeof record.media_type === "string" ? record.media_type : typeof record.mediaType === "string" ? record.mediaType : "image/png";
+      const inlineData = typeof record.data === "string" ? record.data : typeof record.base64 === "string" ? record.base64 : "";
+      const src = source === "blob" && blobId ? buildBlobUrl(blobId, blobBaseUrl) : inlineData ? `data:${mediaType};base64,${inlineData}` : "";
+      if (!src) continue;
+      const alt = typeof record.alt === "string" && record.alt.trim() ? record.alt.trim() : "attached image";
+      const width = typeof record.width === "number" ? record.width : void 0;
+      const height = typeof record.height === "number" ? record.height : void 0;
+      blocks.push({
+        type: "image",
+        src,
+        mediaType,
+        alt,
+        ...width !== void 0 ? { width } : {},
+        ...height !== void 0 ? { height } : {},
+        ...blobId ? { blobId } : {}
+      });
+    }
+  }
+  return blocks;
+}
+function stripRpcEventPrefix(text) {
+  return text.replace(/^\[EVENT via rpc\]\s*/i, "").trim();
 }
 function summarizeCommsTransport(text) {
   const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -2615,9 +2833,9 @@ function summarizeCommsTransport(text) {
       if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
         return "";
       }
-      return `\u21AA request: ${intent}`;
+      return `Peer request: ${intent}`;
     }
-    return "\u21AA request received";
+    return "Peer request received";
   }
   if (header.startsWith("[COMMS RESPONSE")) {
     const statusLine = body.find((line) => line.startsWith("Status:"));
@@ -2642,14 +2860,14 @@ function summarizeCommsTransport(text) {
         }
       } catch {
       }
-      const label = status ? `\u21A9 response (${status})` : "\u21A9 response";
+      const label = status ? `Peer response (${status})` : "Peer response";
       return `${label}: ${summary2}`;
     }
-    return status ? `\u21A9 response (${status})` : "\u21A9 response received";
+    return status ? `Peer response (${status})` : "Peer response received";
   }
   if (header.startsWith("[COMMS MESSAGE")) {
     const joined = [headerTail, ...body].join(" ").trim();
-    return joined ? `\u21A9 message: ${joined}` : "\u21A9 message received";
+    return joined ? `Peer message: ${joined}` : "Peer message received";
   }
   return text;
 }
@@ -2789,7 +3007,7 @@ function extractEmbeddedRpcPrompt(text) {
   return match?.[1]?.trim() || null;
 }
 function mapFramesToTimelineEntries(agent, frames, options = {}) {
-  const orderedFrames = frames;
+  const orderedFrames = options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames;
   const entries = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = /* @__PURE__ */ new Set();
@@ -2825,6 +3043,14 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       pendingText += summarizeFrameData(frame.data);
       continue;
     }
+    if (frame.event === "assistant_image") {
+      flushPendingText();
+      const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
+      if (imageEntry) {
+        entries.push(imageEntry);
+      }
+      continue;
+    }
     const toolCallId = parseToolCallId(frame);
     if (toolCallId && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") && !emittedToolCalls.has(toolCallId)) {
       flushPendingText();
@@ -2857,7 +3083,7 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     }
     if (options.renderInteractionStartsAsUser && frame.event === "interaction_started") {
       flushPendingText();
-      const userEntry = renderHistoryUserEntry(frame, entryId);
+      const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
         entries.push(userEntry);
       }
@@ -2876,19 +3102,19 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "text_complete") {
       continue;
     }
+    if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
+      const streamedText = pendingText;
+      flushPendingText();
+      const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
+      if (terminalEntry) {
+        entries.push(terminalEntry);
+      }
+      continue;
+    }
     if (HIDDEN_EVENTS.has(frame.event)) {
       continue;
     }
-    const streamedText = pendingText;
     flushPendingText();
-    const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
-    if (terminalEntry) {
-      entries.push(terminalEntry);
-      continue;
-    }
-    if (frame.event === "interaction_complete") {
-      continue;
-    }
     const peerEntry = renderPeerEntry(frame, entryId);
     if (peerEntry) {
       entries.push(peerEntry);
@@ -2910,7 +3136,26 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
   flushPendingText();
   return entries;
 }
-function createUserEntry(message) {
+function createUserEntry(message, images = []) {
+  if (images.length > 0) {
+    const blocks = [
+      ...parseConversationRichBlocks(message),
+      ...images.map((image) => ({
+        type: "image",
+        src: image.src,
+        mediaType: image.mediaType,
+        alt: image.alt || "attached image"
+      }))
+    ];
+    return {
+      kind: "message",
+      id: `user:${Date.now()}`,
+      identity: USER_IDENTITY,
+      variant: "rich",
+      createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+      blocks
+    };
+  }
   return {
     kind: "message",
     id: `user:${Date.now()}`,
@@ -3115,6 +3360,46 @@ async function sendMessage(baseUrl, memberId, message, handlingMode = "queue") {
     message,
     handling_mode: handlingMode
   });
+}
+async function sendMessageMultipart(baseUrl, memberId, message, attachments, handlingMode = "queue") {
+  const content = [];
+  if (message.trim()) {
+    content.push({ type: "text", text: message });
+  }
+  const form = new FormData();
+  attachments.forEach((file, index) => {
+    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
+    content.push({
+      type: "image_upload",
+      upload_id: uploadId,
+      media_type: file.type || "application/octet-stream",
+      alt: file.name
+    });
+    form.append(`file:${uploadId}`, file, file.name);
+  });
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `mobkit/send_message:${Date.now()}`,
+    method: "mobkit/send_message",
+    params: {
+      member_id: memberId,
+      content,
+      handling_mode: handlingMode
+    }
+  }));
+  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`mobkit/send_message multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`mobkit/send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  return result.result;
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
@@ -5933,7 +6218,78 @@ function SignalsRail({ frames, collapsed, onSelect }) {
 
 // src/panels/ChatPane.tsx
 var import_react22 = __toESM(require("react"));
+
+// src/lib/composer-attachment-text.ts
+function composerImageFileKey(file) {
+  return [
+    file.name || "",
+    file.type || "",
+    String(file.size),
+    String(file.lastModified ?? 0)
+  ].join("\0");
+}
+function dedupeComposerImageFiles(files) {
+  const seen = /* @__PURE__ */ new Set();
+  const deduped = [];
+  for (const file of files) {
+    const key = composerImageFileKey(file);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(file);
+  }
+  return deduped;
+}
+function defaultBaseHref() {
+  if (typeof window !== "undefined") return window.location.href;
+  return "http://localhost/";
+}
+function defaultOrigin(baseHref) {
+  if (typeof window !== "undefined") return window.location.origin;
+  return new URL(baseHref).origin;
+}
+function normalizeConsoleBlobUrl(raw, baseHref = defaultBaseHref(), origin = defaultOrigin(baseHref)) {
+  try {
+    const url = new URL(raw.trim(), baseHref);
+    if (url.origin !== origin) return null;
+    if (!url.pathname.startsWith("/blobs/")) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+function consoleBlobReferencesFromText(value, baseHref = defaultBaseHref(), origin = defaultOrigin(baseHref)) {
+  const normalized = value.replace(/&amp;/g, "&");
+  const candidates = [
+    ...Array.from(normalized.matchAll(/\b(?:src|href)=["']([^"']+)["']/gi)).map((match) => match[1]),
+    ...Array.from(normalized.matchAll(/(?:https?:\/\/[^\s"'<>]+|\/blobs\/[^\s"'<>]+)/gi)).map((match) => match[0])
+  ];
+  const refs = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    const href = normalizeConsoleBlobUrl(candidate, baseHref, origin);
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    refs.push({ href, raw: candidate });
+  }
+  return refs;
+}
+function consoleBlobUrlsFromText(value) {
+  return consoleBlobReferencesFromText(value).map((ref) => ref.href);
+}
+function stripConsoleBlobReferencesFromText(value, references = consoleBlobReferencesFromText(value)) {
+  let next = value;
+  for (const ref of references) {
+    next = next.split(ref.raw).join("");
+    next = next.split(ref.href).join("");
+  }
+  return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+// src/panels/ChatPane.tsx
 var import_jsx_runtime30 = require("react/jsx-runtime");
+var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
+var MAX_ATTACHMENTS = 4;
+var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 function phaseLabel(_phase) {
   return "working";
 }
@@ -6016,6 +6372,93 @@ function flattenEntry(entry) {
     text: entry.text || ""
   }];
 }
+function textSignatureForMsg(message) {
+  if (message.text) {
+    return message.text.replace(/\s+/g, " ").trim();
+  }
+  if (!Array.isArray(message.blocks) || message.blocks.length === 0) {
+    return "";
+  }
+  const parts = message.blocks.map((block) => {
+    if (block.type === "paragraph") return block.text || "";
+    if (block.type === "heading") return block.text || "";
+    if (block.type === "divider") return block.text || "";
+    return "";
+  });
+  if (parts.some((part) => part.trim().length === 0)) {
+    return "";
+  }
+  return parts.join("\n").replace(/\s+/g, " ").trim();
+}
+function collectImageTransferPayload(data) {
+  const directFiles = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
+  const itemFiles = Array.from(data.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file) => Boolean(file));
+  const textPayloads = [
+    data.getData("text/html"),
+    data.getData("text/uri-list"),
+    data.getData("text/plain")
+  ].filter(Boolean);
+  return { files: dedupeComposerImageFiles([...directFiles, ...itemFiles]), textPayloads };
+}
+function imageTransferPayloadHasImage(payload) {
+  return payload.files.length > 0 || payload.textPayloads.some((text) => imageDataUrlsFromText(text).length > 0 || consoleBlobUrlsFromText(text).length > 0);
+}
+async function imageFilesFromTransferPayload(payload) {
+  if (payload.files.length > 0) {
+    return payload.files;
+  }
+  const files = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const text of payload.textPayloads) {
+    for (const dataUrl of imageDataUrlsFromText(text)) {
+      if (seen.has(dataUrl)) continue;
+      seen.add(dataUrl);
+      const file = fileFromImageDataUrl(dataUrl);
+      if (file) files.push(file);
+    }
+    for (const blobUrl of consoleBlobUrlsFromText(text)) {
+      if (seen.has(blobUrl)) continue;
+      seen.add(blobUrl);
+      const file = await fileFromConsoleBlobUrl(blobUrl);
+      if (file) files.push(file);
+    }
+  }
+  return files;
+}
+function imageDataUrlsFromText(value) {
+  const matches = value.match(/data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+/gi);
+  return matches ?? [];
+}
+function fileFromImageDataUrl(dataUrl) {
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) return null;
+  const [, mediaType, base64] = match;
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    return new File([bytes], `pasted-image.${ext}`, { type: mediaType });
+  } catch {
+    return null;
+  }
+}
+async function fileFromConsoleBlobUrl(url) {
+  try {
+    const response = await fetch(url, { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim() || "";
+    if (!ALLOWED_IMAGE_TYPES.has(mediaType)) return null;
+    const blob = await response.blob();
+    const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    const slug = decodeURIComponent(new URL(url).pathname.split("/").pop() || "blob").replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 80) || "blob";
+    return new File([blob], `${slug}.${ext}`, { type: mediaType });
+  } catch {
+    return null;
+  }
+}
 function ChatPane({
   agent,
   agentLabel,
@@ -6024,7 +6467,9 @@ function ChatPane({
   phase,
   draft,
   sending,
+  staged,
   onDraftChange,
+  onStagedChange,
   onSend,
   onInspect,
   onRespawn,
@@ -6033,7 +6478,15 @@ function ChatPane({
 }) {
   const bodyRef = import_react22.default.useRef(null);
   import_react22.default.useEffect(() => {
-    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    const resetTranscriptScroll = () => {
+      if (bodyRef.current) {
+        bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+        bodyRef.current.scrollLeft = 0;
+      }
+    };
+    resetTranscriptScroll();
+    const frame = window.requestAnimationFrame(resetTranscriptScroll);
+    return () => window.cancelAnimationFrame(frame);
   }, [entries.length, phase]);
   const messages = import_react22.default.useMemo(() => {
     const flat = entries.flatMap(flattenEntry);
@@ -6048,6 +6501,13 @@ function ChatPane({
         last.blocks = [...lastBlocks, ...mBlocks];
         last.id = `${last.id}+${m.id}`;
       } else {
+        if (last && m.kind === "agent" && last.kind === "agent" && last.who === m.who) {
+          const lastSignature = textSignatureForMsg(last);
+          const nextSignature = textSignatureForMsg(m);
+          if (lastSignature && lastSignature === nextSignature) {
+            continue;
+          }
+        }
         merged.push({ ...m });
       }
     }
@@ -6055,6 +6515,114 @@ function ChatPane({
   }, [entries]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
+  const canAttachImages = agent?.model_capabilities?.image_input === true;
+  const [dragActive, setDragActive] = import_react22.default.useState(false);
+  const [attachmentError, setAttachmentError] = import_react22.default.useState(null);
+  const fileInputRef = import_react22.default.useRef(null);
+  const resolvedDraftBlobRefs = import_react22.default.useRef("");
+  function addFiles(fileList) {
+    if (!canAttachImages) return;
+    const files = dedupeComposerImageFiles(Array.from(fileList));
+    const accepted = [];
+    let error = null;
+    for (const file of files) {
+      if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+        error = "Unsupported image type";
+        continue;
+      }
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        error = "Image exceeds 25 MiB";
+        continue;
+      }
+      accepted.push({
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        previewUrl: URL.createObjectURL(file)
+      });
+    }
+    onStagedChange((current) => {
+      const currentKeys = new Set(current.map((item) => composerImageFileKey(item.file)));
+      const append = [];
+      for (const item of accepted) {
+        const key = composerImageFileKey(item.file);
+        if (currentKeys.has(key)) {
+          URL.revokeObjectURL(item.previewUrl);
+          continue;
+        }
+        currentKeys.add(key);
+        if (current.length + append.length >= MAX_ATTACHMENTS) {
+          URL.revokeObjectURL(item.previewUrl);
+          error = `Maximum ${MAX_ATTACHMENTS} images`;
+          continue;
+        }
+        append.push(item);
+      }
+      return [...current, ...append];
+    });
+    setAttachmentError(error);
+  }
+  function removeAttachment(id) {
+    onStagedChange((current) => {
+      const removed = current.find((item) => item.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((item) => item.id !== id);
+    });
+  }
+  import_react22.default.useEffect(() => {
+    if (!canAttachImages) return;
+    const refs = consoleBlobReferencesFromText(draft);
+    if (refs.length === 0) {
+      resolvedDraftBlobRefs.current = "";
+      return;
+    }
+    const signature = refs.map((ref) => ref.href).join("\n");
+    if (signature === resolvedDraftBlobRefs.current) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const files = [];
+        const seen = /* @__PURE__ */ new Set();
+        for (const ref of refs) {
+          if (seen.has(ref.href)) continue;
+          seen.add(ref.href);
+          const file = await fileFromConsoleBlobUrl(ref.href);
+          if (file) files.push(file);
+        }
+        if (cancelled) return;
+        if (files.length > 0) {
+          resolvedDraftBlobRefs.current = signature;
+          addFiles(files);
+          onDraftChange(stripConsoleBlobReferencesFromText(draft, refs));
+        } else {
+          setAttachmentError("No usable image found");
+        }
+      })();
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [canAttachImages, draft, onDraftChange]);
+  async function submitComposer() {
+    if (staged.length > 0 && !canAttachImages) {
+      setAttachmentError("model cannot see images");
+      return;
+    }
+    if (!draft.trim() && staged.length === 0) {
+      return;
+    }
+    const files = staged.map((item) => item.file);
+    try {
+      const sent = await onSend(files);
+      if (sent) {
+        staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+        onStagedChange([]);
+        setAttachmentError(null);
+      }
+    } catch {
+      setAttachmentError("send failed; images retained");
+    }
+  }
   return /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "conv", "data-testid": `chat-pane:${identity}`, children: [
     /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "conv__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "conv__avatar", children: initial }),
@@ -6071,87 +6639,165 @@ function ChatPane({
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", disabled: !agent?.affordances?.can_retire, children: "Retire" })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "conv__body", ref: bodyRef, children: [
-      messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg msg--origin", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__text", children: [
-          "No messages yet. Say hello to ",
-          agentLabel,
-          "."
-        ] }) })
-      ] }),
-      messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time", children: m.time }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg__bubble", children: [
-          m.kind === "user" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
-          m.kind === "agent" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
-          m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__text", children: m.text })
-        ] })
-      ] }, m.id)),
-      phase && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
-        "div",
-        {
-          className: "msg msg--typing",
-          "data-testid": `chat-typing:${identity}`,
-          "aria-live": "polite",
-          "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
-          children: [
-            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
-                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
-                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {})
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
-            ] }) })
-          ]
-        }
-      )
-    ] }),
-    stackSlot,
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer__shell", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
-          "textarea",
-          {
-            placeholder: `Message ${agentLabel}\u2026    @ to mention, / for commands`,
-            value: draft,
-            onChange: (e) => onDraftChange(e.target.value),
-            onKeyDown: (e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                onSend();
-              }
-            },
-            disabled: sending,
-            rows: 2,
-            "data-testid": `chat-composer:${identity}`
+    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+      "div",
+      {
+        className: "conv__body",
+        onScroll: (event) => {
+          if (event.currentTarget.scrollLeft !== 0) {
+            event.currentTarget.scrollLeft = 0;
           }
-        ),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer__row", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "composer__chip", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "k", children: "/" }),
-            " commands"
+        },
+        ref: bodyRef,
+        children: [
+          messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg msg--origin", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__text", children: [
+              "No messages yet. Say hello to ",
+              agentLabel,
+              "."
+            ] }) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "composer__chip", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "k", children: "@" }),
-            " mention"
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
-          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "composer__spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
-            "button",
+          messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time", children: m.time }),
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg__bubble", children: [
+              m.kind === "user" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
+              m.kind === "agent" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
+              m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__text", children: m.text })
+            ] })
+          ] }, m.id)),
+          phase && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+            "div",
             {
-              className: "composer__send",
-              disabled: !draft.trim() || sending,
-              onClick: onSend,
-              "data-testid": `chat-send:${identity}`,
-              children: "Send  \u23CE"
+              className: "msg msg--typing",
+              "data-testid": `chat-typing:${identity}`,
+              "aria-live": "polite",
+              "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {})
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+                ] }) })
+              ]
             }
           )
-        ] })
-      ] }),
+        ]
+      }
+    ),
+    stackSlot,
+    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+        "div",
+        {
+          className: `composer__shell${dragActive && canAttachImages ? " is-drag-active" : ""}`,
+          onDragLeave: () => setDragActive(false),
+          onDragOver: (event) => {
+            if (!canAttachImages) return;
+            event.preventDefault();
+            setDragActive(true);
+          },
+          onDrop: (event) => {
+            if (!canAttachImages) return;
+            event.preventDefault();
+            setDragActive(false);
+            const payload = collectImageTransferPayload(event.dataTransfer);
+            void imageFilesFromTransferPayload(payload).then((files) => {
+              if (files.length > 0) {
+                addFiles(files);
+              } else {
+                setAttachmentError("No usable image found");
+              }
+            });
+          },
+          onPaste: (event) => {
+            if (!canAttachImages) return;
+            const payload = collectImageTransferPayload(event.clipboardData);
+            if (imageTransferPayloadHasImage(payload)) {
+              event.preventDefault();
+              void imageFilesFromTransferPayload(payload).then((files) => {
+                if (files.length > 0) {
+                  addFiles(files);
+                } else {
+                  setAttachmentError("No usable image found");
+                }
+              });
+            }
+          },
+          children: [
+            staged.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "composer__attachments", children: staged.map((item) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer__attachment", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("img", { alt: "", src: item.previewUrl }),
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { "aria-label": "Remove attachment", onClick: () => removeAttachment(item.id), type: "button", children: "\xD7" })
+            ] }, item.id)) }),
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+              "textarea",
+              {
+                placeholder: `Message ${agentLabel}\u2026    @ to mention, / for commands`,
+                value: draft,
+                onChange: (e) => onDraftChange(e.target.value),
+                onKeyDown: (e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submitComposer();
+                  }
+                },
+                disabled: sending,
+                rows: 2,
+                "data-testid": `chat-composer:${identity}`
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+              "input",
+              {
+                accept: "image/png,image/jpeg,image/webp,image/gif",
+                hidden: true,
+                multiple: true,
+                onChange: (event) => {
+                  if (event.target.files) addFiles(event.target.files);
+                  event.currentTarget.value = "";
+                },
+                ref: fileInputRef,
+                type: "file"
+              }
+            ),
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer__row", children: [
+              canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+                "button",
+                {
+                  className: "composer__chip composer__chip--button",
+                  onClick: () => fileInputRef.current?.click(),
+                  type: "button",
+                  children: "+"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "composer__chip", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "k", children: "/" }),
+                " commands"
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "composer__chip", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "k", children: "@" }),
+                " mention"
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "composer__spacer" }),
+              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(
+                "button",
+                {
+                  className: "composer__send",
+                  disabled: !draft.trim() && staged.length === 0 || staged.length > 0 && !canAttachImages || sending,
+                  onClick: submitComposer,
+                  "data-testid": `chat-send:${identity}`,
+                  children: "Send  \u23CE"
+                }
+              )
+            ] })
+          ]
+        }
+      ),
       /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer__footer", children: [
         /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { children: [
           "To: ",
@@ -6171,6 +6817,14 @@ function ChatPane({
         phase && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(import_jsx_runtime30.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: "\xB7" }),
           /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { style: { color: "var(--accent)" }, children: phase })
+        ] }),
+        !canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(import_jsx_runtime30.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: "model cannot see images" })
+        ] }),
+        attachmentError && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(import_jsx_runtime30.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { children: "\xB7" }),
+          /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { style: { color: "var(--bad)" }, children: attachmentError })
         ] })
       ] })
     ] })
@@ -6866,6 +7520,7 @@ function richBlockHasVisibleContent(block) {
     typeof record.name === "string" ? record.name : ""
   ].join(" ").trim();
   if (scalarText.length > 0) return true;
+  if (record.type === "image" && (typeof record.src === "string" || typeof record.blobId === "string")) return true;
   if (Array.isArray(record.headers) && record.headers.some((v) => String(v || "").trim().length > 0)) return true;
   if (Array.isArray(record.rows) && record.rows.some((row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0))) return true;
   return false;
@@ -6901,6 +7556,7 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_started",
   "interaction_complete",
   "interaction_failed",
+  "assistant_image",
   "text_delta",
   "text_complete",
   "tool_call_requested",
@@ -6943,6 +7599,7 @@ function ConsoleApp({ baseUrl }) {
   const [experience, setExperience] = import_react25.default.useState(null);
   const [agents, setAgents] = import_react25.default.useState([]);
   const [draftByKey, setDraftByKey] = import_react25.default.useState({});
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = import_react25.default.useState({});
   const [sendingPanels, setSendingPanels] = import_react25.default.useState(/* @__PURE__ */ new Set());
   const [pinnedAgentIds, setPinnedAgentIds] = import_react25.default.useState(/* @__PURE__ */ new Set());
   const [inspectByIdentity, setInspectByIdentity] = import_react25.default.useState({});
@@ -6995,6 +7652,25 @@ function ConsoleApp({ baseUrl }) {
   }, []);
   const [, setRenderTick] = import_react25.default.useState(0);
   const forceRender = import_react25.default.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = import_react25.default.useRef(stagedAttachmentsByIdentity);
+  import_react25.default.useEffect(() => {
+    stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
+  }, [stagedAttachmentsByIdentity]);
+  import_react25.default.useEffect(() => () => {
+    for (const items of Object.values(stagedAttachmentsRef.current)) {
+      items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    }
+  }, []);
+  function setStagedAttachmentsForIdentity(identity, action) {
+    setStagedAttachmentsByIdentity((current) => {
+      const previous = current[identity] ?? [];
+      const next = typeof action === "function" ? action(previous) : action;
+      const updated = { ...current };
+      if (next.length > 0) updated[identity] = next;
+      else delete updated[identity];
+      return updated;
+    });
+  }
   const identityLogRef = import_react25.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
@@ -7020,6 +7696,7 @@ function ConsoleApp({ baseUrl }) {
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
     if (frame.event === "interaction_started" && log.optimisticUser && log.optimisticUser.interactionId && frame.interactionId === log.optimisticUser.interactionId) {
+      log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       log.optimisticUser = null;
     }
     return true;
@@ -7362,41 +8039,68 @@ function ConsoleApp({ baseUrl }) {
     const agent = agents.find((c) => c.member_id === item.id);
     if (agent) dock.openTarget(buildDockTarget(agent), "replace_focused");
   }
-  async function submitMessageNow(panelId, target, text, handlingMode) {
-    if (target.kind !== "agent-chat") return;
+  async function submitMessageNow(panelId, target, text, handlingMode, attachments = []) {
+    if (target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
-    const userEntry = createUserEntry(text);
+    const optimisticObjectUrls = attachments.map((file) => URL.createObjectURL(file));
+    const userEntry = createUserEntry(
+      text,
+      attachments.map((file, index) => ({
+        src: optimisticObjectUrls[index] || "",
+        mediaType: file.type || "application/octet-stream",
+        alt: file.name
+      }))
+    );
     setSendingPanels((c) => new Set(c).add(panelKey));
     const log = getOrCreateLog(identity);
     log.optimisticUser = {
       interactionId: "",
       entry: userEntry,
-      sentAtMs: Date.now()
+      sentAtMs: Date.now(),
+      objectUrls: optimisticObjectUrls
     };
     commitPanelPhase(panelKey, "waiting");
     identityBusyRef.current[identity] = true;
     forceRender();
     try {
       const id = target.identity?.trim();
-      if (id) {
+      if (attachments.length > 0) {
+        const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id || "";
+          const matched = result.interaction_id ? log.events.some(
+            (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id
+          ) : false;
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
+        }
+      } else if (id) {
         const result = await sendInteract(baseUrl, id, text, `console:${panelId}`, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
             (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id
           );
-          if (matched) log.optimisticUser = null;
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
         }
       } else {
         await sendMessage(baseUrl, target.memberId, text, handlingMode);
       }
+      return true;
     } catch (submitError) {
+      log.optimisticUser?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       log.optimisticUser = null;
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
       setError(errorMessage(submitError));
       forceRender();
+      return false;
     } finally {
       setSendingPanels((c) => {
         const n = new Set(c);
@@ -7405,30 +8109,32 @@ function ConsoleApp({ baseUrl }) {
       });
     }
   }
-  async function onSendMessage(panelId, target) {
-    if (!target || target.kind !== "agent-chat") return;
+  async function onSendMessage(panelId, target, attachments = []) {
+    if (!target || target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
     const text = (draftByKey[panelKey] || "").trim();
-    if (!text) return;
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    if (!text && attachments.length === 0) return false;
     const stack = getPendingStack(identity);
     const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
-    if (!shouldQueue) {
-      await submitMessageNow(panelId, target, text, "queue");
-      return;
+    if (!shouldQueue || attachments.length > 0) {
+      const sent = await submitMessageNow(panelId, target, text, "queue", attachments);
+      if (sent) setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      return sent;
     }
     const newId = `pmsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
     setPendingStack(identity, (prev) => [
       ...prev,
       { id: newId, text, addedAt: Date.now(), status: "entering" }
     ]);
+    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
     window.setTimeout(() => {
       setPendingStack(
         identity,
         (prev) => prev.map((it) => it.id === newId && it.status === "entering" ? { ...it, status: null } : it)
       );
     }, 240);
+    return true;
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
@@ -7617,7 +8323,8 @@ function ConsoleApp({ baseUrl }) {
     const sortedFrames = getSortedFrames(identity);
     const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
-      renderTextDeltas: true
+      renderTextDeltas: true,
+      blobBaseUrl: baseUrl
     });
     const log = getOrCreateLog(identity);
     const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
@@ -7632,8 +8339,9 @@ function ConsoleApp({ baseUrl }) {
       entries
     });
     const draft = draftByKey[panelKey] || "";
+    const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
-    const phase = phaseRef.current[panelKey] ?? agent?.response_phase ?? null;
+    const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey) ? phaseRef.current[panelKey] : agent?.response_phase ?? null;
     const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
       id: s.id,
       kind: "pill",
@@ -7677,8 +8385,10 @@ function ConsoleApp({ baseUrl }) {
         phase,
         draft,
         sending: isSending,
+        staged,
         onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
-        onSend: () => void onSendMessage(panel.id, target),
+        onStagedChange: (action) => setStagedAttachmentsForIdentity(identity, action),
+        onSend: (attachments) => onSendMessage(panel.id, target, attachments),
         onInspect: () => {
           if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab");
         },

@@ -4,6 +4,7 @@ pub mod identity_first;
 
 pub mod auth;
 pub mod baseline;
+pub mod blob_store;
 pub mod config_convention;
 pub mod console_contracts;
 pub mod contact_directory;
@@ -33,6 +34,9 @@ pub use auth::{
 pub use baseline::{
     BaselineVerificationError, BaselineVerificationReport, DEFAULT_MEERKAT_REPO,
     REQUIRED_MEERKAT_SYMBOLS, verify_meerkat_baseline_symbols,
+};
+pub use blob_store::{
+    Base64BlobStoreAdapter, BinaryBlobPayload, BinaryBlobStore, ObjectStoreBlobStore,
 };
 pub use config_convention::ConventionalPaths;
 pub use console_contracts::{
@@ -79,24 +83,24 @@ pub use rpc::{
 pub use rpc::{RpcCapabilities, RpcCapabilitiesError, parse_rpc_capabilities};
 pub use runtime::{
     BaselineRuntimeError, BigQueryGcConfig, BigQuerySessionStoreAdapter, BigQuerySessionStoreError,
-    ConfigResolutionError, ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest,
-    ConsoleRestJsonResponse, DecisionRuntimeError, ElephantMemoryBackendConfig,
-    ElephantMemoryStoreError, GatingAuditEntry, GatingDecideError, GatingDecideRequest,
-    GatingDecision, GatingDecisionResult, GatingEvaluateRequest, GatingEvaluateResult,
-    GatingOutcome, GatingPendingEntry, GatingRiskTier, InMemoryMetadataStore, JsonFileSessionStore,
-    JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent, LifecycleStage,
-    McpBoundaryError, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal, MemoryIndexError,
-    MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult, MemoryStoreInfo,
-    MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle, ModuleHealthState,
-    ModuleHealthTransition, ModuleRouteError, ModuleRouteRequest, ModuleRouteResponse,
-    NormalizationError, PersistentMetadataStore, RpcRouteError, RpcRuntimeError,
-    RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState, RuntimeFromConfigError,
-    RuntimeMetadataTable, RuntimeMutationError, RuntimeOptions, RuntimeRoute,
-    RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition, ScheduleDispatch,
-    ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection, ScheduleTrigger,
-    SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract, SessionStoreKind,
-    SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope, SupervisorReport,
-    TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
+    ConfigResolutionError, ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleModelCapabilities,
+    ConsoleRestJsonRequest, ConsoleRestJsonResponse, DecisionRuntimeError,
+    ElephantMemoryBackendConfig, ElephantMemoryStoreError, GatingAuditEntry, GatingDecideError,
+    GatingDecideRequest, GatingDecision, GatingDecisionResult, GatingEvaluateRequest,
+    GatingEvaluateResult, GatingOutcome, GatingPendingEntry, GatingRiskTier, InMemoryMetadataStore,
+    JsonFileSessionStore, JsonFileSessionStoreError, JsonStoreLockRecord, LifecycleEvent,
+    LifecycleStage, McpBoundaryError, MemoryAssertion, MemoryBackendConfig, MemoryConflictSignal,
+    MemoryIndexError, MemoryIndexRequest, MemoryIndexResult, MemoryQueryRequest, MemoryQueryResult,
+    MemoryStoreInfo, MetadataScope, MetadataStoreError, MobkitRuntimeError, MobkitRuntimeHandle,
+    ModuleHealthState, ModuleHealthTransition, ModuleRouteError, ModuleRouteRequest,
+    ModuleRouteResponse, NormalizationError, PersistentMetadataStore, RpcRouteError,
+    RpcRuntimeError, RuntimeBoundaryError, RuntimeDecisionInputs, RuntimeDecisionState,
+    RuntimeFromConfigError, RuntimeMetadataTable, RuntimeMutationError, RuntimeOptions,
+    RuntimeRoute, RuntimeRouteMutationError, RuntimeShutdownReport, ScheduleDefinition,
+    ScheduleDispatch, ScheduleDispatchReport, ScheduleEvaluation, ScheduleRuntimeInjection,
+    ScheduleTrigger, SchedulingSupervisorSignal, SessionPersistenceRow, SessionStoreContract,
+    SessionStoreKind, SqliteMetadataStore, SubscribeRequest, SubscribeResponse, SubscribeScope,
+    SupervisorReport, TrustedOidcRuntimeConfig, WILDCARD_ROUTE, build_runtime_decision_state,
     evaluate_schedules_at_tick, handle_console_rest_json_route,
     handle_console_rest_json_route_with_snapshot, materialize_latest_session_rows,
     materialize_live_session_rows, normalize_event_line, route_module_call,

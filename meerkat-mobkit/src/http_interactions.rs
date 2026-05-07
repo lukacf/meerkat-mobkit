@@ -68,6 +68,7 @@ fn http_error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
 fn map_runtime_error(error: &MobRuntimeError) -> (StatusCode, Json<Value>) {
     match error {
         MobRuntimeError::InvalidInput(message) => http_error(StatusCode::BAD_REQUEST, message),
+        MobRuntimeError::InvalidConfig(message) => http_error(StatusCode::BAD_REQUEST, message),
         MobRuntimeError::Mob(_) => {
             let text = error.to_string();
             if text.contains("not found") {
@@ -128,7 +129,7 @@ async fn interaction_stream_handler(
 
         let mut seq = 0_u64;
         loop {
-            let next = tokio::time::timeout(Duration::from_secs(300), event_stream.next()).await;
+            let next = tokio::time::timeout(Duration::from_mins(5), event_stream.next()).await;
             let Some(envelope) = next.unwrap_or_default() else {
                 break;
             };

@@ -91,6 +91,17 @@ export interface ConversationRichThinkingBlock {
   persisted?: boolean;
 }
 
+export interface ConversationRichImageBlock {
+  type: "image";
+  src: string;
+  mediaType: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  blobId?: string;
+  imageId?: string;
+}
+
 export type ConversationRichBlock =
   | ConversationRichParagraphBlock
   | ConversationRichHeadingBlock
@@ -99,6 +110,7 @@ export type ConversationRichBlock =
   | ConversationRichCommandBlock
   | ConversationRichFileChangeBlock
   | ConversationRichDividerBlock
+  | ConversationRichImageBlock
   | ConversationRichThinkingBlock
   | ConversationRichToolCallBlock;
 
@@ -162,6 +174,8 @@ export function conversationRichBlockCopyText(block: ConversationRichBlock): str
       return block.text.trim();
     case "thinking":
       return [block.label, block.text].filter(Boolean).join("\n").trim();
+    case "image":
+      return [block.alt || "image", block.blobId || block.src].filter(Boolean).join(" ").trim();
     case "tool-call": {
       if (block.peerTarget) {
         const dir = block.peerIncoming ? "← from" : "→ to";

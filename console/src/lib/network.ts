@@ -153,6 +153,54 @@ export async function sendMessage(
   });
 }
 
+export async function sendMessageMultipart(
+  baseUrl: string,
+  memberId: string,
+  message: string,
+  attachments: File[],
+  handlingMode: "queue" | "steer" = "queue",
+): Promise<ConsoleSendMessageResult> {
+  const content: Array<Record<string, unknown>> = [];
+  if (message.trim()) {
+    content.push({ type: "text", text: message });
+  }
+  const form = new FormData();
+  attachments.forEach((file, index) => {
+    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
+    content.push({
+      type: "image_upload",
+      upload_id: uploadId,
+      media_type: file.type || "application/octet-stream",
+      alt: file.name,
+    });
+    form.append(`file:${uploadId}`, file, file.name);
+  });
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `mobkit/send_message:${Date.now()}`,
+    method: "mobkit/send_message",
+    params: {
+      member_id: memberId,
+      content,
+      handling_mode: handlingMode,
+    },
+  }));
+
+  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`mobkit/send_message multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`mobkit/send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  return result.result as ConsoleSendMessageResult;
+}
+
 const TERMINAL_SSE_EVENTS = new Set([
   "interaction_complete",
   "run_completed",

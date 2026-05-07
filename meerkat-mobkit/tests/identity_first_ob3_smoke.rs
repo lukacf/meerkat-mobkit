@@ -1186,7 +1186,7 @@ async fn e2e_ob3_06_lease_contention_rolling_deploy() {
     let release_grants = vec![LeaseGrant {
         identity: id("personal:alice"),
         fencing_token: a_token,
-        ttl: Duration::from_secs(300),
+        ttl: Duration::from_mins(5),
     }];
     shared_leases
         .release_leases(&release_grants)

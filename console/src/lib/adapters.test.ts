@@ -244,6 +244,183 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
   );
 });
 
+test("mapFramesToTimelineEntries renders terminal completion without streamed deltas", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "api-investigator",
+      member_id: "api-investigator",
+      label: "API Investigator",
+      kind: "identity",
+    },
+    [
+      { id: "evt-1", event: "turn_completed", data: { stop_reason: "end_turn" } },
+      {
+        id: "evt-2",
+        event: "interaction_complete",
+        data: { result: "The uploaded badge says ALL CLEAR." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "assistant");
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "paragraph"
+        ? entries[0].blocks[0].text
+        : ""
+      : "",
+    "The uploaded badge says ALL CLEAR.",
+  );
+});
+
+test("mapFramesToTimelineEntries renders image-tool turns without duplicating final text", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "console-evt-2",
+        event: "interaction_started",
+        interactionId: "turn-1",
+        timestampMs: 10,
+        data: { content: "Generate an ALL CLEAR badge." },
+      },
+      {
+        id: "evt-tool-call",
+        event: "tool_call_requested",
+        interactionId: "turn-1",
+        timestampMs: 20,
+        data: { id: "tool-1", name: "generate_image", args: { prompt: "ALL CLEAR" } },
+      },
+      {
+        id: "evt-tool-done",
+        event: "tool_execution_completed",
+        interactionId: "turn-1",
+        timestampMs: 30,
+        data: {
+          id: "tool-1",
+          name: "generate_image",
+          result: JSON.stringify({
+            images: [
+              {
+                blob_ref: { blob_id: "sha256:badge", media_type: "image/png" },
+                height: 1024,
+                image_id: "image-1",
+                media_type: "image/png",
+                width: 1024,
+              },
+            ],
+          }),
+        },
+      },
+      {
+        id: "evt-image",
+        event: "assistant_image",
+        interactionId: "turn-1",
+        timestampMs: 30,
+        data: {
+          blob_id: "sha256:badge",
+          media_type: "image/png",
+          width: 1024,
+          height: 1024,
+        },
+      },
+      {
+        id: "evt-tool-result",
+        event: "tool_result_received",
+        interactionId: "turn-1",
+        timestampMs: 30,
+        data: {
+          id: "tool-1",
+          name: "generate_image",
+          result: JSON.stringify({
+            images: [
+              {
+                blob_ref: { blob_id: "sha256:badge", media_type: "image/png" },
+                height: 1024,
+                image_id: "image-1",
+                media_type: "image/png",
+                width: 1024,
+              },
+            ],
+          }),
+        },
+      },
+      {
+        id: "evt-turn-started-2",
+        event: "turn_started",
+        interactionId: "turn-1",
+        timestampMs: 30,
+        data: {},
+      },
+      {
+        id: "evt-delta-1",
+        event: "text_delta",
+        interactionId: "turn-1",
+        timestampMs: 40,
+        data: { delta: "Generated" },
+      },
+      {
+        id: "evt-delta-2",
+        event: "text_delta",
+        interactionId: "turn-1",
+        timestampMs: 40,
+        data: { delta: " the square ALL CLEAR incident badge image." },
+      },
+      {
+        id: "evt-text-complete",
+        event: "text_complete",
+        interactionId: "turn-1",
+        timestampMs: 50,
+        data: { content: "Generated the square ALL CLEAR incident badge image." },
+      },
+      {
+        id: "evt-turn-complete",
+        event: "turn_completed",
+        interactionId: "turn-1",
+        timestampMs: 50,
+        data: { stop_reason: "end_turn" },
+      },
+      {
+        id: "evt-complete",
+        event: "interaction_complete",
+        interactionId: "turn-1",
+        timestampMs: 50,
+        data: { result: "Generated the square ALL CLEAR incident badge image." },
+      },
+    ],
+    {
+      renderInteractionStartsAsUser: true,
+      blobBaseUrl: "http://127.0.0.1:49551",
+    },
+  );
+
+  const finalTextEntries = entries.filter((entry) => {
+    if (entry.kind !== "message") return false;
+    if ("text" in entry && entry.text === "Generated the square ALL CLEAR incident badge image.") return true;
+    return "blocks" in entry
+      && Array.isArray(entry.blocks)
+      && entry.blocks.some(
+        (block) => block.type === "paragraph"
+          && block.text === "Generated the square ALL CLEAR incident badge image.",
+      );
+  });
+  const imageEntries = entries.filter(
+    (entry) => entry.kind === "message"
+      && "blocks" in entry
+      && Array.isArray(entry.blocks)
+      && entry.blocks.some((block) => block.type === "image"),
+  );
+
+  assert.equal(finalTextEntries.length, 1);
+  assert.equal(imageEntries.length, 1);
+});
+
 test("mapSessionHistoryToTimelineEntries preserves session ordering while turning comms transport into meta messages", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
@@ -523,6 +700,78 @@ test("mapFramesToTimelineEntries can render historical interaction_started frame
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.identity.role, "user");
   assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Run a status sweep.");
+});
+
+test("mapFramesToTimelineEntries renders user image content blocks inline", () => {
+  const entries = mapFramesToTimelineEntries(
+    null,
+    [
+      {
+        id: "evt-1",
+        event: "interaction_started",
+        data: {
+          content: [
+            { type: "text", text: "Describe this badge." },
+            {
+              type: "image",
+              media_type: "image/jpeg",
+              source: "blob",
+              blob_id: "sha256:abc/def",
+              alt: "incident badge",
+            },
+          ],
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:7000/",
+      renderInteractionStartsAsUser: true,
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(entries[0]?.variant, "rich");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks[0]?.type, "paragraph");
+  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Describe this badge.");
+  assert.equal(blocks[1]?.type, "image");
+  assert.equal(
+    blocks[1]?.type === "image" ? blocks[1].src : "",
+    "http://127.0.0.1:7000/blobs/sha256%3Aabc%2Fdef",
+  );
+  assert.equal(blocks[1]?.type === "image" ? blocks[1].alt : "", "incident badge");
+});
+
+test("mapFramesToTimelineEntries renders assistant_image frames with API blob URLs", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "artist",
+      member_id: "artist",
+      label: "Artist",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-image",
+        event: "assistant_image",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          blob_id: "sha256:abc/def",
+          media_type: "image/png",
+          width: 512,
+          height: 512,
+        },
+      },
+    ],
+    { blobBaseUrl: "http://127.0.0.1:7000/" },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "image");
+  assert.equal(block?.src, "http://127.0.0.1:7000/blobs/sha256%3Aabc%2Fdef");
 });
 
 test("mapFramesToTimelineEntries surfaces inbound comms requests from run_started prompts", () => {

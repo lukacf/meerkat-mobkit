@@ -379,6 +379,6 @@ fn hang_forever(module: &str, operation: &str, tool_name: Option<&str>) -> ! {
         append_log(&format!("{module}:hang:{operation}"));
     }
     loop {
-        std::thread::sleep(Duration::from_secs(60));
+        std::thread::sleep(Duration::from_mins(1));
     }
 }

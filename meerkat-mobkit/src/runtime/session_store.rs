@@ -633,7 +633,7 @@ pub struct BigQueryGcConfig {
 impl Default for BigQueryGcConfig {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(6 * 60 * 60),
+            interval: Duration::from_hours(6),
         }
     }
 }

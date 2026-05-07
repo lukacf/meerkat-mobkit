@@ -1021,10 +1021,52 @@ export interface TextContentBlock {
   readonly text: string;
 }
 
-export interface ImageContentBlock {
+export interface InlineImageContentBlock {
   readonly type: "image";
   readonly mediaType: string;
+  readonly source?: "inline";
   readonly data: string;
+}
+
+export interface BlobImageContentBlock {
+  readonly type: "image";
+  readonly mediaType: string;
+  readonly source: "blob";
+  readonly blobId: string;
+}
+
+export type ImageContentBlock = InlineImageContentBlock | BlobImageContentBlock;
+
+export interface BlobGetResult {
+  readonly blobId: string;
+  readonly mediaType: string;
+  readonly size: number;
+  readonly data: string;
+}
+
+export function parseBlobGetResult(raw: unknown): BlobGetResult {
+  const d = asRecord(raw);
+  return {
+    blobId: String(d.blob_id ?? d.blobId ?? ""),
+    mediaType: String(d.media_type ?? d.mediaType ?? ""),
+    size: Number(d.size ?? 0) || 0,
+    data: String(d.data ?? ""),
+  };
+}
+
+export interface BlobUploadResult {
+  readonly blobId: string;
+  readonly mediaType: string;
+  readonly size: number;
+}
+
+export function parseBlobUploadResult(raw: unknown): BlobUploadResult {
+  const d = asRecord(raw);
+  return {
+    blobId: String(d.blob_id ?? d.blobId ?? ""),
+    mediaType: String(d.media_type ?? d.mediaType ?? ""),
+    size: Number(d.size ?? 0) || 0,
+  };
 }
 
 export type DispatchContentBlock = TextContentBlock | ImageContentBlock;
@@ -1046,18 +1088,43 @@ export interface DispatchInput {
 function parseContentBlock(raw: unknown): DispatchContentBlock {
   const d = asRecord(raw);
   if (d.type === "image") {
+    const mediaType = String(d.media_type ?? d.mediaType ?? "");
+    if (d.source === "blob") {
+      return {
+        type: "image",
+        mediaType,
+        source: "blob",
+        blobId: String(d.blob_id ?? d.blobId ?? ""),
+      };
+    }
     return {
       type: "image",
-      mediaType: String(d.media_type ?? d.mediaType ?? ""),
+      mediaType,
+      source: "inline",
       data: String(d.data ?? ""),
     };
   }
   return { type: "text", text: String(d.text ?? "") };
 }
 
-function contentBlockToDict(block: DispatchContentBlock): Record<string, unknown> {
+export function contentBlockToDict(
+  block: DispatchContentBlock,
+): Record<string, unknown> {
   if (block.type === "image") {
-    return { type: "image", media_type: block.mediaType, data: block.data };
+    if (block.source === "blob") {
+      return {
+        type: "image",
+        media_type: block.mediaType,
+        source: "blob",
+        blob_id: block.blobId,
+      };
+    }
+    return {
+      type: "image",
+      media_type: block.mediaType,
+      source: "inline",
+      data: block.data,
+    };
   }
   return { type: "text", text: block.text };
 }

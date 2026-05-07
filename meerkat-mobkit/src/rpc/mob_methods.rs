@@ -1,5 +1,6 @@
 //! RPC handler implementations for mob member operations.
 
+use base64::Engine;
 use meerkat_core::ContentInput;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::{ForkContext, MemberLaunchMode};
@@ -7,7 +8,10 @@ use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{HelperOptions, MobBackendKind, MobRuntimeMode, ProfileName, SpawnMemberSpec};
 use serde_json::Value;
 
-use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob_with_mode};
+use crate::blob_store::is_valid_blob_id_value;
+use crate::mob_handle_runtime::{
+    assert_member_accepts_images, member_entry_to_json, send_message_on_mob_with_mode,
+};
 use crate::unified_runtime::UnifiedRuntime;
 
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
@@ -45,25 +49,27 @@ pub(crate) fn parse_helper_options(options_val: Option<&Value>) -> Result<Helper
 /// - `"content": "plain text"` (string shorthand)
 /// - `"content": [{"type":"text","text":"..."},{"type":"image",...}]` (multimodal blocks)
 ///
-/// `message` takes precedence if both are present.
-fn extract_content(params: &Value) -> Option<ContentInput> {
+/// `content` takes precedence if both are present so multipart-upload rewrites
+/// cannot be shadowed by a stale text field. If `content` is present but
+/// malformed, reject it instead of falling back to `message`.
+fn extract_content(params: &Value) -> Result<Option<ContentInput>, String> {
+    if let Some(content_val) = params.get("content") {
+        return serde_json::from_value::<ContentInput>(content_val.clone())
+            .map(Some)
+            .map_err(|err| format!("invalid content: {err}"));
+    }
     if let Some(s) = params.get("message").and_then(Value::as_str)
         && !s.is_empty()
     {
-        return Some(ContentInput::Text(s.to_string()));
+        return Ok(Some(ContentInput::Text(s.to_string())));
     }
-    if let Some(content_val) = params.get("content")
-        && let Ok(input) = serde_json::from_value::<ContentInput>(content_val.clone())
-    {
-        return Some(input);
-    }
-    None
+    Ok(None)
 }
 
 /// Optional `handling_mode: "queue" | "steer"` JSON-RPC parameter.
-/// Defaults to `Queue` when missing or null. Used by the console's
-/// pending-message stack to power its "Steer" affordance; everything
-/// else stays on the historical queue path.
+/// Defaults to `Queue` when missing or null; unknown strings remain invalid.
+/// The direct MobKit send path normalizes `Steer` to `Queue` until a
+/// runtime-backed steering surface is available.
 fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
     let Some(raw) = params.get("handling_mode") else {
         return Ok(meerkat_core::types::HandlingMode::Queue);
@@ -84,7 +90,21 @@ pub(super) async fn handle_send_message(
     params: &Value,
 ) -> JsonRpcResponse {
     let member_id = params.get("member_id").and_then(Value::as_str);
-    let content = extract_content(params);
+    let content = match extract_content(params) {
+        Ok(content) => content,
+        Err(message) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message,
+                    data: None,
+                }),
+            };
+        }
+    };
     let handling_mode = match parse_handling_mode(params) {
         Ok(mode) => mode,
         Err(message) => {
@@ -103,6 +123,25 @@ pub(super) async fn handle_send_message(
 
     match (member_id, content) {
         (Some(member_id), Some(content)) if !member_id.is_empty() => {
+            if let Err(err) = assert_member_accepts_images(
+                &runtime.mob_handle(),
+                runtime.mob_runtime().session_service(),
+                member_id,
+                &content,
+            )
+            .await
+            {
+                return JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: None,
+                    error: Some(JsonRpcError {
+                        code: -32602,
+                        message: err.to_string(),
+                        data: None,
+                    }),
+                };
+            }
             match send_message_on_mob_with_mode(
                 &runtime.mob_handle(),
                 member_id,
@@ -140,6 +179,86 @@ pub(super) async fn handle_send_message(
             error: Some(JsonRpcError {
                 code: -32602,
                 message: "Invalid params: member_id and message (or content) required".to_string(),
+                data: None,
+            }),
+        },
+    }
+}
+
+pub(super) async fn handle_blob_get(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let blob_id = params
+        .get("blob_id")
+        .or_else(|| params.get("id"))
+        .and_then(Value::as_str);
+    let Some(blob_id) = blob_id.filter(|value| !value.trim().is_empty()) else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "blob_id required".to_string(),
+                data: None,
+            }),
+        };
+    };
+    if !is_valid_blob_id_value(blob_id) {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "invalid blob_id".to_string(),
+                data: None,
+            }),
+        };
+    }
+    let Some(store) = runtime.binary_blob_store() else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: "binary blob store unavailable".to_string(),
+                data: None,
+            }),
+        };
+    };
+    match store.get_bytes(&meerkat_core::BlobId::from(blob_id)).await {
+        Ok(payload) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "blob_id": payload.blob_id,
+                "media_type": payload.media_type,
+                "size": payload.size,
+                "data": base64::engine::general_purpose::STANDARD.encode(payload.data.as_ref()),
+            })),
+            error: None,
+        },
+        Err(meerkat_core::BlobStoreError::NotFound(_)) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32001,
+                message: format!("blob not found: {blob_id}"),
+                data: Some(serde_json::json!({ "kind": "not_found", "blob_id": blob_id })),
+            }),
+        },
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("blob get failed: {err}"),
                 data: None,
             }),
         },
@@ -877,7 +996,21 @@ pub(super) async fn handle_cross_mob_send(
     let from_member_id = params.get("from_member_id").and_then(Value::as_str);
     let remote_member_id = params.get("remote_member_id").and_then(Value::as_str);
     let remote_mob_id = params.get("remote_mob_id").and_then(Value::as_str);
-    let content = extract_content(params);
+    let content = match extract_content(params) {
+        Ok(content) => content,
+        Err(message) => {
+            return JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: response_id,
+                result: None,
+                error: Some(JsonRpcError {
+                    code: -32602,
+                    message,
+                    data: None,
+                }),
+            };
+        }
+    };
 
     match (from_member_id, remote_member_id, remote_mob_id, content) {
         (Some(from), Some(remote), Some(mob), Some(content))
@@ -2035,5 +2168,29 @@ pub(super) async fn handle_peer_pubkey(
                 data: None,
             }),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_content_rejects_malformed_content_even_with_message_fallback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let params = serde_json::json!({
+            "message": "fallback",
+            "content": { "not": "a content input" },
+        });
+
+        let err = match extract_content(&params) {
+            Ok(_) => {
+                return Err(std::io::Error::other("content key must be authoritative").into());
+            }
+            Err(err) => err,
+        };
+
+        assert!(err.contains("invalid content"), "unexpected error: {err}");
+        Ok(())
     }
 }

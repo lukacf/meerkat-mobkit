@@ -11,9 +11,11 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, ConventionalPaths, GatewayPeerKeys,
-    MOBKIT_CONTRACT_VERSION, MobBootstrapOptions, MobBootstrapSpec, ReleaseMetadata,
-    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
+    ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions,
+    MobBootstrapSpec, ObjectStoreBlobStore, ReleaseMetadata, RuntimeDecisionState,
+    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,12 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 const FALLBACK_TEMPLATE_VERSION: &str = "tux-fallback-v2";
+
+type PersistentSessionServiceParts = (
+    Arc<dyn meerkat_mob::MobSessionService>,
+    Arc<meerkat_runtime::MeerkatMachine>,
+    Arc<dyn BinaryBlobStore>,
+);
 
 #[derive(Debug, Deserialize)]
 struct InitParams {
@@ -347,7 +355,7 @@ fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
     (store_dir, sqlite_path)
 }
 
-/// Returns (session_service, runtime_adapter).
+/// Returns (session_service, runtime_adapter, binary_blob_store).
 ///
 /// The runtime adapter is supplied separately from the session service so
 /// the session service's `runtime_store` stays `None` — keeping the
@@ -358,10 +366,8 @@ fn build_persistent_session_service(
     runtime_root: PathBuf,
     project_root: PathBuf,
     context_root: Option<PathBuf>,
-) -> anyhow::Result<(
-    Arc<dyn meerkat_mob::MobSessionService>,
-    Arc<meerkat_runtime::MeerkatMachine>,
-)> {
+    image_generation: bool,
+) -> anyhow::Result<PersistentSessionServiceParts> {
     let (store_dir, sqlite_path) = resolve_store_dir(store_path);
     fs::create_dir_all(&store_dir)
         .with_context(|| format!("failed to create {}", store_dir.display()))?;
@@ -370,24 +376,10 @@ fn build_persistent_session_service(
             .with_context(|| format!("failed to open {}", sqlite_path.display()))?,
     );
 
-    let blob_dir = store_dir.join("blobs");
-    let mut factory = AgentFactory::new(store_dir)
-        .session_store(session_store.clone())
-        .runtime_root(runtime_root)
-        .project_root(project_root)
-        .builtins(true)
-        .shell(true)
-        .mob(true)
-        .comms(true)
-        .memory(true);
-    if let Some(context_root) = context_root {
-        factory = factory.context_root(context_root);
-    }
-
-    let config = Config::default();
-    let builder = FactoryAgentBuilder::new(factory, config);
+    let binary_blob_store: Arc<dyn BinaryBlobStore> =
+        Arc::new(ObjectStoreBlobStore::local(store_dir.join("blobs"))?);
     let blob_store: Arc<dyn meerkat_core::BlobStore> =
-        Arc::new(meerkat_store::FsBlobStore::new(blob_dir));
+        Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
     // Persistent runtime store at <store_dir>/runtime.sqlite — same path
     // chosen by `MobBootstrapSpec::persistent_inner`, so a gateway and a
     // library-mode runtime pointed at the same dir share state.
@@ -408,18 +400,37 @@ fn build_persistent_session_service(
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
             }
         };
+    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+        Arc::clone(&runtime_store),
+        Arc::clone(&blob_store),
+    ));
+    let mut factory = AgentFactory::new(store_dir)
+        .session_store(session_store.clone())
+        .runtime_root(runtime_root)
+        .project_root(project_root)
+        .builtins(true)
+        .shell(true)
+        .mob(true)
+        .comms(true)
+        .memory(true);
+    if image_generation {
+        factory = factory.with_image_generation_machine(adapter.clone());
+    }
+    if let Some(context_root) = context_root {
+        factory = factory.context_root(context_root);
+    }
+
+    let config = Config::default();
+    let mut builder = FactoryAgentBuilder::new(factory, config);
+    builder.default_blob_store = Some(blob_store.clone());
     let service = Arc::new(PersistentSessionService::new(
         builder,
         64,
         session_store,
         Some(Arc::clone(&runtime_store)),
-        blob_store.clone(),
-    ));
-    let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-        runtime_store,
         blob_store,
     ));
-    Ok((service, adapter))
+    Ok((service, adapter, binary_blob_store))
 }
 
 fn runtime_decision_state(runtime_id: &str) -> RuntimeDecisionState {
@@ -592,20 +603,32 @@ async fn run() -> anyhow::Result<()> {
     std::env::set_current_dir(&workspace_root).ok();
     let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)?;
     let runtime_id = definition.id.to_string();
+    let image_generation = mob_definition_may_use_image_generation(&definition);
 
     let session_spec = if persistent_sessions {
-        let (service, adapter) = build_persistent_session_service(
+        let (service, adapter, binary_blob_store) = build_persistent_session_service(
             &store_path,
             runtime_root.clone(),
             project_root.clone(),
             context_root.clone(),
+            image_generation,
         )?;
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
         spec.runtime_adapter = Some(adapter);
+        spec.binary_blob_store = Some(binary_blob_store);
         spec
     } else {
         // Build the ephemeral path manually to thread project/context roots
         // into AgentFactory (MobBootstrapSpec::ephemeral doesn't accept them).
+        let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        ));
         let mut factory = AgentFactory::new(&runtime_root)
             .runtime_root(runtime_root.clone())
             .project_root(project_root.clone())
@@ -614,13 +637,20 @@ async fn run() -> anyhow::Result<()> {
             .mob(true)
             .comms(true)
             .memory(true);
+        if image_generation {
+            factory = factory.with_image_generation_machine(adapter.clone());
+        }
         if let Some(ref ctx) = context_root {
             factory = factory.context_root(ctx.clone());
         }
         let config = Config::default();
-        let builder = FactoryAgentBuilder::new(factory, config);
+        let mut builder = FactoryAgentBuilder::new(factory, config);
+        builder.default_blob_store = Some(blob_store);
         let session_service = Arc::new(meerkat_session::EphemeralSessionService::new(builder, 64));
-        MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service);
+        spec.runtime_adapter = Some(adapter);
+        spec.binary_blob_store = Some(binary_blob_store);
+        spec
     };
     let mob_spec = session_spec.with_options(MobBootstrapOptions {
         allow_ephemeral_sessions: !persistent_sessions,

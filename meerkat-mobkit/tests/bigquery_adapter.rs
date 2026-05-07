@@ -883,7 +883,7 @@ fn phase_f_real_bigquery_integration_streaming_dedup_tombstone_semantics() {
         ..Default::default()
     }];
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + Duration::from_mins(1);
     loop {
         let latest = runtime
             .block_on(store.read_latest_rows())

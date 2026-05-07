@@ -6,7 +6,7 @@ delegate to the correct RPC methods with correct argument shapes.
 import pytest
 
 from meerkat_mobkit.runtime import MobKitRuntime
-from meerkat_mobkit.identity_first_models import DispatchInput, TextBlock
+from meerkat_mobkit.identity_first_models import DispatchInput, ImageBlock, TextBlock
 
 
 class FakeTransport:
@@ -109,6 +109,21 @@ class TestSendMethod:
         params = transport.calls[0]["params"]
         assert params["identity"] == "agent:alpha"
         assert params["content"] == [{"type": "text", "text": "Hi"}]
+
+    @pytest.mark.asyncio
+    async def test_send_image_block_content_uses_strict_source_shape(self):
+        rt, transport = _make_runtime(result={"accepted": True})
+        blocks = [ImageBlock(media_type="image/png", data="abc")]
+        await rt.send("agent:alpha", blocks)
+        params = transport.calls[0]["params"]
+        assert params["content"] == [
+            {
+                "type": "image",
+                "media_type": "image/png",
+                "source": "inline",
+                "data": "abc",
+            }
+        ]
 
 
 class TestDispatchMethod:

@@ -210,15 +210,15 @@ async fn truncate_sessions_propagates_api_error_on_non_success_status() {
 #[test]
 fn gc_config_defaults_to_six_hours() {
     let config = BigQueryGcConfig::default();
-    assert_eq!(config.interval, Duration::from_secs(6 * 60 * 60));
+    assert_eq!(config.interval, Duration::from_hours(6));
 }
 
 #[test]
 fn gc_config_custom_interval() {
     let config = BigQueryGcConfig {
-        interval: Duration::from_secs(300),
+        interval: Duration::from_mins(5),
     };
-    assert_eq!(config.interval, Duration::from_secs(300));
+    assert_eq!(config.interval, Duration::from_mins(5));
 }
 
 #[tokio::test]

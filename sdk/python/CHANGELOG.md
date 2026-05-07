@@ -4,6 +4,13 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+### Multimodal attachments
+
+- Added `MobHandle.upload_blob(...)` for efficient binary image upload
+  through the console multipart endpoint.
+- `MobHandle.send(...)` accepts image attachments and sends multipart
+  placeholders instead of inlining large base64 payloads in JSON.
+
 ### Streaming structural events + durable cursors
 
 Mobkit's structural-events surface is now durable end-to-end. Consumers

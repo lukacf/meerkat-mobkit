@@ -16,12 +16,13 @@ test("normalizeAgents preserves identity-status summary fields without invention
               state: " running ",
               addressability: "addressable",
               generation: 4,
-              checkpoint_version: 8,
-              lease_healthy: true,
-              labels: { team: " console " },
-            },
-          ],
-        },
+            checkpoint_version: 8,
+            lease_healthy: true,
+            labels: { team: " console " },
+            model_capabilities: { image_input: true },
+          },
+        ],
+      },
       },
     },
     [],
@@ -58,6 +59,7 @@ test("normalizeAgents falls back to identity_status rows when sidebar snapshot i
             generation: 4,
             checkpoint_version: 8,
             lease_healthy: true,
+            model_capabilities: { image_input: true },
           },
         ],
       },
@@ -78,6 +80,7 @@ test("normalizeAgents falls back to identity_status rows when sidebar snapshot i
   assert.equal(agent?.checkpoint_version, 8);
   assert.equal(agent?.lease_healthy, true);
   assert.deepEqual(agent?.labels, { team: "console" });
+  assert.deepEqual(agent?.model_capabilities, { image_input: true });
   assert.deepEqual(agent?.affordances, { can_send_message: false });
 });
 
@@ -112,6 +115,7 @@ test("normalizeAgents enriches sidebar snapshot rows with identity_status when b
             generation: 2,
             checkpoint_version: 3,
             lease_healthy: true,
+            model_capabilities: { image_input: true },
           },
         ],
       },
@@ -129,4 +133,5 @@ test("normalizeAgents enriches sidebar snapshot rows with identity_status when b
   assert.equal(agent?.checkpoint_version, 3);
   assert.equal(agent?.lease_healthy, true);
   assert.deepEqual(agent?.labels, { team: "finance" });
+  assert.deepEqual(agent?.model_capabilities, { image_input: true });
 });

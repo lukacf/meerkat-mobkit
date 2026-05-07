@@ -87,7 +87,7 @@ fn make_grant(name: &str, token: u64) -> LeaseGrant {
     LeaseGrant {
         identity: make_identity(name),
         fencing_token: FencingToken::new(token),
-        ttl: Duration::from_secs(300),
+        ttl: Duration::from_mins(5),
     }
 }
 
@@ -598,7 +598,7 @@ async fn identity_first_choke_08_gateway_newtype_serialization() {
     let grant = LeaseGrant {
         identity: id.clone(),
         fencing_token: ft,
-        ttl: Duration::from_millis(5000),
+        ttl: Duration::from_secs(5),
     };
     let grant_json = serde_json::to_value(&grant).unwrap();
     let ttl_val = &grant_json["ttl"];

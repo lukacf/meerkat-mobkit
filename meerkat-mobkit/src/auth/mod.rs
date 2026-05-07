@@ -530,7 +530,7 @@ impl JwksCacheConfig {
     pub fn new(discovery_url: String) -> Self {
         Self {
             discovery_url,
-            refresh_interval: Duration::from_secs(3600),
+            refresh_interval: Duration::from_hours(1),
             http_timeout: Duration::from_secs(10),
             issuer: None,
             audience: None,

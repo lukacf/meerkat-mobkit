@@ -20,7 +20,20 @@ class ContentBlock:
         if t == "text":
             return TextBlock(text=data["text"])
         elif t == "image":
-            return ImageBlock(media_type=data["media_type"], data=data["data"])
+            source = data.get("source", "inline")
+            if source == "blob":
+                return ImageBlock(
+                    media_type=data["media_type"],
+                    source="blob",
+                    blob_id=data["blob_id"],
+                )
+            if source != "inline":
+                raise ValueError("image source must be 'inline' or 'blob'")
+            return ImageBlock(
+                media_type=data["media_type"],
+                data=data["data"],
+                source="inline",
+            )
         raise ValueError(f"unknown content block type: {t!r}")
 
     def to_dict(self) -> dict[str, Any]:
@@ -38,10 +51,30 @@ class TextBlock(ContentBlock):
 @dataclass
 class ImageBlock(ContentBlock):
     media_type: str
-    data: str
+    data: str = ""
+    source: str = "inline"
+    blob_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.source not in {"inline", "blob"}:
+            raise ValueError("image source must be 'inline' or 'blob'")
+        if self.source == "blob" and not self.blob_id:
+            raise ValueError("blob image blocks require blob_id")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "image", "media_type": self.media_type, "data": self.data}
+        if self.source == "blob":
+            return {
+                "type": "image",
+                "media_type": self.media_type,
+                "source": "blob",
+                "blob_id": self.blob_id,
+            }
+        return {
+            "type": "image",
+            "media_type": self.media_type,
+            "source": "inline",
+            "data": self.data,
+        }
 
 
 # ---------------------------------------------------------------------------

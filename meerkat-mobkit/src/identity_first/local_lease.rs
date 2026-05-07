@@ -20,7 +20,7 @@ use super::types::{
 };
 
 /// Default TTL returned by the local lease provider.
-const LOCAL_LEASE_TTL: Duration = Duration::from_secs(300);
+const LOCAL_LEASE_TTL: Duration = Duration::from_mins(5);
 
 struct LeaseRecord {
     fencing_token: FencingToken,

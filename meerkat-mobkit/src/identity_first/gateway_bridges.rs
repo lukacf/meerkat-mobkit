@@ -838,7 +838,7 @@ mod tests {
         let grant = LeaseGrant {
             identity: AgentIdentity::parse("agent:alpha").unwrap(),
             fencing_token: FencingToken::new(1),
-            ttl: Duration::from_millis(30000),
+            ttl: Duration::from_secs(30),
         };
         let mut response_map = BTreeMap::new();
         response_map.insert(
@@ -866,7 +866,7 @@ mod tests {
         match &result[&id] {
             LeaseAcquireResult::Acquired(g) => {
                 assert_eq!(g.fencing_token, FencingToken::new(1));
-                assert_eq!(g.ttl, Duration::from_millis(30000));
+                assert_eq!(g.ttl, Duration::from_secs(30));
             }
             other => panic!("expected Acquired, got: {other:?}"),
         }
@@ -878,7 +878,7 @@ mod tests {
         let renewed_grant = LeaseGrant {
             identity: AgentIdentity::parse("agent:alpha").unwrap(),
             fencing_token: FencingToken::new(1),
-            ttl: Duration::from_millis(30000),
+            ttl: Duration::from_secs(30),
         };
         let mut response_map = BTreeMap::new();
         response_map.insert(
@@ -912,7 +912,7 @@ mod tests {
         let grants = vec![LeaseGrant {
             identity: AgentIdentity::parse("agent:alpha").unwrap(),
             fencing_token: FencingToken::new(5),
-            ttl: Duration::from_millis(10000),
+            ttl: Duration::from_secs(10),
         }];
         provider.release_leases(&grants).await.unwrap();
 
@@ -1180,7 +1180,7 @@ mod tests {
         let grant = LeaseGrant {
             identity: id,
             fencing_token: ft,
-            ttl: Duration::from_millis(15000),
+            ttl: Duration::from_secs(15),
         };
         let v = serde_json::to_value(&grant).unwrap();
         assert_eq!(v["ttl"].as_u64().unwrap(), 15000);

@@ -8,6 +8,7 @@ import type {
   ConsoleSidebarViewState,
   ConversationEmptySuggestion,
   ConversationIdentity,
+  ConversationRichBlock,
   ConversationRichToolCallBlock,
   ConversationTimelineEntry,
   ConversationViewState,
@@ -353,6 +354,8 @@ function eventSortRank(event: string | undefined): number {
     case "tool_result_received":
     case "tool_execution_completed":
       return 30;
+    case "assistant_image":
+      return 35;
     case "text_delta":
       return 40;
     case "text_complete":
@@ -729,6 +732,47 @@ function renderTerminalEntry(
   return null;
 }
 
+function buildBlobUrl(blobId: string, baseUrl?: string): string {
+  const path = `/blobs/${encodeURIComponent(blobId)}`;
+  const base = baseUrl?.trim();
+  if (!base) return path;
+  return `${base.replace(/\/+$/, "")}${path}`;
+}
+
+function renderAssistantImageEntry(
+  agent: ConsoleAgent,
+  frame: ConsoleFrame,
+  entryId: string,
+  blobBaseUrl?: string,
+): ConversationTimelineEntry | null {
+  const data = frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : {};
+  const blobId = typeof data.blob_id === "string" ? data.blob_id : "";
+  if (!blobId) return null;
+  const mediaType = typeof data.media_type === "string" ? data.media_type : "image/png";
+  const width = typeof data.width === "number" ? data.width : undefined;
+  const height = typeof data.height === "number" ? data.height : undefined;
+  const imageId = typeof data.image_id === "string" ? data.image_id : undefined;
+  return {
+    kind: "message",
+    id: entryId,
+    identity: agentIdentity(agent),
+    variant: "rich",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    blocks: [{
+      type: "image",
+      src: buildBlobUrl(blobId, blobBaseUrl),
+      mediaType,
+      alt: "generated image",
+      ...(width !== undefined ? { width } : {}),
+      ...(height !== undefined ? { height } : {}),
+      blobId,
+      ...(imageId ? { imageId } : {}),
+    }],
+  };
+}
+
 function normalizeComparableText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
@@ -750,20 +794,37 @@ export function buildQuickPromptSuggestions(agent: ConsoleAgent | null): Convers
   return suggestions;
 }
 
-function renderHistoryUserEntry(frame: ConsoleFrame, entryId: string): ConversationTimelineEntry | null {
+function renderHistoryUserEntry(
+  frame: ConsoleFrame,
+  entryId: string,
+  blobBaseUrl?: string,
+): ConversationTimelineEntry | null {
   if (frame.event !== "interaction_started" || typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
   const record = frame.data as Record<string, unknown>;
-  const content = typeof record.content === "string" ? record.content.trim() : "";
-  if (!content) return null;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const blocks = contentToUserBlocks(content, blobBaseUrl);
+    if (blocks.length === 0) return null;
+    return {
+      kind: "message",
+      id: entryId,
+      identity: USER_IDENTITY,
+      variant: "rich",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      blocks,
+    };
+  }
+  const text = extractTextFromContentBlocks(content).trim();
+  if (!text) return null;
   return {
     kind: "message",
     id: entryId,
     identity: USER_IDENTITY,
     variant: "plain",
     createdAt: isoFromTimestampMs(frame.timestampMs),
-    text: content,
+    text,
   };
 }
 
@@ -795,7 +856,19 @@ function renderRunStartedPromptEntries(
     });
   }
 
-  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
+  if (prompt.startsWith("[COMMS")) {
+    const summarized = summarizeCommsTransport(prompt).trim();
+    if (summarized) {
+      entries.push({
+        kind: "message",
+        id: entryId,
+        identity: SYSTEM_IDENTITY,
+        variant: "meta",
+        ...(createdAt ? { createdAt } : {}),
+        text: summarized,
+      });
+    }
+  } else if (prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
     const incomingBlocks = parseIncomingCommsBlocks(prompt);
     if (incomingBlocks.length > 0) {
       // All blocks from a single prompt go into one entry (they're batched)
@@ -813,7 +886,7 @@ function renderRunStartedPromptEntries(
         entries.push({
           kind: "message",
           id: entryId,
-          identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
+          identity: SYSTEM_IDENTITY,
           variant: "meta",
           ...(createdAt ? { createdAt } : {}),
           text: summarized,
@@ -845,6 +918,73 @@ function extractTextFromContentBlocks(blocks: unknown): string {
     .join("");
 }
 
+function contentToUserBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
+  if (typeof content === "string") {
+    return parseConversationRichBlocks(stripRpcEventPrefix(content));
+  }
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  const blocks: ConversationRichBlock[] = [];
+  for (const block of content) {
+    if (typeof block === "string") {
+      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(block)));
+      continue;
+    }
+    if (!block || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (type === "text") {
+      const text = typeof record.text === "string"
+        ? record.text
+        : typeof record.content === "string"
+          ? record.content
+          : "";
+      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(text)));
+      continue;
+    }
+    if (type === "image") {
+      const source = typeof record.source === "string" ? record.source : "";
+      const blobId = typeof record.blob_id === "string"
+        ? record.blob_id
+        : typeof record.blobId === "string"
+          ? record.blobId
+          : "";
+      const mediaType = typeof record.media_type === "string"
+        ? record.media_type
+        : typeof record.mediaType === "string"
+          ? record.mediaType
+          : "image/png";
+      const inlineData = typeof record.data === "string"
+        ? record.data
+        : typeof record.base64 === "string"
+          ? record.base64
+          : "";
+      const src = source === "blob" && blobId
+        ? buildBlobUrl(blobId, blobBaseUrl)
+        : inlineData
+          ? `data:${mediaType};base64,${inlineData}`
+          : "";
+      if (!src) continue;
+      const alt = typeof record.alt === "string" && record.alt.trim()
+        ? record.alt.trim()
+        : "attached image";
+      const width = typeof record.width === "number" ? record.width : undefined;
+      const height = typeof record.height === "number" ? record.height : undefined;
+      blocks.push({
+        type: "image",
+        src,
+        mediaType,
+        alt,
+        ...(width !== undefined ? { width } : {}),
+        ...(height !== undefined ? { height } : {}),
+        ...(blobId ? { blobId } : {}),
+      });
+    }
+  }
+  return blocks;
+}
+
 function stripRpcEventPrefix(text: string): string {
   return text.replace(/^\[EVENT via rpc\]\s*/i, "").trim();
 }
@@ -866,9 +1006,9 @@ function summarizeCommsTransport(text: string): string {
       if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
         return "";
       }
-      return `↪ request: ${intent}`;
+      return `Peer request: ${intent}`;
     }
-    return "↪ request received";
+    return "Peer request received";
   }
   if (header.startsWith("[COMMS RESPONSE")) {
     // Extract status line
@@ -895,14 +1035,14 @@ function summarizeCommsTransport(text: string): string {
           if (typeof val === "string") summary = val;
         }
       } catch { /* use raw */ }
-      const label = status ? `↩ response (${status})` : "↩ response";
+      const label = status ? `Peer response (${status})` : "Peer response";
       return `${label}: ${summary}`;
     }
-    return status ? `↩ response (${status})` : "↩ response received";
+    return status ? `Peer response (${status})` : "Peer response received";
   }
   if (header.startsWith("[COMMS MESSAGE")) {
     const joined = [headerTail, ...body].join(" ").trim();
-    return joined ? `↩ message: ${joined}` : "↩ message received";
+    return joined ? `Peer message: ${joined}` : "Peer message received";
   }
   return text;
 }
@@ -1253,12 +1393,15 @@ export function mapFramesToTimelineEntries(
     renderInteractionStartsAsUser?: boolean;
     renderTextDeltas?: boolean;
     suppressEmbeddedRunStartedPrompt?: boolean;
+    blobBaseUrl?: string;
   } = {},
 ): ConversationTimelineEntry[] {
-  // Use frames in their original store order — sortFramesForTranscript
-  // reorders by interaction group timestamp which interleaves unscoped
-  // comms events into the middle of user interactions.
-  const orderedFrames = frames;
+  // Live streams keep store order so unscoped comms events do not jump
+  // into active turns. Persisted interaction history asks for user prompts,
+  // so restore the turn-local semantic order before rendering.
+  const orderedFrames = options.renderInteractionStartsAsUser
+    ? sortFramesForTranscript(frames)
+    : frames;
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = new Set<string>();
@@ -1297,6 +1440,15 @@ export function mapFramesToTimelineEntries(
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
       pendingText += summarizeFrameData(frame.data);
+      continue;
+    }
+
+    if (frame.event === "assistant_image") {
+      flushPendingText();
+      const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
+      if (imageEntry) {
+        entries.push(imageEntry);
+      }
       continue;
     }
 
@@ -1358,7 +1510,7 @@ export function mapFramesToTimelineEntries(
 
     if (options.renderInteractionStartsAsUser && frame.event === "interaction_started") {
       flushPendingText();
-      const userEntry = renderHistoryUserEntry(frame, entryId);
+      const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
         entries.push(userEntry);
       }
@@ -1382,21 +1534,25 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
+    if (
+      frame.event === "interaction_complete"
+      || frame.event === "interaction_failed"
+      || frame.event === "run_failed"
+    ) {
+      const streamedText = pendingText;
+      flushPendingText();
+      const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
+      if (terminalEntry) {
+        entries.push(terminalEntry);
+      }
+      continue;
+    }
+
     if (HIDDEN_EVENTS.has(frame.event)) {
       continue;
     }
 
-    const streamedText = pendingText;
     flushPendingText();
-
-    const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
-    if (terminalEntry) {
-      entries.push(terminalEntry);
-      continue;
-    }
-    if (frame.event === "interaction_complete") {
-      continue;
-    }
 
     // Try to render as a clean peer message
     const peerEntry = renderPeerEntry(frame, entryId);
@@ -1426,7 +1582,29 @@ export function mapFramesToTimelineEntries(
   return entries;
 }
 
-export function createUserEntry(message: string): ConversationTimelineEntry {
+export function createUserEntry(
+  message: string,
+  images: Array<{ src: string; mediaType: string; alt?: string }> = [],
+): ConversationTimelineEntry {
+  if (images.length > 0) {
+    const blocks: ConversationRichBlock[] = [
+      ...parseConversationRichBlocks(message),
+      ...images.map((image) => ({
+        type: "image" as const,
+        src: image.src,
+        mediaType: image.mediaType,
+        alt: image.alt || "attached image",
+      })),
+    ];
+    return {
+      kind: "message",
+      id: `user:${Date.now()}`,
+      identity: USER_IDENTITY,
+      variant: "rich",
+      createdAt: new Date().toISOString(),
+      blocks,
+    };
+  }
   return {
     kind: "message",
     id: `user:${Date.now()}`,

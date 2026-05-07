@@ -1,12 +1,13 @@
 //! HTTP routes for the admin console REST API.
 
 use async_stream::stream;
-use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode, Uri, header};
+use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
 use futures::future::join_all;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
@@ -16,12 +17,16 @@ use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
-use crate::mob_handle_runtime::{member_entry_to_json, send_message_on_mob_with_mode};
+use crate::mob_handle_runtime::{
+    assert_member_accepts_images, member_entry_to_json, model_capabilities_for_member,
+    send_message_on_mob_with_mode,
+};
 use serde_json::{Value, json};
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
+use crate::blob_store::is_valid_blob_id_value;
 use crate::console_contracts::{
     ALL_EVENTS_CONTROL_IDENTITY, ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope,
     IDENTITY_STREAM_NAME, IdentityStreamRequest, ReplayUnavailableError,
@@ -37,9 +42,11 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
-use crate::unified_runtime::console_events::ConsoleEventStore;
+use crate::unified_runtime::console_events::{
+    ConsoleEventStore, is_empty_web_search_annotations_event,
+};
 use crate::unified_runtime::mob_events::MobEventsStore;
-use crate::unified_runtime::{EventLogStore, EventQuery};
+use crate::unified_runtime::{EventLogStore, EventQuery, PersistedEvent};
 
 #[derive(Clone)]
 pub struct ConsoleJsonState {
@@ -62,6 +69,10 @@ const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.ht
 const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../console-dist/console-app.js");
 const CONSOLE_FRONTEND_APP_CSS: &str = include_str!("../console-dist/console-app.css");
 static CONSOLE_INTERACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+const MAX_MULTIPART_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_MULTIPART_IMAGES: usize = 4;
+const MAX_MULTIPART_BODY_BYTES: usize =
+    (MAX_MULTIPART_IMAGE_BYTES * MAX_MULTIPART_IMAGES) + 1024 * 1024;
 
 pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
     console_json_router_with_state(ConsoleJsonState {
@@ -143,7 +154,13 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
     let router = Router::new()
         .route("/console/experience", get(console_json_handler))
         .route("/console/modules", get(console_json_handler))
-        .route("/console/rpc", post(console_rpc_handler));
+        .route("/console/rpc", post(console_rpc_handler))
+        .route(
+            "/console/rpc/multipart",
+            post(console_rpc_multipart_handler)
+                .layer(DefaultBodyLimit::max(MAX_MULTIPART_BODY_BYTES)),
+        )
+        .route("/blobs/{blob_id}", get(blob_get_handler));
     let router = if state.stream_routes_enabled {
         router
             .route(
@@ -294,6 +311,336 @@ pub async fn console_rpc_handler(
     )
     .await;
     (StatusCode::OK, Json::<Value>(response_value))
+}
+
+pub async fn console_rpc_multipart_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json::<Value>(serde_json::json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": Value::Null,
+                "error": {
+                    "code": -32600,
+                    "message": "unauthorized: console rpc requires a valid auth token",
+                }
+            })),
+        );
+    }
+
+    let Some(runtime) = &state.runtime else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json::<Value>(serde_json::json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": Value::Null,
+                "error": {
+                    "code": -32600,
+                    "message": "console rpc multipart requires a unified runtime",
+                }
+            })),
+        );
+    };
+    let Some(binary_blob_store) = runtime.binary_blob_store() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json::<Value>(serde_json::json!({
+                "jsonrpc": JSONRPC_VERSION,
+                "id": Value::Null,
+                "error": {
+                    "code": -32000,
+                    "message": "binary blob store unavailable",
+                }
+            })),
+        );
+    };
+
+    let mut payload: Option<String> = None;
+    let mut files: std::collections::BTreeMap<String, MultipartImageUpload> =
+        std::collections::BTreeMap::new();
+
+    while let Some(mut field) = match multipart.next_field().await {
+        Ok(field) => field,
+        Err(err) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32602,
+                    format!("invalid multipart body: {err}"),
+                )),
+            );
+        }
+    } {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "payload" {
+            if payload.is_some() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json::<Value>(json_rpc_error_value(
+                        Value::Null,
+                        -32602,
+                        "duplicate payload part",
+                    )),
+                );
+            }
+            payload = match field.text().await {
+                Ok(text) => Some(text),
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json::<Value>(json_rpc_error_value(
+                            Value::Null,
+                            -32602,
+                            format!("invalid payload part: {err}"),
+                        )),
+                    );
+                }
+            };
+            continue;
+        }
+
+        let Some(upload_id) = name.strip_prefix("file:").filter(|id| !id.is_empty()) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32602,
+                    format!("unexpected multipart field: {name}"),
+                )),
+            );
+        };
+        if files.len() >= MAX_MULTIPART_IMAGES {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32602,
+                    format!("too many image attachments; max {MAX_MULTIPART_IMAGES}"),
+                )),
+            );
+        }
+        if files.contains_key(upload_id) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32602,
+                    format!("duplicate file part for upload_id {upload_id}"),
+                )),
+            );
+        }
+        let media_type = field
+            .content_type()
+            .map(str::to_string)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        if !is_allowed_image_media_type(&media_type) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32602,
+                    format!("unsupported image media type: {media_type}"),
+                )),
+            );
+        }
+        let mut bytes = bytes::BytesMut::new();
+        loop {
+            let chunk = match field.chunk().await {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json::<Value>(json_rpc_error_value(
+                            Value::Null,
+                            -32602,
+                            format!("invalid file part {upload_id}: {err}"),
+                        )),
+                    );
+                }
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            if bytes.len() + chunk.len() > MAX_MULTIPART_IMAGE_BYTES {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json::<Value>(json_rpc_error_value(
+                        Value::Null,
+                        -32602,
+                        format!("image attachment {upload_id} exceeds 25 MiB"),
+                    )),
+                );
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        files.insert(
+            upload_id.to_string(),
+            MultipartImageUpload {
+                media_type,
+                bytes: bytes.freeze(),
+            },
+        );
+    }
+
+    let payload = match payload {
+        Some(payload) => payload,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32602,
+                    "payload part required",
+                )),
+            );
+        }
+    };
+    let mut parsed_request = match serde_json::from_str::<JsonRpcRequest>(&payload) {
+        Ok(req) => req,
+        Err(err) => {
+            return (
+                StatusCode::OK,
+                Json::<Value>(json_rpc_error_value(
+                    Value::Null,
+                    -32600,
+                    format!("Invalid Request: {err}"),
+                )),
+            );
+        }
+    };
+    let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
+    match parsed_request.method.as_str() {
+        "mobkit/send_message" => {
+            if let Err(message) = externalize_image_upload_placeholders(
+                &mut parsed_request.params,
+                files,
+                binary_blob_store,
+            )
+            .await
+            {
+                return (
+                    StatusCode::OK,
+                    Json::<Value>(invalid_params(response_id, message)),
+                );
+            }
+        }
+        "mobkit/blob/upload" => {
+            let result = match externalize_single_image_upload(
+                &parsed_request.params,
+                files,
+                binary_blob_store,
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(message) => {
+                    return (
+                        StatusCode::OK,
+                        Json::<Value>(invalid_params(response_id, message)),
+                    );
+                }
+            };
+            return (
+                StatusCode::OK,
+                Json::<Value>(response_value(response_id, Some(result), None)),
+            );
+        }
+        _ => {
+            return (
+                StatusCode::OK,
+                Json::<Value>(invalid_params(
+                    response_id,
+                    "multipart RPC supports mobkit/send_message and mobkit/blob/upload only",
+                )),
+            );
+        }
+    }
+
+    let response_value = handle_console_runtime_rpc(
+        runtime,
+        state.module_runtime.clone(),
+        state.contact_directory.as_ref(),
+        state.event_log.clone(),
+        state.gateway_peer_keys.as_ref(),
+        state.console_events.clone(),
+        state.metadata_table.clone(),
+        state.mob_events.clone(),
+        parsed_request,
+        true,
+    )
+    .await;
+    (StatusCode::OK, Json::<Value>(response_value))
+}
+
+pub async fn blob_get_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    AxumPath(blob_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if !console_request_authorized(&state, &headers, &uri) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json::<Value>(serde_json::json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    }
+    let Some(runtime) = &state.runtime else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json::<Value>(serde_json::json!({ "error": "runtime_unavailable" })),
+        )
+            .into_response();
+    };
+    let Some(store) = runtime.binary_blob_store() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json::<Value>(serde_json::json!({ "error": "blob_store_unavailable" })),
+        )
+            .into_response();
+    };
+    if !is_valid_blob_id_value(&blob_id) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json::<Value>(serde_json::json!({ "error": "invalid_blob_id" })),
+        )
+            .into_response();
+    }
+    match store
+        .get_bytes(&meerkat_core::BlobId::from(blob_id.as_str()))
+        .await
+    {
+        Ok(payload) => {
+            let mut response_headers = HeaderMap::new();
+            let content_type = HeaderValue::from_str(&payload.media_type)
+                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+            response_headers.insert(header::CONTENT_TYPE, content_type);
+            if let Ok(content_length) = HeaderValue::from_str(&payload.size.to_string()) {
+                response_headers.insert(header::CONTENT_LENGTH, content_length);
+            }
+            response_headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, max-age=31536000, immutable"),
+            );
+            (StatusCode::OK, response_headers, payload.data).into_response()
+        }
+        Err(meerkat_core::BlobStoreError::NotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json::<Value>(serde_json::json!({ "error": "blob_not_found" })),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json::<Value>(serde_json::json!({ "error": err.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn console_identity_stream_handler(
@@ -631,6 +978,337 @@ fn sse_event_from_envelope(envelope: &ConsoleIdentityEventEnvelope) -> Option<Ev
     }
 }
 
+#[derive(Debug)]
+struct MultipartImageUpload {
+    media_type: String,
+    bytes: bytes::Bytes,
+}
+
+fn json_rpc_error_value(id: Value, code: i64, message: impl Into<String>) -> Value {
+    serde_json::json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "id": id,
+        "error": {
+            "code": code,
+            "message": message.into(),
+        }
+    })
+}
+
+fn project_query_events_for_console(events: Vec<PersistedEvent>, query: &EventQuery) -> Value {
+    let mut projected = Vec::new();
+    for event in events {
+        if persisted_event_is_empty_web_search_annotations(&event) {
+            continue;
+        }
+        let assistant_images = assistant_image_events_from_persisted(&event, query);
+        projected.push(serde_json::to_value(&event).unwrap_or(Value::Null));
+        projected.extend(assistant_images);
+    }
+    Value::Array(projected)
+}
+
+fn persisted_event_is_empty_web_search_annotations(event: &PersistedEvent) -> bool {
+    let crate::types::UnifiedEvent::Agent {
+        event_type,
+        payload,
+        ..
+    } = &event.event
+    else {
+        return false;
+    };
+    is_empty_web_search_annotations_event(event_type, payload.as_ref())
+}
+
+fn assistant_image_events_from_persisted(event: &PersistedEvent, query: &EventQuery) -> Vec<Value> {
+    let crate::types::UnifiedEvent::Agent {
+        agent_id,
+        event_type,
+        payload,
+    } = &event.event
+    else {
+        return Vec::new();
+    };
+    let identity = derive_console_identity_from_runtime_id(agent_id)
+        .unwrap_or_else(|| event.member_id.clone().unwrap_or_else(|| agent_id.clone()));
+    if let Some(query_identity) = query.identity.as_deref()
+        && query_identity != identity
+        && query_identity != agent_id
+        && event.member_id.as_deref() != Some(query_identity)
+    {
+        return Vec::new();
+    }
+    let Some(payload) = payload else {
+        return Vec::new();
+    };
+    let Some(image_result) = parse_generate_image_tool_result_value(payload) else {
+        return Vec::new();
+    };
+    image_result
+        .images
+        .iter()
+        .enumerate()
+        .map(|(idx, image)| {
+            serde_json::to_value(ConsoleIdentityEventEnvelope {
+                event_id: format!("{}#assistant_image:{idx}", event.id),
+                interaction_id: None,
+                identity: identity.clone(),
+                event_type: "assistant_image".to_string(),
+                timestamp_ms: event.timestamp_ms,
+                data: json!({
+                    "source_event_type": event_type,
+                    "tool_call_id": payload.get("id").cloned().unwrap_or(Value::Null),
+                    "image_id": image.image_id.0.to_string(),
+                    "blob_id": image.blob_ref.blob_id.to_string(),
+                    "media_type": image.media_type.as_str(),
+                    "width": image.width,
+                    "height": image.height,
+                    "revised_prompt": image_result.revised_prompt.clone(),
+                }),
+            })
+            .unwrap_or(Value::Null)
+        })
+        .collect()
+}
+
+fn parse_generate_image_tool_result_value(
+    payload: &Value,
+) -> Option<meerkat_core::image_generation::ImageGenerationToolResult> {
+    if payload.get("name").and_then(Value::as_str) != Some("generate_image") {
+        return None;
+    }
+    let result_value = payload.get("result")?;
+    if let Some(result_text) = result_value.as_str() {
+        serde_json::from_str(result_text).ok()
+    } else {
+        serde_json::from_value(result_value.clone()).ok()
+    }
+}
+
+fn derive_console_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
+    let (identity, suffix) = runtime_id.rsplit_once(':')?;
+    if identity.is_empty() || suffix.is_empty() {
+        return None;
+    }
+    if !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let identity = identity.strip_prefix("rt:").unwrap_or(identity);
+    if identity.is_empty() {
+        return None;
+    }
+    Some(identity.to_string())
+}
+
+fn is_allowed_image_media_type(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+    )
+}
+
+fn image_upload_part_name<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    context: &str,
+) -> Result<&'a str, String> {
+    object
+        .get("upload_id")
+        .or_else(|| object.get("part_name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{context}.upload_id or {context}.part_name is required"))
+}
+
+async fn externalize_image_upload_placeholders(
+    params: &mut Value,
+    files: std::collections::BTreeMap<String, MultipartImageUpload>,
+    blob_store: std::sync::Arc<dyn crate::blob_store::BinaryBlobStore>,
+) -> Result<(), String> {
+    let Some(content) = params.get_mut("content") else {
+        return Err("multipart payload params.content is required".to_string());
+    };
+    let mut placeholders = std::collections::BTreeMap::<String, String>::new();
+    collect_image_upload_placeholders(content, &mut placeholders)?;
+    if placeholders.is_empty() {
+        return Err(
+            "multipart payload must contain at least one image_upload placeholder".to_string(),
+        );
+    }
+    if placeholders.len() > MAX_MULTIPART_IMAGES {
+        return Err(format!(
+            "too many image_upload placeholders; max {MAX_MULTIPART_IMAGES}"
+        ));
+    }
+    for upload_id in files.keys() {
+        if !placeholders.contains_key(upload_id) {
+            return Err(format!(
+                "file part has no matching image_upload placeholder: {upload_id}"
+            ));
+        }
+    }
+    for upload_id in placeholders.keys() {
+        if !files.contains_key(upload_id) {
+            return Err(format!(
+                "image_upload placeholder missing file part: {upload_id}"
+            ));
+        }
+    }
+
+    let mut refs = std::collections::BTreeMap::<String, Value>::new();
+    for (upload_id, file) in files {
+        let declared_media_type = placeholders
+            .get(&upload_id)
+            .cloned()
+            .unwrap_or_else(|| file.media_type.clone());
+        if !is_allowed_image_media_type(&declared_media_type) {
+            return Err(format!(
+                "unsupported image media type in placeholder {upload_id}: {declared_media_type}"
+            ));
+        }
+        if declared_media_type != file.media_type {
+            return Err(format!(
+                "media type mismatch for {upload_id}: placeholder {declared_media_type}, file {}",
+                file.media_type
+            ));
+        }
+        let blob_ref = blob_store
+            .put_bytes(&file.media_type, file.bytes)
+            .await
+            .map_err(|err| format!("failed to store image {upload_id}: {err}"))?;
+        refs.insert(
+            upload_id,
+            serde_json::json!({
+                "type": "image",
+                "media_type": blob_ref.media_type,
+                "source": "blob",
+                "blob_id": blob_ref.blob_id,
+            }),
+        );
+    }
+    replace_image_upload_placeholders(content, &refs)?;
+    if let Some(object) = params.as_object_mut() {
+        object.remove("message");
+    }
+    Ok(())
+}
+
+async fn externalize_single_image_upload(
+    params: &Value,
+    files: std::collections::BTreeMap<String, MultipartImageUpload>,
+    blob_store: std::sync::Arc<dyn crate::blob_store::BinaryBlobStore>,
+) -> Result<Value, String> {
+    let upload = params.get("upload").unwrap_or(params);
+    if upload
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "image_upload")
+    {
+        return Err("upload.type must be image_upload".to_string());
+    }
+    let upload_object = upload
+        .as_object()
+        .ok_or_else(|| "upload must be an object".to_string())?;
+    let upload_id = image_upload_part_name(upload_object, "upload")?;
+    let Some(file) = files.get(upload_id) else {
+        return Err(format!(
+            "image_upload placeholder missing file part: {upload_id}"
+        ));
+    };
+    if files.len() != 1 {
+        return Err("mobkit/blob/upload accepts exactly one file part".to_string());
+    }
+    let declared_media_type = upload
+        .get("media_type")
+        .and_then(Value::as_str)
+        .unwrap_or(file.media_type.as_str());
+    if !is_allowed_image_media_type(declared_media_type) {
+        return Err(format!(
+            "unsupported image media type in upload {upload_id}: {declared_media_type}"
+        ));
+    }
+    if declared_media_type != file.media_type {
+        return Err(format!(
+            "media type mismatch for {upload_id}: placeholder {declared_media_type}, file {}",
+            file.media_type
+        ));
+    }
+    let size = file.bytes.len() as u64;
+    let blob_ref = blob_store
+        .put_bytes(&file.media_type, file.bytes.clone())
+        .await
+        .map_err(|err| format!("failed to store image {upload_id}: {err}"))?;
+    Ok(json!({
+        "blob_id": blob_ref.blob_id,
+        "media_type": blob_ref.media_type,
+        "size": size,
+    }))
+}
+
+fn collect_image_upload_placeholders(
+    value: &Value,
+    placeholders: &mut std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_image_upload_placeholders(item, placeholders)?;
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("image_upload") {
+                let upload_id = image_upload_part_name(object, "image_upload")?;
+                let media_type = object
+                    .get("media_type")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| format!("image_upload {upload_id} requires media_type"))?;
+                if placeholders
+                    .insert(upload_id.to_string(), media_type.to_string())
+                    .is_some()
+                {
+                    return Err(format!("duplicate image_upload placeholder: {upload_id}"));
+                }
+            } else {
+                for child in object.values() {
+                    collect_image_upload_placeholders(child, placeholders)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn replace_image_upload_placeholders(
+    value: &mut Value,
+    refs: &std::collections::BTreeMap<String, Value>,
+) -> Result<(), String> {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                replace_image_upload_placeholders(item, refs)?;
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("image_upload") {
+                let upload_id = image_upload_part_name(object, "image_upload")?;
+                let replacement = refs
+                    .get(upload_id)
+                    .ok_or_else(|| format!("missing blob replacement for {upload_id}"))?;
+                *value = replacement.clone();
+            } else {
+                for child in object.values_mut() {
+                    replace_image_upload_placeholders(child, refs)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn current_time_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -675,6 +1353,28 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
+async fn member_entry_to_console_json(
+    runtime: &MobRuntime,
+    entry: &meerkat_mob::runtime::MobMemberListEntry,
+) -> Value {
+    let mut value = member_entry_to_json(entry);
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "model_capabilities".to_string(),
+            serde_json::to_value(
+                model_capabilities_for_member(
+                    &runtime.handle(),
+                    runtime.session_service(),
+                    &entry.agent_identity,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null),
+        );
+    }
+    value
+}
+
 fn internal_error(id: Value, message: impl Into<String>) -> Value {
     response_value(
         id,
@@ -709,10 +1409,10 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
     )
 }
 
-/// Optional JSON-RPC param `handling_mode: "queue" | "steer"`. Anything
-/// else (missing, null, unknown string) maps to `Queue` so the default
-/// stays untouched. The console's pending-message stack uses `"steer"`
-/// to power its "cut the line" affordance; everything else stays Queue.
+/// Optional JSON-RPC param `handling_mode: "queue" | "steer"`.
+/// Missing/null defaults to `Queue`; unknown strings remain invalid params.
+/// The direct MobKit send path normalizes `Steer` to `Queue` until a
+/// runtime-backed steering surface is available.
 fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
     let Some(raw) = params.get("handling_mode") else {
         return Ok(meerkat_core::types::HandlingMode::Queue);
@@ -842,6 +1542,7 @@ async fn handle_console_runtime_rpc(
                 "mobkit/member_status",
                 "mobkit/read_session_history",
                 "mobkit/collect_completed",
+                "mobkit/blob/get",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
                 "mobkit/list_flows",
@@ -871,6 +1572,7 @@ async fn handle_console_runtime_rpc(
             if is_authenticated {
                 methods.extend_from_slice(&[
                     "mobkit/send_message",
+                    "mobkit/blob/upload",
                     "mobkit/ensure_member",
                     "mobkit/retire_member",
                     "mobkit/respawn_member",
@@ -927,12 +1629,50 @@ async fn handle_console_runtime_rpc(
                 None,
             )
         }
+        "mobkit/blob/get" => {
+            let Some(blob_id) = request
+                .params
+                .get("blob_id")
+                .or_else(|| request.params.get("id"))
+                .and_then(Value::as_str)
+            else {
+                return invalid_params(response_id, "blob_id required");
+            };
+            if !is_valid_blob_id_value(blob_id) {
+                return invalid_params(response_id, "invalid blob_id");
+            }
+            let Some(store) = runtime.binary_blob_store() else {
+                return internal_error(response_id, "binary blob store unavailable");
+            };
+            match store.get_bytes(&meerkat_core::BlobId::from(blob_id)).await {
+                Ok(payload) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "blob_id": payload.blob_id,
+                        "media_type": payload.media_type,
+                        "size": payload.size,
+                        "data": base64::engine::general_purpose::STANDARD.encode(payload.data.as_ref()),
+                    })),
+                    None,
+                ),
+                Err(meerkat_core::BlobStoreError::NotFound(_)) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("blob not found: {blob_id}"),
+                        data: Some(json!({ "kind": "not_found", "blob_id": blob_id })),
+                    }),
+                ),
+                Err(err) => internal_error(response_id, format!("blob get failed: {err}")),
+            }
+        }
         "mobkit/list_members" => {
             let handle = runtime.handle();
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
-                members.push(member_entry_to_json(entry));
+                members.push(member_entry_to_console_json(runtime, entry).await);
             }
             response_value(response_id, Some(Value::Array(members)), None)
         }
@@ -944,9 +1684,11 @@ async fn handle_console_runtime_rpc(
             let identity = MeerkatId::from(member_id);
             let entries = handle.list_members_including_retiring().await;
             match entries.into_iter().find(|e| e.agent_identity == identity) {
-                Some(entry) => {
-                    response_value(response_id, Some(member_entry_to_json(&entry)), None)
-                }
+                Some(entry) => response_value(
+                    response_id,
+                    Some(member_entry_to_console_json(runtime, &entry).await),
+                    None,
+                ),
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
             }
         }
@@ -970,7 +1712,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_matching(filter).await;
             let mut matches = Vec::with_capacity(entries.len());
             for entry in &entries {
-                matches.push(member_entry_to_json(entry));
+                matches.push(member_entry_to_console_json(runtime, entry).await);
             }
             response_value(response_id, Some(Value::Array(matches)), None)
         }
@@ -978,23 +1720,63 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
-            let content =
-                if let Some(message) = request.params.get("message").and_then(Value::as_str) {
-                    ContentInput::Text(message.to_string())
-                } else if let Some(content) = request.params.get("content") {
-                    match serde_json::from_value::<ContentInput>(content.clone()) {
-                        Ok(content) => content,
-                        Err(err) => {
-                            return invalid_params(response_id, format!("invalid content: {err}"));
-                        }
+            let raw_content = if let Some(content) = request.params.get("content") {
+                content.clone()
+            } else if let Some(message) = request.params.get("message").and_then(Value::as_str) {
+                Value::String(message.to_string())
+            } else {
+                return invalid_params(response_id, "message or content required");
+            };
+            let content = if request.params.get("content").is_some() {
+                match serde_json::from_value::<ContentInput>(raw_content.clone()) {
+                    Ok(content) => content,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid content: {err}"));
                     }
-                } else {
-                    return invalid_params(response_id, "message or content required");
-                };
+                }
+            } else if let Some(message) = raw_content.as_str() {
+                ContentInput::Text(message.to_string())
+            } else {
+                return invalid_params(response_id, "message or content required");
+            };
             let handling_mode = match parse_handling_mode(&request.params) {
                 Ok(mode) => mode,
                 Err(message) => return invalid_params(response_id, message),
             };
+            if let Err(err) = assert_member_accepts_images(
+                &runtime.handle(),
+                runtime.session_service(),
+                member_id,
+                &content,
+            )
+            .await
+            {
+                return invalid_params(response_id, err.to_string());
+            }
+            let interaction_id = mint_console_interaction_id();
+            if let Some(store) = &console_events {
+                if let Err(message) = store
+                    .reserve_interaction_value(
+                        member_id,
+                        Some(member_id),
+                        &interaction_id,
+                        "console:send_message",
+                        raw_content,
+                    )
+                    .await
+                {
+                    return response_value(
+                        response_id,
+                        None,
+                        Some(JsonRpcError {
+                            code: -32003,
+                            message: message.to_string(),
+                            data: None,
+                        }),
+                    );
+                }
+                store.accept_interaction(member_id, &interaction_id).await;
+            }
             match send_message_on_mob_with_mode(
                 &runtime.handle(),
                 member_id,
@@ -1009,10 +1791,23 @@ async fn handle_console_runtime_rpc(
                         "accepted": true,
                         "member_id": member_id,
                         "session_id": session_id,
+                        "interaction_id": interaction_id,
                     })),
                     None,
                 ),
-                Err(err) => internal_error(response_id, format!("send_message failed: {err}")),
+                Err(err) => {
+                    if let Some(store) = &console_events {
+                        store
+                            .fail_interaction(
+                                member_id,
+                                &interaction_id,
+                                "send_message_failed",
+                                json!(err.to_string()),
+                            )
+                            .await;
+                    }
+                    internal_error(response_id, format!("send_message failed: {err}"))
+                }
             }
         }
         "mobkit/interact" => {
@@ -1511,10 +2306,10 @@ async fn handle_console_runtime_rpc(
                 }
             };
             match event_log {
-                Some(store) => match store.query(query).await {
+                Some(store) => match store.query(query.clone()).await {
                     Ok(events) => response_value(
                         response_id,
-                        Some(serde_json::to_value(&events).unwrap_or(Value::Null)),
+                        Some(project_query_events_for_console(events, &query)),
                         None,
                     ),
                     Err(err) => {
@@ -2247,6 +3042,12 @@ async fn build_live_snapshot(
             .resolve_bridge_session_id(&entry.agent_identity)
             .await
             .map(|s| s.to_string());
+        let model_capabilities = model_capabilities_for_member(
+            &handle,
+            runtime.session_service(),
+            &entry.agent_identity,
+        )
+        .await;
         members.push(crate::runtime::ConsoleMember {
             agent_identity: entry.agent_identity.to_string(),
             role: entry.role.to_string(),
@@ -2254,6 +3055,7 @@ async fn build_live_snapshot(
                 meerkat_mob::MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
                 meerkat_mob::MemberState::Retiring => MEMBER_STATE_RETIRING.to_string(),
             },
+            model_capabilities,
             runtime_mode: Some(entry.runtime_mode.to_string()),
             session_id,
             wired_to: entry.wired_to.iter().map(ToString::to_string).collect(),
@@ -2317,6 +3119,7 @@ async fn build_live_snapshot(
                 role: Some(member.role.clone()),
                 state: Some(member.state.clone()),
                 session_id: member.session_id.clone(),
+                model_capabilities: member.model_capabilities.clone(),
                 response_phase,
                 watched,
                 alert_level,
@@ -2372,8 +3175,18 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::mint_console_interaction_id;
-    use std::collections::BTreeSet;
+    use super::{
+        MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload,
+        externalize_image_upload_placeholders, externalize_single_image_upload,
+        mint_console_interaction_id, project_query_events_for_console,
+    };
+    use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
+    use crate::types::UnifiedEvent;
+    use crate::unified_runtime::{EventQuery, PersistedEvent};
+    use bytes::Bytes;
+    use serde_json::json;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     #[test]
     fn mint_console_interaction_id_is_unique_across_same_tick_calls() {
@@ -2381,5 +3194,333 @@ mod tests {
             .map(|_| mint_console_interaction_id())
             .collect::<BTreeSet<_>>();
         assert_eq!(ids.len(), 32);
+    }
+
+    #[test]
+    fn multipart_body_limit_covers_configured_image_limit() {
+        const _: () = assert!(MAX_MULTIPART_BODY_BYTES > MAX_MULTIPART_IMAGE_BYTES);
+        const _: () = assert!(MAX_MULTIPART_BODY_BYTES > 2 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn multipart_blob_upload_stores_one_file() -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "upload-1".to_string(),
+            MultipartImageUpload {
+                media_type: "image/png".to_string(),
+                bytes: Bytes::from_static(b"png-data"),
+            },
+        );
+        let result = externalize_single_image_upload(
+            &json!({
+                "upload": {
+                    "type": "image_upload",
+                    "upload_id": "upload-1",
+                    "media_type": "image/png"
+                }
+            }),
+            files,
+            store.clone(),
+        )
+        .await
+        .map_err(std::io::Error::other)?;
+
+        assert_eq!(result["media_type"], json!("image/png"));
+        assert_eq!(result["size"], json!(8));
+        let Some(blob_id) = result["blob_id"].as_str() else {
+            return Err(std::io::Error::other("blob id").into());
+        };
+        let payload = store
+            .get_bytes(&meerkat_core::BlobId::from(blob_id))
+            .await?;
+        assert_eq!(payload.data.as_ref(), b"png-data");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_blob_upload_accepts_part_name_alias()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "image-field".to_string(),
+            MultipartImageUpload {
+                media_type: "image/png".to_string(),
+                bytes: Bytes::from_static(b"png-data"),
+            },
+        );
+        let result = externalize_single_image_upload(
+            &json!({
+                "upload": {
+                    "type": "image_upload",
+                    "part_name": "image-field",
+                    "media_type": "image/png"
+                }
+            }),
+            files,
+            store,
+        )
+        .await
+        .map_err(std::io::Error::other)?;
+
+        assert_eq!(result["media_type"], json!("image/png"));
+        assert!(
+            result["blob_id"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256:"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_blob_upload_rejects_media_mismatch() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "upload-1".to_string(),
+            MultipartImageUpload {
+                media_type: "image/jpeg".to_string(),
+                bytes: Bytes::from_static(b"jpeg-data"),
+            },
+        );
+        let err = match externalize_single_image_upload(
+            &json!({
+                "upload": {
+                    "type": "image_upload",
+                    "upload_id": "upload-1",
+                    "media_type": "image/png"
+                }
+            }),
+            files,
+            store,
+        )
+        .await
+        {
+            Ok(_) => return Err(std::io::Error::other("media mismatch").into()),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("media type mismatch"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_blob_upload_rejects_extra_file() -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        for id in ["upload-1", "upload-2"] {
+            files.insert(
+                id.to_string(),
+                MultipartImageUpload {
+                    media_type: "image/png".to_string(),
+                    bytes: Bytes::from_static(b"png"),
+                },
+            );
+        }
+        let err = match externalize_single_image_upload(
+            &json!({
+                "upload": {
+                    "type": "image_upload",
+                    "upload_id": "upload-1",
+                    "media_type": "image/png"
+                }
+            }),
+            files,
+            store,
+        )
+        .await
+        {
+            Ok(_) => return Err(std::io::Error::other("one file only").into()),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("exactly one file part"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_send_replaces_placeholders_and_removes_shadow_message()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "upload-1".to_string(),
+            MultipartImageUpload {
+                media_type: "image/webp".to_string(),
+                bytes: Bytes::from_static(b"webp-data"),
+            },
+        );
+        let mut params = json!({
+            "member_id": "artist",
+            "message": "stale shadow text",
+            "content": [
+                { "type": "text", "text": "describe" },
+                {
+                    "type": "image_upload",
+                    "upload_id": "upload-1",
+                    "media_type": "image/webp"
+                }
+            ]
+        });
+        externalize_image_upload_placeholders(&mut params, files, store)
+            .await
+            .map_err(std::io::Error::other)?;
+
+        assert!(params.get("message").is_none());
+        assert_eq!(params["content"][1]["type"], json!("image"));
+        assert_eq!(params["content"][1]["source"], json!("blob"));
+        assert_eq!(params["content"][1]["media_type"], json!("image/webp"));
+        assert!(
+            params["content"][1]["blob_id"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256:"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_send_accepts_part_name_placeholder() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "image-field".to_string(),
+            MultipartImageUpload {
+                media_type: "image/png".to_string(),
+                bytes: Bytes::from_static(b"png-data"),
+            },
+        );
+        let mut params = json!({
+            "member_id": "analyst",
+            "content": [
+                { "type": "text", "text": "describe" },
+                {
+                    "type": "image_upload",
+                    "part_name": "image-field",
+                    "media_type": "image/png"
+                }
+            ]
+        });
+
+        externalize_image_upload_placeholders(&mut params, files, store)
+            .await
+            .map_err(std::io::Error::other)?;
+
+        assert_eq!(params["content"][1]["type"], json!("image"));
+        assert_eq!(params["content"][1]["source"], json!("blob"));
+        assert_eq!(params["content"][1]["media_type"], json!("image/png"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_send_rejects_placeholder_without_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut params = json!({
+            "content": [{
+                "type": "image_upload",
+                "upload_id": "missing",
+                "media_type": "image/png"
+            }]
+        });
+        let err = match externalize_image_upload_placeholders(&mut params, BTreeMap::new(), store)
+            .await
+        {
+            Ok(()) => return Err(std::io::Error::other("missing file").into()),
+            Err(err) => err,
+        };
+        assert!(err.contains("missing file part"), "unexpected error: {err}");
+        Ok(())
+    }
+
+    #[test]
+    fn query_events_projects_assistant_images_for_console_history()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![PersistedEvent {
+            id: "evt-image-tool".to_string(),
+            seq: 7,
+            timestamp_ms: 42,
+            member_id: Some("rt:identity:luka:0".to_string()),
+            event: UnifiedEvent::Agent {
+                agent_id: "rt:identity:luka:0".to_string(),
+                event_type: "tool_execution_completed".to_string(),
+                payload: Some(serde_json::json!({
+                    "id": "tool-call-1",
+                    "name": "generate_image",
+                    "result": {
+                        "operation_id": "00000000-0000-0000-0000-000000000001",
+                        "terminal": { "terminal": "generated" },
+                        "images": [{
+                            "image_id": "00000000-0000-0000-0000-000000000002",
+                            "blob_ref": {
+                                "blob_id": "generated-blob-1",
+                                "media_type": "image/png"
+                            },
+                            "media_type": "image/png",
+                            "width": 640,
+                            "height": 480
+                        }],
+                        "provider_text": { "disposition": "not_emitted" },
+                        "revised_prompt": { "disposition": "unchanged" },
+                        "native_metadata": { "provider": "not_emitted" }
+                    }
+                })),
+            },
+        }];
+
+        let projected = project_query_events_for_console(
+            events,
+            &EventQuery {
+                identity: Some("identity:luka".to_string()),
+                ..EventQuery::default()
+            },
+        );
+        let serde_json::Value::Array(items) = projected else {
+            return Err(std::io::Error::other("array projection").into());
+        };
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[1]["event_type"], "assistant_image");
+        assert_eq!(items[1]["identity"], "identity:luka");
+        assert_eq!(items[1]["data"]["blob_id"], "generated-blob-1");
+        Ok(())
+    }
+
+    #[test]
+    fn query_events_hides_empty_web_search_annotation_history()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![PersistedEvent {
+            id: "evt-annotation".to_string(),
+            seq: 8,
+            timestamp_ms: 42,
+            member_id: Some("rt:identity:luka:0".to_string()),
+            event: UnifiedEvent::Agent {
+                agent_id: "rt:identity:luka:0".to_string(),
+                event_type: "server_tool_content".to_string(),
+                payload: Some(serde_json::json!({
+                    "id": "msg-1",
+                    "name": "web_search_annotations",
+                    "content": {
+                        "type": "message_annotations",
+                        "annotations": []
+                    }
+                })),
+            },
+        }];
+
+        let projected = project_query_events_for_console(events, &EventQuery::default());
+        let serde_json::Value::Array(items) = projected else {
+            return Err(std::io::Error::other("array projection").into());
+        };
+
+        assert!(items.is_empty());
+        Ok(())
     }
 }

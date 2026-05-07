@@ -14,6 +14,8 @@ pub struct ConsoleMember {
     pub agent_identity: String,
     pub role: String,
     pub state: String,
+    #[serde(default)]
+    pub model_capabilities: ConsoleModelCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -21,6 +23,12 @@ pub struct ConsoleMember {
     pub wired_to: Vec<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub labels: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleModelCapabilities {
+    #[serde(default)]
+    pub image_input: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +58,8 @@ pub struct ConsoleAgentLiveSnapshot {
     pub state: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub model_capabilities: ConsoleModelCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -214,6 +224,7 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
             role: None,
             state: Some("idle".to_string()),
             session_id: None,
+            model_capabilities: ConsoleModelCapabilities::default(),
             response_phase: None,
             watched: None,
             alert_level: None,
@@ -238,6 +249,7 @@ fn build_console_experience_contract(
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
         agent.role.is_some()
             || agent.session_id.is_some()
+            || agent.model_capabilities != ConsoleModelCapabilities::default()
             || agent.response_phase.is_some()
             || agent.watched.is_some()
             || agent.alert_level.is_some()
@@ -317,6 +329,7 @@ fn build_console_experience_contract(
                         "kind": "mob_agent",
                         "role": member.role,
                         "state": member.state,
+                        "model_capabilities": member.model_capabilities,
                         "session_id": member.session_id,
                         "wired_to": member.wired_to,
                         "labels": member.labels,
@@ -382,6 +395,10 @@ fn build_console_experience_contract(
                     if let Some(session_id) = &agent.session_id {
                         record.insert("session_id".to_string(), Value::String(session_id.clone()));
                     }
+                    record.insert(
+                        "model_capabilities".to_string(),
+                        serde_json::to_value(&agent.model_capabilities).unwrap_or(Value::Null),
+                    );
                     if let Some(response_phase) = &agent.response_phase {
                         record.insert(
                             "response_phase".to_string(),
@@ -491,7 +508,7 @@ fn build_console_experience_contract(
                 "supported_scopes": ["mob", "agent"],
             },
             "list_item_contract": {
-                "fields": ["agent_id", "member_id", "identity", "label", "kind", "role", "state", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
+                "fields": ["agent_id", "member_id", "identity", "label", "kind", "role", "state", "model_capabilities", "response_phase", "wired_to", "labels", "group", "addressable", "affordances", "watched", "alertLevel", "degraded", "degradedReason"],
                 "agent_id_field": "agent_id",
                 "member_id_field": "member_id",
                 "group_by_field": "group",
@@ -501,7 +518,7 @@ fn build_console_experience_contract(
                     "singleton": "set \"true\" to prevent retire (e.g. review, summarizer agents)",
                     "group": "sidebar group name; overrides profile-based grouping",
                 },
-                "refresh_projection": "source_method returns ConsoleMember rows (agent_identity, role, state, wired_to, labels). Clients must project: agent_id=agent_identity, member_id=agent_identity, label=labels.display_name||agent_identity, group=labels.group||role, addressable=labels.addressable!='false', affordances derived from labels.singleton and addressable.",
+                "refresh_projection": "source_method returns ConsoleMember rows (agent_identity, role, state, model_capabilities, wired_to, labels). Clients must project: agent_id=agent_identity, member_id=agent_identity, label=labels.display_name||agent_identity, group=labels.group||role, addressable=labels.addressable!='false', model_capabilities.image_input default false, affordances derived from labels.singleton and addressable.",
             },
             "live_snapshot": {
                 "agents": sidebar_agents,
@@ -770,6 +787,9 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             }
             if let Some(response_phase) = agent.get("response_phase").and_then(Value::as_str) {
                 row["response_phase"] = Value::String(response_phase.to_string());
+            }
+            if let Some(model_capabilities) = agent.get("model_capabilities") {
+                row["model_capabilities"] = model_capabilities.clone();
             }
             if let Some(session_id) = agent.get("session_id").and_then(Value::as_str) {
                 row["session_id"] = Value::String(session_id.to_string());

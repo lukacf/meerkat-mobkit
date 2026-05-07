@@ -38,7 +38,7 @@ struct ConsoleEventReplayState {
 struct PendingInteraction {
     interaction_id: String,
     origin: String,
-    content: String,
+    content: Value,
 }
 
 impl ConsoleEventStore {
@@ -239,6 +239,24 @@ impl ConsoleEventStore {
         origin: &str,
         content: &str,
     ) -> Result<(), &'static str> {
+        self.reserve_interaction_value(
+            identity,
+            runtime_member_id,
+            interaction_id,
+            origin,
+            Value::String(content.to_string()),
+        )
+        .await
+    }
+
+    pub(crate) async fn reserve_interaction_value(
+        &self,
+        identity: &str,
+        runtime_member_id: Option<&str>,
+        interaction_id: &str,
+        origin: &str,
+        content: Value,
+    ) -> Result<(), &'static str> {
         // If projection later fails to resolve an identity (e.g. runtime id
         // format changes), stale pending entries can accumulate. Rather than
         // reject new interactions once the per-identity cap is hit — which
@@ -259,7 +277,7 @@ impl ConsoleEventStore {
             queue.push_back(PendingInteraction {
                 interaction_id: interaction_id.to_string(),
                 origin: origin.to_string(),
-                content: content.to_string(),
+                content,
             });
             if let Some(runtime_member_id) =
                 runtime_member_id.filter(|value| !value.trim().is_empty())
@@ -405,6 +423,9 @@ impl ConsoleEventStore {
         else {
             return;
         };
+        if is_empty_web_search_annotations_event(event_type, payload.as_ref()) {
+            return;
+        }
 
         let (identity, interaction_id) = {
             let mut state = self.state.write().await;
@@ -451,9 +472,32 @@ impl ConsoleEventStore {
             identity: identity.clone(),
             event_type: projected_type.to_string(),
             timestamp_ms: event.timestamp_ms,
-            data: projected_data,
+            data: projected_data.clone(),
         })
         .await;
+
+        if let Some(image_result) = parse_generate_image_tool_result(&projected_data) {
+            for (idx, image) in image_result.images.iter().enumerate() {
+                self.append_envelope(ConsoleIdentityEventEnvelope {
+                    event_id: format!("{}#assistant_image:{idx}", event.event_id),
+                    interaction_id: interaction_id.clone(),
+                    identity: identity.clone(),
+                    event_type: "assistant_image".to_string(),
+                    timestamp_ms: event.timestamp_ms,
+                    data: json!({
+                        "source_event_type": event_type,
+                        "tool_call_id": projected_data.get("id").cloned().unwrap_or(Value::Null),
+                        "image_id": image.image_id.0.to_string(),
+                        "blob_id": image.blob_ref.blob_id,
+                        "media_type": image.media_type.as_str(),
+                        "width": image.width,
+                        "height": image.height,
+                        "revised_prompt": image_result.revised_prompt.clone(),
+                    }),
+                })
+                .await;
+            }
+        }
 
         {
             let mut state = self.state.write().await;
@@ -502,6 +546,43 @@ impl ConsoleEventStore {
             .cloned()
             .flatten()
     }
+}
+
+fn parse_generate_image_tool_result(
+    payload: &Value,
+) -> Option<meerkat_core::image_generation::ImageGenerationToolResult> {
+    if payload.get("name").and_then(Value::as_str) != Some("generate_image") {
+        return None;
+    }
+    let result_value = payload.get("result")?;
+    if let Some(result_text) = result_value.as_str() {
+        serde_json::from_str(result_text).ok()
+    } else {
+        serde_json::from_value(result_value.clone()).ok()
+    }
+}
+
+pub(crate) fn is_empty_web_search_annotations_event(
+    event_type: &str,
+    payload: Option<&Value>,
+) -> bool {
+    if event_type != "server_tool_content" {
+        return false;
+    }
+    let Some(payload) = payload else {
+        return false;
+    };
+    payload.get("name").and_then(Value::as_str) == Some("web_search_annotations")
+        && payload
+            .get("content")
+            .and_then(|content| content.get("type"))
+            .and_then(Value::as_str)
+            == Some("message_annotations")
+        && payload
+            .get("content")
+            .and_then(|content| content.get("annotations"))
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
 }
 
 fn trim_deque(deque: &mut VecDeque<ConsoleIdentityEventEnvelope>, cap: usize) {
@@ -560,6 +641,10 @@ fn derive_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
         return None;
     }
     if !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let identity = identity.strip_prefix("rt:").unwrap_or(identity);
+    if identity.is_empty() {
         return None;
     }
     Some(identity.to_string())
@@ -725,6 +810,134 @@ mod tests {
         assert_eq!(events[2].event_type, "interaction_complete");
         assert_eq!(events[2].event_id, "evt-agent-2");
         assert_eq!(events[2].data["source_event_type"], json!("run_completed"));
+    }
+
+    #[tokio::test]
+    async fn empty_web_search_annotation_events_are_not_projected_to_console() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("identity:luka:0", "identity:luka")
+            .await;
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-annotation".to_string(),
+                source: "agent".to_string(),
+                timestamp_ms: 10,
+                event: UnifiedEvent::Agent {
+                    agent_id: "identity:luka:0".to_string(),
+                    event_type: "server_tool_content".to_string(),
+                    payload: Some(json!({
+                        "id": "msg-1",
+                        "name": "web_search_annotations",
+                        "content": {
+                            "type": "message_annotations",
+                            "annotations": []
+                        }
+                    })),
+                },
+            })
+            .await;
+
+        let events = store
+            .query(&EventQuery {
+                identity: Some("identity:luka".to_string()),
+                ..EventQuery::default()
+            })
+            .await;
+        assert!(events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reserved_interaction_can_preserve_structured_multimodal_content() {
+        let store = ConsoleEventStore::new();
+        store
+            .reserve_interaction_value(
+                "api-investigator",
+                Some("api-investigator"),
+                "turn-image",
+                "console:send_message",
+                json!([
+                    { "type": "text", "text": "Describe this badge." },
+                    {
+                        "type": "image",
+                        "media_type": "image/jpeg",
+                        "source": "blob",
+                        "blob_id": "sha256:abc"
+                    }
+                ]),
+            )
+            .await
+            .expect("reserve interaction");
+        store
+            .accept_interaction("api-investigator", "turn-image")
+            .await;
+
+        let events = store
+            .query(&EventQuery {
+                identity: Some("api-investigator".to_string()),
+                ..EventQuery::default()
+            })
+            .await;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "interaction_started");
+        assert_eq!(
+            events[0].data["content"][0]["text"],
+            json!("Describe this badge.")
+        );
+        assert_eq!(events[0].data["content"][1]["blob_id"], json!("sha256:abc"));
+    }
+
+    #[tokio::test]
+    async fn generate_image_tool_results_project_assistant_image_events() {
+        let store = ConsoleEventStore::new();
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-image-tool".to_string(),
+                source: "agent".to_string(),
+                timestamp_ms: 42,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:identity:luka:0".to_string(),
+                    event_type: "tool_execution_completed".to_string(),
+                    payload: Some(json!({
+                        "id": "tool-call-1",
+                        "name": "generate_image",
+                        "result": {
+                            "operation_id": "00000000-0000-0000-0000-000000000001",
+                            "terminal": { "terminal": "generated" },
+                            "images": [{
+                                "image_id": "00000000-0000-0000-0000-000000000002",
+                                "blob_ref": {
+                                    "blob_id": "generated-blob-1",
+                                    "media_type": "image/png"
+                                },
+                                "media_type": "image/png",
+                                "width": 640,
+                                "height": 480
+                            }],
+                            "provider_text": { "disposition": "not_emitted" },
+                            "revised_prompt": { "disposition": "unchanged" },
+                            "native_metadata": { "provider": "not_emitted" }
+                        }
+                    })),
+                },
+            })
+            .await;
+
+        let events = store
+            .query(&EventQuery {
+                identity: Some("identity:luka".to_string()),
+                ..EventQuery::default()
+            })
+            .await;
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "tool_execution_completed");
+        assert_eq!(events[1].event_type, "assistant_image");
+        assert_eq!(events[1].event_id, "evt-image-tool#assistant_image:0");
+        assert_eq!(events[1].data["tool_call_id"], json!("tool-call-1"));
+        assert_eq!(events[1].data["blob_id"], json!("generated-blob-1"));
+        assert_eq!(events[1].data["media_type"], json!("image/png"));
+        assert_eq!(events[1].data["width"], json!(640));
+        assert_eq!(events[1].data["height"], json!(480));
     }
 
     #[tokio::test]

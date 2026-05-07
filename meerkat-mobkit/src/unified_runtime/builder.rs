@@ -93,9 +93,9 @@ impl UnifiedRuntimeBuilder {
     }
 
     /// Enable persistent state at the given path. When set, the builder
-    /// creates a `SqliteSessionStore`, `FsBlobStore`, and `MobStorage::redb()`
-    /// under this directory. When not set, the builder uses an ephemeral
-    /// session service with an auto-created temp directory.
+    /// creates a `SqliteSessionStore`, binary blob store, and
+    /// `MobStorage::redb()` under this directory. When not set, the builder
+    /// uses an ephemeral session service with an auto-created temp directory.
     pub fn persistent_state(mut self, path: impl Into<PathBuf>) -> Self {
         self.persistent_state_path = Some(path.into());
         self
@@ -205,6 +205,18 @@ impl UnifiedRuntimeBuilder {
     /// Enable or disable memory tools (default: true).
     pub fn memory(mut self, enabled: bool) -> Self {
         self.capability_flags.memory = enabled;
+        self
+    }
+
+    /// Force image-generation runtime substrate wiring.
+    ///
+    /// Definition-based builders also infer this from
+    /// `profiles.<name>.tools.image_generation`; Meerkat owns the per-profile
+    /// visibility decision. With Meerkat 0.6.1, profiles that opt into
+    /// image generation must also leave `tools.builtins = true` because
+    /// `generate_image` is registered by the builtin dispatcher.
+    pub fn image_generation(mut self, enabled: bool) -> Self {
+        self.capability_flags.image_generation = enabled;
         self
     }
 
@@ -409,10 +421,19 @@ impl UnifiedRuntimeBuilder {
         // the bridge connects the identity-first control plane to real sessions.
         let session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>> = {
             let handle = runtime.mob_runtime.handle();
-            let bridge = if let Some(ref store) = self.custom_session_store {
-                crate::identity_first::bridge::MobSessionBridge::with_session_store(
-                    handle,
-                    store.clone(),
+            let session_service = runtime.mob_runtime.session_service().cloned();
+            let session_store = self.custom_session_store.clone();
+            let bridge = if let (Some(store), Some(service)) =
+                (session_store.clone(), session_service.clone())
+            {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store_and_service(
+                    handle, store, service,
+                )
+            } else if let Some(store) = session_store {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store(handle, store)
+            } else if let Some(service) = session_service {
+                crate::identity_first::bridge::MobSessionBridge::with_session_service(
+                    handle, service,
                 )
             } else {
                 crate::identity_first::bridge::MobSessionBridge::new(handle)
@@ -471,6 +492,7 @@ impl UnifiedRuntimeBuilder {
     /// Resolve the mob spec from the definition-based path.
     /// Called only when `mob_spec` is not set (legacy path handled in `build()`).
     async fn resolve_mob_spec(&self) -> Result<MobBootstrapSpec, UnifiedRuntimeBuilderError> {
+        let mut caps = self.capability_flags;
         let definition = match self.definition_source {
             Some(DefinitionSource::Inline(ref def)) => *def.clone(),
             Some(DefinitionSource::TomlPath(ref path)) => {
@@ -493,6 +515,8 @@ impl UnifiedRuntimeBuilder {
                 ));
             }
         };
+        caps.image_generation |=
+            crate::mob_handle_runtime::mob_definition_may_use_image_generation(&definition);
 
         let hook = self
             .session_hook
@@ -519,8 +543,6 @@ impl UnifiedRuntimeBuilder {
                     })
                 })
             });
-
-        let caps = self.capability_flags;
 
         // Note: blocking I/O (fs, SQLite, redb) — acceptable at startup.
         let mut spec = if let Some(ref state_path) = self.persistent_state_path {

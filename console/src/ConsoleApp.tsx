@@ -34,6 +34,7 @@ import {
   queryEvents,
   sendInteract as sendInteractRpc,
   sendMessage,
+  sendMessageMultipart,
   subscribeConsoleEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
@@ -57,7 +58,7 @@ import { Topbar } from "./panels/Topbar";
 import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
 import { Sidebar as DesignSidebar } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
-import { ChatPane } from "./panels/ChatPane";
+import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
 import { PendingStack, type PendingItem } from "./panels/PendingStack";
 
@@ -72,6 +73,7 @@ interface OptimisticUserMessage {
   interactionId: string;
   entry: ConversationTimelineEntry;
   sentAtMs: number;
+  objectUrls?: string[];
 }
 
 interface IdentityLog {
@@ -98,6 +100,10 @@ function richBlockHasVisibleContent(block: unknown): boolean {
     typeof record.name === "string" ? record.name : "",
   ].join(" ").trim();
   if (scalarText.length > 0) return true;
+  if (
+    record.type === "image"
+    && (typeof record.src === "string" || typeof record.blobId === "string")
+  ) return true;
   if (Array.isArray(record.headers) && record.headers.some((v) => String(v || "").trim().length > 0)) return true;
   if (Array.isArray(record.rows) && record.rows.some((row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0))) return true;
   return false;
@@ -127,6 +133,7 @@ const REFRESH_TRIGGER_EVENTS = new Set([
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
   "interaction_started", "interaction_complete", "interaction_failed",
+  "assistant_image",
   "text_delta", "text_complete",
   "tool_call_requested", "tool_call", "tool_result_received",
   "tool_execution_started", "tool_execution_completed",
@@ -153,6 +160,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(null);
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
   const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>({});
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = React.useState<Record<string, StagedAttachment[]>>({});
   const [sendingPanels, setSendingPanels] = React.useState<Set<string>>(new Set());
   const [pinnedAgentIds, setPinnedAgentIds] = React.useState<Set<string>>(new Set());
   const [inspectByIdentity, setInspectByIdentity] = React.useState<Record<string, IdentityInspectViewState | null>>({});
@@ -191,6 +199,29 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
   const forceRender = React.useCallback(() => setRenderTick((n) => n + 1), []);
+  const stagedAttachmentsRef = React.useRef(stagedAttachmentsByIdentity);
+  React.useEffect(() => {
+    stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
+  }, [stagedAttachmentsByIdentity]);
+  React.useEffect(() => () => {
+    for (const items of Object.values(stagedAttachmentsRef.current)) {
+      items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+    }
+  }, []);
+
+  function setStagedAttachmentsForIdentity(
+    identity: string,
+    action: React.SetStateAction<StagedAttachment[]>,
+  ) {
+    setStagedAttachmentsByIdentity((current) => {
+      const previous = current[identity] ?? [];
+      const next = typeof action === "function" ? action(previous) : action;
+      const updated = { ...current };
+      if (next.length > 0) updated[identity] = next;
+      else delete updated[identity];
+      return updated;
+    });
+  }
 
   // =========================================================================
   // DATA MODEL — single canonical event log per identity
@@ -252,6 +283,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       && log.optimisticUser.interactionId
       && frame.interactionId === log.optimisticUser.interactionId
     ) {
+      log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       log.optimisticUser = null;
     }
     return true;
@@ -747,18 +779,28 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     target: MobKitDockTarget,
     text: string,
     handlingMode: "queue" | "steer",
-  ) {
-    if (target.kind !== "agent-chat") return;
+    attachments: File[] = [],
+  ): Promise<boolean> {
+    if (target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
 
-    const userEntry = createUserEntry(text);
+    const optimisticObjectUrls = attachments.map((file) => URL.createObjectURL(file));
+    const userEntry = createUserEntry(
+      text,
+      attachments.map((file, index) => ({
+        src: optimisticObjectUrls[index] || "",
+        mediaType: file.type || "application/octet-stream",
+        alt: file.name,
+      })),
+    );
     setSendingPanels((c) => new Set(c).add(panelKey));
     const log = getOrCreateLog(identity);
     log.optimisticUser = {
       interactionId: "",
       entry: userEntry,
       sentAtMs: Date.now(),
+      objectUrls: optimisticObjectUrls,
     };
     // Use commitPanelPhase (not bare phaseRef assignment) so the
     // value/since bookkeeping is consistent with what
@@ -771,7 +813,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     try {
       const id = target.identity?.trim();
-      if (id) {
+      if (attachments.length > 0) {
+        const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id || "";
+          const matched = result.interaction_id
+            ? log.events.some(
+                (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
+              )
+            : false;
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
+        }
+      } else if (id) {
         const result = await sendInteractRpc(baseUrl, id, text, `console:${panelId}`, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id;
@@ -780,37 +836,43 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           const matched = log.events.some(
             (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
           );
-          if (matched) log.optimisticUser = null;
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
         }
       } else {
         await sendMessage(baseUrl, target.memberId, text, handlingMode);
       }
+      return true;
     } catch (submitError) {
+      log.optimisticUser?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       log.optimisticUser = null;
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
       setError(errorMessage(submitError));
       forceRender();
+      return false;
     } finally {
       setSendingPanels((c) => { const n = new Set(c); n.delete(panelKey); return n; });
     }
   }
 
-  async function onSendMessage(panelId: string, target: MobKitDockTarget | null) {
-    if (!target || target.kind !== "agent-chat") return;
+  async function onSendMessage(panelId: string, target: MobKitDockTarget | null, attachments: File[] = []): Promise<boolean> {
+    if (!target || target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
     const text = (draftByKey[panelKey] || "").trim();
-    if (!text) return;
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    if (!text && attachments.length === 0) return false;
 
     const stack = getPendingStack(identity);
     const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
 
-    if (!shouldQueue) {
+    if (!shouldQueue || attachments.length > 0) {
       // Idle + empty stack: bypass straight to the wire.
-      await submitMessageNow(panelId, target, text, "queue");
-      return;
+      const sent = await submitMessageNow(panelId, target, text, "queue", attachments);
+      if (sent) setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      return sent;
     }
 
     // Push onto the stack instead. The animation flag clears itself
@@ -821,11 +883,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ...prev,
       { id: newId, text, addedAt: Date.now(), status: "entering" },
     ]);
+    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
     window.setTimeout(() => {
       setPendingStack(identity, (prev) =>
         prev.map((it) => (it.id === newId && it.status === "entering" ? { ...it, status: null } : it)),
       );
     }, 240);
+    return true;
   }
 
   // ── Pending-stack action handlers ────────────────────────────────
@@ -1044,6 +1108,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
       renderTextDeltas: true,
+      blobBaseUrl: baseUrl,
     });
 
     // Optimistic user message: rendered until an interaction_started
@@ -1065,8 +1130,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       entries,
     });
     const draft = draftByKey[panelKey] || "";
+    const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
-    const phase = phaseRef.current[panelKey] ?? agent?.response_phase ?? null;
+    const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey)
+      ? phaseRef.current[panelKey]
+      : agent?.response_phase ?? null;
 
     const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
       id: s.id, kind: "pill" as const, label: s.label, iconName: s.iconName || "i-bolt",
@@ -1108,8 +1176,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         phase={phase}
         draft={draft}
         sending={isSending}
+        staged={staged}
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
-        onSend={() => void onSendMessage(panel.id, target)}
+        onStagedChange={(action) => setStagedAttachmentsForIdentity(identity, action)}
+        onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
         onInspect={() => { if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab"); }}
         onRespawn={() => void onLifecycleAction(identity, "mobkit/respawn")}
         onRetire={() => void onLifecycleAction(identity, "mobkit/retire")}

@@ -23,10 +23,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use meerkat_mobkit::{
-    AuthPolicy, BigQueryNaming, ConsolePolicy, DiscoverySpec, MOBKIT_CONTRACT_VERSION,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ReleaseMetadata,
-    RestartPolicy, RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig,
-    UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json, start_mobkit_runtime,
+    AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
+    DiscoverySpec, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
+    ModuleConfig, ObjectStoreBlobStore, ReleaseMetadata, RestartPolicy, RuntimeDecisionState,
+    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json,
+    handle_unified_rpc_json, mob_handle_runtime::mob_definition_may_use_image_generation,
+    start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
 
@@ -186,7 +188,7 @@ impl StdioCallbackBridge {
         }
 
         // Wait for Python to respond (routed by the stdin multiplexer)
-        match tokio::time::timeout(Duration::from_secs(120), rx).await {
+        match tokio::time::timeout(Duration::from_mins(2), rx).await {
             Ok(Ok(value)) => {
                 if let Some(error) = value.get("error") {
                     Err(format!(
@@ -585,6 +587,7 @@ external_addressable = true
         );
         std::process::exit(1);
     });
+    let image_generation = mob_definition_may_use_image_generation(&definition);
 
     // Validate profile model names against the catalog.
     // A wrong model name (e.g., "claude-sonnet-4-5-20250514" instead of "claude-sonnet-4-5")
@@ -783,22 +786,17 @@ external_addressable = true
                 format!("failed to open redb mob storage: {e}"),
             ),
         };
-        // Match the ephemeral path's capability mask — only comms is enabled
-        // by default. Apps control additional capabilities via their mob
-        // definition profiles, not the gateway factory.
-        let factory = AgentFactory::new(state_path).comms(true);
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
-            session_store.clone(),
-        )));
-        let callback_builder = StdioCallbackAgentBuilder {
-            inner: inner_builder,
-            bridge: bridge.clone(),
-            has_session_builder,
-            session_store: Some(session_store.clone()),
-        };
+        let binary_blob_store: Arc<dyn BinaryBlobStore> =
+            match ObjectStoreBlobStore::local(state_path.join("blobs")) {
+                Ok(store) => Arc::new(store),
+                Err(e) => fail_init(
+                    &request_id,
+                    -32603,
+                    format!("failed to open binary blob store: {e}"),
+                ),
+            };
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(meerkat_store::FsBlobStore::new(state_path.join("blobs")));
+            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
         // Persistent runtime store at <state_path>/runtime.sqlite — must
         // be Some() on the session service so archive/retire can mutate
         // the authoritative session, and must be persistent so resume
@@ -817,18 +815,36 @@ external_addressable = true
                     Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
                 }
             };
+        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        ));
+        // Match the ephemeral path's capability mask — only comms is enabled
+        // by default. Apps control additional capabilities via their mob
+        // definition profiles, not the gateway factory.
+        let mut factory = AgentFactory::new(state_path).builtins(false).comms(true);
+        if image_generation {
+            factory = factory.with_image_generation_machine(adapter.clone());
+        }
+        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
+            session_store.clone(),
+        )));
+        inner_builder.default_blob_store = Some(blob_store.clone());
+        let callback_builder = StdioCallbackAgentBuilder {
+            inner: inner_builder,
+            bridge: bridge.clone(),
+            has_session_builder,
+            session_store: Some(session_store.clone()),
+        };
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 callback_builder,
                 16,
                 session_store,
                 Some(Arc::clone(&runtime_store)),
-                blob_store.clone(),
+                blob_store,
             ));
-        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
-            runtime_store,
-            blob_store,
-        ));
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
@@ -836,6 +852,7 @@ external_addressable = true
                 default_llm_client: None,
             });
         spec.runtime_adapter = Some(adapter);
+        spec.binary_blob_store = Some(binary_blob_store);
         (spec, None)
     } else {
         // Ephemeral mode (original behavior).
@@ -843,10 +860,24 @@ external_addressable = true
         // so agent-level persistence is not needed. This avoids failures on read-only
         // filesystems (e.g., GKE containers) where the default JSONL store can't write.
         let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
-        let factory = AgentFactory::new(temp_dir.path())
+        let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let blob_store: Arc<dyn meerkat_core::BlobStore> =
+            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
+            Arc::clone(&runtime_store),
+            Arc::clone(&blob_store),
+        ));
+        let mut factory = AgentFactory::new(temp_dir.path())
+            .builtins(false)
             .comms(true)
             .session_store(Arc::new(meerkat::MemoryStore::new()));
-        let inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        if image_generation {
+            factory = factory.with_image_generation_machine(adapter.clone());
+        }
+        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        inner_builder.default_blob_store = Some(blob_store);
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
@@ -855,12 +886,14 @@ external_addressable = true
         };
         let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
 
-        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
                 default_llm_client: None,
             });
+        spec.runtime_adapter = Some(adapter);
+        spec.binary_blob_store = Some(binary_blob_store);
         (spec, Some(temp_dir))
     };
 
@@ -969,9 +1002,19 @@ external_addressable = true
         // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
         // session_bridge() won't be set — build it directly.
         let mob_handle = runtime.mob_handle();
-        let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(
-            meerkat_mobkit::identity_first::MobSessionBridge::new(mob_handle),
-        );
+        let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
+            if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+                Arc::new(
+                    meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
+                        mob_handle,
+                        session_service,
+                    ),
+                )
+            } else {
+                Arc::new(meerkat_mobkit::identity_first::MobSessionBridge::new(
+                    mob_handle,
+                ))
+            };
 
         let irt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store,

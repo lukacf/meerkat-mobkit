@@ -313,6 +313,10 @@ impl UnifiedRuntime {
         self.mob_events.clone()
     }
 
+    pub fn binary_blob_store(&self) -> Option<Arc<dyn crate::blob_store::BinaryBlobStore>> {
+        self.mob_runtime.binary_blob_store()
+    }
+
     pub(crate) fn module_runtime_handle(&self) -> Arc<tokio::sync::Mutex<MobkitRuntimeHandle>> {
         Arc::clone(&self.module_runtime)
     }

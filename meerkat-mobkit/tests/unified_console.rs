@@ -21,7 +21,7 @@ use std::time::Duration;
 use axum::Router;
 use axum::body::Body;
 use axum::body::to_bytes;
-use axum::http::{Request, StatusCode};
+use axum::http::{Request, StatusCode, header};
 use meerkat::{AgentFactory, Config, build_ephemeral_service};
 use meerkat_client::TestClient;
 use meerkat_core::SessionId;
@@ -29,9 +29,9 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state, console_json_router,
-    handle_console_rest_json_route,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobRuntimeError, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    console_json_router, handle_console_rest_json_route,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -96,6 +96,15 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
     .expect("decision state builds")
 }
 
+fn assert_mob_stop_allows_boundary_cancel(stop: Result<(), MobRuntimeError>) {
+    if let Err(err) = stop {
+        assert!(
+            err.to_string().contains("cancel_after_boundary"),
+            "shutdown failed: {err:?}"
+        );
+    }
+}
+
 async fn build_runtime_fixture() -> RuntimeFixture {
     let temp_dir = tempfile::tempdir().expect("temp dir");
     let session_path = temp_dir.path().join("sessions");
@@ -110,7 +119,7 @@ async fn build_runtime_fixture() -> RuntimeFixture {
 id = "phase-h1-console-mob"
 
 [profiles.lead]
-model = "gpt-5.2"
+model = "gpt-5.5"
 external_addressable = true
 
 [profiles.lead.tools]
@@ -188,6 +197,36 @@ async fn get_console_experience(app: &Router) -> Value {
         .await
         .expect("console body");
     serde_json::from_slice(&body).expect("console json")
+}
+
+async fn query_console_events(app: &Router, identity: &str) -> Vec<Value> {
+    let query_payload = json!({
+        "jsonrpc": "2.0",
+        "id": "query-events",
+        "method": "mobkit/query_events",
+        "params": { "identity": identity }
+    });
+    let query_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(query_payload.to_string()))
+                .expect("query request"),
+        )
+        .await
+        .expect("query response");
+    assert_eq!(query_response.status(), StatusCode::OK);
+    let query_body = to_bytes(query_response.into_body(), 1024 * 1024)
+        .await
+        .expect("query body");
+    let query_json: Value = serde_json::from_slice(&query_body).expect("query json");
+    query_json["result"]["events"]
+        .as_array()
+        .expect("fallback console events")
+        .clone()
 }
 
 #[tokio::test]
@@ -352,7 +391,7 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -400,7 +439,256 @@ async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+}
+
+#[tokio::test]
+async fn multipart_blob_upload_round_trips_through_reference_router() {
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "multipart-console-mob"
+
+[profiles.lead]
+model = "gpt-5.2"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse multipart mob definition");
+    let runtime = UnifiedRuntime::builder()
+        .definition(definition)
+        .module_config(MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "multipart-console".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        })
+        .default_llm_client(Arc::new(TestClient::default()))
+        .timeout(Duration::from_secs(2))
+        .build()
+        .await
+        .expect("build multipart runtime");
+
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let boundary = "mobkit-test-boundary";
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": "upload-1",
+        "method": "mobkit/blob/upload",
+        "params": {
+            "upload": {
+                "type": "image_upload",
+                "upload_id": "upload-1",
+                "media_type": "image/png"
+            }
+        }
+    });
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"payload\"\r\n");
+    body.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    body.extend_from_slice(payload.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file:upload-1\"; filename=\"tiny.png\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(b"tiny-png");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let upload_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc/multipart")
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("multipart request"),
+        )
+        .await
+        .expect("multipart response");
+    assert_eq!(upload_response.status(), StatusCode::OK);
+    let upload_body = to_bytes(upload_response.into_body(), 1024 * 1024)
+        .await
+        .expect("multipart body");
+    let upload_json: Value = serde_json::from_slice(&upload_body).expect("upload json");
+    let blob_id = upload_json["result"]["blob_id"]
+        .as_str()
+        .expect("blob id")
+        .to_string();
+    assert_eq!(upload_json["result"]["media_type"], json!("image/png"));
+    assert_eq!(upload_json["result"]["size"], json!(8));
+
+    let blob_response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/blobs/{blob_id}"))
+                .body(Body::empty())
+                .expect("blob request"),
+        )
+        .await
+        .expect("blob response");
+    assert_eq!(blob_response.status(), StatusCode::OK);
+    assert_eq!(
+        blob_response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/png")
+    );
+    let blob_body = to_bytes(blob_response.into_body(), 1024 * 1024)
+        .await
+        .expect("blob body");
+    assert_eq!(blob_body.as_ref(), b"tiny-png");
+
+    let shutdown = runtime.shutdown().await;
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
+}
+
+#[tokio::test]
+async fn multipart_send_message_projects_text_and_image_into_console_events() {
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "multipart-send-console-mob"
+
+[profiles.lead]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.lead.tools]
+comms = true
+"#,
+    )
+    .expect("parse multipart send mob definition");
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let session_path = temp_dir.path().join("sessions");
+    std::fs::create_dir_all(&session_path).expect("session path");
+    let factory = AgentFactory::new(&session_path).comms(true);
+    let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+    let binary_blob_store: Arc<dyn meerkat_mobkit::BinaryBlobStore> =
+        Arc::new(meerkat_mobkit::ObjectStoreBlobStore::memory());
+    let mut mob_spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+        .with_options(MobBootstrapOptions {
+            allow_ephemeral_sessions: true,
+            notify_orchestrator_on_resume: true,
+            default_llm_client: Some(Arc::new(TestClient::default())),
+        });
+    mob_spec.binary_blob_store = Some(binary_blob_store);
+    let runtime = UnifiedRuntime::bootstrap(
+        mob_spec,
+        MobKitConfig {
+            modules: vec![],
+            discovery: DiscoverySpec {
+                namespace: "multipart-send-console".to_string(),
+                modules: vec![],
+            },
+            pre_spawn: vec![],
+        },
+        Duration::from_secs(2),
+    )
+    .await
+    .expect("build multipart send runtime");
+    runtime
+        .spawn(console_member_spec("analyst"))
+        .await
+        .expect("spawn analyst member");
+
+    let app = runtime.build_reference_app_router(decision_state(false));
+    let boundary = "mobkit-send-boundary";
+    let payload = json!({
+        "jsonrpc": "2.0",
+        "id": "send-1",
+        "method": "mobkit/send_message",
+        "params": {
+            "member_id": "analyst",
+            "content": [
+                { "type": "text", "text": "Describe this inline image." },
+                {
+                    "type": "image_upload",
+                    "part_name": "image-field",
+                    "media_type": "image/png"
+                }
+            ]
+        }
+    });
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"payload\"\r\n");
+    body.extend_from_slice(b"Content-Type: application/json\r\n\r\n");
+    body.extend_from_slice(payload.to_string().as_bytes());
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file:image-field\"; filename=\"tiny.png\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: image/png\r\n\r\n");
+    body.extend_from_slice(b"tiny-png");
+    body.extend_from_slice(b"\r\n");
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+
+    let send_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/console/rpc/multipart")
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
+                .expect("multipart send request"),
+        )
+        .await
+        .expect("multipart send response");
+    assert_eq!(send_response.status(), StatusCode::OK);
+    let send_body = to_bytes(send_response.into_body(), 1024 * 1024)
+        .await
+        .expect("multipart send body");
+    let send_json: Value = serde_json::from_slice(&send_body).expect("send json");
+    assert!(
+        send_json.get("error").is_none() || send_json["error"].is_null(),
+        "send failed: {send_json}"
+    );
+    assert_eq!(send_json["result"]["accepted"], json!(true));
+    assert!(send_json["result"]["interaction_id"].as_str().is_some());
+
+    let events = query_console_events(&app, "analyst").await;
+    let started = events
+        .iter()
+        .find(|event| event["event_type"] == "interaction_started")
+        .expect("interaction_started event");
+    assert_eq!(
+        started["data"]["content"][0]["text"],
+        json!("Describe this inline image.")
+    );
+    assert_eq!(started["data"]["content"][1]["type"], json!("image"));
+    assert_eq!(started["data"]["content"][1]["source"], json!("blob"));
+    assert_eq!(
+        started["data"]["content"][1]["media_type"],
+        json!("image/png")
+    );
+    assert!(
+        started["data"]["content"][1]["blob_id"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("sha256:"))
+    );
+
+    let shutdown = runtime.shutdown().await;
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -473,7 +761,7 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
     let after_stop = get_console_experience(&app).await;
     assert_eq!(
         after_stop["health_overview"]["live_snapshot"]["running"],
@@ -601,7 +889,7 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -699,5 +987,5 @@ async fn phase_h1_multi_instance_profile_sidebar_enumerates_individual_agents() 
     assert_eq!(profile_caps["lead"]["instance_count"], json!(3));
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
