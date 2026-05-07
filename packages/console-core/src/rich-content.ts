@@ -135,8 +135,8 @@ export function renderConversationInlineMarkdown(text: string): string {
       return `@@CODE_${index}@@`;
     })
     .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
-    .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>")
+    .replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>")
+    .replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
     .replace(/\n/g, "<br />");
 

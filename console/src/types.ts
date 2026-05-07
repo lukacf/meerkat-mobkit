@@ -24,11 +24,33 @@ export interface ConsoleFrame {
   identity?: string;
   interactionId?: string;
   timestampMs?: number;
+  cursor?: string;
+  runtimeKey?: string;
+  sessionId?: string;
+  status?: string;
+  frameVersion?: number;
+  updatedAtMs?: number;
+  turnId?: string;
+  runId?: string;
   data: unknown;
 }
 
 export type ConsoleInteractRequest = ConsoleInteractionRequest;
 export type ConsoleInteractAccepted = ConsoleInteractionAccepted;
+
+export interface ConsoleTimelineAccepted extends ConsoleInteractionAccepted {
+  conversation_id?: string;
+  session_id?: string;
+  input_frame_id?: string;
+  cursor?: string;
+  status?: string;
+}
+
+export interface ConsoleTimelinePage {
+  frames: ConsoleFrame[];
+  nextCursor?: string;
+  available: boolean;
+}
 export type ConsoleIdentityStreamSubscription = IdentityStreamRequest;
 export type ConsoleIdentityStreamEvent = ConsoleIdentityEventEnvelope;
 

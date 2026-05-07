@@ -143,6 +143,13 @@ function normalizeResponsePhase(value) {
 function normalizeFiniteNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : void 0;
 }
+function normalizeStringArray(value) {
+  if (!Array.isArray(value)) {
+    return void 0;
+  }
+  const normalized = Array.from(new Set(value.map(trimString).filter((entry) => Boolean(entry))));
+  return normalized.length > 0 ? normalized : void 0;
+}
 function normalizeSidebarWatchFields(value) {
   const record = value && typeof value === "object" ? value : {};
   const normalized = {};
@@ -160,18 +167,6 @@ function normalizeSidebarWatchFields(value) {
     normalized.degradedReason = degradedReason;
   }
   return normalized;
-}
-function normalizeConsoleInteractionAccepted(value) {
-  const record = value && typeof value === "object" ? value : null;
-  if (!record) {
-    return null;
-  }
-  const interactionId = trimString(record.interaction_id);
-  const identity = trimString(record.identity);
-  if (!interactionId || !identity) {
-    return null;
-  }
-  return { interaction_id: interactionId, identity };
 }
 function normalizeIdentityStatusRow(value) {
   const record = value && typeof value === "object" ? value : null;
@@ -197,6 +192,37 @@ function normalizeIdentityStatusRow(value) {
     ...typeof record.generation === "number" && Number.isFinite(record.generation) ? { generation: record.generation } : {},
     ...typeof record.checkpoint_version === "number" && Number.isFinite(record.checkpoint_version) ? { checkpoint_version: record.checkpoint_version } : {},
     ...typeof record.lease_healthy === "boolean" ? { lease_healthy: record.lease_healthy } : {}
+  };
+}
+function normalizeIdentityInspectViewState(value) {
+  const record = value && typeof value === "object" ? value : null;
+  const statusRow = normalizeIdentityStatusRow(value);
+  if (!record || !statusRow) {
+    return null;
+  }
+  const continuityRecord = record.continuity && typeof record.continuity === "object" ? record.continuity : {};
+  const leaseRecord = record.lease && typeof record.lease === "object" ? record.lease : record.lease === null ? null : void 0;
+  return {
+    ...statusRow,
+    continuity: {
+      ...normalizeFiniteNumber(continuityRecord.generation) !== void 0 ? { generation: normalizeFiniteNumber(continuityRecord.generation) } : {},
+      ...normalizeFiniteNumber(continuityRecord.checkpoint_version) !== void 0 ? { checkpoint_version: normalizeFiniteNumber(continuityRecord.checkpoint_version) } : {},
+      ...trimString(continuityRecord.session_id) ? { session_id: trimString(continuityRecord.session_id) } : {},
+      ...trimString(continuityRecord.agent_runtime_id) ? { agent_runtime_id: trimString(continuityRecord.agent_runtime_id) } : {}
+    },
+    ...leaseRecord === null ? { lease: null } : leaseRecord && normalizeFiniteNumber(leaseRecord.fencing_token) !== void 0 && normalizeFiniteNumber(leaseRecord.ttl_remaining_ms) !== void 0 && typeof leaseRecord.healthy === "boolean" ? {
+      lease: {
+        fencing_token: normalizeFiniteNumber(leaseRecord.fencing_token),
+        ttl_remaining_ms: normalizeFiniteNumber(leaseRecord.ttl_remaining_ms),
+        healthy: leaseRecord.healthy
+      }
+    } : {},
+    ...trimString(record.output_preview) !== void 0 ? { output_preview: trimString(record.output_preview) ?? null } : {},
+    ...typeof record.is_final === "boolean" || record.is_final === null ? { is_final: record.is_final } : {},
+    ...normalizeFiniteNumber(record.peer_reachable_count) !== void 0 ? { peer_reachable_count: normalizeFiniteNumber(record.peer_reachable_count) } : record.peer_reachable_count === null ? { peer_reachable_count: null } : {},
+    ...normalizeStringArray(record.topology_peers) ? { topology_peers: normalizeStringArray(record.topology_peers) } : {},
+    ...Array.isArray(record.recent_tool_calls) ? { recent_tool_calls: record.recent_tool_calls } : {},
+    ...normalizeFiniteNumber(record.last_activity_ms) !== void 0 ? { last_activity_ms: normalizeFiniteNumber(record.last_activity_ms) } : record.last_activity_ms === null ? { last_activity_ms: null } : {}
   };
 }
 function normalizeRoutingSectionView(value) {
@@ -322,7 +348,7 @@ function renderConversationInlineMarkdown(text) {
   const escaped = escapeHtml(text || "").replace(/`([^`]+)`/g, (_match, code) => {
     const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
     return `@@CODE_${index}@@`;
-  }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>").replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>').replace(/\n/g, "<br />");
+  }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>").replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>').replace(/\n/g, "<br />");
   return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");
 }
 function conversationRichBlockCopyText(block) {
@@ -2336,6 +2362,7 @@ function summarizeFrameData(data) {
 }
 function eventSortRank(event) {
   switch (event) {
+    case "user_input":
     case "interaction_started":
       return 0;
     case "tool_call_requested":
@@ -2404,6 +2431,7 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "reasoning_delta",
   "reasoning_complete",
   "interaction_started",
+  "frame_updated",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -2666,7 +2694,10 @@ function buildQuickPromptSuggestions(agent) {
   return suggestions;
 }
 function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
-  if (frame.event !== "interaction_started" || typeof frame.data !== "object" || frame.data === null) {
+  if (frame.event !== "interaction_started" && frame.event !== "user_input") {
+    return null;
+  }
+  if (typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
   const record = frame.data;
@@ -3081,7 +3112,7 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       continue;
     }
-    if (options.renderInteractionStartsAsUser && frame.event === "interaction_started") {
+    if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
@@ -3164,6 +3195,24 @@ function createUserEntry(message, images = []) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     text: message
   };
+}
+function sortConversationTimelineEntries(entries) {
+  return entries.map((entry, index) => ({ entry, index })).sort((left, right) => {
+    const leftTs = Date.parse(String(left.entry.createdAt || ""));
+    const rightTs = Date.parse(String(right.entry.createdAt || ""));
+    const safeLeft = Number.isFinite(leftTs) ? leftTs : Number.NaN;
+    const safeRight = Number.isFinite(rightTs) ? rightTs : Number.NaN;
+    if (Number.isFinite(safeLeft) && Number.isFinite(safeRight) && safeLeft !== safeRight) {
+      return safeLeft - safeRight;
+    }
+    if (Number.isFinite(safeLeft) && !Number.isFinite(safeRight)) {
+      return 1;
+    }
+    if (!Number.isFinite(safeLeft) && Number.isFinite(safeRight)) {
+      return -1;
+    }
+    return left.index - right.index;
+  }).map(({ entry }) => entry);
 }
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
@@ -3272,7 +3321,70 @@ function unwrapConsoleEnvelope(eventName, data) {
       data: envelope.data
     };
   }
+  if (typeof record.type === "string" && "frame" in record) {
+    const frame = timelineFrameToConsoleFrame(record.frame);
+    const isUpdateEnvelope = eventName === "frame_updated";
+    return {
+      id: frame.id,
+      event: isUpdateEnvelope ? "frame_updated" : frame.event,
+      identity: frame.identity,
+      interactionId: frame.interactionId,
+      timestampMs: frame.timestampMs,
+      cursor: frame.cursor,
+      runtimeKey: frame.runtimeKey,
+      sessionId: frame.sessionId,
+      status: frame.status,
+      frameVersion: frame.frameVersion,
+      updatedAtMs: frame.updatedAtMs,
+      turnId: frame.turnId,
+      runId: frame.runId,
+      data: isUpdateEnvelope ? frame.event === "frame_updated" ? frame.data : { frame } : frame.data
+    };
+  }
   return { data };
+}
+function timelineFrameToConsoleFrame(raw) {
+  if (!raw || typeof raw !== "object") {
+    return { id: "", event: "event", data: raw };
+  }
+  const record = raw;
+  const cursor = typeof record.cursor === "string" ? record.cursor : void 0;
+  const payload = "payload" in record ? record.payload : record;
+  if (record.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
+    const updated = timelineFrameToConsoleFrame(payload.frame);
+    return {
+      id: String(record.id || cursor || ""),
+      event: "frame_updated",
+      identity: typeof record.identity === "string" ? record.identity : updated.identity,
+      interactionId: typeof record.interaction_id === "string" ? record.interaction_id : updated.interactionId,
+      timestampMs: typeof record.timestamp_ms === "number" ? record.timestamp_ms : void 0,
+      cursor,
+      runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : updated.runtimeKey,
+      sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
+      status: typeof record.status === "string" ? record.status : updated.status,
+      frameVersion: typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
+      updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : updated.updatedAtMs,
+      turnId: typeof record.turn_id === "string" ? record.turn_id : updated.turnId,
+      runId: typeof record.run_id === "string" ? record.run_id : updated.runId,
+      data: { frame: updated }
+    };
+  }
+  return {
+    id: String(record.id || cursor || ""),
+    event: String(record.kind || "event"),
+    identity: typeof record.identity === "string" ? record.identity : void 0,
+    interactionId: typeof record.interaction_id === "string" ? record.interaction_id : void 0,
+    timestampMs: typeof record.timestamp_ms === "number" ? record.timestamp_ms : void 0,
+    cursor,
+    runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : void 0,
+    sessionId: typeof record.session_id === "string" ? record.session_id : void 0,
+    status: typeof record.status === "string" ? record.status : void 0,
+    frameVersion: typeof record.frame_version === "number" ? record.frame_version : void 0,
+    updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : void 0,
+    turnId: typeof record.turn_id === "string" ? record.turn_id : void 0,
+    runId: typeof record.run_id === "string" ? record.run_id : void 0,
+    data: payload
+  };
 }
 function parseSseFrames(rawText) {
   const blocks = rawText.split(/\n\n+/).map((part) => part.trim()).filter(Boolean);
@@ -3314,6 +3426,14 @@ function parseSseFrames(rawText) {
       identity: normalized.identity,
       interactionId: normalized.interactionId,
       timestampMs: normalized.timestampMs,
+      cursor: normalized.cursor,
+      runtimeKey: normalized.runtimeKey,
+      sessionId: normalized.sessionId,
+      status: normalized.status,
+      frameVersion: normalized.frameVersion,
+      updatedAtMs: normalized.updatedAtMs,
+      turnId: normalized.turnId,
+      runId: normalized.runId,
       data: normalized.data
     });
   }
@@ -3400,6 +3520,48 @@ async function sendMessageMultipart(baseUrl, memberId, message, attachments, han
     throw new Error(`mobkit/send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return result.result;
+}
+async function sendConsoleMultipart(baseUrl, identity, message, attachments, origin, idempotencyKey, handlingMode = "queue") {
+  const content = [];
+  if (message.trim()) {
+    content.push({ type: "text", text: message });
+  }
+  const form = new FormData();
+  attachments.forEach((file, index) => {
+    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
+    content.push({
+      type: "image_upload",
+      upload_id: uploadId,
+      media_type: file.type || "application/octet-stream",
+      alt: file.name
+    });
+    form.append(`file:${uploadId}`, file, file.name);
+  });
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `mobkit/console/send:${Date.now()}`,
+    method: "mobkit/console/send",
+    params: {
+      identity,
+      content,
+      origin,
+      idempotency_key: idempotencyKey,
+      handling_mode: handlingMode
+    }
+  }));
+  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  return normalizeConsoleTimelineAccepted(result.result, identity);
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
@@ -3532,104 +3694,125 @@ function flushTrailingSseBlock(buffer, onFrame) {
     onFrame(frame);
   }
 }
-function persistedEventToFrame(raw, index) {
-  const record = typeof raw === "object" && raw !== null ? raw : {};
-  if (typeof record.event_id === "string" && typeof record.event_type === "string" && typeof record.identity === "string" && "data" in record) {
-    return {
-      id: String(record.event_id),
-      event: String(record.event_type),
-      identity: String(record.identity),
-      ...typeof record.interaction_id === "string" ? { interactionId: String(record.interaction_id) } : {},
-      ...typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {},
-      data: record.data
-    };
+async function queryTimeline(baseUrl, target, limit = 400) {
+  const result = await rpc(baseUrl, "mobkit/console/query_timeline", {
+    limit,
+    ...target.identity?.trim() ? { identity: target.identity.trim() } : {},
+    ...target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {},
+    ...target.after?.trim() ? { after: target.after.trim() } : {}
+  });
+  if (!result || typeof result !== "object") {
+    return { frames: [], available: false };
   }
-  const event = typeof record.event === "object" && record.event !== null ? record.event : {};
-  if (event.kind === "agent") {
-    const payload = typeof event.payload === "object" && event.payload !== null ? event.payload : null;
-    return {
-      id: String(record.id ?? `event:${index}`),
-      event: String(event.event_type ?? "agent_event"),
-      ...typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {},
-      data: payload ?? event
-    };
-  }
-  if (event.kind === "module") {
-    return {
-      id: String(record.id ?? `event:${index}`),
-      event: String(event.event_type ?? "module_event"),
-      ...typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {},
-      data: event.payload ?? event
-    };
-  }
+  const record = result;
+  const rawFrames = Array.isArray(record.frames) ? record.frames : [];
   return {
-    id: String(record.id ?? `event:${index}`),
-    event: String(record.type ?? "event"),
-    ...typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {},
-    data: raw
+    frames: rawFrames.map(timelineFrameToConsoleFrame),
+    nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : void 0,
+    available: true
   };
 }
-async function queryEvents(baseUrl, target, limit = 40) {
-  const identity = target.identity?.trim();
-  const memberId = target.memberId?.trim();
-  const result = await rpc(baseUrl, "mobkit/query_events", {
-    limit,
-    ...identity ? { identity } : {},
-    ...identity ? {} : memberId ? { member_id: memberId } : {}
-  });
-  let events = result;
-  let available = true;
-  if (typeof result === "object" && result !== null) {
-    const record = result;
-    if (record.status === "no_event_log_configured") {
-      events = Array.isArray(record.events) ? record.events : [];
-      available = false;
-    } else if (Array.isArray(record.events)) {
-      events = record.events;
-    }
-  }
-  if (!Array.isArray(events)) {
-    return { frames: [], available };
-  }
-  const frames = events.filter((raw) => {
-    if (typeof raw !== "object" || raw === null) return true;
-    const ev = raw.event;
-    if (typeof ev !== "object" || ev === null) return true;
-    const eventRecord = ev;
-    if (eventRecord.kind !== "agent") return true;
-    return typeof eventRecord.payload === "object" && eventRecord.payload !== null;
-  }).map((event, index) => persistedEventToFrame(event, index));
-  return { frames, available };
-}
-async function sendInteract(baseUrl, identity, content, origin, handlingMode = "queue") {
-  const accepted = await rpc(baseUrl, "mobkit/interact", {
+async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue") {
+  const accepted = await rpc(baseUrl, "mobkit/console/send", {
     identity,
     content,
     origin,
+    idempotency_key: idempotencyKey,
     handling_mode: handlingMode
   });
-  const normalized = normalizeConsoleInteractionAccepted(accepted);
-  if (!normalized) {
-    throw new Error("mobkit/interact returned an invalid acceptance payload");
+  if (!accepted || typeof accepted !== "object") {
+    throw new Error("mobkit/console/send returned an invalid acceptance payload");
   }
-  return normalized;
+  const record = accepted;
+  return normalizeConsoleTimelineAccepted(record, identity);
+}
+function normalizeConsoleTimelineAccepted(accepted, fallbackIdentity) {
+  const record = accepted && typeof accepted === "object" ? accepted : {};
+  return {
+    interaction_id: String(record.interaction_id || ""),
+    identity: String(record.identity || fallbackIdentity),
+    conversation_id: typeof record.conversation_id === "string" ? record.conversation_id : void 0,
+    session_id: typeof record.session_id === "string" ? record.session_id : void 0,
+    input_frame_id: typeof record.input_frame_id === "string" ? record.input_frame_id : void 0,
+    cursor: typeof record.cursor === "string" ? record.cursor : void 0,
+    status: typeof record.status === "string" ? record.status : void 0
+  };
 }
 async function callConsoleRpc(baseUrl, method, params = {}) {
   return rpc(baseUrl, method, params);
 }
-function subscribeConsoleEvents(baseUrl, path, onFrame, options) {
-  const controller = new AbortController();
+function timelineStreamPath(target) {
+  const params = new URLSearchParams();
+  if (target.identity?.trim()) params.set("identity", target.identity.trim());
+  if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
+  if (target.after?.trim()) params.set("after", target.after.trim());
+  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+}
+function cursorFromTimelineFrame(frame) {
+  const cursor = frame.cursor?.trim();
+  if (cursor) return cursor;
+  if (frame.event === "snapshot_complete") {
+    const id = frame.id?.trim();
+    if (id?.startsWith("console:")) return id;
+  }
+  return void 0;
+}
+function replayUnavailableFrame(error) {
+  const replayError = error.replayError;
+  return {
+    id: `replay_unavailable:${Date.now()}`,
+    event: "replay_unavailable",
+    data: replayError || {
+      message: error instanceof Error ? error.message : String(error)
+    }
+  };
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function subscribeTimelineEvents(baseUrl, target, onFrame) {
+  let stopped = false;
+  let controller = null;
+  let after = target.after?.trim() || void 0;
   void (async () => {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method: options?.method || "GET",
-      headers: { "content-type": "application/json" },
-      ...options?.body ? { body: JSON.stringify(options.body) } : {},
-      signal: controller.signal
-    });
-    await streamFramesFromResponse(response, { onFrame, stopOnTerminal: false });
-  })().catch(() => {
-  });
-  return () => controller.abort();
+    let retryDelayMs = 250;
+    while (!stopped) {
+      controller = new AbortController();
+      try {
+        await streamFramesFromResponse(
+          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+            method: "GET",
+            headers: { "content-type": "application/json" },
+            signal: controller.signal
+          }),
+          {
+            stopOnTerminal: false,
+            onFrame: (frame) => {
+              const nextCursor = cursorFromTimelineFrame(frame);
+              if (nextCursor) {
+                after = nextCursor;
+              }
+              onFrame(frame);
+            }
+          }
+        );
+        retryDelayMs = 250;
+      } catch (error) {
+        if (stopped || controller.signal.aborted) {
+          break;
+        }
+        onFrame(replayUnavailableFrame(error));
+      }
+      if (!stopped) {
+        await sleep(retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 2e3);
+      }
+    }
+  })();
+  return () => {
+    stopped = true;
+    controller?.abort();
+  };
 }
 
 // src/icon.tsx
@@ -5217,7 +5400,7 @@ function roleOf(a) {
 function stateLabel(state) {
   return (state || "unknown").toLowerCase();
 }
-function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
+function RosterPanel({ agents, onSelect, onInspect, onLifecycle, canResetLifecycle = false }) {
   const [q, setQ] = import_react15.default.useState("");
   const [role, setRole] = import_react15.default.useState("all");
   const [sel, setSel] = import_react15.default.useState(agents[0]?.member_id || "");
@@ -5330,24 +5513,9 @@ function RosterPanel({ agents, onSelect, onInspect, onLifecycle }) {
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rd__actions", children: [
           /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onInspect(active), children: "Inspect" }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
-            "button",
-            {
-              disabled: !active.affordances?.can_respawn,
-              onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"),
-              children: "Respawn"
-            }
-          ),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: "Reset" }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)(
-            "button",
-            {
-              className: "danger",
-              disabled: !active.affordances?.can_retire,
-              onClick: () => onLifecycle(activeIdentity, "mobkit/retire"),
-              children: "Retire"
-            }
-          )
+          active.affordances?.can_respawn ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"), children: "Respawn" }) : null,
+          canResetLifecycle ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: "Reset" }) : null,
+          active.affordances?.can_retire ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { className: "danger", onClick: () => onLifecycle(activeIdentity, "mobkit/retire"), children: "Retire" }) : null
         ] })
       ] }) })
     ] })
@@ -5890,7 +6058,7 @@ function useConsoleVariant() {
 // src/panels/Sidebar.tsx
 var import_react20 = __toESM(require("react"));
 var import_jsx_runtime28 = require("react/jsx-runtime");
-var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "gates", "logs"];
+var ALL_NAV = ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"];
 var NAV_LABEL = {
   topology: "Topology",
   timeline: "Today",
@@ -5898,7 +6066,8 @@ var NAV_LABEL = {
   roster: "Roster",
   routing: "Routing",
   gates: "Gates",
-  logs: "Logs"
+  logs: "Logs",
+  health: "Health"
 };
 function parseNavList(raw) {
   const out = /* @__PURE__ */ new Set();
@@ -5957,12 +6126,18 @@ function Sidebar({
   selectedMemberId,
   recentActivity,
   collapsed,
+  visibleControls,
   onSelect,
   onInspect,
   onOpenControl
 }) {
   const [q, setQ] = import_react20.default.useState("");
-  const navKinds = import_react20.default.useMemo(() => visibleNavKinds(), []);
+  const navKinds = import_react20.default.useMemo(() => {
+    const configured = visibleNavKinds();
+    if (!visibleControls) return configured;
+    const allowed = new Set(visibleControls);
+    return configured.filter((kind) => allowed.has(kind));
+  }, [visibleControls]);
   const filtered = import_react20.default.useMemo(() => {
     if (!q) return agents;
     const needle = q.toLowerCase();
@@ -6635,8 +6810,8 @@ function ChatPane({
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "conv__actions", children: [
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:inspect", children: "Inspect" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", disabled: !agent?.affordances?.can_respawn, children: "Respawn" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", disabled: !agent?.affordances?.can_retire, children: "Retire" })
+        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: "Respawn" }) : null,
+        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: "Retire" }) : null
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
@@ -6843,6 +7018,7 @@ function MobKitDock({
   viewState,
   agents,
   renderPanelBody,
+  visibleControls,
   onSelectTab,
   onCloseTab,
   onCreateTab,
@@ -6939,6 +7115,7 @@ function MobKitDock({
         node: activeTab.layout,
         viewState,
         agents,
+        visibleControls,
         renderPanelBody,
         onFocusPanel,
         onSplitPanel,
@@ -7008,6 +7185,7 @@ function PaneView({
   viewState,
   agents,
   renderPanelBody,
+  visibleControls,
   onFocusPanel,
   onSplitPanel,
   onClosePanel,
@@ -7090,6 +7268,7 @@ function PaneView({
             PaneMenu,
             {
               agents,
+              visibleControls,
               onClose: () => setMenuOpen(false),
               onPick: (target2) => {
                 setMenuOpen(false);
@@ -7103,21 +7282,22 @@ function PaneView({
     }
   );
 }
-function PaneMenu({ agents, onClose, onPick }) {
+function PaneMenu({ agents, visibleControls, onClose, onPick }) {
+  const controls = [
+    ["topology", "Topology"],
+    ["timeline", "Today"],
+    ["gating", "Gating"],
+    ["roster", "Roster"],
+    ["routing", "Routing"],
+    ["gates", "Gates"],
+    ["logs", "Logs"],
+    ["health", "Health"]
+  ].filter(([kind]) => !visibleControls || visibleControls.includes(kind));
   return /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(import_jsx_runtime31.Fragment, { children: [
     /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "pane-menu__scrim", onMouseDown: onClose }),
     /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)("div", { className: "pane-menu", onMouseDown: (e) => e.stopPropagation(), children: [
       /* @__PURE__ */ (0, import_jsx_runtime31.jsx)("div", { className: "pane-menu__label", children: "Views" }),
-      [
-        ["topology", "Topology"],
-        ["timeline", "Today"],
-        ["gating", "Gating"],
-        ["roster", "Roster"],
-        ["routing", "Routing"],
-        ["gates", "Gates"],
-        ["logs", "Logs"],
-        ["health", "Health"]
-      ].map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
+      controls.map(([kind, label]) => /* @__PURE__ */ (0, import_jsx_runtime31.jsxs)(
         "button",
         {
           className: "pane-menu__item",
@@ -7542,7 +7722,45 @@ function sanitizeConversationEntries(entries) {
   }
   return sanitized;
 }
+function normalizeConsoleInspectResult(value) {
+  const direct = normalizeIdentityInspectViewState(value);
+  if (direct) return direct;
+  const record = value && typeof value === "object" ? value : {};
+  const identityRecord = record.identity && typeof record.identity === "object" ? record.identity : null;
+  if (!identityRecord) return null;
+  return normalizeIdentityInspectViewState({
+    identity: identityRecord.identity,
+    display_name: identityRecord.display_name,
+    role: identityRecord.labels && typeof identityRecord.labels === "object" ? identityRecord.labels.role : void 0,
+    state: identityRecord.health,
+    addressability: identityRecord.addressable === true ? "addressable" : "internal_only",
+    session_id: identityRecord.session_id,
+    labels: identityRecord.labels,
+    continuity: {
+      session_id: identityRecord.session_id,
+      agent_runtime_id: identityRecord.runtime_member_id
+    },
+    topology_peers: Array.isArray(record.peers) ? record.peers : [],
+    lease: null
+  });
+}
 var DEFAULT_APPROVER_ID = "console-ops-lead";
+function createIdempotencyKey() {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+  }
+  return `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+function cursorSeq(cursor) {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "interaction_failed",
@@ -7553,6 +7771,7 @@ var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "route_changed"
 ]);
 var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
+  "user_input",
   "interaction_started",
   "interaction_complete",
   "interaction_failed",
@@ -7572,7 +7791,8 @@ var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "interaction_failed",
   "run_completed",
-  "run_failed"
+  "run_failed",
+  "message_delivery_failed"
 ]);
 var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "subscribed",
@@ -7588,6 +7808,7 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "keep-alive",
   "tool_config_changed",
   "tool_scope_changed",
+  "user_input",
   "text_delta",
   "tool_call_requested",
   "tool_call",
@@ -7687,15 +7908,30 @@ function ConsoleApp({ baseUrl }) {
   }
   function frameKey(frame) {
     if (frame.id) return frame.id;
+    if (frame.cursor) return frame.cursor;
     return `${frame.event}:${frame.identity || ""}:${frame.interactionId || ""}:${frame.timestampMs || 0}`;
   }
   function appendFrame(identity, frame) {
     const log = getOrCreateLog(identity);
+    if (frame.event === "frame_updated" && frame.data && typeof frame.data === "object") {
+      const updated = frame.data.frame;
+      if (updated && updated.id) {
+        const existingIndex = log.byKey.get(updated.id);
+        if (existingIndex !== void 0 && log.events[existingIndex]) {
+          const existingVersion = log.events[existingIndex].frameVersion ?? 0;
+          const updatedVersion = updated.frameVersion ?? existingVersion;
+          if (updatedVersion < existingVersion) return false;
+          log.events[existingIndex] = { ...log.events[existingIndex], ...updated };
+          return true;
+        }
+      }
+      return false;
+    }
     const key = frameKey(frame);
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
-    if (frame.event === "interaction_started" && log.optimisticUser && log.optimisticUser.interactionId && frame.interactionId === log.optimisticUser.interactionId) {
+    if ((frame.event === "interaction_started" || frame.event === "user_input") && log.optimisticUser && log.optimisticUser.interactionId && frame.interactionId === log.optimisticUser.interactionId) {
       log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       log.optimisticUser = null;
     }
@@ -7710,8 +7946,11 @@ function ConsoleApp({ baseUrl }) {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events.map((frame, index) => ({ frame, index })).sort((a, b) => {
-      const ta = a.frame.timestampMs || 0;
-      const tb = b.frame.timestampMs || 0;
+      const ca = cursorSeq(a.frame.cursor);
+      const cb = cursorSeq(b.frame.cursor);
+      if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+      const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+      const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       if (ta !== tb) return ta - tb;
       return a.index - b.index;
     }).map((entry) => entry.frame);
@@ -7904,31 +8143,36 @@ function ConsoleApp({ baseUrl }) {
     initialTargetOpened.current = true;
     dock.openTarget(buildDockTarget(first), "replace_focused");
   }, [agents, dock]);
+  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const visibleControls = import_react25.default.useMemo(
+    () => hasMobControlSurface ? ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"] : ["topology", "timeline", "roster", "logs", "health"],
+    [hasMobControlSurface]
+  );
   const refreshPanelData = import_react25.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter((t) => t.kind === "identity-inspect");
     if (inspects.length) {
       const entries = await Promise.all(inspects.map(async (t) => {
-        const r2 = await callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
-        return [t.identity, r2];
+        const r2 = await callConsoleRpc(baseUrl, "mobkit/console/inspect_identity", { identity: t.identity }).catch(() => callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity: t.identity }));
+        return [t.identity, normalizeConsoleInspectResult(r2)];
       }));
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
-    if (openPanels.some((t) => t.kind === "routing")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
       const [routes, history] = await Promise.all([
         callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
         callConsoleRpc(baseUrl, "mobkit/delivery/history", {})
       ]);
       setRoutingData(buildRoutingSectionView({ routesResponse: routes, historyResponse: history }));
     }
-    if (openPanels.some((t) => t.kind === "gating")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating")) {
       const [p, a] = await Promise.all([
         callConsoleRpc(baseUrl, "mobkit/gating/pending", {}),
         callConsoleRpc(baseUrl, "mobkit/gating/audit", { limit: 50 })
       ]);
       setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
     }
-  }, [baseUrl, dock.viewState.panels]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
   import_react25.default.useEffect(() => {
     void refreshPanelData().catch(() => {
     });
@@ -7953,7 +8197,7 @@ function ConsoleApp({ baseUrl }) {
         return;
       }
       try {
-        const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
         reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
@@ -7970,7 +8214,7 @@ function ConsoleApp({ baseUrl }) {
       if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
-          const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
           reconcileServerLog(identity, frames, available);
           forceRender();
         } catch {
@@ -7983,7 +8227,7 @@ function ConsoleApp({ baseUrl }) {
   const scheduleExperienceRefreshRef = import_react25.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
   import_react25.default.useEffect(() => {
-    void queryEvents(baseUrl, {}, 200).then(({ frames }) => {
+    void queryTimeline(baseUrl, {}, 200).then(({ frames }) => {
       const seen = /* @__PURE__ */ new Set();
       const filtered = [];
       for (const frame of frames) {
@@ -7997,7 +8241,7 @@ function ConsoleApp({ baseUrl }) {
       forceRender();
     }).catch(() => {
     });
-    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+    const unsubscribe = subscribeTimelineEvents(baseUrl, {}, (frame) => {
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
       }
@@ -8009,9 +8253,9 @@ function ConsoleApp({ baseUrl }) {
         appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
         const wasBusy = identityBusyRef.current[identity] === true;
-        if (frame.event === "interaction_started" || frame.event === "run_started") {
+        if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
           identityBusyRef.current[identity] = true;
-        } else if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed") {
+        } else if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
           identityBusyRef.current[identity] = false;
           if (wasBusy) maybeDrainHead(identity);
         }
@@ -8065,7 +8309,27 @@ function ConsoleApp({ baseUrl }) {
     forceRender();
     try {
       const id = target.identity?.trim();
-      if (attachments.length > 0) {
+      if (attachments.length > 0 && id) {
+        const result = await sendConsoleMultipart(
+          baseUrl,
+          id,
+          text,
+          attachments,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode
+        );
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id;
+          const matched = log.events.some(
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
+          );
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
+        }
+      } else if (attachments.length > 0) {
         const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id || "";
@@ -8078,11 +8342,18 @@ function ConsoleApp({ baseUrl }) {
           }
         }
       } else if (id) {
-        const result = await sendInteract(baseUrl, id, text, `console:${panelId}`, handlingMode);
+        const result = await sendConsole(
+          baseUrl,
+          id,
+          text,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode
+        );
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
-            (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
           );
           if (matched) {
             log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
@@ -8328,10 +8599,10 @@ function ConsoleApp({ baseUrl }) {
     });
     const log = getOrCreateLog(identity);
     const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
-    const entries = sanitizeConversationEntries([
+    const entries = sanitizeConversationEntries(sortConversationTimelineEntries([
       ...conversationEntries,
       ...optimisticEntry ? [optimisticEntry] : []
-    ]);
+    ]));
     const conversation = buildConversationViewState({
       memberId: target.memberId,
       agentLabel: target.title,
@@ -8342,6 +8613,8 @@ function ConsoleApp({ baseUrl }) {
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
     const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey) ? phaseRef.current[panelKey] : agent?.response_phase ?? null;
+    const canRespawn = agent?.affordances?.can_respawn === true;
+    const canRetire = agent?.affordances?.can_retire === true;
     const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
       id: s.id,
       kind: "pill",
@@ -8392,21 +8665,25 @@ function ConsoleApp({ baseUrl }) {
         onInspect: () => {
           if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab");
         },
-        onRespawn: () => void onLifecycleAction(identity, "mobkit/respawn"),
-        onRetire: () => void onLifecycleAction(identity, "mobkit/retire"),
+        onRespawn: canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : void 0,
+        onRetire: canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : void 0,
         stackSlot
       }
     );
   }
   function renderInspectPanel(target) {
     const inspect = inspectByIdentity[target.identity];
+    const agent = agents.find((candidate) => candidate.identity === target.identity || candidate.member_id === target.identity);
+    const canRespawn = agent?.affordances?.can_respawn === true;
+    const canRetire = agent?.affordances?.can_retire === true;
+    const canReset = experience?.runtime_capabilities?.can_retire_members === true;
     return /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "console-panel", "data-testid": `inspect-panel:${target.identity}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "console-panel__header", children: [
         /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("h3", { children: target.identity }),
         /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("div", { className: "console-panel__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: "Respawn" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: "Reset" }),
-          /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: "Retire" })
+          canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: "Respawn" }) : null,
+          canReset ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: "Reset" }) : null,
+          canRetire ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: "Retire" }) : null
         ] })
       ] }),
       !inspect ? /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime33.jsxs)("dl", { className: "console-panel__grid", children: [
@@ -8460,6 +8737,9 @@ function ConsoleApp({ baseUrl }) {
     if (!target) return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "console-panel", children: "No panel target" });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") return renderInspectPanel(target);
+    if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
+      return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
+    }
     if (target.kind === "routing") return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(RoutingPanel, { data: routingData });
     if (target.kind === "gating") return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(
       GatingInboxPanel,
@@ -8485,7 +8765,8 @@ function ConsoleApp({ baseUrl }) {
         agents,
         onSelect: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
         onInspect: handleInspectAgent,
-        onLifecycle: (identity, method) => void onLifecycleAction(identity, method)
+        onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
+        canResetLifecycle: hasMobControlSurface
       }
     );
     if (target.kind === "gates") return /* @__PURE__ */ (0, import_jsx_runtime33.jsx)(GatesPanel, { audit: gatingData.audit });
@@ -8528,9 +8809,13 @@ function ConsoleApp({ baseUrl }) {
                   selectedMemberId: focusedMemberId,
                   recentActivity: activityRef.current,
                   collapsed: sidebarCollapsed,
+                  visibleControls,
                   onSelect: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
                   onInspect: (a) => dock.openTarget(buildInspectTarget(a), "replace_focused"),
-                  onOpenControl: (kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")
+                  onOpenControl: (kind) => {
+                    if (!visibleControls.includes(kind)) return;
+                    dock.openTarget(buildControlTarget(kind), "replace_focused");
+                  }
                 }
               ),
               /* @__PURE__ */ (0, import_jsx_runtime33.jsx)("div", { className: "pane-resizer", "aria-hidden": "true", "data-testid": "resize:sidebar", onPointerDown: handleSidebarResize }),
@@ -8540,6 +8825,7 @@ function ConsoleApp({ baseUrl }) {
                   viewState: dock.viewState,
                   agents,
                   renderPanelBody,
+                  visibleControls,
                   onSelectTab: (id) => dock.selectTab(id),
                   onCloseTab: (id) => dock.closeTab(id),
                   onCreateTab: () => dock.createTab(),

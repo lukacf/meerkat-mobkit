@@ -8,6 +8,8 @@ import type {
   ConsoleFrame,
   ConsoleIdentityStreamEvent,
   ConsoleInteractAccepted,
+  ConsoleTimelineAccepted,
+  ConsoleTimelinePage,
   ConsoleReplayUnavailablePayload,
   ConsoleSessionHistoryPage,
   ConsoleSendMessageResult,
@@ -17,7 +19,22 @@ import type {
 function unwrapConsoleEnvelope(
   eventName: string,
   data: unknown,
-): { id?: string; event?: string; identity?: string; interactionId?: string; timestampMs?: number; data: unknown } {
+): {
+  id?: string;
+  event?: string;
+  identity?: string;
+  interactionId?: string;
+  timestampMs?: number;
+  cursor?: string;
+  runtimeKey?: string;
+  sessionId?: string;
+  status?: string;
+  frameVersion?: number;
+  updatedAtMs?: number;
+  turnId?: string;
+  runId?: string;
+  data: unknown;
+} {
   if (!data || typeof data !== "object") {
     return { data };
   }
@@ -38,7 +55,83 @@ function unwrapConsoleEnvelope(
       data: envelope.data,
     };
   }
+  if (typeof record.type === "string" && "frame" in record) {
+    const frame = timelineFrameToConsoleFrame(record.frame);
+    const isUpdateEnvelope = eventName === "frame_updated";
+    return {
+      id: frame.id,
+      event: isUpdateEnvelope ? "frame_updated" : frame.event,
+      identity: frame.identity,
+      interactionId: frame.interactionId,
+      timestampMs: frame.timestampMs,
+      cursor: frame.cursor,
+      runtimeKey: frame.runtimeKey,
+      sessionId: frame.sessionId,
+      status: frame.status,
+      frameVersion: frame.frameVersion,
+      updatedAtMs: frame.updatedAtMs,
+      turnId: frame.turnId,
+      runId: frame.runId,
+      data: isUpdateEnvelope
+        ? frame.event === "frame_updated"
+          ? frame.data
+          : { frame }
+        : frame.data,
+    };
+  }
   return { data };
+}
+
+function timelineFrameToConsoleFrame(raw: unknown): ConsoleFrame {
+  if (!raw || typeof raw !== "object") {
+    return { id: "", event: "event", data: raw };
+  }
+  const record = raw as Record<string, unknown>;
+  const cursor = typeof record.cursor === "string" ? record.cursor : undefined;
+  const payload = "payload" in record ? record.payload : record;
+  if (
+    record.kind === "frame_updated" &&
+    payload &&
+    typeof payload === "object" &&
+    "frame" in payload
+  ) {
+    const updated = timelineFrameToConsoleFrame((payload as Record<string, unknown>).frame);
+    return {
+      id: String(record.id || cursor || ""),
+      event: "frame_updated",
+      identity: typeof record.identity === "string" ? record.identity : updated.identity,
+      interactionId:
+        typeof record.interaction_id === "string" ? record.interaction_id : updated.interactionId,
+      timestampMs: typeof record.timestamp_ms === "number" ? record.timestamp_ms : undefined,
+      cursor,
+      runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : updated.runtimeKey,
+      sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
+      status: typeof record.status === "string" ? record.status : updated.status,
+      frameVersion:
+        typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
+      updatedAtMs:
+        typeof record.updated_at_ms === "number" ? record.updated_at_ms : updated.updatedAtMs,
+      turnId: typeof record.turn_id === "string" ? record.turn_id : updated.turnId,
+      runId: typeof record.run_id === "string" ? record.run_id : updated.runId,
+      data: { frame: updated },
+    };
+  }
+  return {
+    id: String(record.id || cursor || ""),
+    event: String(record.kind || "event"),
+    identity: typeof record.identity === "string" ? record.identity : undefined,
+    interactionId: typeof record.interaction_id === "string" ? record.interaction_id : undefined,
+    timestampMs: typeof record.timestamp_ms === "number" ? record.timestamp_ms : undefined,
+    cursor,
+    runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : undefined,
+    sessionId: typeof record.session_id === "string" ? record.session_id : undefined,
+    status: typeof record.status === "string" ? record.status : undefined,
+    frameVersion: typeof record.frame_version === "number" ? record.frame_version : undefined,
+    updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : undefined,
+    turnId: typeof record.turn_id === "string" ? record.turn_id : undefined,
+    runId: typeof record.run_id === "string" ? record.run_id : undefined,
+    data: payload,
+  };
 }
 
 export function parseSseFrames(rawText: string): ConsoleFrame[] {
@@ -89,6 +182,14 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
       identity: normalized.identity,
       interactionId: normalized.interactionId,
       timestampMs: normalized.timestampMs,
+      cursor: normalized.cursor,
+      runtimeKey: normalized.runtimeKey,
+      sessionId: normalized.sessionId,
+      status: normalized.status,
+      frameVersion: normalized.frameVersion,
+      updatedAtMs: normalized.updatedAtMs,
+      turnId: normalized.turnId,
+      runId: normalized.runId,
       data: normalized.data,
     });
   }
@@ -199,6 +300,58 @@ export async function sendMessageMultipart(
     throw new Error(`mobkit/send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return result.result as ConsoleSendMessageResult;
+}
+
+export async function sendConsoleMultipart(
+  baseUrl: string,
+  identity: string,
+  message: string,
+  attachments: File[],
+  origin: string,
+  idempotencyKey: string,
+  handlingMode: "queue" | "steer" = "queue",
+): Promise<ConsoleTimelineAccepted> {
+  const content: Array<Record<string, unknown>> = [];
+  if (message.trim()) {
+    content.push({ type: "text", text: message });
+  }
+  const form = new FormData();
+  attachments.forEach((file, index) => {
+    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
+    content.push({
+      type: "image_upload",
+      upload_id: uploadId,
+      media_type: file.type || "application/octet-stream",
+      alt: file.name,
+    });
+    form.append(`file:${uploadId}`, file, file.name);
+  });
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `mobkit/console/send:${Date.now()}`,
+    method: "mobkit/console/send",
+    params: {
+      identity,
+      content,
+      origin,
+      idempotency_key: idempotencyKey,
+      handling_mode: handlingMode,
+    },
+  }));
+
+  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  return normalizeConsoleTimelineAccepted(result.result, identity);
 }
 
 const TERMINAL_SSE_EVENTS = new Set([
@@ -534,6 +687,29 @@ export async function queryEvents(
   return { frames, available };
 }
 
+export async function queryTimeline(
+  baseUrl: string,
+  target: { identity?: string; conversationId?: string; after?: string },
+  limit = 400,
+): Promise<ConsoleTimelinePage> {
+  const result = await rpc<unknown>(baseUrl, "mobkit/console/query_timeline", {
+    limit,
+    ...(target.identity?.trim() ? { identity: target.identity.trim() } : {}),
+    ...(target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {}),
+    ...(target.after?.trim() ? { after: target.after.trim() } : {}),
+  });
+  if (!result || typeof result !== "object") {
+    return { frames: [], available: false };
+  }
+  const record = result as Record<string, unknown>;
+  const rawFrames = Array.isArray(record.frames) ? record.frames : [];
+  return {
+    frames: rawFrames.map(timelineFrameToConsoleFrame),
+    nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : undefined,
+    available: true,
+  };
+}
+
 export async function readSessionHistory(
   baseUrl: string,
   sessionId: string,
@@ -617,6 +793,44 @@ export async function sendInteract(
     throw new Error("mobkit/interact returned an invalid acceptance payload");
   }
   return normalized;
+}
+
+export async function sendConsole(
+  baseUrl: string,
+  identity: string,
+  content: string | Array<Record<string, unknown>>,
+  origin: string,
+  idempotencyKey: string,
+  handlingMode: "queue" | "steer" = "queue",
+): Promise<ConsoleTimelineAccepted> {
+  const accepted = await rpc<unknown>(baseUrl, "mobkit/console/send", {
+    identity,
+    content,
+    origin,
+    idempotency_key: idempotencyKey,
+    handling_mode: handlingMode,
+  });
+  if (!accepted || typeof accepted !== "object") {
+    throw new Error("mobkit/console/send returned an invalid acceptance payload");
+  }
+  const record = accepted as Record<string, unknown>;
+  return normalizeConsoleTimelineAccepted(record, identity);
+}
+
+function normalizeConsoleTimelineAccepted(
+  accepted: unknown,
+  fallbackIdentity: string,
+): ConsoleTimelineAccepted {
+  const record = accepted && typeof accepted === "object" ? accepted as Record<string, unknown> : {};
+  return {
+    interaction_id: String(record.interaction_id || ""),
+    identity: String(record.identity || fallbackIdentity),
+    conversation_id: typeof record.conversation_id === "string" ? record.conversation_id : undefined,
+    session_id: typeof record.session_id === "string" ? record.session_id : undefined,
+    input_frame_id: typeof record.input_frame_id === "string" ? record.input_frame_id : undefined,
+    cursor: typeof record.cursor === "string" ? record.cursor : undefined,
+    status: typeof record.status === "string" ? record.status : undefined,
+  };
 }
 
 export async function sendAddressedInteraction(
@@ -773,6 +987,90 @@ export function subscribeConsoleEvents(
   });
 
   return () => controller.abort();
+}
+
+function timelineStreamPath(target: { identity?: string; conversationId?: string; after?: string }): string {
+  const params = new URLSearchParams();
+  if (target.identity?.trim()) params.set("identity", target.identity.trim());
+  if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
+  if (target.after?.trim()) params.set("after", target.after.trim());
+  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+}
+
+function cursorFromTimelineFrame(frame: ConsoleFrame): string | undefined {
+  const cursor = frame.cursor?.trim();
+  if (cursor) return cursor;
+  if (frame.event === "snapshot_complete") {
+    const id = frame.id?.trim();
+    if (id?.startsWith("console:")) return id;
+  }
+  return undefined;
+}
+
+function replayUnavailableFrame(error: unknown): ConsoleFrame {
+  const replayError = (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError;
+  return {
+    id: `replay_unavailable:${Date.now()}`,
+    event: "replay_unavailable",
+    data: replayError || {
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function subscribeTimelineEvents(
+  baseUrl: string,
+  target: { identity?: string; conversationId?: string; after?: string },
+  onFrame: (frame: ConsoleFrame) => void,
+): () => void {
+  let stopped = false;
+  let controller: AbortController | null = null;
+  let after = target.after?.trim() || undefined;
+
+  void (async () => {
+    let retryDelayMs = 250;
+    while (!stopped) {
+      controller = new AbortController();
+      try {
+        await streamFramesFromResponse(
+          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+            method: "GET",
+            headers: { "content-type": "application/json" },
+            signal: controller.signal,
+          }),
+          {
+            stopOnTerminal: false,
+            onFrame: (frame) => {
+              const nextCursor = cursorFromTimelineFrame(frame);
+              if (nextCursor) {
+                after = nextCursor;
+              }
+              onFrame(frame);
+            },
+          },
+        );
+        retryDelayMs = 250;
+      } catch (error) {
+        if (stopped || controller.signal.aborted) {
+          break;
+        }
+        onFrame(replayUnavailableFrame(error));
+      }
+      if (!stopped) {
+        await sleep(retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 2_000);
+      }
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    controller?.abort();
+  };
 }
 
 export function subscribeIdentityEvents(

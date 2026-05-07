@@ -11,6 +11,7 @@ import {
   useConsoleDockController,
 } from "@console-components";
 import type { ConsoleComposerToolbarItem, ConversationTimelineEntry, IdentityInspectViewState } from "@console-core";
+import { normalizeIdentityInspectViewState } from "@console-core";
 
 import { normalizeAgents } from "./lib/agents";
 import {
@@ -25,17 +26,19 @@ import {
   buildSidebarViewState,
   createUserEntry,
   mapFramesToTimelineEntries,
+  sortConversationTimelineEntries,
   type MobKitDockTarget,
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
 import {
   callConsoleRpc,
   fetchJson,
-  queryEvents,
-  sendInteract as sendInteractRpc,
+  queryTimeline,
+  sendConsole,
+  sendConsoleMultipart,
   sendMessage,
   sendMessageMultipart,
-  subscribeConsoleEvents,
+  subscribeTimelineEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
 import type {
@@ -56,7 +59,7 @@ import { GatesPanel } from "./panels/GatesPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
 import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
-import { Sidebar as DesignSidebar } from "./panels/Sidebar";
+import { Sidebar as DesignSidebar, type NavKind } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
@@ -124,7 +127,53 @@ function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): Conv
   return sanitized;
 }
 
+function normalizeConsoleInspectResult(value: unknown): IdentityInspectViewState | null {
+  const direct = normalizeIdentityInspectViewState(value);
+  if (direct) return direct;
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const identityRecord = record.identity && typeof record.identity === "object"
+    ? record.identity as Record<string, unknown>
+    : null;
+  if (!identityRecord) return null;
+  return normalizeIdentityInspectViewState({
+    identity: identityRecord.identity,
+    display_name: identityRecord.display_name,
+    role: identityRecord.labels && typeof identityRecord.labels === "object"
+      ? (identityRecord.labels as Record<string, unknown>).role
+      : undefined,
+    state: identityRecord.health,
+    addressability: identityRecord.addressable === true ? "addressable" : "internal_only",
+    session_id: identityRecord.session_id,
+    labels: identityRecord.labels,
+    continuity: {
+      session_id: identityRecord.session_id,
+      agent_runtime_id: identityRecord.runtime_member_id,
+    },
+    topology_peers: Array.isArray(record.peers) ? record.peers : [],
+    lease: null,
+  });
+}
+
 const DEFAULT_APPROVER_ID = "console-ops-lead";
+
+function createIdempotencyKey(): string {
+  try {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      return crypto.randomUUID();
+    }
+  } catch {
+    // Fall through to timestamp-based key.
+  }
+  return `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function cursorSeq(cursor: string | undefined): number | null {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
@@ -132,7 +181,7 @@ const REFRESH_TRIGGER_EVENTS = new Set([
   "member_ready", "member_retired", "gating_decision", "route_changed",
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
-  "interaction_started", "interaction_complete", "interaction_failed",
+  "user_input", "interaction_started", "interaction_complete", "interaction_failed",
   "assistant_image",
   "text_delta", "text_complete",
   "tool_call_requested", "tool_call", "tool_result_received",
@@ -140,14 +189,14 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "run_started", "run_completed", "run_failed",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([
-  "interaction_complete", "interaction_failed", "run_completed", "run_failed",
+  "interaction_complete", "interaction_failed", "run_completed", "run_failed", "message_delivery_failed",
 ]);
 // Events filtered from the activity rail — don't buffer them
 const ACTIVITY_SKIP_EVENTS = new Set([
   "subscribed", "run_started", "run_completed", "turn_started", "turn_completed",
   "text_complete", "reasoning_delta", "reasoning_complete", "interaction_started",
   "run_failed", "keep-alive", "tool_config_changed", "tool_scope_changed",
-  "text_delta", "tool_call_requested", "tool_call", "tool_execution_started",
+  "user_input", "text_delta", "tool_call_requested", "tool_call", "tool_execution_started",
   "tool_result_received", "tool_execution_completed",
 ]);
 
@@ -262,6 +311,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   /// `interactionId` keeps interaction-bound events from colliding.
   function frameKey(frame: ConsoleFrame): string {
     if (frame.id) return frame.id;
+    if (frame.cursor) return frame.cursor;
     return `${frame.event}:${frame.identity || ""}:${frame.interactionId || ""}:${frame.timestampMs || 0}`;
   }
 
@@ -273,12 +323,26 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   /// rendering the user turn itself.
   function appendFrame(identity: string, frame: ConsoleFrame): boolean {
     const log = getOrCreateLog(identity);
+    if (frame.event === "frame_updated" && frame.data && typeof frame.data === "object") {
+      const updated = (frame.data as Record<string, unknown>).frame as ConsoleFrame | undefined;
+      if (updated && updated.id) {
+        const existingIndex = log.byKey.get(updated.id);
+        if (existingIndex !== undefined && log.events[existingIndex]) {
+          const existingVersion = log.events[existingIndex].frameVersion ?? 0;
+          const updatedVersion = updated.frameVersion ?? existingVersion;
+          if (updatedVersion < existingVersion) return false;
+          log.events[existingIndex] = { ...log.events[existingIndex], ...updated };
+          return true;
+        }
+      }
+      return false;
+    }
     const key = frameKey(frame);
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
     if (
-      frame.event === "interaction_started"
+      (frame.event === "interaction_started" || frame.event === "user_input")
       && log.optimisticUser
       && log.optimisticUser.interactionId
       && frame.interactionId === log.optimisticUser.interactionId
@@ -309,17 +373,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     for (const frame of frames) appendFrame(identity, frame);
   }
 
-  /// Render-time view: frames sorted ascending by `timestampMs`, with
-  /// insertion order as a stable tiebreaker (preserves intra-tick
-  /// ordering as the server emitted them).
+  /// Render-time chat view: aggregate cursor is the canonical order. The
+  /// server admits user input before dispatch, so cursor order preserves
+  /// causality without timestamp-only restore drift.
   function getSortedFrames(identity: string): ConsoleFrame[] {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events
       .map((frame, index) => ({ frame, index }))
       .sort((a, b) => {
-        const ta = a.frame.timestampMs || 0;
-        const tb = b.frame.timestampMs || 0;
+        const ca = cursorSeq(a.frame.cursor);
+        const cb = cursorSeq(b.frame.cursor);
+        if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+        const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+        const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
         if (ta !== tb) return ta - tb;
         return a.index - b.index;
       })
@@ -570,6 +637,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     dock.openTarget(buildDockTarget(first), "replace_focused");
   }, [agents, dock]);
 
+  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const visibleControls = React.useMemo<NavKind[]>(
+    () => hasMobControlSurface
+      ? ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"]
+      : ["topology", "timeline", "roster", "logs", "health"],
+    [hasMobControlSurface],
+  );
+
   // =========================================================================
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
@@ -579,26 +654,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const inspects = openPanels.filter((t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> => t.kind === "identity-inspect");
     if (inspects.length) {
       const entries = await Promise.all(inspects.map(async (t) => {
-        const r = await callConsoleRpc<IdentityInspectViewState>(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
-        return [t.identity, r] as const;
+        const r = await callConsoleRpc<unknown>(baseUrl, "mobkit/console/inspect_identity", { identity: t.identity })
+          .catch(() => callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity: t.identity }));
+        return [t.identity, normalizeConsoleInspectResult(r)] as const;
       }));
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
-    if (openPanels.some((t) => t.kind === "routing")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
       const [routes, history] = await Promise.all([
         callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
         callConsoleRpc(baseUrl, "mobkit/delivery/history", {}),
       ]);
       setRoutingData(buildRoutingSectionView({ routesResponse: routes, historyResponse: history }));
     }
-    if (openPanels.some((t) => t.kind === "gating")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating")) {
       const [p, a] = await Promise.all([
         callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
         callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
       ]);
       setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
     }
-  }, [baseUrl, dock.viewState.panels]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
 
   React.useEffect(() => { void refreshPanelData().catch(() => {}); }, [dock.viewState.panels, refreshPanelData]);
 
@@ -627,7 +703,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return;
       }
       try {
-        const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+        const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
         reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
@@ -652,7 +728,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
-          const { frames, available } = await queryEvents(baseUrl, { identity }, 400);
+          const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
           reconcileServerLog(identity, frames, available);
           forceRender();
         } catch { /* silent */ }
@@ -675,7 +751,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // Seed activity with recent history (only on mount) — apply same
     // filter as SSE. The activity rail is its own concern; it doesn't
     // share state with the per-identity logs.
-    void queryEvents(baseUrl, {}, 200)
+    void queryTimeline(baseUrl, {}, 200)
       .then(({ frames }) => {
         const seen = new Set<string>();
         const filtered: ConsoleFrame[] = [];
@@ -691,7 +767,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       })
       .catch(() => {});
 
-    const unsubscribe = subscribeConsoleEvents(baseUrl, "/console/events/stream", (frame) => {
+    const unsubscribe = subscribeTimelineEvents(baseUrl, {}, (frame) => {
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
@@ -714,13 +790,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         // auto-drain hook + by the Send handler to decide whether
         // to bypass the stack (idle + empty) or push to it.
         const wasBusy = identityBusyRef.current[identity] === true;
-        if (frame.event === "interaction_started" || frame.event === "run_started") {
+        if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
           identityBusyRef.current[identity] = true;
         } else if (
           frame.event === "interaction_complete"
           || frame.event === "interaction_failed"
           || frame.event === "run_completed"
           || frame.event === "run_failed"
+          || frame.event === "message_delivery_failed"
         ) {
           identityBusyRef.current[identity] = false;
           // busy → idle transition: drain the head item if the
@@ -813,7 +890,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     try {
       const id = target.identity?.trim();
-      if (attachments.length > 0) {
+      if (attachments.length > 0 && id) {
+        const result = await sendConsoleMultipart(
+          baseUrl,
+          id,
+          text,
+          attachments,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode,
+        );
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id;
+          const matched = log.events.some(
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
+          );
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
+        }
+      } else if (attachments.length > 0) {
         const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id || "";
@@ -828,13 +925,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }
         }
       } else if (id) {
-        const result = await sendInteractRpc(baseUrl, id, text, `console:${panelId}`, handlingMode);
+        const result = await sendConsole(
+          baseUrl,
+          id,
+          text,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode,
+        );
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id;
           // The interaction_started frame may have arrived between
           // the send and the RPC response — reconcile retroactively.
           const matched = log.events.some(
-            (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
           );
           if (matched) {
             log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
@@ -1118,10 +1222,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const log = getOrCreateLog(identity);
     const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
 
-    const entries = sanitizeConversationEntries([
+    const entries = sanitizeConversationEntries(sortConversationTimelineEntries([
       ...conversationEntries,
       ...(optimisticEntry ? [optimisticEntry] : []),
-    ]);
+    ]));
 
     const conversation = buildConversationViewState({
       memberId: target.memberId,
@@ -1135,6 +1239,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey)
       ? phaseRef.current[panelKey]
       : agent?.response_phase ?? null;
+    const canRespawn = agent?.affordances?.can_respawn === true;
+    const canRetire = agent?.affordances?.can_retire === true;
 
     const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
       id: s.id, kind: "pill" as const, label: s.label, iconName: s.iconName || "i-bolt",
@@ -1181,8 +1287,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onStagedChange={(action) => setStagedAttachmentsForIdentity(identity, action)}
         onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
         onInspect={() => { if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab"); }}
-        onRespawn={() => void onLifecycleAction(identity, "mobkit/respawn")}
-        onRetire={() => void onLifecycleAction(identity, "mobkit/retire")}
+        onRespawn={canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : undefined}
+        onRetire={canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : undefined}
         stackSlot={stackSlot}
       />
     );
@@ -1194,14 +1300,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function renderInspectPanel(target: Extract<MobKitDockTarget, { kind: "identity-inspect" }>) {
     const inspect = inspectByIdentity[target.identity];
+    const agent = agents.find((candidate) => candidate.identity === target.identity || candidate.member_id === target.identity);
+    const canRespawn = agent?.affordances?.can_respawn === true;
+    const canRetire = agent?.affordances?.can_retire === true;
+    const canReset = experience?.runtime_capabilities?.can_retire_members === true;
     return (
       <div className="console-panel" data-testid={`inspect-panel:${target.identity}`}>
         <div className="console-panel__header">
           <h3>{target.identity}</h3>
           <div className="console-panel__actions">
-            <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>Respawn</button>
-            <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>Reset</button>
-            <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>Retire</button>
+            {canRespawn ? <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>Respawn</button> : null}
+            {canReset ? <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>Reset</button> : null}
+            {canRetire ? <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>Retire</button> : null}
           </div>
         </div>
         {!inspect ? <p>Loading identity details…</p> : (
@@ -1258,6 +1368,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (!target) return <div className="console-panel">No panel target</div>;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") return renderInspectPanel(target);
+    if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
+      return <div className="console-panel">This view requires a mob runtime control surface.</div>;
+    }
     if (target.kind === "routing") return <RoutingPanel data={routingData} />;
     if (target.kind === "gating") return (
       <GatingInboxPanel
@@ -1281,6 +1394,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
         onInspect={handleInspectAgent}
         onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
+        canResetLifecycle={hasMobControlSurface}
       />
     );
     if (target.kind === "gates") return <GatesPanel audit={gatingData.audit} />;
@@ -1316,9 +1430,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           selectedMemberId={focusedMemberId}
           recentActivity={activityRef.current}
           collapsed={sidebarCollapsed}
+          visibleControls={visibleControls}
           onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
           onInspect={(a) => dock.openTarget(buildInspectTarget(a), "replace_focused")}
-          onOpenControl={(kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")}
+          onOpenControl={(kind) => {
+            if (!visibleControls.includes(kind)) return;
+            dock.openTarget(buildControlTarget(kind), "replace_focused");
+          }}
         />
         <div className="pane-resizer" aria-hidden="true" data-testid="resize:sidebar" onPointerDown={handleSidebarResize} />
         <div className="main">
@@ -1326,6 +1444,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             viewState={dock.viewState}
             agents={agents}
             renderPanelBody={renderPanelBody}
+            visibleControls={visibleControls}
             onSelectTab={(id) => dock.selectTab(id)}
             onCloseTab={(id) => dock.closeTab(id)}
             onCreateTab={() => dock.createTab()}

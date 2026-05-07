@@ -86,6 +86,10 @@ async fn test_builder_persistent_default() {
         state_path.join("sessions.db").exists(),
         "SQLite session store must be created"
     );
+    assert!(
+        state_path.join("mobkit_console.sqlite").exists(),
+        "durable MobKit console log must be created"
+    );
 
     runtime.mob_handle().stop().await.expect("stop");
 }

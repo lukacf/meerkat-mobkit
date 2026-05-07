@@ -345,6 +345,7 @@ function summarizeFrameData(data: unknown): string {
 
 function eventSortRank(event: string | undefined): number {
   switch (event) {
+    case "user_input":
     case "interaction_started":
       return 0;
     case "tool_call_requested":
@@ -423,6 +424,7 @@ const HIDDEN_EVENTS = new Set([
   "reasoning_delta",
   "reasoning_complete",
   "interaction_started",
+  "frame_updated",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -799,7 +801,13 @@ function renderHistoryUserEntry(
   entryId: string,
   blobBaseUrl?: string,
 ): ConversationTimelineEntry | null {
-  if (frame.event !== "interaction_started" || typeof frame.data !== "object" || frame.data === null) {
+  if (
+    frame.event !== "interaction_started"
+    && frame.event !== "user_input"
+  ) {
+    return null;
+  }
+  if (typeof frame.data !== "object" || frame.data === null) {
     return null;
   }
   const record = frame.data as Record<string, unknown>;
@@ -1508,7 +1516,7 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    if (options.renderInteractionStartsAsUser && frame.event === "interaction_started") {
+    if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {

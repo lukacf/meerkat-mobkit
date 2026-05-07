@@ -6,6 +6,7 @@ pub mod auth;
 pub mod baseline;
 pub mod blob_store;
 pub mod config_convention;
+pub mod console_aggregator;
 pub mod console_contracts;
 pub mod contact_directory;
 pub mod decisions;
@@ -39,6 +40,17 @@ pub use blob_store::{
     Base64BlobStoreAdapter, BinaryBlobPayload, BinaryBlobStore, ObjectStoreBlobStore,
 };
 pub use config_convention::ConventionalPaths;
+pub use console_aggregator::{
+    AllowAllConsoleVisibilityPolicy, AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame,
+    ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection,
+    ConsoleIdentityRecord, ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted,
+    ConsoleLogError, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
+    ConsoleRuntimeRegistration, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelinePage,
+    ConsoleTimelineQuery, ConsoleVisibility, ConsoleVisibilityPolicy, InMemoryConsoleLogStore,
+    MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect, ReplaySubscriptionState,
+    ReplaySubscriptionTransition, SendEffect, SendState, SendTransition, SourceIngestionEffect,
+    SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
+};
 pub use console_contracts::{
     ConsoleIdentityEventEnvelope, ConsoleInteractionAccepted, ConsoleInteractionRejectedError,
     ConsoleInteractionRequest, IdentityStreamRequest, ReplayUnavailableError,
@@ -60,7 +72,7 @@ pub use http_auth::{auth_middleware, with_auth_layer};
 pub use http_console::{
     ConsoleJsonState, console_frontend_app_js_handler, console_frontend_index_handler,
     console_frontend_router, console_json_handler, console_json_router,
-    console_json_router_with_runtime,
+    console_json_router_with_aggregator, console_json_router_with_runtime,
 };
 pub use http_interactions::interaction_stream_router;
 pub use http_sse::{

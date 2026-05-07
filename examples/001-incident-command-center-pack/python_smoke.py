@@ -29,6 +29,20 @@ def main() -> int:
     status = rpc(base_url, "mobkit/status_identity", {"identity": "incident-commander"})
     assert status["identity"] == "incident-commander"
 
+    console_identities = rpc(base_url, "mobkit/console/list_identities", {})["identities"]
+    assert any(entry["identity"] == "incident-commander" for entry in console_identities)
+
+    console_inspect = rpc(base_url, "mobkit/console/inspect_identity", {"identity": "incident-commander"})
+    assert console_inspect["identity"]["identity"] == "incident-commander"
+    assert console_inspect["identity"]["visibility"] == "addressable"
+
+    timeline = rpc(base_url, "mobkit/console/query_timeline", {
+        "identity": "incident-commander",
+        "limit": 20,
+    })
+    assert timeline["frames"], "expected canonical console timeline frames"
+    assert all(frame["identity"] == "incident-commander" for frame in timeline["frames"])
+
     inspect = rpc(base_url, "mobkit/inspect_identity", {"identity": "payments-sre"})
     assert inspect["identity"] == "payments-sre"
 

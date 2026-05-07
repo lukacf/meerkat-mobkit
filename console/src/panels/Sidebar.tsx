@@ -1,13 +1,14 @@
 import React from "react";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
-type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "gates" | "logs";
+export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "gates" | "logs" | "health";
 
 interface SidebarProps {
   agents: ConsoleAgent[];
   selectedMemberId: string;
   recentActivity: ConsoleFrame[];
   collapsed: boolean;
+  visibleControls?: NavKind[];
   onSelect: (agent: ConsoleAgent) => void;
   onInspect: (agent: ConsoleAgent) => void;
   onOpenControl: (kind: NavKind) => void;
@@ -21,7 +22,7 @@ interface SidebarProps {
 ///
 /// Embedders can drop the query string into the iframe URL without
 /// touching the React tree. Reads once on mount; reload to change.
-const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "gates", "logs"];
+const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"];
 const NAV_LABEL: Record<NavKind, string> = {
   topology: "Topology",
   timeline: "Today",
@@ -30,6 +31,7 @@ const NAV_LABEL: Record<NavKind, string> = {
   routing: "Routing",
   gates: "Gates",
   logs: "Logs",
+  health: "Health",
 };
 
 function parseNavList(raw: string | null): Set<NavKind> {
@@ -100,13 +102,19 @@ export function Sidebar({
   selectedMemberId,
   recentActivity,
   collapsed,
+  visibleControls,
   onSelect,
   onInspect,
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
   // Computed once; URL-driven config doesn't change without a reload.
-  const navKinds = React.useMemo(() => visibleNavKinds(), []);
+  const navKinds = React.useMemo(() => {
+    const configured = visibleNavKinds();
+    if (!visibleControls) return configured;
+    const allowed = new Set(visibleControls);
+    return configured.filter((kind) => allowed.has(kind));
+  }, [visibleControls]);
 
   const filtered = React.useMemo(() => {
     if (!q) return agents;

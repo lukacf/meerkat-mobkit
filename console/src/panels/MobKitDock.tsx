@@ -9,11 +9,13 @@ import type {
 import type { ConsoleAgent } from "../types";
 import type { MobKitDockTarget } from "../lib/adapters";
 import { buildControlTarget, buildDockTarget, buildInspectTarget } from "../lib/adapters";
+import type { NavKind } from "./Sidebar";
 
 interface MobKitDockProps {
   viewState: ConsoleDockViewState<MobKitDockTarget>;
   agents: ConsoleAgent[];
   renderPanelBody: (panel: { id: string; target?: MobKitDockTarget | null }) => React.ReactNode;
+  visibleControls?: NavKind[];
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   onCreateTab: () => void;
@@ -40,6 +42,7 @@ export function MobKitDock({
   viewState,
   agents,
   renderPanelBody,
+  visibleControls,
   onSelectTab,
   onCloseTab,
   onCreateTab,
@@ -134,6 +137,7 @@ export function MobKitDock({
             node={activeTab.layout}
             viewState={viewState}
             agents={agents}
+            visibleControls={visibleControls}
             renderPanelBody={renderPanelBody}
             onFocusPanel={onFocusPanel}
             onSplitPanel={onSplitPanel}
@@ -149,7 +153,7 @@ export function MobKitDock({
 
 interface DockLayoutProps extends Pick<MobKitDockProps,
   "viewState" | "agents" | "renderPanelBody" |
-  "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onResizeSplit" | "onOpenTargetInPanel"
+  "visibleControls" | "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onResizeSplit" | "onOpenTargetInPanel"
 > {
   node: ConsoleDockNode;
 }
@@ -215,13 +219,13 @@ function SplitView(props: DockLayoutProps): React.JSX.Element | null {
 
 interface PaneViewProps extends Pick<MobKitDockProps,
   "viewState" | "agents" | "renderPanelBody" |
-  "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onOpenTargetInPanel"
+  "visibleControls" | "onFocusPanel" | "onSplitPanel" | "onClosePanel" | "onOpenTargetInPanel"
 > {
   panelId: string;
 }
 
 function PaneView({
-  panelId, viewState, agents, renderPanelBody,
+  panelId, viewState, agents, renderPanelBody, visibleControls,
   onFocusPanel, onSplitPanel, onClosePanel, onOpenTargetInPanel,
 }: PaneViewProps): React.JSX.Element | null {
   const panel = viewState.panels.find((p) => p.id === panelId);
@@ -284,6 +288,7 @@ function PaneView({
         {menuOpen && (
           <PaneMenu
             agents={agents}
+            visibleControls={visibleControls}
             onClose={() => setMenuOpen(false)}
             onPick={(target) => {
               setMenuOpen(false);
@@ -301,26 +306,28 @@ function PaneView({
 
 interface PaneMenuProps {
   agents: ConsoleAgent[];
+  visibleControls?: NavKind[];
   onClose: () => void;
   onPick: (target: MobKitDockTarget) => void;
 }
 
-function PaneMenu({ agents, onClose, onPick }: PaneMenuProps): React.JSX.Element {
+function PaneMenu({ agents, visibleControls, onClose, onPick }: PaneMenuProps): React.JSX.Element {
+  const controls = ([
+    ["topology", "Topology"],
+    ["timeline", "Today"],
+    ["gating", "Gating"],
+    ["roster", "Roster"],
+    ["routing", "Routing"],
+    ["gates", "Gates"],
+    ["logs", "Logs"],
+    ["health", "Health"],
+  ] as const).filter(([kind]) => !visibleControls || visibleControls.includes(kind));
   return (
     <>
       <div className="pane-menu__scrim" onMouseDown={onClose} />
       <div className="pane-menu" onMouseDown={(e) => e.stopPropagation()}>
         <div className="pane-menu__label">Views</div>
-        {([
-          ["topology", "Topology"],
-          ["timeline", "Today"],
-          ["gating", "Gating"],
-          ["roster", "Roster"],
-          ["routing", "Routing"],
-          ["gates", "Gates"],
-          ["logs", "Logs"],
-          ["health", "Health"],
-        ] as const).map(([kind, label]) => (
+        {controls.map(([kind, label]) => (
           <button
             key={kind}
             className="pane-menu__item"

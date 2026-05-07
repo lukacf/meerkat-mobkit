@@ -13,8 +13,9 @@ use meerkat_mob::{AttributedEvent, MobError, MobEventRouterHandle, MobHandle, Sp
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
-use self::console_events::ConsoleEventStore;
+pub(crate) use self::console_events::ConsoleEventStore;
 use self::mob_events::MobEventsStore;
+use crate::console_aggregator::{ConsoleLogStore, InMemoryConsoleLogStore};
 use crate::mob_handle_runtime::{MobBootstrapSpec, MobRuntime, MobRuntimeError};
 use crate::runtime::{
     InMemoryMetadataStore, MetadataScope, MobkitRuntimeHandle, PersistentMetadataStore,
@@ -122,6 +123,7 @@ pub struct UnifiedRuntime {
     mob_event_ingress: tokio::sync::Mutex<Option<MobEventIngress>>,
     bootstrap_edges_report: tokio::sync::RwLock<Option<UnifiedRuntimeReconcileEdgesReport>>,
     event_log: Option<event_log::EventLogHandle>,
+    console_log_store: Arc<dyn ConsoleLogStore>,
     console_events: ConsoleEventStore,
     mob_events: MobEventsStore,
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
@@ -198,6 +200,7 @@ impl UnifiedRuntime {
             mob_event_ingress: tokio::sync::Mutex::new(mob_event_ingress),
             bootstrap_edges_report: tokio::sync::RwLock::new(None),
             event_log: None,
+            console_log_store: Arc::new(InMemoryConsoleLogStore::new()),
             console_events: ConsoleEventStore::new(),
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
@@ -402,6 +405,10 @@ impl UnifiedRuntime {
         self.event_log
             .as_ref()
             .map(event_log::EventLogHandle::store)
+    }
+
+    pub fn console_log_store(&self) -> Arc<dyn ConsoleLogStore> {
+        self.console_log_store.clone()
     }
 
     /// Query persisted operational events from the event log store.

@@ -627,6 +627,29 @@ test("sortConversationTimelineEntries keeps optimistic user messages after older
   assert.deepEqual(entries.map((entry) => entry.id), ["user-1", "assistant-1", "user-2"]);
 });
 
+test("sortConversationTimelineEntries orders accepted user frames before later assistant replies regardless of entry arrival", () => {
+  const entries = sortConversationTimelineEntries([
+    {
+      kind: "message",
+      id: "assistant-1",
+      identity: { id: "agent-1", label: "Agent", role: "assistant" },
+      variant: "plain",
+      text: "ORDER_OK",
+      createdAt: "2026-05-07T15:21:50.000Z",
+    },
+    {
+      kind: "message",
+      id: "user-1",
+      identity: { id: "user", label: "You", role: "user" },
+      variant: "plain",
+      text: "Ordering smoke: reply with exactly ORDER_OK and no extra text.",
+      createdAt: "2026-05-07T15:21:48.000Z",
+    },
+  ]);
+
+  assert.deepEqual(entries.map((entry) => entry.id), ["user-1", "assistant-1"]);
+});
+
 test("mapFramesToTimelineEntries renders tool turns without raw tool lifecycle system noise", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -691,6 +714,25 @@ test("mapFramesToTimelineEntries can render historical interaction_started frame
       {
         id: "evt-1",
         event: "interaction_started",
+        data: { content: "Run a status sweep." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Run a status sweep.");
+});
+
+test("mapFramesToTimelineEntries renders aggregate user_input frames as user messages", () => {
+  const entries = mapFramesToTimelineEntries(
+    null,
+    [
+      {
+        id: "console-frame-1",
+        cursor: "console:1",
+        event: "user_input",
         data: { content: "Run a status sweep." },
       },
     ],
@@ -852,6 +894,49 @@ test("mapFramesToTimelineEntries orders persisted interaction history by interac
         : ""
       : "",
     "Working on it.",
+  );
+});
+
+test("mapFramesToTimelineEntries keeps accepted user input before the later assistant response when frames arrive reversed", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "assistant-frame",
+        cursor: "console:10",
+        event: "interaction_complete",
+        interactionId: "runtime-turn-1",
+        timestampMs: Date.parse("2026-05-07T15:16:28.000Z"),
+        data: { text: "OK" },
+      },
+      {
+        id: "user-frame",
+        cursor: "console:11",
+        event: "user_input",
+        interactionId: "console-interaction-1",
+        timestampMs: Date.parse("2026-05-07T15:16:26.000Z"),
+        data: { content: "Reply with exactly OK." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Reply with exactly OK.");
+  assert.equal(entries[1]?.identity.role, "assistant");
+  assert.equal(
+    entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
+      ? entries[1].blocks[0]?.type === "paragraph"
+        ? entries[1].blocks[0].text
+        : ""
+      : "",
+    "OK",
   );
 });
 

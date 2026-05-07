@@ -26,8 +26,8 @@ interface ChatPaneProps {
   onStagedChange: React.Dispatch<React.SetStateAction<StagedAttachment[]>>;
   onSend: (attachments?: File[]) => boolean | Promise<boolean>;
   onInspect: () => void;
-  onRespawn: () => void;
-  onRetire: () => void;
+  onRespawn?: () => void;
+  onRetire?: () => void;
   /// Pending-message stack rendered between conversation body and
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
   /// reserves the slot. Pass `null` (or omit) to suppress.
@@ -476,8 +476,12 @@ export function ChatPane({
         </div>
         <div className="conv__actions">
           <button className="conv__action" onClick={onInspect} data-testid="conv-action:inspect">Inspect</button>
-          <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn" disabled={!agent?.affordances?.can_respawn}>Respawn</button>
-          <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire" disabled={!agent?.affordances?.can_retire}>Retire</button>
+          {agent?.affordances?.can_respawn && onRespawn ? (
+            <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn">Respawn</button>
+          ) : null}
+          {agent?.affordances?.can_retire && onRetire ? (
+            <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire">Retire</button>
+          ) : null}
         </div>
       </div>
       <div
