@@ -35,6 +35,7 @@ import {
   fetchJson,
   queryTimeline,
   sendConsole,
+  sendConsoleMultipart,
   sendMessage,
   sendMessageMultipart,
   subscribeTimelineEvents,
@@ -889,7 +890,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     try {
       const id = target.identity?.trim();
-      if (attachments.length > 0) {
+      if (attachments.length > 0 && id) {
+        const result = await sendConsoleMultipart(
+          baseUrl,
+          id,
+          text,
+          attachments,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode,
+        );
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id;
+          const matched = log.events.some(
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
+          );
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
+        }
+      } else if (attachments.length > 0) {
         const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id || "";

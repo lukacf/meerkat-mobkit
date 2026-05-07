@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
+use crate::blob_store::BinaryBlobStore;
 use crate::mob_handle_runtime::{
     MobRuntime, assert_member_accepts_images, send_message_on_mob_with_mode,
 };
@@ -257,19 +258,16 @@ impl MobKitConsoleAggregator {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
-        if self.has_registered_runtimes()
-            && let Some(identity) = query.identity.as_deref()
-            && self.inspect_identity(identity).await?.is_none()
-        {
-            return Ok(ConsoleTimelinePage {
-                frames: Vec::new(),
-                next_cursor: query.after,
-            });
-        }
+        let explicit_identity = query.identity.clone();
         let mut page = self.inner.store.query_frames(query).await?;
         let mut visible_frames = Vec::with_capacity(page.frames.len());
         for frame in page.frames {
-            if frame_is_visible(&self.inner, &frame).await.unwrap_or(false) {
+            let allow_historical_identity =
+                explicit_identity.as_deref() == Some(frame.identity.as_str());
+            if frame_is_visible(&self.inner, &frame, allow_historical_identity)
+                .await
+                .unwrap_or(false)
+            {
                 visible_frames.push(frame);
             }
         }
@@ -285,7 +283,9 @@ impl MobKitConsoleAggregator {
         match event {
             ConsoleTimelineEvent::ConsoleFrame { frame }
             | ConsoleTimelineEvent::FrameUpdated { frame } => {
-                frame_is_visible(&self.inner, frame).await.unwrap_or(false)
+                frame_is_visible(&self.inner, frame, false)
+                    .await
+                    .unwrap_or(false)
             }
             ConsoleTimelineEvent::SnapshotStarted { .. }
             | ConsoleTimelineEvent::SnapshotComplete { .. }
@@ -293,11 +293,14 @@ impl MobKitConsoleAggregator {
         }
     }
 
-    fn has_registered_runtimes(&self) -> bool {
-        self.inner
-            .runtimes
-            .read()
-            .map(|entries| !entries.is_empty())
+    pub async fn timeline_frame_visible_for_query(
+        &self,
+        frame: &ConsoleFrame,
+        identity: Option<&str>,
+    ) -> bool {
+        let allow_historical_identity = identity == Some(frame.identity.as_str());
+        frame_is_visible(&self.inner, frame, allow_historical_identity)
+            .await
             .unwrap_or(false)
     }
 
@@ -340,6 +343,13 @@ impl MobKitConsoleAggregator {
             &request.origin,
             &request.idempotency_key,
         );
+        let handling_mode_value = request
+            .handling_mode
+            .as_deref()
+            .unwrap_or("queue")
+            .to_string();
+        let request_fingerprint =
+            send_request_fingerprint(&request.origin, &request.content, &handling_mode_value);
         if let Some(existing) = self
             .inner
             .store
@@ -347,15 +357,18 @@ impl MobKitConsoleAggregator {
             .await
             .map_err(ConsoleSendError::Log)?
         {
-            let same_origin = existing.payload.get("origin").and_then(Value::as_str)
-                == Some(request.origin.as_str());
-            let same_content = existing.payload.get("content") == Some(&request.content);
-            let same_handling_mode = existing
-                .payload
-                .get("handling_mode")
-                .and_then(Value::as_str)
-                == request.handling_mode.as_deref().or(Some("queue"));
-            if !same_origin || !same_content || !same_handling_mode {
+            let same_request = existing.source.source_cursor.as_deref()
+                == Some(request_fingerprint.as_str())
+                || existing.source.source_cursor.is_none()
+                    && existing.payload.get("origin").and_then(Value::as_str)
+                        == Some(request.origin.as_str())
+                    && existing.payload.get("content") == Some(&request.content)
+                    && existing
+                        .payload
+                        .get("handling_mode")
+                        .and_then(Value::as_str)
+                        == Some(handling_mode_value.as_str());
+            if !same_request {
                 return Err(ConsoleSendError::IdempotencyConflict(
                     request.idempotency_key,
                 ));
@@ -381,11 +394,6 @@ impl MobKitConsoleAggregator {
             .resolve_bridge_session_id(&MeerkatId::from(runtime_identity.as_str()))
             .await
             .map(|sid| sid.to_string());
-        let handling_mode_value = request
-            .handling_mode
-            .as_deref()
-            .unwrap_or("queue")
-            .to_string();
         let mut new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
@@ -404,7 +412,7 @@ impl MobKitConsoleAggregator {
             }),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Send,
-                source_cursor: None,
+                source_cursor: Some(request_fingerprint),
             },
             source_event_id: None,
             interaction_id: Some(interaction_id.clone()),
@@ -427,14 +435,15 @@ impl MobKitConsoleAggregator {
             .append_if_absent(new_frame)
             .await
             .map_err(ConsoleSendError::Log)?;
-        if outcome.disposition == AppendDisposition::Inserted {
-            let _ = self
-                .inner
-                .event_tx
-                .send(ConsoleTimelineEvent::ConsoleFrame {
-                    frame: outcome.frame.clone(),
-                });
+        if outcome.disposition == AppendDisposition::Existing {
+            return Ok(accepted_from_frame(&outcome.frame));
         }
+        let _ = self
+            .inner
+            .event_tx
+            .send(ConsoleTimelineEvent::ConsoleFrame {
+                frame: outcome.frame.clone(),
+            });
         let accepted = accepted_from_frame(&outcome.frame);
 
         let (dispatching, _effects) = SendState::AcceptedPersisted
@@ -512,6 +521,46 @@ impl MobKitConsoleAggregator {
                 Ok(accepted)
             }
         }
+    }
+
+    pub async fn binary_blob_store_for_identity(
+        &self,
+        identity: &str,
+    ) -> Result<Option<Arc<dyn BinaryBlobStore>>, ConsoleSendError> {
+        if identity.trim().is_empty() {
+            return Err(ConsoleSendError::InvalidRequest(
+                "identity must be non-empty".to_string(),
+            ));
+        }
+        let Some((entry, member, _runtime_identity)) = self.resolve_member(identity).await else {
+            return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
+        };
+        let Some(record) = identity_record_for_member(&entry, &member).await else {
+            return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
+        };
+        if !entry.visibility_policy.identity_visible(&record) {
+            return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
+        }
+        if !member_is_addressable(&member) {
+            return Err(ConsoleSendError::NotAddressable(identity.to_string()));
+        }
+        if member.state == meerkat_mob::MemberState::Retiring {
+            return Err(ConsoleSendError::Retired(identity.to_string()));
+        }
+        Ok(entry.runtime.binary_blob_store())
+    }
+
+    pub fn binary_blob_stores(&self) -> Vec<Arc<dyn BinaryBlobStore>> {
+        self.inner
+            .runtimes
+            .read()
+            .map(|entries| {
+                entries
+                    .values()
+                    .filter_map(|entry| entry.runtime.binary_blob_store())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     async fn resolve_member(
@@ -599,9 +648,14 @@ async fn backfill_session_history(
         let Some(session_id) = record.session_id.clone() else {
             continue;
         };
+        let watermark_runtime_key =
+            session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
         let mut offset = inner
             .store
-            .source_watermark(&entry.runtime_key, ConsoleFrameSourceKind::SessionHistory)
+            .source_watermark(
+                &watermark_runtime_key,
+                ConsoleFrameSourceKind::SessionHistory,
+            )
             .await?
             .and_then(|watermark| parse_session_history_watermark(&watermark, &session_id))
             .unwrap_or(0);
@@ -677,7 +731,7 @@ async fn backfill_session_history(
             inner
                 .store
                 .record_source_watermark(
-                    &entry.runtime_key,
+                    &watermark_runtime_key,
                     ConsoleFrameSourceKind::SessionHistory,
                     &format!("{session_id}:{offset}"),
                 )
@@ -1063,27 +1117,40 @@ async fn history_frame_has_existing_counterpart(
     inner: &AggregatorInner,
     frame: &NewConsoleFrame,
 ) -> ConsoleLogResult<bool> {
-    let page = inner
-        .store
-        .query_frames(ConsoleTimelineQuery {
-            identity: Some(frame.identity.clone()),
-            conversation_id: frame.conversation_id.clone(),
-            after: None,
-            limit: 10_000,
-        })
-        .await?;
     let fingerprint = transcript_fingerprint(&frame.kind, &frame.payload);
     if fingerprint.is_none() {
         return Ok(false);
     }
-    Ok(page.frames.iter().any(|existing| {
-        let same_session = existing.session_id == frame.session_id
-            || existing.session_id.is_none()
-            || frame.session_id.is_none();
-        existing.source.kind != ConsoleFrameSourceKind::SessionHistory
-            && same_session
-            && transcript_fingerprint(&existing.kind, &existing.payload) == fingerprint
-    }))
+    let mut after = None;
+    loop {
+        let page = inner
+            .store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some(frame.identity.clone()),
+                conversation_id: frame.conversation_id.clone(),
+                after,
+                limit: 1_000,
+            })
+            .await?;
+        if page.frames.iter().any(|existing| {
+            let same_session = existing.session_id == frame.session_id
+                || existing.session_id.is_none()
+                || frame.session_id.is_none();
+            existing.source.kind != ConsoleFrameSourceKind::SessionHistory
+                && same_session
+                && transcript_fingerprint(&existing.kind, &existing.payload) == fingerprint
+        }) {
+            return Ok(true);
+        }
+        if page.frames.is_empty() || page.next_cursor.is_none() {
+            return Ok(false);
+        }
+        after = page.next_cursor;
+    }
+}
+
+fn session_history_watermark_runtime_key(runtime_key: &str, session_id: &str) -> String {
+    format!("{runtime_key}:session-history:{session_id}")
 }
 
 fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
@@ -1108,7 +1175,11 @@ fn stable_value_fingerprint(value: &Value) -> String {
     }
 }
 
-async fn frame_is_visible(inner: &AggregatorInner, frame: &ConsoleFrame) -> ConsoleLogResult<bool> {
+async fn frame_is_visible(
+    inner: &AggregatorInner,
+    frame: &ConsoleFrame,
+    allow_historical_identity: bool,
+) -> ConsoleLogResult<bool> {
     let entry = {
         let entries = inner
             .runtimes
@@ -1135,7 +1206,7 @@ async fn frame_is_visible(inner: &AggregatorInner, frame: &ConsoleFrame) -> Cons
             .iter()
             .find(|member| member.agent_identity == runtime_member)
         else {
-            return Ok(false);
+            return Ok(allow_historical_identity && entry.visibility_policy.frame_visible(frame));
         };
         let Some(record) = identity_record_for_member(&entry, member).await else {
             return Ok(false);
@@ -1285,6 +1356,11 @@ fn send_dedupe_key(
     format!("send:{runtime_key}:{identity}:{origin}:{idempotency_key}")
 }
 
+fn send_request_fingerprint(origin: &str, content: &Value, handling_mode: &str) -> String {
+    let content_json = serde_json::to_string(content).unwrap_or_default();
+    hash_short(&format!("{origin}\n{handling_mode}\n{content_json}"))
+}
+
 fn hash_short(value: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(value.as_bytes());
@@ -1423,6 +1499,102 @@ mod tests {
                 .and_then(|frame| frame.get("status"))
                 .and_then(Value::as_str),
             Some("delivered")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_scan_is_not_capped_to_one_page() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for idx in 0..1_005 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("filler-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: Some("session-a".to_string()),
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Completed,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("filler-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append filler");
+        }
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "live-user-input".to_string(),
+                timestamp_ms: 2_000,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "content": "already here" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("live-user-input".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append live input");
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-user-input".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({ "content": "already here" }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:1006".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
+    #[test]
+    fn session_history_watermark_key_is_session_scoped() {
+        assert_ne!(
+            session_history_watermark_runtime_key("runtime-a", "session-1"),
+            session_history_watermark_runtime_key("runtime-a", "session-2")
         );
     }
 

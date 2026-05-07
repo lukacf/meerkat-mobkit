@@ -302,6 +302,58 @@ export async function sendMessageMultipart(
   return result.result as ConsoleSendMessageResult;
 }
 
+export async function sendConsoleMultipart(
+  baseUrl: string,
+  identity: string,
+  message: string,
+  attachments: File[],
+  origin: string,
+  idempotencyKey: string,
+  handlingMode: "queue" | "steer" = "queue",
+): Promise<ConsoleTimelineAccepted> {
+  const content: Array<Record<string, unknown>> = [];
+  if (message.trim()) {
+    content.push({ type: "text", text: message });
+  }
+  const form = new FormData();
+  attachments.forEach((file, index) => {
+    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
+    content.push({
+      type: "image_upload",
+      upload_id: uploadId,
+      media_type: file.type || "application/octet-stream",
+      alt: file.name,
+    });
+    form.append(`file:${uploadId}`, file, file.name);
+  });
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `mobkit/console/send:${Date.now()}`,
+    method: "mobkit/console/send",
+    params: {
+      identity,
+      content,
+      origin,
+      idempotency_key: idempotencyKey,
+      handling_mode: handlingMode,
+    },
+  }));
+
+  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  return normalizeConsoleTimelineAccepted(result.result, identity);
+}
+
 const TERMINAL_SSE_EVENTS = new Set([
   "interaction_complete",
   "run_completed",
@@ -762,9 +814,17 @@ export async function sendConsole(
     throw new Error("mobkit/console/send returned an invalid acceptance payload");
   }
   const record = accepted as Record<string, unknown>;
+  return normalizeConsoleTimelineAccepted(record, identity);
+}
+
+function normalizeConsoleTimelineAccepted(
+  accepted: unknown,
+  fallbackIdentity: string,
+): ConsoleTimelineAccepted {
+  const record = accepted && typeof accepted === "object" ? accepted as Record<string, unknown> : {};
   return {
     interaction_id: String(record.interaction_id || ""),
-    identity: String(record.identity || identity),
+    identity: String(record.identity || fallbackIdentity),
     conversation_id: typeof record.conversation_id === "string" ? record.conversation_id : undefined,
     session_id: typeof record.session_id === "string" ? record.session_id : undefined,
     input_frame_id: typeof record.input_frame_id === "string" ? record.input_frame_id : undefined,

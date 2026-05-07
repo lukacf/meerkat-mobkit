@@ -26,7 +26,7 @@ use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::warn;
 
-use crate::blob_store::is_valid_blob_id_value;
+use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
     ConsoleCursor, ConsoleFrame, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
     ConsoleSendError, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineQuery,
@@ -613,6 +613,10 @@ async fn query_timeline_snapshot(
     if query.limit == 0 {
         query.limit = 200;
     }
+    if query.after.is_none() {
+        return query_fresh_timeline_snapshot(aggregator, query).await;
+    }
+    let query_identity = query.identity.clone();
     for page_idx in 0..MAX_SNAPSHOT_PAGES {
         let page = aggregator.store().query_frames(query.clone()).await?;
         if page.frames.is_empty() {
@@ -620,7 +624,9 @@ async fn query_timeline_snapshot(
         }
         latest_cursor = page.next_cursor.clone();
         let page_len = page.frames.len();
-        frames.extend(visible_snapshot_frames(aggregator, page.frames).await?);
+        frames.extend(
+            visible_snapshot_frames(aggregator, page.frames, query_identity.as_deref()).await?,
+        );
         query.after = latest_cursor.clone();
         if page_len < query.limit {
             break;
@@ -634,16 +640,47 @@ async fn query_timeline_snapshot(
     Ok((frames, latest_cursor))
 }
 
+async fn query_fresh_timeline_snapshot(
+    aggregator: &MobKitConsoleAggregator,
+    mut query: ConsoleTimelineQuery,
+) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
+    let requested_limit = query.limit;
+    query.limit = query.limit.max(1_000);
+    let query_identity = query.identity.clone();
+    let mut latest_cursor = None;
+    let mut tail = std::collections::VecDeque::with_capacity(requested_limit);
+    loop {
+        let page = aggregator.store().query_frames(query.clone()).await?;
+        if page.frames.is_empty() {
+            break;
+        }
+        latest_cursor = page.next_cursor.clone();
+        let page_len = page.frames.len();
+        for frame in
+            visible_snapshot_frames(aggregator, page.frames, query_identity.as_deref()).await?
+        {
+            if tail.len() >= requested_limit {
+                tail.pop_front();
+            }
+            tail.push_back(frame);
+        }
+        query.after = latest_cursor.clone();
+        if page_len < query.limit {
+            break;
+        }
+    }
+    Ok((tail.into_iter().collect(), latest_cursor))
+}
+
 async fn visible_snapshot_frames(
     aggregator: &MobKitConsoleAggregator,
     frames: Vec<ConsoleFrame>,
+    identity: Option<&str>,
 ) -> ConsoleLogResult<Vec<ConsoleFrame>> {
     let mut visible = Vec::with_capacity(frames.len());
     for frame in frames {
         if aggregator
-            .timeline_event_visible(&ConsoleTimelineEvent::ConsoleFrame {
-                frame: frame.clone(),
-            })
+            .timeline_frame_visible_for_query(&frame, identity)
             .await
         {
             visible.push(frame);
@@ -692,6 +729,18 @@ fn console_send_rpc_code(err: &ConsoleSendError) -> i64 {
             -32000
         }
     }
+}
+
+fn console_send_rpc_error(response_id: Value, err: ConsoleSendError) -> Value {
+    response_value(
+        response_id,
+        None,
+        Some(JsonRpcError {
+            code: console_send_rpc_code(&err),
+            message: err.to_string(),
+            data: None,
+        }),
+    )
 }
 
 fn timeline_event_matches(
@@ -782,33 +831,6 @@ pub async fn console_rpc_multipart_handler(
             })),
         );
     }
-
-    let Some(runtime) = &state.runtime else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json::<Value>(serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": Value::Null,
-                "error": {
-                    "code": -32600,
-                    "message": "console rpc multipart requires a unified runtime",
-                }
-            })),
-        );
-    };
-    let Some(binary_blob_store) = runtime.binary_blob_store() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json::<Value>(serde_json::json!({
-                "jsonrpc": JSONRPC_VERSION,
-                "id": Value::Null,
-                "error": {
-                    "code": -32000,
-                    "message": "binary blob store unavailable",
-                }
-            })),
-        );
-    };
 
     let mut payload: Option<String> = None;
     let mut files: std::collections::BTreeMap<String, MultipartImageUpload> =
@@ -967,6 +989,78 @@ pub async fn console_rpc_multipart_handler(
     let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
     match parsed_request.method.as_str() {
         "mobkit/send_message" => {
+            let Some(runtime) = &state.runtime else {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json::<Value>(json_rpc_error_value(
+                        response_id,
+                        -32600,
+                        "mobkit/send_message multipart requires a unified runtime",
+                    )),
+                );
+            };
+            let Some(binary_blob_store) = runtime.binary_blob_store() else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json::<Value>(json_rpc_error_value(
+                        response_id,
+                        -32000,
+                        "binary blob store unavailable",
+                    )),
+                );
+            };
+            if let Err(message) = externalize_image_upload_placeholders(
+                &mut parsed_request.params,
+                files,
+                binary_blob_store,
+            )
+            .await
+            {
+                return (
+                    StatusCode::OK,
+                    Json::<Value>(invalid_params(response_id, message)),
+                );
+            }
+        }
+        "mobkit/console/send" => {
+            let Some(aggregator) = &state.console_aggregator else {
+                return (
+                    StatusCode::OK,
+                    Json::<Value>(invalid_params(
+                        response_id,
+                        "mobkit/console/send multipart requires a console aggregator",
+                    )),
+                );
+            };
+            let Some(identity) = parsed_request
+                .params
+                .get("identity")
+                .and_then(Value::as_str)
+            else {
+                return (
+                    StatusCode::OK,
+                    Json::<Value>(invalid_params(response_id, "identity required")),
+                );
+            };
+            let binary_blob_store = match aggregator.binary_blob_store_for_identity(identity).await
+            {
+                Ok(Some(store)) => store,
+                Ok(None) => {
+                    return (
+                        StatusCode::OK,
+                        Json::<Value>(invalid_params(
+                            response_id,
+                            "binary blob store unavailable for identity",
+                        )),
+                    );
+                }
+                Err(err) => {
+                    return (
+                        StatusCode::OK,
+                        Json::<Value>(console_send_rpc_error(response_id, err)),
+                    );
+                }
+            };
             if let Err(message) = externalize_image_upload_placeholders(
                 &mut parsed_request.params,
                 files,
@@ -981,6 +1075,26 @@ pub async fn console_rpc_multipart_handler(
             }
         }
         "mobkit/blob/upload" => {
+            let Some(runtime) = &state.runtime else {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json::<Value>(json_rpc_error_value(
+                        response_id,
+                        -32600,
+                        "mobkit/blob/upload multipart requires a unified runtime",
+                    )),
+                );
+            };
+            let Some(binary_blob_store) = runtime.binary_blob_store() else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json::<Value>(json_rpc_error_value(
+                        response_id,
+                        -32000,
+                        "binary blob store unavailable",
+                    )),
+                );
+            };
             let result = match externalize_single_image_upload(
                 &parsed_request.params,
                 files,
@@ -1006,26 +1120,41 @@ pub async fn console_rpc_multipart_handler(
                 StatusCode::OK,
                 Json::<Value>(invalid_params(
                     response_id,
-                    "multipart RPC supports mobkit/send_message and mobkit/blob/upload only",
+                    "multipart RPC supports mobkit/send_message, mobkit/console/send, and mobkit/blob/upload only",
                 )),
             );
         }
     }
-
-    let response_value = handle_console_runtime_rpc(
-        runtime,
-        state.module_runtime.clone(),
-        state.contact_directory.as_ref(),
-        state.event_log.clone(),
-        state.gateway_peer_keys.as_ref(),
-        state.console_events.clone(),
-        state.console_aggregator.clone(),
-        state.metadata_table.clone(),
-        state.mob_events.clone(),
-        parsed_request,
-        true,
-    )
-    .await;
+    let response_value = if parsed_request.method == "mobkit/console/send"
+        && state.runtime.is_none()
+    {
+        handle_console_aggregator_rpc(state.console_aggregator.clone(), parsed_request, true).await
+    } else {
+        let Some(runtime) = &state.runtime else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json::<Value>(json_rpc_error_value(
+                    response_id,
+                    -32600,
+                    "console rpc multipart requires a unified runtime",
+                )),
+            );
+        };
+        handle_console_runtime_rpc(
+            runtime,
+            state.module_runtime.clone(),
+            state.contact_directory.as_ref(),
+            state.event_log.clone(),
+            state.gateway_peer_keys.as_ref(),
+            state.console_events.clone(),
+            state.console_aggregator.clone(),
+            state.metadata_table.clone(),
+            state.mob_events.clone(),
+            parsed_request,
+            true,
+        )
+        .await
+    };
     (StatusCode::OK, Json::<Value>(response_value))
 }
 
@@ -1042,20 +1171,6 @@ pub async fn blob_get_handler(
         )
             .into_response();
     }
-    let Some(runtime) = &state.runtime else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json::<Value>(serde_json::json!({ "error": "runtime_unavailable" })),
-        )
-            .into_response();
-    };
-    let Some(store) = runtime.binary_blob_store() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json::<Value>(serde_json::json!({ "error": "blob_store_unavailable" })),
-        )
-            .into_response();
-    };
     if !is_valid_blob_id_value(&blob_id) {
         return (
             StatusCode::BAD_REQUEST,
@@ -1063,35 +1178,56 @@ pub async fn blob_get_handler(
         )
             .into_response();
     }
-    match store
-        .get_bytes(&meerkat_core::BlobId::from(blob_id.as_str()))
-        .await
+    let blob_id = meerkat_core::BlobId::from(blob_id.as_str());
+    let mut stores: Vec<std::sync::Arc<dyn BinaryBlobStore>> = Vec::new();
+    if let Some(runtime) = &state.runtime
+        && let Some(store) = runtime.binary_blob_store()
     {
-        Ok(payload) => {
-            let mut response_headers = HeaderMap::new();
-            let content_type = HeaderValue::from_str(&payload.media_type)
-                .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-            response_headers.insert(header::CONTENT_TYPE, content_type);
-            if let Ok(content_length) = HeaderValue::from_str(&payload.size.to_string()) {
-                response_headers.insert(header::CONTENT_LENGTH, content_length);
-            }
-            response_headers.insert(
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("private, max-age=31536000, immutable"),
-            );
-            (StatusCode::OK, response_headers, payload.data).into_response()
-        }
-        Err(meerkat_core::BlobStoreError::NotFound(_)) => (
-            StatusCode::NOT_FOUND,
-            Json::<Value>(serde_json::json!({ "error": "blob_not_found" })),
-        )
-            .into_response(),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json::<Value>(serde_json::json!({ "error": err.to_string() })),
-        )
-            .into_response(),
+        stores.push(store);
     }
+    if let Some(aggregator) = &state.console_aggregator {
+        stores.extend(aggregator.binary_blob_stores());
+    }
+    if stores.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json::<Value>(serde_json::json!({ "error": "blob_store_unavailable" })),
+        )
+            .into_response();
+    }
+    for store in stores {
+        match store.get_bytes(&blob_id).await {
+            Ok(payload) => return blob_payload_response(payload),
+            Err(meerkat_core::BlobStoreError::NotFound(_)) => continue,
+            Err(err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json::<Value>(serde_json::json!({ "error": err.to_string() })),
+                )
+                    .into_response();
+            }
+        }
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json::<Value>(serde_json::json!({ "error": "blob_not_found" })),
+    )
+        .into_response()
+}
+
+fn blob_payload_response(payload: BinaryBlobPayload) -> axum::response::Response {
+    let mut response_headers = HeaderMap::new();
+    let content_type = HeaderValue::from_str(&payload.media_type)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    response_headers.insert(header::CONTENT_TYPE, content_type);
+    if let Ok(content_length) = HeaderValue::from_str(&payload.size.to_string()) {
+        response_headers.insert(header::CONTENT_LENGTH, content_length);
+    }
+    response_headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
+    );
+    (StatusCode::OK, response_headers, payload.data).into_response()
 }
 
 async fn console_identity_stream_handler(
@@ -3970,10 +4106,13 @@ mod tests {
     use super::{
         MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, cursor_is_after,
         externalize_image_upload_placeholders, externalize_single_image_upload,
-        mint_console_interaction_id, project_query_events_for_console,
+        mint_console_interaction_id, project_query_events_for_console, query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
-    use crate::console_aggregator::ConsoleCursor;
+    use crate::console_aggregator::{
+        ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
+        ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
+    };
     use crate::types::UnifiedEvent;
     use crate::unified_runtime::{EventQuery, PersistedEvent};
     use bytes::Bytes;
@@ -4005,6 +4144,133 @@ mod tests {
             &ConsoleCursor::from("console:9"),
             &ConsoleCursor::from("console:10")
         ));
+    }
+
+    #[tokio::test]
+    async fn fresh_timeline_snapshot_reads_tail_without_full_log_replay()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for idx in 0..25_000 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("event-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Completed,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("event-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await?;
+        }
+
+        let (frames, cursor) = query_timeline_snapshot(
+            &aggregator,
+            ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                after: None,
+                limit: 200,
+                ..ConsoleTimelineQuery::default()
+            },
+        )
+        .await?;
+
+        assert!(!frames.is_empty());
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(25_000));
+        assert_eq!(
+            frames.last().and_then(|frame| frame.cursor.seq()),
+            Some(25_000)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fresh_timeline_snapshot_keeps_sparse_identity_frames()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "sparse-event".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "sparse-agent".to_string(),
+                conversation_id: Some("sparse-agent".to_string()),
+                session_id: None,
+                kind: "text_complete".to_string(),
+                status: ConsoleFrameStatus::Completed,
+                payload: json!({ "text": "still visible" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("sparse-event".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+        for idx in 0..25_000 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("other-event-{idx}"),
+                    timestamp_ms: idx + 2,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "busy-agent".to_string(),
+                    conversation_id: Some("busy-agent".to_string()),
+                    session_id: None,
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Completed,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("other-event-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await?;
+        }
+
+        let (frames, cursor) = query_timeline_snapshot(
+            &aggregator,
+            ConsoleTimelineQuery {
+                identity: Some("sparse-agent".to_string()),
+                after: None,
+                limit: 200,
+                ..ConsoleTimelineQuery::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].identity, "sparse-agent");
+        assert_eq!(frames[0].payload["text"], json!("still visible"));
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1));
+        Ok(())
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ import {
   queryTimeline,
   sendAddressedInteraction,
   sendConsole,
+  sendConsoleMultipart,
   subscribeIdentityEvents,
 } from "./network";
 
@@ -230,6 +231,55 @@ test("sendConsole posts idempotent console send RPC", async () => {
     assert.equal(result.input_frame_id, "console-frame-1");
     assert.equal(result.cursor, "console:1");
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("sendConsoleMultipart posts identity multipart sends with upload placeholders", async () => {
+  const originalFetch = globalThis.fetch;
+  let payload = "";
+  let hasFilePart = false;
+
+  globalThis.fetch = (async (_input, init) => {
+    const form = init?.body as FormData;
+    payload = String(form.get("payload") || "");
+    hasFilePart = Boolean(form.get("file:upload-test-0"));
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "mobkit/console/send:1",
+      result: {
+        interaction_id: "turn-1",
+        identity: "agent-a",
+        input_frame_id: "console-frame-1",
+        cursor: "console:1",
+        status: "accepted",
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const originalNow = Date.now;
+  try {
+    Date.now = () => Number.parseInt("test", 36);
+    const result = await sendConsoleMultipart(
+      "http://127.0.0.1:7000",
+      "agent-a",
+      "describe this",
+      [new File(["png"], "badge.png", { type: "image/png" })],
+      "console:panel",
+      "idem-1",
+    );
+    assert.match(payload, /"method":"mobkit\/console\/send"/);
+    assert.match(payload, /"identity":"agent-a"/);
+    assert.match(payload, /"idempotency_key":"idem-1"/);
+    assert.match(payload, /"upload_id":"upload-test-0"/);
+    assert.equal(hasFilePart, true);
+    assert.equal(result.input_frame_id, "console-frame-1");
+    assert.equal(result.cursor, "console:1");
+  } finally {
+    Date.now = originalNow;
     globalThis.fetch = originalFetch;
   }
 });

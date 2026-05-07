@@ -3521,6 +3521,48 @@ async function sendMessageMultipart(baseUrl, memberId, message, attachments, han
   }
   return result.result;
 }
+async function sendConsoleMultipart(baseUrl, identity, message, attachments, origin, idempotencyKey, handlingMode = "queue") {
+  const content = [];
+  if (message.trim()) {
+    content.push({ type: "text", text: message });
+  }
+  const form = new FormData();
+  attachments.forEach((file, index) => {
+    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
+    content.push({
+      type: "image_upload",
+      upload_id: uploadId,
+      media_type: file.type || "application/octet-stream",
+      alt: file.name
+    });
+    form.append(`file:${uploadId}`, file, file.name);
+  });
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `mobkit/console/send:${Date.now()}`,
+    method: "mobkit/console/send",
+    params: {
+      identity,
+      content,
+      origin,
+      idempotency_key: idempotencyKey,
+      handling_mode: handlingMode
+    }
+  }));
+  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  return normalizeConsoleTimelineAccepted(result.result, identity);
+}
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "run_completed",
@@ -3682,9 +3724,13 @@ async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, h
     throw new Error("mobkit/console/send returned an invalid acceptance payload");
   }
   const record = accepted;
+  return normalizeConsoleTimelineAccepted(record, identity);
+}
+function normalizeConsoleTimelineAccepted(accepted, fallbackIdentity) {
+  const record = accepted && typeof accepted === "object" ? accepted : {};
   return {
     interaction_id: String(record.interaction_id || ""),
-    identity: String(record.identity || identity),
+    identity: String(record.identity || fallbackIdentity),
     conversation_id: typeof record.conversation_id === "string" ? record.conversation_id : void 0,
     session_id: typeof record.session_id === "string" ? record.session_id : void 0,
     input_frame_id: typeof record.input_frame_id === "string" ? record.input_frame_id : void 0,
@@ -8212,7 +8258,27 @@ function ConsoleApp({ baseUrl }) {
     forceRender();
     try {
       const id = target.identity?.trim();
-      if (attachments.length > 0) {
+      if (attachments.length > 0 && id) {
+        const result = await sendConsoleMultipart(
+          baseUrl,
+          id,
+          text,
+          attachments,
+          `console:${panelId}`,
+          createIdempotencyKey(),
+          handlingMode
+        );
+        if (log.optimisticUser) {
+          log.optimisticUser.interactionId = result.interaction_id;
+          const matched = log.events.some(
+            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
+          );
+          if (matched) {
+            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            log.optimisticUser = null;
+          }
+        }
+      } else if (attachments.length > 0) {
         const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
         if (log.optimisticUser) {
           log.optimisticUser.interactionId = result.interaction_id || "";
