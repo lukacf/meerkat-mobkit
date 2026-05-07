@@ -29,9 +29,9 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 use meerkat_mobkit::{
     AuthPolicy, BigQueryNaming, ConsolePolicy, ConsoleRestJsonRequest, DiscoverySpec,
-    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, RuntimeDecisionInputs, RuntimeOpsPolicy,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state, console_json_router,
-    handle_console_rest_json_route,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, MobRuntimeError, RuntimeDecisionInputs,
+    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, build_runtime_decision_state,
+    console_json_router, handle_console_rest_json_route,
 };
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -94,6 +94,15 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
         release_metadata_json: release_json(),
     })
     .expect("decision state builds")
+}
+
+fn assert_mob_stop_allows_boundary_cancel(stop: Result<(), MobRuntimeError>) {
+    if let Err(err) = stop {
+        assert!(
+            err.to_string().contains("cancel_after_boundary"),
+            "shutdown failed: {err:?}"
+        );
+    }
 }
 
 async fn build_runtime_fixture() -> RuntimeFixture {
@@ -382,7 +391,7 @@ async fn phase_h1_req_001_reference_style_router_mounts_console_and_sse() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -430,7 +439,7 @@ async fn live_snapshot_keeps_configured_modules_even_when_runtime_members_differ
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -545,11 +554,7 @@ comms = true
     assert_eq!(blob_body.as_ref(), b"tiny-png");
 
     let shutdown = runtime.shutdown().await;
-    assert!(
-        shutdown.mob_stop.is_ok(),
-        "shutdown failed: {:?}",
-        shutdown.mob_stop
-    );
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -683,12 +688,7 @@ comms = true
     );
 
     let shutdown = runtime.shutdown().await;
-    if let Err(err) = shutdown.mob_stop {
-        assert!(
-            err.to_string().contains("cancel_after_boundary"),
-            "shutdown failed: {err:?}"
-        );
-    }
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -761,7 +761,7 @@ async fn phase_h1_live_snapshot_tracks_runtime_drift() {
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
     let after_stop = get_console_experience(&app).await;
     assert_eq!(
         after_stop["health_overview"]["live_snapshot"]["running"],
@@ -889,7 +889,7 @@ async fn phase_h1_cross_panel_sidebar_agent_streams_and_unknown_member_rejected(
     );
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
 
 #[tokio::test]
@@ -987,5 +987,5 @@ async fn phase_h1_multi_instance_profile_sidebar_enumerates_individual_agents() 
     assert_eq!(profile_caps["lead"]["instance_count"], json!(3));
 
     let shutdown = fixture.runtime.shutdown().await;
-    assert!(shutdown.mob_stop.is_ok());
+    assert_mob_stop_allows_boundary_cancel(shutdown.mob_stop);
 }
