@@ -267,13 +267,30 @@ impl MobKitConsoleAggregator {
             });
         }
         let mut page = self.inner.store.query_frames(query).await?;
-        page.frames
-            .retain(|frame| frame_is_visible(&self.inner, frame).unwrap_or(false));
+        let mut visible_frames = Vec::with_capacity(page.frames.len());
+        for frame in page.frames {
+            if frame_is_visible(&self.inner, &frame).await.unwrap_or(false) {
+                visible_frames.push(frame);
+            }
+        }
+        page.frames = visible_frames;
         Ok(page)
     }
 
     pub async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
         self.inner.store.latest_cursor().await
+    }
+
+    pub async fn timeline_event_visible(&self, event: &ConsoleTimelineEvent) -> bool {
+        match event {
+            ConsoleTimelineEvent::ConsoleFrame { frame }
+            | ConsoleTimelineEvent::FrameUpdated { frame } => {
+                frame_is_visible(&self.inner, frame).await.unwrap_or(false)
+            }
+            ConsoleTimelineEvent::SnapshotStarted { .. }
+            | ConsoleTimelineEvent::SnapshotComplete { .. }
+            | ConsoleTimelineEvent::ReplayUnavailable { .. } => true,
+        }
     }
 
     fn has_registered_runtimes(&self) -> bool {
@@ -307,6 +324,7 @@ impl MobKitConsoleAggregator {
         }
 
         let content = content_input_from_value(&request.content)?;
+        let handling_mode = parse_handling_mode(request.handling_mode.as_deref())?;
         assert_member_accepts_images(
             &entry.runtime.handle(),
             entry.runtime.session_service(),
@@ -349,7 +367,7 @@ impl MobKitConsoleAggregator {
         entry
             .console_events
             .reserve_interaction_value(
-                &request.identity,
+                &runtime_identity,
                 Some(runtime_identity.as_str()),
                 &interaction_id,
                 &request.origin,
@@ -422,10 +440,6 @@ impl MobKitConsoleAggregator {
         let (dispatching, _effects) = SendState::AcceptedPersisted
             .apply(SendTransition::StartDispatch)
             .map_err(ConsoleSendError::State)?;
-        entry
-            .console_events
-            .accept_interaction(&request.identity, &interaction_id)
-            .await;
         update_frame_status_and_emit(
             &self.inner,
             &outcome.frame.id,
@@ -434,7 +448,6 @@ impl MobKitConsoleAggregator {
         .await
         .map_err(ConsoleSendError::Log)?;
 
-        let handling_mode = parse_handling_mode(request.handling_mode.as_deref())?;
         match send_message_on_mob_with_mode(
             &entry.runtime.handle(),
             &runtime_identity,
@@ -562,6 +575,7 @@ async fn backfill_session_history(
     inner: &AggregatorInner,
     runtime_key: &str,
 ) -> ConsoleLogResult<()> {
+    const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
     let Some(entry) = inner
         .runtimes
         .read()
@@ -585,46 +599,97 @@ async fn backfill_session_history(
         let Some(session_id) = record.session_id.clone() else {
             continue;
         };
-        let Ok(page) = entry
-            .runtime
-            .read_session_history(&session_id, 0, Some(1000))
-            .await
-        else {
-            continue;
-        };
-        let Ok(page_value) = serde_json::to_value(page) else {
-            continue;
-        };
-        let base_offset = page_value
-            .get("offset")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
-        let Some(messages) = page_value.get("messages").and_then(Value::as_array) else {
-            continue;
-        };
-        for (idx, message) in messages.iter().enumerate() {
-            let absolute_offset = base_offset + idx;
-            let mut frame = frame_from_session_history_message(
-                &entry.runtime_key,
-                &record.identity,
-                &session_id,
-                absolute_offset,
-                message.clone(),
-            );
-            if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
-                frame.payload = redacted;
-                frame.status = ConsoleFrameStatus::Redacted;
-            }
-            append_and_emit(inner, frame).await?;
-        }
-        inner
+        let mut offset = inner
             .store
-            .record_source_watermark(
-                &entry.runtime_key,
-                ConsoleFrameSourceKind::SessionHistory,
-                &format!("{session_id}:{}", base_offset + messages.len()),
-            )
-            .await?;
+            .source_watermark(&entry.runtime_key, ConsoleFrameSourceKind::SessionHistory)
+            .await?
+            .and_then(|watermark| parse_session_history_watermark(&watermark, &session_id))
+            .unwrap_or(0);
+        loop {
+            let page = match entry
+                .runtime
+                .read_session_history(&session_id, offset, Some(SESSION_HISTORY_PAGE_LIMIT))
+                .await
+            {
+                Ok(page) => page,
+                Err(err) => {
+                    append_backfill_gap(
+                        inner,
+                        &entry.runtime_key,
+                        &record.identity,
+                        err.to_string(),
+                    )
+                    .await?;
+                    break;
+                }
+            };
+            let page_value = match serde_json::to_value(page) {
+                Ok(value) => value,
+                Err(err) => {
+                    append_backfill_gap(
+                        inner,
+                        &entry.runtime_key,
+                        &record.identity,
+                        err.to_string(),
+                    )
+                    .await?;
+                    break;
+                }
+            };
+            let base_offset = page_value
+                .get("offset")
+                .and_then(Value::as_u64)
+                .unwrap_or(offset as u64) as usize;
+            let Some(messages) = page_value.get("messages").and_then(Value::as_array) else {
+                append_backfill_gap(
+                    inner,
+                    &entry.runtime_key,
+                    &record.identity,
+                    "session history page missing messages".to_string(),
+                )
+                .await?;
+                break;
+            };
+            if messages.is_empty() {
+                break;
+            }
+            for (idx, message) in messages.iter().enumerate() {
+                let absolute_offset = base_offset + idx;
+                let Some(mut frame) = frame_from_session_history_message(
+                    &entry.runtime_key,
+                    &record.identity,
+                    &session_id,
+                    absolute_offset,
+                    message.clone(),
+                ) else {
+                    continue;
+                };
+                if history_frame_has_existing_counterpart(inner, &frame).await? {
+                    continue;
+                }
+                if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
+                    frame.payload = redacted;
+                    frame.status = ConsoleFrameStatus::Redacted;
+                }
+                append_and_emit(inner, frame).await?;
+            }
+            offset = base_offset + messages.len();
+            inner
+                .store
+                .record_source_watermark(
+                    &entry.runtime_key,
+                    ConsoleFrameSourceKind::SessionHistory,
+                    &format!("{session_id}:{offset}"),
+                )
+                .await?;
+            let has_more = page_value
+                .get("has_more")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !has_more || messages.len() < SESSION_HISTORY_PAGE_LIMIT {
+                break;
+            }
+        }
     }
     Ok(())
 }
@@ -679,6 +744,53 @@ async fn append_source_gap(
             payload: json!({
                 "reason": reason,
                 "source_kind": "console_event",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Synthetic,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        },
+    )
+    .await?;
+    let _ = inner
+        .event_tx
+        .send(ConsoleTimelineEvent::ReplayUnavailable {
+            requested_cursor: format!("source-gap:{runtime_key}"),
+            latest_cursor: inner.store.latest_cursor().await.ok().flatten(),
+        });
+    Ok(())
+}
+
+async fn append_backfill_gap(
+    inner: &AggregatorInner,
+    runtime_key: &str,
+    identity: &str,
+    reason: String,
+) -> ConsoleLogResult<()> {
+    append_and_emit(
+        inner,
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: format!(
+                "session-backfill-gap:{runtime_key}:{identity}:{}",
+                current_time_ms()
+            ),
+            timestamp_ms: current_time_ms(),
+            runtime_key: runtime_key.to_string(),
+            identity: identity.to_string(),
+            conversation_id: Some(identity.to_string()),
+            session_id: None,
+            kind: "replay_unavailable".to_string(),
+            status: ConsoleFrameStatus::DeliveryFailed,
+            payload: json!({
+                "reason": reason,
+                "source_kind": "session_history",
             }),
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::Synthetic,
@@ -836,7 +948,7 @@ fn frame_from_session_history_message(
     session_id: &str,
     offset: usize,
     message: Value,
-) -> NewConsoleFrame {
+) -> Option<NewConsoleFrame> {
     let payload_hash = hash_short(&serde_json::to_string(&message).unwrap_or_default());
     let role = message
         .get("role")
@@ -848,7 +960,7 @@ fn frame_from_session_history_message(
     } else if role.contains("assistant") {
         "text_complete"
     } else {
-        "session_history_message"
+        return None;
     };
     let timestamp_ms = history_timestamp_ms(&message).unwrap_or_else(current_time_ms);
     let payload = if kind == "text_complete" {
@@ -864,7 +976,7 @@ fn frame_from_session_history_message(
     } else {
         json!({ "message": message })
     };
-    NewConsoleFrame {
+    Some(NewConsoleFrame {
         id: None,
         dedupe_key: format!("session-history:{runtime_key}:{session_id}:{offset}:{payload_hash}"),
         timestamp_ms,
@@ -885,7 +997,7 @@ fn frame_from_session_history_message(
         run_id: None,
         parent_frame_id: None,
         caused_by_frame_id: None,
-    }
+    })
 }
 
 fn history_timestamp_ms(message: &Value) -> Option<u64> {
@@ -924,20 +1036,114 @@ fn extract_history_text(message: &Value) -> String {
                 .join("");
         }
     }
+    if let Some(blocks) = message.get("blocks").and_then(Value::as_array) {
+        return blocks
+            .iter()
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .or_else(|| block.get("content"))
+                    .and_then(Value::as_str)
+            })
+            .collect::<Vec<_>>()
+            .join("");
+    }
     String::new()
 }
 
-fn frame_is_visible(inner: &AggregatorInner, frame: &ConsoleFrame) -> ConsoleLogResult<bool> {
-    let entries = inner
-        .runtimes
-        .read()
-        .map_err(|_| runtime_registry_lock_error())?;
-    if entries.is_empty() {
-        return Ok(true);
+fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
+    let (watermark_session_id, offset) = watermark.rsplit_once(':')?;
+    if watermark_session_id != session_id {
+        return None;
     }
-    let Some(entry) = entries.get(&frame.runtime_key) else {
+    offset.parse().ok()
+}
+
+async fn history_frame_has_existing_counterpart(
+    inner: &AggregatorInner,
+    frame: &NewConsoleFrame,
+) -> ConsoleLogResult<bool> {
+    let page = inner
+        .store
+        .query_frames(ConsoleTimelineQuery {
+            identity: Some(frame.identity.clone()),
+            conversation_id: frame.conversation_id.clone(),
+            after: None,
+            limit: 10_000,
+        })
+        .await?;
+    let fingerprint = transcript_fingerprint(&frame.kind, &frame.payload);
+    if fingerprint.is_none() {
         return Ok(false);
+    }
+    Ok(page.frames.iter().any(|existing| {
+        let same_session = existing.session_id == frame.session_id
+            || existing.session_id.is_none()
+            || frame.session_id.is_none();
+        existing.source.kind != ConsoleFrameSourceKind::SessionHistory
+            && same_session
+            && transcript_fingerprint(&existing.kind, &existing.payload) == fingerprint
+    }))
+}
+
+fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
+    match kind {
+        "user_input" | "interaction_started" => payload
+            .get("content")
+            .map(stable_value_fingerprint)
+            .or_else(|| payload.get("message").map(stable_value_fingerprint)),
+        "text_complete" | "interaction_complete" | "run_completed" => payload
+            .get("text")
+            .or_else(|| payload.get("result"))
+            .or_else(|| payload.get("content"))
+            .map(stable_value_fingerprint),
+        _ => None,
+    }
+}
+
+fn stable_value_fingerprint(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.trim().to_string(),
+        other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+async fn frame_is_visible(inner: &AggregatorInner, frame: &ConsoleFrame) -> ConsoleLogResult<bool> {
+    let entry = {
+        let entries = inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?;
+        if entries.is_empty() {
+            return Ok(true);
+        }
+        let Some(entry) = entries.get(&frame.runtime_key) else {
+            return Ok(false);
+        };
+        entry.clone()
     };
+    if frame.identity != "__console__" {
+        let runtime_member_id = strip_namespace(&frame.identity, &entry.identity_namespace)
+            .unwrap_or_else(|| frame.identity.clone());
+        let runtime_member = MeerkatId::from(runtime_member_id.as_str());
+        let members = entry
+            .runtime
+            .handle()
+            .list_members_including_retiring()
+            .await;
+        let Some(member) = members
+            .iter()
+            .find(|member| member.agent_identity == runtime_member)
+        else {
+            return Ok(false);
+        };
+        let Some(record) = identity_record_for_member(&entry, member).await else {
+            return Ok(false);
+        };
+        if !entry.visibility_policy.identity_visible(&record) {
+            return Ok(false);
+        }
+    }
     Ok(entry.visibility_policy.frame_visible(frame))
 }
 
@@ -1232,7 +1438,8 @@ mod tests {
                 "content": "hello",
                 "timestamp_ms": 10
             }),
-        );
+        )
+        .expect("user history frame");
         let assistant = frame_from_session_history_message(
             "runtime-a",
             "agent-a",
@@ -1243,7 +1450,8 @@ mod tests {
                 "content": [{ "type": "text", "text": "hi there" }],
                 "timestamp_ms": 11
             }),
-        );
+        )
+        .expect("assistant history frame");
 
         assert_eq!(user.kind, "user_input");
         assert_eq!(user.source.kind, ConsoleFrameSourceKind::SessionHistory);
@@ -1255,5 +1463,38 @@ mod tests {
                 .dedupe_key
                 .starts_with("session-history:runtime-a:session-a:1:")
         );
+    }
+
+    #[test]
+    fn session_history_projection_skips_non_transcript_messages() {
+        let skipped = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "content": "internal system prompt"
+            }),
+        );
+        assert!(skipped.is_none());
+    }
+
+    #[test]
+    fn session_history_projection_extracts_assistant_blocks() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "assistant",
+                "blocks": [
+                    { "type": "text", "text": "hello " },
+                    { "type": "text", "text": "there" }
+                ]
+            }),
+        )
+        .expect("assistant block history frame");
+        assert_eq!(frame.payload["text"], json!("hello there"));
     }
 }

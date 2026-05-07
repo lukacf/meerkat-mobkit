@@ -6,6 +6,7 @@ interface RosterPanelProps {
   onSelect: (agent: ConsoleAgent) => void;
   onInspect: (agent: ConsoleAgent) => void;
   onLifecycle: (identity: string, method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset") => void;
+  canResetLifecycle?: boolean;
 }
 
 const ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"] as const;
@@ -24,7 +25,7 @@ function stateLabel(state?: string): string {
   return (state || "unknown").toLowerCase();
 }
 
-export function RosterPanel({ agents, onSelect, onInspect, onLifecycle }: RosterPanelProps): React.JSX.Element {
+export function RosterPanel({ agents, onSelect, onInspect, onLifecycle, canResetLifecycle = false }: RosterPanelProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
   const [role, setRole] = React.useState<Role>("all");
   const [sel, setSel] = React.useState<string>(agents[0]?.member_id || "");
@@ -118,16 +119,15 @@ export function RosterPanel({ agents, onSelect, onInspect, onLifecycle }: Roster
               </dl>
               <div className="rd__actions">
                 <button onClick={() => onInspect(active)}>Inspect</button>
-                <button
-                  disabled={!active.affordances?.can_respawn}
-                  onClick={() => onLifecycle(activeIdentity, "mobkit/respawn")}
-                >Respawn</button>
-                <button onClick={() => onLifecycle(activeIdentity, "mobkit/reset")}>Reset</button>
-                <button
-                  className="danger"
-                  disabled={!active.affordances?.can_retire}
-                  onClick={() => onLifecycle(activeIdentity, "mobkit/retire")}
-                >Retire</button>
+                {active.affordances?.can_respawn ? (
+                  <button onClick={() => onLifecycle(activeIdentity, "mobkit/respawn")}>Respawn</button>
+                ) : null}
+                {canResetLifecycle ? (
+                  <button onClick={() => onLifecycle(activeIdentity, "mobkit/reset")}>Reset</button>
+                ) : null}
+                {active.affordances?.can_retire ? (
+                  <button className="danger" onClick={() => onLifecycle(activeIdentity, "mobkit/retire")}>Retire</button>
+                ) : null}
               </div>
             </>
           )}

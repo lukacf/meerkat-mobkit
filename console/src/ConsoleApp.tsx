@@ -11,6 +11,7 @@ import {
   useConsoleDockController,
 } from "@console-components";
 import type { ConsoleComposerToolbarItem, ConversationTimelineEntry, IdentityInspectViewState } from "@console-core";
+import { normalizeIdentityInspectViewState } from "@console-core";
 
 import { normalizeAgents } from "./lib/agents";
 import {
@@ -57,7 +58,7 @@ import { GatesPanel } from "./panels/GatesPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
 import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
-import { Sidebar as DesignSidebar } from "./panels/Sidebar";
+import { Sidebar as DesignSidebar, type NavKind } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
@@ -123,6 +124,33 @@ function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): Conv
     if (entry.text && entry.text.trim().length > 0) sanitized.push(entry);
   }
   return sanitized;
+}
+
+function normalizeConsoleInspectResult(value: unknown): IdentityInspectViewState | null {
+  const direct = normalizeIdentityInspectViewState(value);
+  if (direct) return direct;
+  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const identityRecord = record.identity && typeof record.identity === "object"
+    ? record.identity as Record<string, unknown>
+    : null;
+  if (!identityRecord) return null;
+  return normalizeIdentityInspectViewState({
+    identity: identityRecord.identity,
+    display_name: identityRecord.display_name,
+    role: identityRecord.labels && typeof identityRecord.labels === "object"
+      ? (identityRecord.labels as Record<string, unknown>).role
+      : undefined,
+    state: identityRecord.health,
+    addressability: identityRecord.addressable === true ? "addressable" : "internal_only",
+    session_id: identityRecord.session_id,
+    labels: identityRecord.labels,
+    continuity: {
+      session_id: identityRecord.session_id,
+      agent_runtime_id: identityRecord.runtime_member_id,
+    },
+    topology_peers: Array.isArray(record.peers) ? record.peers : [],
+    lease: null,
+  });
 }
 
 const DEFAULT_APPROVER_ID = "console-ops-lead";
@@ -344,23 +372,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     for (const frame of frames) appendFrame(identity, frame);
   }
 
-  /// Render-time chat view: frames sorted by conversational time first,
-  /// with the aggregate cursor only as a deterministic tiebreaker. The
-  /// console log remains cursor-ordered at the store/API layer, but the
-  /// transcript must not let source-event admission order place an
-  /// assistant response ahead of the user input that triggered it.
+  /// Render-time chat view: aggregate cursor is the canonical order. The
+  /// server admits user input before dispatch, so cursor order preserves
+  /// causality without timestamp-only restore drift.
   function getSortedFrames(identity: string): ConsoleFrame[] {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events
       .map((frame, index) => ({ frame, index }))
       .sort((a, b) => {
-        const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-        const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-        if (ta !== tb) return ta - tb;
         const ca = cursorSeq(a.frame.cursor);
         const cb = cursorSeq(b.frame.cursor);
         if (ca !== null && cb !== null && ca !== cb) return ca - cb;
+        const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+        const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+        if (ta !== tb) return ta - tb;
         return a.index - b.index;
       })
       .map((entry) => entry.frame);
@@ -610,6 +636,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     dock.openTarget(buildDockTarget(first), "replace_focused");
   }, [agents, dock]);
 
+  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const visibleControls = React.useMemo<NavKind[]>(
+    () => hasMobControlSurface
+      ? ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"]
+      : ["topology", "timeline", "roster", "logs", "health"],
+    [hasMobControlSurface],
+  );
+
   // =========================================================================
   // REFRESH PANEL DATA (inspect, routing, gating)
   // =========================================================================
@@ -619,26 +653,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const inspects = openPanels.filter((t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> => t.kind === "identity-inspect");
     if (inspects.length) {
       const entries = await Promise.all(inspects.map(async (t) => {
-        const r = await callConsoleRpc<IdentityInspectViewState>(baseUrl, "mobkit/inspect_identity", { identity: t.identity });
-        return [t.identity, r] as const;
+        const r = await callConsoleRpc<unknown>(baseUrl, "mobkit/console/inspect_identity", { identity: t.identity })
+          .catch(() => callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity: t.identity }));
+        return [t.identity, normalizeConsoleInspectResult(r)] as const;
       }));
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
-    if (openPanels.some((t) => t.kind === "routing")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
       const [routes, history] = await Promise.all([
         callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
         callConsoleRpc(baseUrl, "mobkit/delivery/history", {}),
       ]);
       setRoutingData(buildRoutingSectionView({ routesResponse: routes, historyResponse: history }));
     }
-    if (openPanels.some((t) => t.kind === "gating")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating")) {
       const [p, a] = await Promise.all([
         callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
         callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
       ]);
       setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
     }
-  }, [baseUrl, dock.viewState.panels]);
+  }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
 
   React.useEffect(() => { void refreshPanelData().catch(() => {}); }, [dock.viewState.panels, refreshPanelData]);
 
@@ -1183,6 +1218,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey)
       ? phaseRef.current[panelKey]
       : agent?.response_phase ?? null;
+    const canRespawn = agent?.affordances?.can_respawn === true;
+    const canRetire = agent?.affordances?.can_retire === true;
 
     const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
       id: s.id, kind: "pill" as const, label: s.label, iconName: s.iconName || "i-bolt",
@@ -1229,8 +1266,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onStagedChange={(action) => setStagedAttachmentsForIdentity(identity, action)}
         onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
         onInspect={() => { if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab"); }}
-        onRespawn={() => void onLifecycleAction(identity, "mobkit/respawn")}
-        onRetire={() => void onLifecycleAction(identity, "mobkit/retire")}
+        onRespawn={canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : undefined}
+        onRetire={canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : undefined}
         stackSlot={stackSlot}
       />
     );
@@ -1242,14 +1279,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function renderInspectPanel(target: Extract<MobKitDockTarget, { kind: "identity-inspect" }>) {
     const inspect = inspectByIdentity[target.identity];
+    const agent = agents.find((candidate) => candidate.identity === target.identity || candidate.member_id === target.identity);
+    const canRespawn = agent?.affordances?.can_respawn === true;
+    const canRetire = agent?.affordances?.can_retire === true;
+    const canReset = experience?.runtime_capabilities?.can_retire_members === true;
     return (
       <div className="console-panel" data-testid={`inspect-panel:${target.identity}`}>
         <div className="console-panel__header">
           <h3>{target.identity}</h3>
           <div className="console-panel__actions">
-            <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>Respawn</button>
-            <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>Reset</button>
-            <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>Retire</button>
+            {canRespawn ? <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>Respawn</button> : null}
+            {canReset ? <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>Reset</button> : null}
+            {canRetire ? <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>Retire</button> : null}
           </div>
         </div>
         {!inspect ? <p>Loading identity details…</p> : (
@@ -1306,6 +1347,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (!target) return <div className="console-panel">No panel target</div>;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") return renderInspectPanel(target);
+    if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
+      return <div className="console-panel">This view requires a mob runtime control surface.</div>;
+    }
     if (target.kind === "routing") return <RoutingPanel data={routingData} />;
     if (target.kind === "gating") return (
       <GatingInboxPanel
@@ -1329,6 +1373,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
         onInspect={handleInspectAgent}
         onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
+        canResetLifecycle={hasMobControlSurface}
       />
     );
     if (target.kind === "gates") return <GatesPanel audit={gatingData.audit} />;
@@ -1364,9 +1409,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           selectedMemberId={focusedMemberId}
           recentActivity={activityRef.current}
           collapsed={sidebarCollapsed}
+          visibleControls={visibleControls}
           onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
           onInspect={(a) => dock.openTarget(buildInspectTarget(a), "replace_focused")}
-          onOpenControl={(kind) => dock.openTarget(buildControlTarget(kind), "replace_focused")}
+          onOpenControl={(kind) => {
+            if (!visibleControls.includes(kind)) return;
+            dock.openTarget(buildControlTarget(kind), "replace_focused");
+          }}
         />
         <div className="pane-resizer" aria-hidden="true" data-testid="resize:sidebar" onPointerDown={handleSidebarResize} />
         <div className="main">
@@ -1374,6 +1423,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             viewState={dock.viewState}
             agents={agents}
             renderPanelBody={renderPanelBody}
+            visibleControls={visibleControls}
             onSelectTab={(id) => dock.selectTab(id)}
             onCloseTab={(id) => dock.closeTab(id)}
             onCreateTab={() => dock.createTab()}

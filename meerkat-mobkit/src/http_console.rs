@@ -28,8 +28,9 @@ use tracing::warn;
 
 use crate::blob_store::is_valid_blob_id_value;
 use crate::console_aggregator::{
-    ConsoleCursor, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
-    ConsoleTimelineEvent, ConsoleTimelineQuery, MobKitConsoleAggregator,
+    ConsoleCursor, ConsoleFrame, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
+    ConsoleSendError, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineQuery,
+    MobKitConsoleAggregator,
 };
 use crate::console_contracts::{
     ALL_EVENTS_CONTROL_IDENTITY, ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope,
@@ -41,8 +42,9 @@ use crate::mob_handle_runtime::{MEMBER_STATE_ACTIVE, MEMBER_STATE_RETIRING, MobR
 use crate::rpc::{JSONRPC_VERSION, JsonRpcError, JsonRpcRequest, JsonRpcResponse};
 use crate::runtime::MobkitRuntimeHandle;
 use crate::runtime::{
-    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleRestJsonRequest, DeliveryHistoryRequest,
-    GatingDecideRequest, GatingDecision, RuntimeDecisionState, extract_bearer_token_from_header,
+    ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
+    ConsoleRestJsonRequest, DeliveryHistoryRequest, GatingDecideRequest, GatingDecision,
+    RuntimeDecisionState, extract_bearer_token_from_header,
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
@@ -264,7 +266,12 @@ pub async fn console_json_handler(
         Some(runtime) => Some(
             build_live_snapshot(runtime, &config_module_ids, state.console_events.as_ref()).await,
         ),
-        None => None,
+        None => match &state.console_aggregator {
+            Some(aggregator) => build_aggregator_live_snapshot(aggregator, &config_module_ids)
+                .await
+                .ok(),
+            None => None,
+        },
     };
 
     let response = handle_console_rest_json_route_with_snapshot(
@@ -385,6 +392,7 @@ async fn console_identities_handler(
             "console aggregator unavailable",
         );
     };
+    let aggregator = aggregator.clone();
     match aggregator.list_identities().await {
         Ok(identities) => (
             StatusCode::OK,
@@ -484,6 +492,7 @@ async fn console_timeline_stream_handler(
             "console aggregator unavailable",
         );
     };
+    let aggregator = aggregator.clone();
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
@@ -492,29 +501,30 @@ async fn console_timeline_stream_handler(
         .map(ToString::to_string);
     let timeline_query = timeline_query_from_http(query, last_event_id);
     let mut rx = aggregator.subscribe();
-    let replay_page = match aggregator.query_timeline(timeline_query.clone()).await {
-        Ok(page) => page,
-        Err(_) => {
-            let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
-            let requested_cursor = timeline_query
-                .after
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_default();
-            return (
-                StatusCode::CONFLICT,
-                Json::<Value>(
-                    serde_json::to_value(ConsoleReplayUnavailable {
-                        error: "replay_unavailable".to_string(),
-                        requested_cursor,
-                        latest_cursor,
-                    })
-                    .unwrap_or_else(|_| json!({ "error": "replay_unavailable" })),
-                ),
-            )
-                .into_response();
-        }
-    };
+    let (snapshot_frames, snapshot_cursor) =
+        match query_timeline_snapshot(&aggregator, timeline_query.clone()).await {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                let latest_cursor = aggregator.latest_cursor().await.ok().flatten();
+                let requested_cursor = timeline_query
+                    .after
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                return (
+                    StatusCode::CONFLICT,
+                    Json::<Value>(
+                        serde_json::to_value(ConsoleReplayUnavailable {
+                            error: "replay_unavailable".to_string(),
+                            requested_cursor,
+                            latest_cursor,
+                        })
+                        .unwrap_or_else(|_| json!({ "error": "replay_unavailable" })),
+                    ),
+                )
+                    .into_response();
+            }
+        };
     let identity = timeline_query.identity.clone();
     let conversation_id = timeline_query.conversation_id.clone();
     let snapshot_after = timeline_query.after.clone();
@@ -522,8 +532,8 @@ async fn console_timeline_stream_handler(
         if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::SnapshotStarted { after: snapshot_after }) {
             yield Ok::<Event, Infallible>(event);
         }
-        let mut latest_cursor = replay_page.next_cursor.clone();
-        for frame in replay_page.frames {
+        let mut latest_cursor = snapshot_cursor;
+        for frame in snapshot_frames {
             latest_cursor = Some(frame.cursor.clone());
             if let Some(event) = sse_event_from_timeline_event(&ConsoleTimelineEvent::ConsoleFrame { frame }) {
                 yield Ok::<Event, Infallible>(event);
@@ -535,6 +545,9 @@ async fn console_timeline_stream_handler(
         loop {
             match rx.recv().await {
                 Ok(event) if timeline_event_matches(&event, identity.as_deref(), conversation_id.as_deref()) => {
+                    if !aggregator.timeline_event_visible(&event).await {
+                        continue;
+                    }
                     if let Some(event_cursor) = timeline_event_cursor(&event)
                         && let Some(current_cursor) = latest_cursor.as_ref()
                         && !cursor_is_after(event_cursor, current_cursor)
@@ -588,6 +601,55 @@ fn timeline_query_from_http(
         after,
         limit: query.limit.unwrap_or(200),
     }
+}
+
+async fn query_timeline_snapshot(
+    aggregator: &MobKitConsoleAggregator,
+    mut query: ConsoleTimelineQuery,
+) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
+    const MAX_SNAPSHOT_PAGES: usize = 100;
+    let mut frames = Vec::new();
+    let mut latest_cursor = query.after.clone();
+    if query.limit == 0 {
+        query.limit = 200;
+    }
+    for page_idx in 0..MAX_SNAPSHOT_PAGES {
+        let page = aggregator.store().query_frames(query.clone()).await?;
+        if page.frames.is_empty() {
+            break;
+        }
+        latest_cursor = page.next_cursor.clone();
+        let page_len = page.frames.len();
+        frames.extend(visible_snapshot_frames(aggregator, page.frames).await?);
+        query.after = latest_cursor.clone();
+        if page_len < query.limit {
+            break;
+        }
+        if page_idx + 1 == MAX_SNAPSHOT_PAGES {
+            return Err(Box::new(std::io::Error::other(
+                "timeline replay exceeded maximum snapshot pages",
+            )));
+        }
+    }
+    Ok((frames, latest_cursor))
+}
+
+async fn visible_snapshot_frames(
+    aggregator: &MobKitConsoleAggregator,
+    frames: Vec<ConsoleFrame>,
+) -> ConsoleLogResult<Vec<ConsoleFrame>> {
+    let mut visible = Vec::with_capacity(frames.len());
+    for frame in frames {
+        if aggregator
+            .timeline_event_visible(&ConsoleTimelineEvent::ConsoleFrame {
+                frame: frame.clone(),
+            })
+            .await
+        {
+            visible.push(frame);
+        }
+    }
+    Ok(visible)
 }
 
 fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::response::Response {
@@ -2520,6 +2582,14 @@ async fn handle_console_runtime_rpc(
                 );
             }
 
+            // `handling_mode` is read off the raw params rather than added
+            // to `ConsoleInteractionRequest` so the contract struct stays
+            // stable for callers that don't care which mode they sent in.
+            let handling_mode = match parse_handling_mode(&request.params) {
+                Ok(mode) => mode,
+                Err(message) => return invalid_params(response_id, message),
+            };
+
             let interaction_id = mint_console_interaction_id();
             if let Some(store) = &console_events
                 && let Err(message) = store
@@ -2548,14 +2618,6 @@ async fn handle_console_runtime_rpc(
             if let Some(store) = &console_events {
                 store.accept_interaction(identity, &interaction_id).await;
             }
-
-            // `handling_mode` is read off the raw params rather than added
-            // to `ConsoleInteractionRequest` so the contract struct stays
-            // stable for callers that don't care which mode they sent in.
-            let handling_mode = match parse_handling_mode(&request.params) {
-                Ok(mode) => mode,
-                Err(message) => return invalid_params(response_id, message),
-            };
 
             match send_message_on_mob_with_mode(
                 &handle,
@@ -3796,6 +3858,78 @@ async fn build_live_snapshot(
         members,
         true,
     )
+}
+
+async fn build_aggregator_live_snapshot(
+    aggregator: &MobKitConsoleAggregator,
+    config_module_ids: &[String],
+) -> Result<ConsoleLiveSnapshot, Box<dyn std::error::Error + Send + Sync>> {
+    let identities = aggregator.list_identities().await?;
+    let mut members = identities
+        .iter()
+        .map(|identity| {
+            let mut labels = identity.labels.clone();
+            labels
+                .entry("display_name".to_string())
+                .or_insert_with(|| identity.display_name.clone());
+            labels
+                .entry("addressable".to_string())
+                .or_insert_with(|| identity.addressable.to_string());
+            ConsoleMember {
+                agent_identity: identity.identity.clone(),
+                role: labels
+                    .get("role")
+                    .cloned()
+                    .unwrap_or_else(|| "identity".to_string()),
+                state: identity.health.clone(),
+                model_capabilities: ConsoleModelCapabilities::default(),
+                runtime_mode: Some("console_aggregator".to_string()),
+                session_id: identity.session_id.clone(),
+                wired_to: Vec::new(),
+                labels,
+            }
+        })
+        .collect::<Vec<_>>();
+    members.sort_by(|left, right| left.agent_identity.cmp(&right.agent_identity));
+    let agents = members
+        .iter()
+        .map(|member| ConsoleAgentLiveSnapshot {
+            agent_id: member.agent_identity.clone(),
+            member_id: member.agent_identity.clone(),
+            label: member
+                .labels
+                .get("display_name")
+                .cloned()
+                .unwrap_or_else(|| member.agent_identity.clone()),
+            kind: "meerkat".to_string(),
+            identity: Some(member.agent_identity.clone()),
+            role: Some(member.role.clone()),
+            state: Some(member.state.clone()),
+            session_id: member.session_id.clone(),
+            model_capabilities: member.model_capabilities.clone(),
+            response_phase: None,
+            watched: None,
+            alert_level: None,
+            degraded: None,
+            degraded_reason: None,
+        })
+        .collect::<Vec<_>>();
+    let loaded_modules = if config_module_ids.is_empty() {
+        members
+            .iter()
+            .map(|member| member.agent_identity.clone())
+            .collect()
+    } else {
+        config_module_ids.to_vec()
+    };
+    Ok(ConsoleLiveSnapshot::new(
+        Some("console-aggregator".to_string()),
+        true,
+        loaded_modules,
+        agents,
+        members,
+        true,
+    ))
 }
 
 pub async fn console_frontend_index_handler() -> impl IntoResponse {

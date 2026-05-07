@@ -246,6 +246,7 @@ fn build_console_experience_contract(
     modules: &[String],
     live_snapshot: &ConsoleLiveSnapshot,
 ) -> Value {
+    let is_aggregate_console = live_snapshot.runtime_id.as_deref() == Some("console-aggregator");
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
         agent.role.is_some()
             || agent.session_id.is_some()
@@ -280,11 +281,11 @@ fn build_console_experience_contract(
     // runtime is present, so multi-instance profiles (e.g. 5 profiles → 15
     // agents) enumerate every individual agent, not just profile-level IDs.
     // Fall back to loaded_modules for module-only runtimes.
-    let sidebar_agents: Vec<Value> =
-        if live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty() {
-            let mut sorted_members: Vec<&ConsoleMember> = live_snapshot.members.iter().collect();
-            sorted_members.sort_by(|a, b| a.agent_identity.cmp(&b.agent_identity));
-            sorted_members
+    let has_roster_members = live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty();
+    let sidebar_agents: Vec<Value> = if has_roster_members {
+        let mut sorted_members: Vec<&ConsoleMember> = live_snapshot.members.iter().collect();
+        sorted_members.sort_by(|a, b| a.agent_identity.cmp(&b.agent_identity));
+        sorted_members
                 .iter()
                 .map(|member| {
                     let label = member
@@ -342,92 +343,108 @@ fn build_console_experience_contract(
                         "affordances": {
                             "addressable": addressable,
                             "can_send_message": addressable,
-                            "can_retire": !singleton,
-                            "can_respawn": true,
-                            "runtime_mode": "mob_agent",
+                            "can_retire": !is_aggregate_console && !singleton,
+                            "can_respawn": !is_aggregate_console,
+                            "runtime_mode": if is_aggregate_console { "console_aggregator" } else { "mob_agent" },
                         },
                     })
                 })
                 .collect()
-        } else {
-            live_snapshot
-                .loaded_modules
-                .iter()
-                .map(|module_id| {
-                    serde_json::json!({
-                        "agent_id": module_id,
-                        "member_id": module_id,
-                        "label": module_id,
-                        "kind": "module_agent",
-                    })
+    } else {
+        live_snapshot
+            .loaded_modules
+            .iter()
+            .map(|module_id| {
+                serde_json::json!({
+                    "agent_id": module_id,
+                    "member_id": module_id,
+                    "label": module_id,
+                    "kind": "module_agent",
                 })
-                .collect()
-        };
+            })
+            .collect()
+    };
 
-    let sidebar_agents: Vec<Value> =
-        if live_snapshot.has_mob_runtime && !live_snapshot.members.is_empty() {
-            sidebar_agents
-        } else if live_snapshot.agents.iter().any(has_extended_agent_contract) {
-            live_snapshot
-                .agents
-                .iter()
-                .map(|agent| {
-                    let mut record = serde_json::Map::new();
+    let sidebar_agents: Vec<Value> = if has_roster_members {
+        sidebar_agents
+    } else if live_snapshot.agents.iter().any(has_extended_agent_contract) {
+        live_snapshot
+            .agents
+            .iter()
+            .map(|agent| {
+                let mut record = serde_json::Map::new();
+                record.insert(
+                    "agent_id".to_string(),
+                    Value::String(agent.agent_id.clone()),
+                );
+                record.insert(
+                    "member_id".to_string(),
+                    Value::String(agent.member_id.clone()),
+                );
+                record.insert("label".to_string(), Value::String(agent.label.clone()));
+                record.insert("kind".to_string(), Value::String(agent.kind.clone()));
+                if let Some(role) = &agent.role {
+                    record.insert("role".to_string(), Value::String(role.clone()));
+                }
+                if let Some(state) = &agent.state {
+                    record.insert("state".to_string(), Value::String(state.clone()));
+                }
+                if let Some(identity) = &agent.identity {
+                    record.insert("identity".to_string(), Value::String(identity.clone()));
+                }
+                if let Some(session_id) = &agent.session_id {
+                    record.insert("session_id".to_string(), Value::String(session_id.clone()));
+                }
+                record.insert(
+                    "model_capabilities".to_string(),
+                    serde_json::to_value(&agent.model_capabilities).unwrap_or(Value::Null),
+                );
+                if let Some(response_phase) = &agent.response_phase {
                     record.insert(
-                        "agent_id".to_string(),
-                        Value::String(agent.agent_id.clone()),
+                        "response_phase".to_string(),
+                        Value::String(response_phase.clone()),
                     );
+                }
+                if is_aggregate_console {
+                    record.insert("addressable".to_string(), Value::Bool(true));
                     record.insert(
-                        "member_id".to_string(),
-                        Value::String(agent.member_id.clone()),
+                        "affordances".to_string(),
+                        serde_json::json!({
+                            "addressable": true,
+                            "can_send_message": true,
+                            "can_retire": false,
+                            "can_respawn": false,
+                            "runtime_mode": "console_aggregator",
+                        }),
                     );
-                    record.insert("label".to_string(), Value::String(agent.label.clone()));
-                    record.insert("kind".to_string(), Value::String(agent.kind.clone()));
-                    if let Some(role) = &agent.role {
-                        record.insert("role".to_string(), Value::String(role.clone()));
-                    }
-                    if let Some(state) = &agent.state {
-                        record.insert("state".to_string(), Value::String(state.clone()));
-                    }
-                    if let Some(identity) = &agent.identity {
-                        record.insert("identity".to_string(), Value::String(identity.clone()));
-                    }
-                    if let Some(session_id) = &agent.session_id {
-                        record.insert("session_id".to_string(), Value::String(session_id.clone()));
-                    }
+                }
+                if let Some(watched) = agent.watched {
+                    record.insert("watched".to_string(), Value::Bool(watched));
+                }
+                if let Some(alert_level) = &agent.alert_level {
+                    record.insert("alertLevel".to_string(), Value::String(alert_level.clone()));
+                }
+                if let Some(degraded) = agent.degraded {
+                    record.insert("degraded".to_string(), Value::Bool(degraded));
+                }
+                if let Some(degraded_reason) = &agent.degraded_reason {
                     record.insert(
-                        "model_capabilities".to_string(),
-                        serde_json::to_value(&agent.model_capabilities).unwrap_or(Value::Null),
+                        "degradedReason".to_string(),
+                        Value::String(degraded_reason.clone()),
                     );
-                    if let Some(response_phase) = &agent.response_phase {
-                        record.insert(
-                            "response_phase".to_string(),
-                            Value::String(response_phase.clone()),
-                        );
-                    }
-                    if let Some(watched) = agent.watched {
-                        record.insert("watched".to_string(), Value::Bool(watched));
-                    }
-                    if let Some(alert_level) = &agent.alert_level {
-                        record.insert("alertLevel".to_string(), Value::String(alert_level.clone()));
-                    }
-                    if let Some(degraded) = agent.degraded {
-                        record.insert("degraded".to_string(), Value::Bool(degraded));
-                    }
-                    if let Some(degraded_reason) = &agent.degraded_reason {
-                        record.insert(
-                            "degradedReason".to_string(),
-                            Value::String(degraded_reason.clone()),
-                        );
-                    }
-                    Value::Object(record)
-                })
-                .collect()
-        } else {
-            sidebar_agents
-        };
+                }
+                Value::Object(record)
+            })
+            .collect()
+    } else {
+        sidebar_agents
+    };
 
-    let has_mob = live_snapshot.has_mob_runtime;
+    let has_mob = live_snapshot.has_mob_runtime && !is_aggregate_console;
+    let can_send_messages = has_mob || is_aggregate_console;
+    let can_spawn_members = has_mob && !is_aggregate_console;
+    let can_wire_members = has_mob && !is_aggregate_console;
+    let can_retire_members = has_mob && !is_aggregate_console;
     let identity_status_rows = build_identity_status_rows(&sidebar_agents);
 
     // P3: Build per-profile capability hints from roster data.
@@ -467,11 +484,11 @@ fn build_console_experience_contract(
         "contract_version": MOBKIT_CONTRACT_VERSION,
         "runtime_id": live_snapshot.runtime_id,
         "runtime_capabilities": {
-            "can_spawn_members": has_mob,
-            "can_send_messages": has_mob,
-            "can_wire_members": has_mob,
-            "can_retire_members": has_mob,
-            "available_spawn_modes": if has_mob {
+            "can_spawn_members": can_spawn_members,
+            "can_send_messages": can_send_messages,
+            "can_wire_members": can_wire_members,
+            "can_retire_members": can_retire_members,
+            "available_spawn_modes": if can_spawn_members {
                 vec!["module", "role"]
             } else {
                 vec!["module"]
@@ -496,7 +513,7 @@ fn build_console_experience_contract(
                 "mode": "poll",
                 "interval_ms": 5000,
             },
-            "source_method": if has_mob { "mobkit/list_members" } else { "mobkit/status" },
+            "source_method": if is_aggregate_console { "mobkit/console/list_identities" } else if has_mob { "mobkit/list_members" } else { "mobkit/status" },
             "refresh_policy": {
                 "mode": "pull",
                 "poll_interval_ms": 5000,
@@ -532,7 +549,7 @@ fn build_console_experience_contract(
                 "mode": "poll",
                 "interval_ms": 5000,
             },
-            "source_method": if has_mob { "mobkit/list_members" } else { "mobkit/status" },
+            "source_method": if is_aggregate_console { "mobkit/console/list_identities" } else if has_mob { "mobkit/list_members" } else { "mobkit/status" },
             "rows": identity_status_rows,
         },
         "activity_feed": {
@@ -545,7 +562,7 @@ fn build_console_experience_contract(
                 "update_semantics": "append",
             },
             "transport": "sse",
-            "source_route": "/console/events/stream",
+            "source_route": if is_aggregate_console { "/console/timeline/stream" } else { "/console/events/stream" },
             "request_contract": {
                 "last_event_id_header": "optional Last-Event-ID checkpoint from prior event_id",
             },
@@ -575,8 +592,8 @@ fn build_console_experience_contract(
                 "topic": "selected_identity",
                 "update_semantics": "append",
             },
-            "send_method": "mobkit/interact",
-            "observe_route": "/console/identity/stream",
+            "send_method": if is_aggregate_console { "mobkit/console/send" } else { "mobkit/interact" },
+            "observe_route": if is_aggregate_console { "/console/timeline/stream" } else { "/console/identity/stream" },
             "transport": "rpc+sse",
             "request_contract": {
                 "identity": "required target identity",
@@ -601,8 +618,8 @@ fn build_console_experience_contract(
                 "mode": "poll",
                 "interval_ms": 5000,
             },
-            "source_method": "mobkit/status",
-            "route_method": "mobkit/routing/routes/list",
+            "source_method": if is_aggregate_console { "mobkit/console/list_identities" } else { "mobkit/status" },
+            "route_method": if is_aggregate_console { Value::Null } else { serde_json::json!("mobkit/routing/routes/list") },
             "refresh_policy": {
                 "mode": "pull",
                 "poll_interval_ms": 5000,
@@ -647,8 +664,9 @@ fn build_console_experience_contract(
                 "mode": "poll",
                 "interval_ms": 5000,
             },
-            "source_method": "mobkit/status",
-            "activity_source_method": EVENTS_SUBSCRIBE_METHOD,
+            "source_method": if is_aggregate_console { "mobkit/console/list_identities" } else { "mobkit/status" },
+            "activity_source_method": if is_aggregate_console { Value::Null } else { serde_json::json!(EVENTS_SUBSCRIBE_METHOD) },
+            "activity_source_route": if is_aggregate_console { serde_json::json!("/console/timeline/stream") } else { Value::Null },
             "refresh_policy": {
                 "mode": "pull_and_stream",
                 "poll_interval_ms": 5000,
@@ -664,35 +682,45 @@ fn build_console_experience_contract(
                 "identities": identity_status_rows,
             }
         },
-        "flows": {
-            "panel_id": "console.flows",
-            "title": "Flows",
-            "schema_version": "1",
-            "refresh": {
-                "mode": "poll",
-                "interval_ms": 10000,
-            },
-            "evaluate_method": "mobkit/scheduling/evaluate",
-            "dispatch_method": "mobkit/scheduling/dispatch",
-            "refresh_policy": {
-                "mode": "pull",
-                "poll_interval_ms": 10000,
-            },
-            "request_contract": {
-                "schedules": "caller-supplied array of ScheduleDefinition (schedule_id, interval|cron, timezone, enabled)",
-                "tick_ms": "evaluation timestamp in epoch milliseconds",
-            },
-            "evaluate_response_contract": {
-                "tick_ms": "u64 — echoed evaluation tick",
-                "due_triggers": "array of ScheduleTrigger {schedule_id, interval, timezone, due_tick_ms}",
-            },
-            "dispatch_response_contract": {
-                "tick_ms": "u64 — echoed dispatch tick",
-                "due_count": "usize — number of triggers that were due",
-                "dispatched": "array of ScheduleDispatch {claim_key, schedule_id, interval, timezone, due_tick_ms, tick_ms, event_id, supervisor_signal?, runtime_injection?, runtime_injection_error?}",
-                "skipped_claims": "array of schedule_id strings skipped due to idempotent claim",
-            },
-            "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
+        "flows": if is_aggregate_console {
+            serde_json::json!({
+                "panel_id": "console.flows",
+                "title": "Flows",
+                "schema_version": "1",
+                "available": false,
+                "reason": "flow scheduling is not exposed by the console aggregator surface",
+            })
+        } else {
+            serde_json::json!({
+                "panel_id": "console.flows",
+                "title": "Flows",
+                "schema_version": "1",
+                "refresh": {
+                    "mode": "poll",
+                    "interval_ms": 10000,
+                },
+                "evaluate_method": "mobkit/scheduling/evaluate",
+                "dispatch_method": "mobkit/scheduling/dispatch",
+                "refresh_policy": {
+                    "mode": "pull",
+                    "poll_interval_ms": 10000,
+                },
+                "request_contract": {
+                    "schedules": "caller-supplied array of ScheduleDefinition (schedule_id, interval|cron, timezone, enabled)",
+                    "tick_ms": "evaluation timestamp in epoch milliseconds",
+                },
+                "evaluate_response_contract": {
+                    "tick_ms": "u64 - echoed evaluation tick",
+                    "due_triggers": "array of ScheduleTrigger {schedule_id, interval, timezone, due_tick_ms}",
+                },
+                "dispatch_response_contract": {
+                    "tick_ms": "u64 - echoed dispatch tick",
+                    "due_count": "usize - number of triggers that were due",
+                    "dispatched": "array of ScheduleDispatch {claim_key, schedule_id, interval, timezone, due_tick_ms, tick_ms, event_id, supervisor_signal?, runtime_injection?, runtime_injection_error?}",
+                    "skipped_claims": "array of schedule_id strings skipped due to idempotent claim",
+                },
+                "note": "Flows require caller-supplied schedule definitions; the runtime does not persist a flow registry. Clients must maintain their own schedule configs."
+            })
         },
         "session_history": if has_mob {
             serde_json::json!({
