@@ -21,7 +21,6 @@ pub mod process;
 pub mod protocol;
 pub mod rpc;
 pub mod runtime;
-pub mod tool_overlay;
 pub mod types;
 pub mod unified_runtime;
 

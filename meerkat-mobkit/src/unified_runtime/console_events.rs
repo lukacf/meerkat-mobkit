@@ -423,6 +423,9 @@ impl ConsoleEventStore {
         else {
             return;
         };
+        if is_empty_web_search_annotations_event(event_type, payload.as_ref()) {
+            return;
+        }
 
         let (identity, interaction_id) = {
             let mut state = self.state.write().await;
@@ -557,6 +560,29 @@ fn parse_generate_image_tool_result(
     } else {
         serde_json::from_value(result_value.clone()).ok()
     }
+}
+
+pub(crate) fn is_empty_web_search_annotations_event(
+    event_type: &str,
+    payload: Option<&Value>,
+) -> bool {
+    if event_type != "server_tool_content" {
+        return false;
+    }
+    let Some(payload) = payload else {
+        return false;
+    };
+    payload.get("name").and_then(Value::as_str) == Some("web_search_annotations")
+        && payload
+            .get("content")
+            .and_then(|content| content.get("type"))
+            .and_then(Value::as_str)
+            == Some("message_annotations")
+        && payload
+            .get("content")
+            .and_then(|content| content.get("annotations"))
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
 }
 
 fn trim_deque(deque: &mut VecDeque<ConsoleIdentityEventEnvelope>, cap: usize) {
@@ -784,6 +810,41 @@ mod tests {
         assert_eq!(events[2].event_type, "interaction_complete");
         assert_eq!(events[2].event_id, "evt-agent-2");
         assert_eq!(events[2].data["source_event_type"], json!("run_completed"));
+    }
+
+    #[tokio::test]
+    async fn empty_web_search_annotation_events_are_not_projected_to_console() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("identity:luka:0", "identity:luka")
+            .await;
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-annotation".to_string(),
+                source: "agent".to_string(),
+                timestamp_ms: 10,
+                event: UnifiedEvent::Agent {
+                    agent_id: "identity:luka:0".to_string(),
+                    event_type: "server_tool_content".to_string(),
+                    payload: Some(json!({
+                        "id": "msg-1",
+                        "name": "web_search_annotations",
+                        "content": {
+                            "type": "message_annotations",
+                            "annotations": []
+                        }
+                    })),
+                },
+            })
+            .await;
+
+        let events = store
+            .query(&EventQuery {
+                identity: Some("identity:luka".to_string()),
+                ..EventQuery::default()
+            })
+            .await;
+        assert!(events.is_empty());
     }
 
     #[tokio::test]

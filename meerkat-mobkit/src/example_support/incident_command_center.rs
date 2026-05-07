@@ -194,12 +194,11 @@ async fn build_runtime_bundle_with_client(
     let definition = incident_definition()?;
     let mut builder = UnifiedRuntime::builder()
         .definition(definition)
-        .image_generation(true)
         .session_hook(Arc::new(IncidentSessionHook))
         .module_config(example_module_config(scenario)?)
         .edge_discovery(ScenarioEdgeDiscovery::new(scenario.links.clone()))
         .timeout(Duration::from_mins(1));
-    if let Some(client) = default_llm_client {
+    if let Some(client) = default_llm_client.or_else(default_incident_llm_client_from_env) {
         builder = builder.default_llm_client(client);
     }
     let runtime = builder.build().await.context("build incident runtime")?;
@@ -227,6 +226,21 @@ async fn build_runtime_bundle_with_client(
         runtime: Arc::new(runtime),
         decisions,
     })
+}
+
+fn default_incident_llm_client_from_env() -> Option<Arc<dyn LlmClient>> {
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+    let base_url =
+        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".to_string());
+    Some(Arc::new(
+        meerkat_client::OpenAiClient::new_with_optional_api_key_and_base_url(
+            Some(api_key),
+            base_url,
+        ),
+    ))
 }
 
 pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario) -> Result<()> {
@@ -335,8 +349,13 @@ pub fn incident_model() -> String {
     std::env::var("RKAT_INCIDENT_MODEL").unwrap_or_else(|_| "gpt-5.5".to_string())
 }
 
+pub fn incident_image_model() -> String {
+    std::env::var("RKAT_INCIDENT_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-1".to_string())
+}
+
 fn incident_definition() -> Result<MobDefinition> {
     let model = incident_model();
+    let image_model = incident_image_model();
     MobDefinition::from_toml(&format!(
         r#"
 [mob]
@@ -378,6 +397,7 @@ HOW TO OPERATE:
 - When a teammate replies with `peer_response`, read the actual answer from the response payload fields such as `result.summary`, `result.status_line`, or `result.facts`. Do not treat a completed response as empty if those fields are present.
 - Your final operator answer should be concise, operationally useful, and mention which teammates you consulted.
 - Do not pretend a peer confirmed something if they have not replied.
+- When the operator explicitly asks you to generate an image, call `generate_image` directly without consulting peers first. Include `provider: "openai"` and `model: "{image_model}"` in the image request so the example uses the configured image route instead of the provider default.
 """
 
 [skills.payments_sre_role]
@@ -477,6 +497,8 @@ skills = ["comms_protocol", "commander_role"]
 peer_description = "Incident commander coordinating the CardinalPay outage response"
 
 [profiles.commander.tools]
+# Meerkat 0.6.1 registers generate_image through the builtin dispatcher, so
+# image-generation profiles must keep builtins enabled until upstream splits it.
 builtins = true
 comms = true
 image_generation = true
@@ -846,6 +868,7 @@ impl AgentToolDispatcher for IncidentToolDispatcher {
 mod tests {
     use super::*;
     use futures::Stream;
+    use meerkat_mob::definition::SkillSource;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -995,6 +1018,19 @@ mod tests {
             commander.runtime_mode.to_string(),
             "autonomous_host",
             "incident commander must be a long-running autonomous host so peer replies are drained while idle",
+        );
+        let commander_skill = match definition
+            .skills
+            .get("commander_role")
+            .expect("commander role skill present")
+        {
+            SkillSource::Inline { content } => content.as_str(),
+            SkillSource::Path { .. } => panic!("commander role should be inline content"),
+        };
+        assert!(
+            commander_skill.contains("provider: \"openai\"")
+                && commander_skill.contains("model: \"gpt-image-1\""),
+            "commander image-generation instructions should pin the configured image route"
         );
     }
 

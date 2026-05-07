@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Multimodal attachments
+
+- Added `MobHandle.uploadBlob(...)` / `upload_blob(...)` for efficient
+  binary image upload through the console multipart endpoint.
+- `MobHandle.send(...)` accepts image attachments and sends multipart
+  placeholders instead of inlining large base64 payloads in JSON.
+
 ### Streaming structural events + durable cursors
 
 Parity with the Python SDK: structural events are now durable

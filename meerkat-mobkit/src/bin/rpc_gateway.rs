@@ -27,8 +27,8 @@ use meerkat_mobkit::{
     DiscoverySpec, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
     ModuleConfig, ObjectStoreBlobStore, ReleaseMetadata, RestartPolicy, RuntimeDecisionState,
     RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, start_mobkit_runtime,
-    tool_overlay::validate_mobkit_tool_overlay_from_toml,
+    handle_unified_rpc_json, mob_handle_runtime::mob_definition_may_use_image_generation,
+    start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
 
@@ -587,20 +587,7 @@ external_addressable = true
         );
         std::process::exit(1);
     });
-    let overlay_config = validate_mobkit_tool_overlay_from_toml(&definition, mob_config_toml)
-        .unwrap_or_else(|e| {
-            let error_response = json!({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": { "code": -32602, "message": format!("Invalid MobKit tool overlay: {e}") }
-            });
-            println!(
-                "{}",
-                serde_json::to_string(&error_response)
-                    .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
-            );
-            std::process::exit(1);
-        });
+    let image_generation = mob_definition_may_use_image_generation(&definition);
 
     // Validate profile model names against the catalog.
     // A wrong model name (e.g., "claude-sonnet-4-5-20250514" instead of "claude-sonnet-4-5")
@@ -835,10 +822,8 @@ external_addressable = true
         // Match the ephemeral path's capability mask — only comms is enabled
         // by default. Apps control additional capabilities via their mob
         // definition profiles, not the gateway factory.
-        let mut factory = AgentFactory::new(state_path)
-            .builtins(overlay_config.image_generation)
-            .comms(true);
-        if overlay_config.image_generation {
+        let mut factory = AgentFactory::new(state_path).builtins(false).comms(true);
+        if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
         let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
@@ -885,10 +870,10 @@ external_addressable = true
             Arc::clone(&blob_store),
         ));
         let mut factory = AgentFactory::new(temp_dir.path())
-            .builtins(overlay_config.image_generation)
+            .builtins(false)
             .comms(true)
             .session_store(Arc::new(meerkat::MemoryStore::new()));
-        if overlay_config.image_generation {
+        if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
         let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
@@ -1017,9 +1002,19 @@ external_addressable = true
         // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
         // session_bridge() won't be set — build it directly.
         let mob_handle = runtime.mob_handle();
-        let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> = Arc::new(
-            meerkat_mobkit::identity_first::MobSessionBridge::new(mob_handle),
-        );
+        let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
+            if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+                Arc::new(
+                    meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
+                        mob_handle,
+                        session_service,
+                    ),
+                )
+            } else {
+                Arc::new(meerkat_mobkit::identity_first::MobSessionBridge::new(
+                    mob_handle,
+                ))
+            };
 
         let irt = IdentityRuntime::new(IdentityRuntimeConfig {
             continuity_store,

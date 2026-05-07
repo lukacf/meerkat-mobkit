@@ -15,7 +15,7 @@ use meerkat_mobkit::{
     ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions,
     MobBootstrapSpec, ObjectStoreBlobStore, ReleaseMetadata, RuntimeDecisionState,
     RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
-    tool_overlay::{MobKitToolOverlayConfig, validate_mobkit_tool_overlay_from_toml},
+    mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
 use serde::{Deserialize, Serialize};
@@ -317,15 +317,13 @@ fn load_definition(
     workspace_root: &Path,
     fingerprint: &str,
     paths: &ConventionalPaths,
-) -> anyhow::Result<(MobDefinition, bool, MobKitToolOverlayConfig)> {
+) -> anyhow::Result<(MobDefinition, bool)> {
     if let Some(path) = &paths.mob_toml {
         let text = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let definition = MobDefinition::from_toml(&text)
             .with_context(|| format!("failed to parse {}", path.display()))?;
-        let overlay_config = validate_mobkit_tool_overlay_from_toml(&definition, &text)
-            .map_err(|err| anyhow!("invalid MobKit tool overlay in {}: {err}", path.display()))?;
-        return Ok((definition, true, overlay_config));
+        return Ok((definition, true));
     }
 
     let definition_json_path = workspace_root.join("definition.json");
@@ -334,15 +332,11 @@ fn load_definition(
             .with_context(|| format!("failed to read {}", definition_json_path.display()))?;
         let definition = serde_json::from_str::<MobDefinition>(&text)
             .with_context(|| format!("failed to parse {}", definition_json_path.display()))?;
-        return Ok((definition, true, MobKitToolOverlayConfig::default()));
+        return Ok((definition, true));
     }
 
     let runtime_id = format!("tux-{}", short_hash(fingerprint));
-    Ok((
-        minimal_definition(&runtime_id)?,
-        false,
-        MobKitToolOverlayConfig::default(),
-    ))
+    Ok((minimal_definition(&runtime_id)?, false))
 }
 
 fn resolve_store_dir(store_path: &Path) -> (PathBuf, PathBuf) {
@@ -607,9 +601,9 @@ async fn run() -> anyhow::Result<()> {
     }
 
     std::env::set_current_dir(&workspace_root).ok();
-    let (definition, used_workspace_config, overlay_config) =
-        load_definition(&workspace_root, &key, &paths)?;
+    let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)?;
     let runtime_id = definition.id.to_string();
+    let image_generation = mob_definition_may_use_image_generation(&definition);
 
     let session_spec = if persistent_sessions {
         let (service, adapter, binary_blob_store) = build_persistent_session_service(
@@ -617,7 +611,7 @@ async fn run() -> anyhow::Result<()> {
             runtime_root.clone(),
             project_root.clone(),
             context_root.clone(),
-            overlay_config.image_generation,
+            image_generation,
         )?;
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
         spec.runtime_adapter = Some(adapter);
@@ -643,7 +637,7 @@ async fn run() -> anyhow::Result<()> {
             .mob(true)
             .comms(true)
             .memory(true);
-        if overlay_config.image_generation {
+        if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
         if let Some(ref ctx) = context_root {

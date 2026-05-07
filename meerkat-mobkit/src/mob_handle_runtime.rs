@@ -4,18 +4,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures::StreamExt;
 use meerkat::{AgentFactory, Config, FactoryAgentBuilder, SessionStore};
-use meerkat_client::LlmClient;
-use meerkat_core::AgentSessionStore;
+use meerkat_client::types::LlmStream;
+use meerkat_client::{LlmClient, LlmRequest};
 use meerkat_core::agent::CommsRuntime;
 use meerkat_core::service::{
     CreateSessionRequest, SessionError, SessionHistoryPage, SessionHistoryQuery,
     SessionServiceHistoryExt,
 };
+use meerkat_core::{AgentSessionStore, AssistantBlock, Message, Provider};
 use meerkat_mob::{
-    MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage, ProfileName,
+    MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage, Profile,
+    ProfileName,
 };
 use meerkat_store::StoreAdapter;
+use serde_json::Value;
 
 use crate::blob_store::{Base64BlobStoreAdapter, BinaryBlobStore, ObjectStoreBlobStore};
 
@@ -33,6 +37,111 @@ pub struct MobBootstrapOptions {
     pub allow_ephemeral_sessions: bool,
     pub notify_orchestrator_on_resume: bool,
     pub default_llm_client: Option<Arc<dyn LlmClient>>,
+}
+
+/// Wraps an LLM client and strips provider-emitted evidence blocks that are
+/// useful for UI/citation projection but unsafe to replay into the next
+/// stateless provider request.
+pub struct ReplaySanitizingLlmClient {
+    inner: Arc<dyn LlmClient>,
+}
+
+impl ReplaySanitizingLlmClient {
+    pub fn new(inner: Arc<dyn LlmClient>) -> Self {
+        Self { inner }
+    }
+
+    pub fn wrap(inner: Arc<dyn LlmClient>) -> Arc<dyn LlmClient> {
+        Arc::new(Self::new(inner))
+    }
+}
+
+/// Agent-layer companion to [`ReplaySanitizingLlmClient`].
+///
+/// Meerkat session services can also receive already-adapted
+/// `AgentLlmClient`s through live replacement and hot-swap APIs. Sanitize at
+/// that boundary too so provider-emitted server tool telemetry is never
+/// replayed into the next stateless model request just because the client
+/// entered below the raw `LlmClient` adapter seam.
+pub struct ReplaySanitizingAgentLlmClient {
+    inner: Arc<dyn meerkat_core::AgentLlmClient>,
+}
+
+impl ReplaySanitizingAgentLlmClient {
+    pub fn new(inner: Arc<dyn meerkat_core::AgentLlmClient>) -> Self {
+        Self { inner }
+    }
+
+    pub fn wrap(
+        inner: Arc<dyn meerkat_core::AgentLlmClient>,
+    ) -> Arc<dyn meerkat_core::AgentLlmClient> {
+        Arc::new(Self::new(inner))
+    }
+}
+
+#[async_trait]
+impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
+    async fn stream_response(
+        &self,
+        messages: &[Message],
+        tools: &[Arc<meerkat_core::ToolDef>],
+        max_tokens: u32,
+        temperature: Option<f32>,
+        provider_params: Option<&meerkat_core::lifecycle::run_primitive::ProviderParamsOverride>,
+    ) -> Result<meerkat_core::agent::LlmStreamResult, meerkat_core::AgentError> {
+        let sanitized: Vec<Message> = messages
+            .iter()
+            .cloned()
+            .map(sanitize_message_for_stateless_replay)
+            .collect();
+        self.inner
+            .stream_response(&sanitized, tools, max_tokens, temperature, provider_params)
+            .await
+    }
+
+    fn provider(&self) -> &'static str {
+        self.inner.provider()
+    }
+
+    fn model(&self) -> &str {
+        self.inner.model()
+    }
+
+    fn compile_schema(
+        &self,
+        output_schema: &meerkat_core::OutputSchema,
+    ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
+        self.inner.compile_schema(output_schema)
+    }
+}
+
+#[async_trait]
+impl LlmClient for ReplaySanitizingLlmClient {
+    fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
+        let inner = Arc::clone(&self.inner);
+        let sanitized = sanitize_llm_request_for_stateless_replay(request);
+        Box::pin(async_stream::stream! {
+            let mut stream = inner.stream(&sanitized);
+            while let Some(event) = stream.next().await {
+                yield event;
+            }
+        })
+    }
+
+    fn provider(&self) -> &'static str {
+        self.inner.provider()
+    }
+
+    async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+        self.inner.health_check().await
+    }
+
+    fn compile_schema(
+        &self,
+        output_schema: &meerkat_core::OutputSchema,
+    ) -> Result<meerkat_core::schema::CompiledSchema, meerkat_core::schema::SchemaError> {
+        self.inner.compile_schema(output_schema)
+    }
 }
 
 /// Async hook called before each session is created. Receives the mutable
@@ -93,6 +202,10 @@ struct PreBuildMobSessionService {
     after_create_hook: Option<AfterCreateHook>,
 }
 
+fn no_op_pre_build_hook() -> PreBuildHook {
+    Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeTurnTrace {
@@ -100,6 +213,147 @@ pub(crate) struct RuntimeTurnTrace {
     pub(crate) boundary: String,
     pub(crate) contributing_input_count: usize,
     pub(crate) outcome: String,
+}
+
+fn is_replay_unsafe_server_tool_content(name: &str, content: &Value) -> bool {
+    name == "web_search_annotations"
+        || content
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind.starts_with("response."))
+}
+
+fn sanitize_llm_request_for_stateless_replay(request: &LlmRequest) -> LlmRequest {
+    let mut sanitized = request.clone();
+    sanitized.messages = request
+        .messages
+        .iter()
+        .cloned()
+        .map(sanitize_message_for_stateless_replay)
+        .collect();
+    sanitized
+}
+
+fn sanitize_create_session_request_llm_override(req: &mut CreateSessionRequest) {
+    let Some(build) = req.build.as_mut() else {
+        return;
+    };
+    let Some(client) = build
+        .llm_client_override
+        .as_ref()
+        .and_then(meerkat::decode_llm_client_override_from_service)
+    else {
+        return;
+    };
+    build.llm_client_override = Some(meerkat::encode_llm_client_override_for_service(
+        ReplaySanitizingLlmClient::wrap(client),
+    ));
+}
+
+fn sanitize_message_for_stateless_replay(message: Message) -> Message {
+    match message {
+        Message::BlockAssistant(mut assistant) => {
+            assistant.blocks = assistant
+                .blocks
+                .into_iter()
+                .filter_map(|block| match block {
+                    AssistantBlock::ServerToolContent { name, content, .. }
+                        if is_replay_unsafe_server_tool_content(&name, &content) =>
+                    {
+                        None
+                    }
+                    AssistantBlock::Image { blob_ref, .. } => Some(AssistantBlock::Text {
+                        text: format!(
+                            "[Generated image omitted from provider replay: {}]",
+                            blob_ref.blob_id
+                        ),
+                        meta: None,
+                    }),
+                    other => Some(other),
+                })
+                .collect();
+            Message::BlockAssistant(assistant)
+        }
+        other => other,
+    }
+}
+
+fn assistant_block_requires_factory_replay_guard(block: &AssistantBlock) -> bool {
+    match block {
+        AssistantBlock::Image { .. } => true,
+        AssistantBlock::ServerToolContent { name, content, .. } => {
+            is_replay_unsafe_server_tool_content(name, content)
+        }
+        _ => false,
+    }
+}
+
+fn message_requires_factory_replay_guard(message: &Message) -> bool {
+    match message {
+        Message::BlockAssistant(assistant) => assistant
+            .blocks
+            .iter()
+            .any(assistant_block_requires_factory_replay_guard),
+        _ => false,
+    }
+}
+
+fn history_page_requires_factory_replay_guard(page: &SessionHistoryPage) -> bool {
+    page.messages
+        .iter()
+        .any(message_requires_factory_replay_guard)
+}
+
+fn replay_guard_error() -> SessionError {
+    SessionError::FailedWithData {
+        message: "this session contains generated-image or provider-evidence transcript blocks that MobKit cannot safely replay through Meerkat 0.6.1's factory-resolved provider path; start a new session or send the image to another agent until Meerkat owns provider replay projection".to_string(),
+        data: serde_json::json!({
+            "code": "mobkit_replay_projection_guard",
+            "reason": "meerkat_0_6_1_missing_factory_resolved_client_projection_hook",
+        }),
+    }
+}
+
+fn guard_create_session_request_replay_history(
+    req: &CreateSessionRequest,
+) -> Result<(), SessionError> {
+    if req.initial_turn != meerkat_core::service::InitialTurnPolicy::RunImmediately {
+        return Ok(());
+    }
+    let Some(resume_session) = req
+        .build
+        .as_ref()
+        .and_then(|build| build.resume_session.as_ref())
+    else {
+        return Ok(());
+    };
+    if resume_session
+        .messages()
+        .iter()
+        .any(message_requires_factory_replay_guard)
+    {
+        return Err(replay_guard_error());
+    }
+    Ok(())
+}
+
+async fn guard_factory_resolved_replay_history(
+    service: &Arc<dyn MobSessionService>,
+    id: &meerkat_core::types::SessionId,
+) -> Result<(), SessionError> {
+    let page = service
+        .read_history(
+            id,
+            SessionHistoryQuery {
+                offset: 0,
+                limit: None,
+            },
+        )
+        .await?;
+    if history_page_requires_factory_replay_guard(&page) {
+        return Err(replay_guard_error());
+    }
+    Ok(())
 }
 
 /// Open the persistent runtime store that holds the authoritative
@@ -179,6 +433,43 @@ fn summarize_runtime_prompt(prompt: &meerkat_core::ContentInput) -> String {
     }
 }
 
+/// Whether the session factory should wire the image-generation substrate for
+/// this definition. Meerkat 0.6.1 owns the per-profile visibility decision via
+/// `profile.tools.image_generation`; MobKit only needs to make the runtime
+/// machine available when a profile opts in, or when a realm profile may resolve
+/// to an opt-in profile at spawn time.
+pub fn mob_definition_may_use_image_generation(definition: &MobDefinition) -> bool {
+    definition.profiles.values().any(|binding| {
+        binding
+            .as_inline()
+            .is_none_or(|profile| profile.tools.image_generation)
+    })
+}
+
+fn validate_image_generation_tool_config(
+    definition: &MobDefinition,
+) -> Result<(), MobRuntimeError> {
+    let mut invalid_profiles = Vec::new();
+    for (profile_name, binding) in &definition.profiles {
+        let Some(profile) = binding.as_inline() else {
+            continue;
+        };
+        if profile.tools.image_generation && !profile.tools.builtins {
+            invalid_profiles.push(profile_name.to_string());
+        }
+    }
+
+    if invalid_profiles.is_empty() {
+        return Ok(());
+    }
+
+    invalid_profiles.sort();
+    Err(MobRuntimeError::InvalidConfig(format!(
+        "Meerkat 0.6.1 requires profiles with tools.image_generation = true to also set tools.builtins = true because generate_image is registered through the builtin dispatcher; invalid profile(s): {}",
+        invalid_profiles.join(", ")
+    )))
+}
+
 fn normalize_runtime_turn_request(
     req: meerkat_core::service::StartTurnRequest,
 ) -> meerkat_core::service::StartTurnRequest {
@@ -194,6 +485,18 @@ fn normalize_runtime_turn_request(
     }
 }
 
+fn normalize_direct_member_delivery_mode(
+    handling_mode: meerkat_core::types::HandlingMode,
+) -> meerkat_core::types::HandlingMode {
+    match handling_mode {
+        // Direct member delivery goes through the queue-only session-service
+        // path. Runtime-backed callers may request Steer, but forwarding it
+        // here causes Meerkat to reject the replay as an invalid surface.
+        meerkat_core::types::HandlingMode::Steer => meerkat_core::types::HandlingMode::Queue,
+        other => other,
+    }
+}
+
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
 /// overriding only `create_session` to apply the pre-build hook.
 macro_rules! delegate_mob_session_service {
@@ -205,6 +508,8 @@ macro_rules! delegate_mob_session_service {
                 mut req: CreateSessionRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
                 (self.hook)(&mut req).await?;
+                sanitize_create_session_request_llm_override(&mut req);
+                guard_create_session_request_replay_history(&req)?;
 
                 // Capture context before create_session consumes the request.
                 let ctx = SessionCreatedContext {
@@ -227,6 +532,7 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
                 req: meerkat_core::service::StartTurnRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
+                guard_factory_resolved_replay_history(&self.inner, id).await?;
                 self.inner.start_turn(id, req).await
             }
             async fn interrupt(
@@ -240,7 +546,9 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
                 client: Arc<dyn meerkat_core::AgentLlmClient>,
             ) -> Result<(), SessionError> {
-                self.inner.set_session_client(id, client).await
+                self.inner
+                    .set_session_client(id, ReplaySanitizingAgentLlmClient::wrap(client))
+                    .await
             }
             async fn hot_swap_session_llm_identity(
                 &self,
@@ -250,7 +558,12 @@ macro_rules! delegate_mob_session_service {
                 request_policy: meerkat_core::SessionLlmRequestPolicy,
             ) -> Result<(), SessionError> {
                 self.inner
-                    .hot_swap_session_llm_identity(id, client, identity, request_policy)
+                    .hot_swap_session_llm_identity(
+                        id,
+                        ReplaySanitizingAgentLlmClient::wrap(client),
+                        identity,
+                        request_policy,
+                    )
                     .await
             }
             async fn update_session_keep_alive(
@@ -310,6 +623,20 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
             ) -> Option<Arc<dyn meerkat_core::agent::CommsRuntime>> {
                 self.inner.comms_runtime(id).await
+            }
+
+            async fn event_injector(
+                &self,
+                id: &meerkat_core::types::SessionId,
+            ) -> Option<Arc<dyn meerkat_core::EventInjector>> {
+                self.inner.event_injector(id).await
+            }
+
+            async fn interaction_event_injector(
+                &self,
+                id: &meerkat_core::types::SessionId,
+            ) -> Option<Arc<dyn meerkat_core::event_injector::SubscribableInjector>> {
+                self.inner.interaction_event_injector(id).await
             }
         }
 
@@ -455,8 +782,10 @@ struct AfterCreateMobSessionService {
 impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
     async fn create_session(
         &self,
-        req: CreateSessionRequest,
+        mut req: CreateSessionRequest,
     ) -> Result<meerkat_core::types::RunResult, SessionError> {
+        sanitize_create_session_request_llm_override(&mut req);
+        guard_create_session_request_replay_history(&req)?;
         // Capture pre-create context from the request (before inner consumes it).
         // The inner service's pre-build hooks may mutate the request further,
         // but we capture here because we can't read the request after inner
@@ -480,6 +809,7 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         id: &meerkat_core::types::SessionId,
         req: meerkat_core::service::StartTurnRequest,
     ) -> Result<meerkat_core::types::RunResult, SessionError> {
+        guard_factory_resolved_replay_history(&self.inner, id).await?;
         self.inner.start_turn(id, req).await
     }
     async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
@@ -490,7 +820,9 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         id: &meerkat_core::types::SessionId,
         client: Arc<dyn meerkat_core::AgentLlmClient>,
     ) -> Result<(), SessionError> {
-        self.inner.set_session_client(id, client).await
+        self.inner
+            .set_session_client(id, ReplaySanitizingAgentLlmClient::wrap(client))
+            .await
     }
     async fn hot_swap_session_llm_identity(
         &self,
@@ -500,7 +832,12 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         request_policy: meerkat_core::SessionLlmRequestPolicy,
     ) -> Result<(), SessionError> {
         self.inner
-            .hot_swap_session_llm_identity(id, client, identity, request_policy)
+            .hot_swap_session_llm_identity(
+                id,
+                ReplaySanitizingAgentLlmClient::wrap(client),
+                identity,
+                request_policy,
+            )
             .await
     }
     async fn update_session_keep_alive(
@@ -554,6 +891,20 @@ impl meerkat_core::service::SessionServiceCommsExt for AfterCreateMobSessionServ
         id: &meerkat_core::types::SessionId,
     ) -> Option<Arc<dyn meerkat_core::agent::CommsRuntime>> {
         self.inner.comms_runtime(id).await
+    }
+
+    async fn event_injector(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Option<Arc<dyn meerkat_core::EventInjector>> {
+        self.inner.event_injector(id).await
+    }
+
+    async fn interaction_event_injector(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Option<Arc<dyn meerkat_core::event_injector::SubscribableInjector>> {
+        self.inner.interaction_event_injector(id).await
     }
 }
 
@@ -653,6 +1004,11 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         session_service: Arc<dyn MobSessionService>,
     ) -> Self {
+        let session_service = Arc::new(PreBuildMobSessionService {
+            inner: session_service,
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+        }) as Arc<dyn MobSessionService>;
         Self {
             definition,
             storage,
@@ -746,9 +1102,10 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
         hook: Option<PreBuildHook>,
-        caps: CapabilityFlags,
+        mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
+        caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
@@ -780,9 +1137,7 @@ impl MobBootstrapSpec {
         let session_service: Arc<dyn MobSessionService> = Arc::new(
             meerkat_session::EphemeralSessionService::new(builder, max_sessions),
         );
-        let hook = hook.unwrap_or_else(|| {
-            Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
-        });
+        let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
@@ -855,9 +1210,10 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
         hook: Option<PreBuildHook>,
-        caps: CapabilityFlags,
+        mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
+        caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let binary_blob_store: Arc<dyn BinaryBlobStore> = match ObjectStoreBlobStore::local(
             store_path.join("blobs"),
         ) {
@@ -908,9 +1264,7 @@ impl MobBootstrapSpec {
                 Some(runtime_store),
                 blob_store,
             ));
-        let hook = hook.unwrap_or_else(|| {
-            Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
-        });
+        let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
@@ -929,9 +1283,10 @@ impl MobBootstrapSpec {
         store_path: PathBuf,
         max_sessions: usize,
         hook: Option<PreBuildHook>,
-        caps: CapabilityFlags,
+        mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
+        caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = Config::default();
         let session_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
@@ -969,9 +1324,7 @@ impl MobBootstrapSpec {
                 Some(runtime_store),
                 blob_store,
             ));
-        let hook = hook.unwrap_or_else(|| {
-            Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
-        });
+        let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
@@ -989,6 +1342,7 @@ impl MobBootstrapSpec {
 pub enum MobRuntimeError {
     Mob(MobError),
     InvalidInput(&'static str),
+    InvalidConfig(String),
 }
 
 impl std::fmt::Display for MobRuntimeError {
@@ -996,6 +1350,7 @@ impl std::fmt::Display for MobRuntimeError {
         match self {
             Self::Mob(err) => write!(f, "{err}"),
             Self::InvalidInput(message) => write!(f, "{message}"),
+            Self::InvalidConfig(message) => write!(f, "{message}"),
         }
     }
 }
@@ -1088,6 +1443,7 @@ pub struct MobRuntime {
 
 impl MobRuntime {
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
+        validate_image_generation_tool_config(&spec.definition)?;
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
         let binary_blob_store = spec.binary_blob_store.clone();
@@ -1114,7 +1470,7 @@ impl MobRuntime {
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
 
         if let Some(client) = spec.options.default_llm_client {
-            builder = builder.with_default_llm_client(client);
+            builder = builder.with_default_llm_client(ReplaySanitizingLlmClient::wrap(client));
         }
 
         let handle = builder.create().await?;
@@ -1315,25 +1671,59 @@ pub fn content_input_has_images(content: &meerkat_core::ContentInput) -> bool {
     }
 }
 
-pub fn model_capabilities_for_role(
-    definition: &MobDefinition,
-    role: &str,
+pub fn model_capabilities_for_model(
+    provider: Provider,
+    model: &str,
 ) -> crate::runtime::ConsoleModelCapabilities {
-    let profile_name = ProfileName::from(role);
-    let image_input = definition
-        .resolve_inline_profile(&profile_name)
-        .and_then(|profile| {
-            meerkat_core::Provider::infer_from_model(&profile.model).and_then(|provider| {
-                meerkat_core::model_profile::profile_for(provider, &profile.model)
-            })
-        })
+    let image_input = meerkat_core::model_profile::profile_for(provider, model)
         .map(|profile| profile.vision)
         .unwrap_or(false);
     crate::runtime::ConsoleModelCapabilities { image_input }
 }
 
+pub fn model_capabilities_for_profile(
+    profile: &Profile,
+) -> crate::runtime::ConsoleModelCapabilities {
+    let image_input = Provider::infer_from_model(&profile.model)
+        .and_then(|provider| meerkat_core::model_profile::profile_for(provider, &profile.model))
+        .map(|profile| profile.vision)
+        .unwrap_or(false);
+    crate::runtime::ConsoleModelCapabilities { image_input }
+}
+
+pub fn model_capabilities_for_role(
+    definition: &MobDefinition,
+    role: &str,
+) -> crate::runtime::ConsoleModelCapabilities {
+    let profile_name = ProfileName::from(role);
+    definition
+        .resolve_inline_profile(&profile_name)
+        .map(model_capabilities_for_profile)
+        .unwrap_or(crate::runtime::ConsoleModelCapabilities { image_input: false })
+}
+
+pub async fn model_capabilities_for_member(
+    handle: &MobHandle,
+    session_service: Option<&Arc<dyn MobSessionService>>,
+    member_id: &meerkat_mob::ids::MeerkatId,
+) -> crate::runtime::ConsoleModelCapabilities {
+    if let Some(service) = session_service
+        && let Some(session_id) = handle.resolve_bridge_session_id(member_id).await
+        && let Ok(view) = service.read(&session_id).await
+    {
+        return model_capabilities_for_model(view.state.provider, &view.state.model);
+    }
+
+    handle
+        .get_member(member_id)
+        .await
+        .map(|member| model_capabilities_for_role(handle.definition(), member.role.as_str()))
+        .unwrap_or(crate::runtime::ConsoleModelCapabilities { image_input: false })
+}
+
 pub async fn assert_member_accepts_images(
     handle: &MobHandle,
+    session_service: Option<&Arc<dyn MobSessionService>>,
     member_id: &str,
     content: &meerkat_core::ContentInput,
 ) -> Result<(), MobRuntimeError> {
@@ -1344,7 +1734,7 @@ pub async fn assert_member_accepts_images(
     let Some(member) = handle.get_member(&mid).await else {
         return Err(MobRuntimeError::InvalidInput("member not found"));
     };
-    let caps = model_capabilities_for_role(handle.definition(), member.role.as_str());
+    let caps = model_capabilities_for_member(handle, session_service, &member.agent_identity).await;
     if caps.image_input {
         Ok(())
     } else {
@@ -1377,11 +1767,11 @@ pub async fn send_message_on_mob(
     .await
 }
 
-/// Variant that lets the caller pick `Queue` (next-turn boundary) vs
-/// `Steer` (interrupt at the earliest cooperative pause). The console
-/// uses this to power the "Steer" affordance on its client-side
-/// pending-message stack — every other path keeps the historical
-/// `Queue` default by going through `send_message_on_mob` above.
+/// Variant that accepts the console's `Queue`/`Steer` wire contract while
+/// delivering through MobKit's direct member-send path. Direct member delivery
+/// is queue-only in Meerkat 0.6, so `Steer` is normalized before reaching the
+/// session service; callers that need a true interrupt boundary must use a
+/// runtime-backed steering surface.
 pub async fn send_message_on_mob_with_mode(
     handle: &MobHandle,
     member_id: &str,
@@ -1400,6 +1790,7 @@ pub async fn send_message_on_mob_with_mode(
         return Err(MobRuntimeError::InvalidInput("content must not be empty"));
     }
     let mid = meerkat_mob::ids::MeerkatId::from(member_id);
+    let handling_mode = normalize_direct_member_delivery_mode(handling_mode);
     let _receipt = handle
         .member(&mid)
         .await?
@@ -1420,6 +1811,622 @@ pub async fn send_message_on_mob_with_mode(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_generation_substrate_defaults_off_for_inline_profiles() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.worker]
+model = "gpt-5.5"
+
+[profiles.worker.tools]
+builtins = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        assert!(
+            !mob_definition_may_use_image_generation(&definition),
+            "inline profiles should not wire the image substrate unless a profile opts in"
+        );
+    }
+
+    #[test]
+    fn image_generation_substrate_follows_profile_tool_config() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.commander]
+model = "gpt-5.5"
+
+[profiles.commander.tools]
+builtins = true
+image_generation = true
+
+[profiles.investigator]
+model = "gpt-5.5"
+
+[profiles.investigator.tools]
+builtins = true
+image_generation = false
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        let commander = definition.profiles["commander"].as_inline().unwrap();
+        let investigator = definition.profiles["investigator"].as_inline().unwrap();
+        assert!(commander.tools.image_generation);
+        assert!(!investigator.tools.image_generation);
+        assert!(
+            mob_definition_may_use_image_generation(&definition),
+            "one opt-in profile is enough to wire substrate; Meerkat gates visibility per profile"
+        );
+    }
+
+    #[test]
+    fn image_generation_profiles_must_leave_builtins_enabled_for_meerkat_061() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.commander]
+model = "gpt-5.5"
+
+[profiles.commander.tools]
+builtins = false
+image_generation = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        let err = validate_image_generation_tool_config(&definition)
+            .expect_err("image_generation without builtins should be rejected");
+        assert!(
+            err.to_string().contains("commander"),
+            "error should name the invalid profile"
+        );
+        assert!(
+            err.to_string().contains("tools.builtins = true"),
+            "error should explain the Meerkat 0.6.1 coupling"
+        );
+    }
+
+    #[test]
+    fn image_generation_substrate_is_conservative_for_realm_profile_refs() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.worker]
+realm_profile = "worker-v2"
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+
+        assert!(
+            mob_definition_may_use_image_generation(&definition),
+            "realm profiles resolve at spawn time, so MobKit wires substrate and lets Meerkat enforce profile policy"
+        );
+    }
+
+    #[test]
+    fn sanitize_llm_request_drops_replay_unsafe_server_tool_blocks() {
+        let request = meerkat_client::LlmRequest::new(
+            "gpt-5.5",
+            vec![meerkat_core::Message::BlockAssistant(
+                meerkat_core::BlockAssistantMessage::new(
+                    vec![
+                        meerkat_core::AssistantBlock::Text {
+                            text: "done".to_string(),
+                            meta: None,
+                        },
+                        meerkat_core::AssistantBlock::ServerToolContent {
+                            id: Some("ws-stream".to_string()),
+                            name: "web_search".to_string(),
+                            content: serde_json::json!({
+                                "type": "response.web_search_call.searching",
+                                "item_id": "ws_123"
+                            }),
+                            meta: None,
+                        },
+                        meerkat_core::AssistantBlock::ServerToolContent {
+                            id: Some("ws_123".to_string()),
+                            name: "web_search_call".to_string(),
+                            content: serde_json::json!({
+                                "type": "web_search_call",
+                                "id": "ws_123",
+                                "status": "completed"
+                            }),
+                            meta: None,
+                        },
+                        meerkat_core::AssistantBlock::ServerToolContent {
+                            id: None,
+                            name: "web_search_annotations".to_string(),
+                            content: serde_json::json!({
+                                "type": "message_annotations",
+                                "annotations": []
+                            }),
+                            meta: None,
+                        },
+                    ],
+                    meerkat_core::StopReason::EndTurn,
+                ),
+            )],
+        );
+
+        let sanitized = sanitize_llm_request_for_stateless_replay(&request);
+        let meerkat_core::Message::BlockAssistant(assistant) = &sanitized.messages[0] else {
+            panic!("expected block assistant");
+        };
+
+        assert_eq!(assistant.blocks.len(), 2);
+        assert!(matches!(
+            assistant.blocks[0],
+            meerkat_core::AssistantBlock::Text { .. }
+        ));
+        assert!(matches!(
+            assistant.blocks[1],
+            meerkat_core::AssistantBlock::ServerToolContent { ref name, .. }
+                if name == "web_search_call"
+        ));
+    }
+
+    #[test]
+    fn sanitize_llm_request_leaves_canonical_request_unchanged() {
+        let request = meerkat_client::LlmRequest::new(
+            "gpt-5.5",
+            vec![meerkat_core::Message::BlockAssistant(
+                meerkat_core::BlockAssistantMessage::new(
+                    vec![
+                        meerkat_core::AssistantBlock::Text {
+                            text: "visible".to_string(),
+                            meta: None,
+                        },
+                        generated_image_block_for_test(),
+                    ],
+                    meerkat_core::StopReason::EndTurn,
+                ),
+            )],
+        );
+
+        let sanitized = sanitize_llm_request_for_stateless_replay(&request);
+
+        let meerkat_core::Message::BlockAssistant(original_assistant) = &request.messages[0] else {
+            panic!("expected original block assistant");
+        };
+        assert!(
+            original_assistant
+                .blocks
+                .iter()
+                .any(|block| matches!(block, meerkat_core::AssistantBlock::Image { .. })),
+            "request-view sanitization must not rewrite canonical caller-owned messages"
+        );
+
+        let meerkat_core::Message::BlockAssistant(sanitized_assistant) = &sanitized.messages[0]
+        else {
+            panic!("expected sanitized block assistant");
+        };
+        assert!(
+            sanitized_assistant.blocks.iter().any(
+                |block| matches!(block, meerkat_core::AssistantBlock::Text { text, .. }
+                    if text.contains("Generated image omitted from provider replay"))
+            ),
+            "sanitized replay view should replace generated images with text placeholders"
+        );
+    }
+
+    #[derive(Default)]
+    struct CapturingAgentLlmClient {
+        seen_messages: std::sync::Mutex<Vec<meerkat_core::Message>>,
+    }
+
+    #[async_trait]
+    impl meerkat_core::AgentLlmClient for CapturingAgentLlmClient {
+        async fn stream_response(
+            &self,
+            messages: &[meerkat_core::Message],
+            _tools: &[Arc<meerkat_core::ToolDef>],
+            _max_tokens: u32,
+            _temperature: Option<f32>,
+            _provider_params: Option<
+                &meerkat_core::lifecycle::run_primitive::ProviderParamsOverride,
+            >,
+        ) -> Result<meerkat_core::agent::LlmStreamResult, meerkat_core::AgentError> {
+            *self
+                .seen_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = messages.to_vec();
+            Ok(meerkat_core::agent::LlmStreamResult::new(
+                Vec::new(),
+                meerkat_core::StopReason::EndTurn,
+                meerkat_core::Usage::default(),
+            ))
+        }
+
+        fn provider(&self) -> &'static str {
+            "openai"
+        }
+
+        fn model(&self) -> &'static str {
+            "gpt-5.5"
+        }
+    }
+
+    #[tokio::test]
+    async fn sanitize_agent_llm_client_drops_replay_unsafe_server_tool_blocks() {
+        let capture = Arc::new(CapturingAgentLlmClient::default());
+        let inner: Arc<dyn meerkat_core::AgentLlmClient> = capture.clone();
+        let wrapped = ReplaySanitizingAgentLlmClient::wrap(inner);
+        let messages = vec![meerkat_core::Message::BlockAssistant(
+            meerkat_core::BlockAssistantMessage::new(
+                vec![
+                    meerkat_core::AssistantBlock::Text {
+                        text: "visible".to_string(),
+                        meta: None,
+                    },
+                    meerkat_core::AssistantBlock::ServerToolContent {
+                        id: Some("ws-stream".to_string()),
+                        name: "web_search".to_string(),
+                        content: serde_json::json!({
+                            "type": "response.web_search_call.searching",
+                            "item_id": "ws_123"
+                        }),
+                        meta: None,
+                    },
+                    meerkat_core::AssistantBlock::ServerToolContent {
+                        id: Some("ok".to_string()),
+                        name: "web_search_call".to_string(),
+                        content: serde_json::json!({
+                            "type": "web_search_call",
+                            "id": "ws_123",
+                            "status": "completed"
+                        }),
+                        meta: None,
+                    },
+                ],
+                meerkat_core::StopReason::EndTurn,
+            ),
+        )];
+        let tools: Vec<Arc<meerkat_core::ToolDef>> = Vec::new();
+
+        wrapped
+            .stream_response(&messages, &tools, 512, None, None)
+            .await
+            .expect("wrapped client should delegate");
+
+        let seen = capture
+            .seen_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let meerkat_core::Message::BlockAssistant(assistant) = &seen[0] else {
+            panic!("expected block assistant");
+        };
+        assert_eq!(assistant.blocks.len(), 2);
+        assert!(matches!(
+            assistant.blocks[0],
+            meerkat_core::AssistantBlock::Text { .. }
+        ));
+        assert!(matches!(
+            assistant.blocks[1],
+            meerkat_core::AssistantBlock::ServerToolContent { ref name, .. }
+                if name == "web_search_call"
+        ));
+    }
+
+    fn generated_image_block_for_test() -> meerkat_core::AssistantBlock {
+        serde_json::from_value(serde_json::json!({
+            "block_type": "image",
+            "data": {
+                "image_id": "00000000-0000-0000-0000-000000000051",
+                "blob_ref": {
+                    "blob_id": "sha256:test-generated-image",
+                    "media_type": "image/png"
+                },
+                "media_type": "image/png",
+                "width": 1024,
+                "height": 1024,
+                "revised_prompt": { "disposition": "not_requested" },
+                "meta": { "provider": "not_emitted" }
+            }
+        }))
+        .expect("test image block should deserialize")
+    }
+
+    #[test]
+    fn sanitize_message_projects_assistant_image_to_replay_placeholder() {
+        let message =
+            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
+                vec![
+                    meerkat_core::AssistantBlock::Text {
+                        text: "Here is the image.".to_string(),
+                        meta: None,
+                    },
+                    generated_image_block_for_test(),
+                ],
+                meerkat_core::StopReason::EndTurn,
+            ));
+
+        let sanitized = sanitize_message_for_stateless_replay(message);
+        let meerkat_core::Message::BlockAssistant(assistant) = sanitized else {
+            panic!("expected block assistant");
+        };
+
+        assert_eq!(assistant.blocks.len(), 2);
+        assert!(matches!(
+            assistant.blocks[0],
+            meerkat_core::AssistantBlock::Text { .. }
+        ));
+        let meerkat_core::AssistantBlock::Text { text, .. } = &assistant.blocks[1] else {
+            panic!("generated image should become a text replay placeholder");
+        };
+        assert!(
+            text.contains("sha256:test-generated-image"),
+            "placeholder should preserve the durable blob id"
+        );
+    }
+
+    struct GuardProbeMobSessionService {
+        history: std::sync::Mutex<Vec<meerkat_core::Message>>,
+        start_turn_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl GuardProbeMobSessionService {
+        fn new(history: Vec<meerkat_core::Message>) -> Self {
+            Self {
+                history: std::sync::Mutex::new(history),
+                start_turn_calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn start_turn_calls(&self) -> usize {
+            self.start_turn_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionService for GuardProbeMobSessionService {
+        async fn create_session(
+            &self,
+            _req: CreateSessionRequest,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            Err(SessionError::Unsupported("create_session".to_string()))
+        }
+
+        async fn start_turn(
+            &self,
+            id: &meerkat_core::SessionId,
+            _req: meerkat_core::service::StartTurnRequest,
+        ) -> Result<meerkat_core::RunResult, SessionError> {
+            self.start_turn_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(meerkat_core::RunResult {
+                text: "ok".to_string(),
+                session_id: id.clone(),
+                usage: meerkat_core::Usage::default(),
+                turns: 1,
+                tool_calls: 0,
+                terminal_cause_kind: None,
+                structured_output: None,
+                extraction_error: None,
+                schema_warnings: None,
+                skill_diagnostics: None,
+            })
+        }
+
+        async fn interrupt(&self, _id: &meerkat_core::SessionId) -> Result<(), SessionError> {
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            _id: &meerkat_core::SessionId,
+        ) -> Result<meerkat_core::service::SessionView, SessionError> {
+            Err(SessionError::Unsupported("read".to_string()))
+        }
+
+        async fn list(
+            &self,
+            _query: meerkat_core::service::SessionQuery,
+        ) -> Result<Vec<meerkat_core::service::SessionSummary>, SessionError> {
+            Ok(Vec::new())
+        }
+
+        async fn archive(&self, _id: &meerkat_core::SessionId) -> Result<(), SessionError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceCommsExt for GuardProbeMobSessionService {}
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceControlExt for GuardProbeMobSessionService {
+        async fn append_system_context(
+            &self,
+            _id: &meerkat_core::SessionId,
+            _req: meerkat_core::service::AppendSystemContextRequest,
+        ) -> Result<
+            meerkat_core::service::AppendSystemContextResult,
+            meerkat_core::service::SessionControlError,
+        > {
+            Err(meerkat_core::service::SessionControlError::Session(
+                SessionError::Unsupported("append_system_context".to_string()),
+            ))
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceHistoryExt for GuardProbeMobSessionService {
+        async fn read_history(
+            &self,
+            id: &meerkat_core::SessionId,
+            query: meerkat_core::service::SessionHistoryQuery,
+        ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
+            let history = self
+                .history
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            Ok(meerkat_core::service::SessionHistoryPage::from_messages(
+                id.clone(),
+                &history,
+                query,
+            ))
+        }
+    }
+
+    impl MobSessionService for GuardProbeMobSessionService {}
+
+    fn start_turn_request_for_test() -> meerkat_core::service::StartTurnRequest {
+        meerkat_core::service::StartTurnRequest {
+            prompt: meerkat_core::ContentInput::Text("next turn".to_string()),
+            system_prompt: None,
+            render_metadata: None,
+            handling_mode: meerkat_core::types::HandlingMode::Queue,
+            event_tx: None,
+            skill_references: None,
+            flow_tool_overlay: None,
+            pre_turn_context_appends: Vec::new(),
+            turn_metadata: None,
+        }
+    }
+
+    fn no_op_hook() -> PreBuildHook {
+        Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
+    }
+
+    #[tokio::test]
+    async fn factory_replay_guard_blocks_start_turn_after_assistant_image() {
+        let probe = Arc::new(GuardProbeMobSessionService::new(vec![
+            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
+                vec![generated_image_block_for_test()],
+                meerkat_core::StopReason::EndTurn,
+            )),
+        ]));
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let wrapped = PreBuildMobSessionService {
+            inner,
+            hook: no_op_hook(),
+            after_create_hook: None,
+        };
+
+        let result = meerkat_core::service::SessionService::start_turn(
+            &wrapped,
+            &meerkat_core::SessionId::new(),
+            start_turn_request_for_test(),
+        )
+        .await;
+
+        let Err(SessionError::FailedWithData { data, .. }) = result else {
+            panic!("expected replay guard error, got {result:?}");
+        };
+        assert_eq!(data["code"], "mobkit_replay_projection_guard");
+        assert_eq!(
+            probe.start_turn_calls(),
+            0,
+            "guard must fail before the provider-backed session turn starts"
+        );
+    }
+
+    #[tokio::test]
+    async fn factory_replay_guard_allows_plain_text_history() {
+        let probe = Arc::new(GuardProbeMobSessionService::new(vec![
+            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
+                vec![meerkat_core::AssistantBlock::Text {
+                    text: "plain history".to_string(),
+                    meta: None,
+                }],
+                meerkat_core::StopReason::EndTurn,
+            )),
+        ]));
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let wrapped = PreBuildMobSessionService {
+            inner,
+            hook: no_op_hook(),
+            after_create_hook: None,
+        };
+
+        meerkat_core::service::SessionService::start_turn(
+            &wrapped,
+            &meerkat_core::SessionId::new(),
+            start_turn_request_for_test(),
+        )
+        .await
+        .expect("plain text history should pass the guard");
+
+        assert_eq!(probe.start_turn_calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_spec_new_wraps_raw_session_service_with_replay_guard() {
+        let probe = Arc::new(GuardProbeMobSessionService::new(vec![
+            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
+                vec![generated_image_block_for_test()],
+                meerkat_core::StopReason::EndTurn,
+            )),
+        ]));
+        let service: Arc<dyn MobSessionService> = probe.clone();
+        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
+
+        let result = spec
+            .session_service
+            .start_turn(
+                &meerkat_core::SessionId::new(),
+                start_turn_request_for_test(),
+            )
+            .await;
+
+        let Err(SessionError::FailedWithData { data, .. }) = result else {
+            panic!("expected replay guard error, got {result:?}");
+        };
+        assert_eq!(data["code"], "mobkit_replay_projection_guard");
+        assert_eq!(
+            probe.start_turn_calls(),
+            0,
+            "MobBootstrapSpec::new must guard raw gateway-provided services before turns start"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_rejects_image_generation_when_builtins_are_disabled() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.commander]
+model = "gpt-5.5"
+
+[profiles.commander.tools]
+builtins = false
+image_generation = true
+"#,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        let service: Arc<dyn MobSessionService> =
+            Arc::new(GuardProbeMobSessionService::new(Vec::new()));
+        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
+
+        let Err(err) = MobRuntime::bootstrap(spec).await else {
+            panic!("invalid image_generation/builtins config should fail before mob build");
+        };
+
+        assert!(
+            err.to_string().contains("commander"),
+            "bootstrap error should name the invalid profile"
+        );
+    }
 
     /// Verify that persistent_with_hook wraps the session service with
     /// PreBuildMobSessionService (hook is Some).
@@ -1729,6 +2736,20 @@ mod tests {
         );
         assert_eq!(normalized.prompt, expected_prompt);
         assert_eq!(normalized.system_prompt, expected_system_prompt);
+    }
+
+    /// Direct member delivery must not forward runtime-only steering semantics.
+    #[test]
+    fn normalize_direct_member_delivery_mode_downgrades_steer() {
+        assert_eq!(
+            normalize_direct_member_delivery_mode(meerkat_core::types::HandlingMode::Queue),
+            meerkat_core::types::HandlingMode::Queue
+        );
+        assert_eq!(
+            normalize_direct_member_delivery_mode(meerkat_core::types::HandlingMode::Steer),
+            meerkat_core::types::HandlingMode::Queue,
+            "the direct member-send path is queue-only until a runtime-backed steering surface is wired"
+        );
     }
 
     /// SessionCreatedContext must carry model, labels, and optional system_prompt.

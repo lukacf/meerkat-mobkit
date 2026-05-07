@@ -788,6 +788,9 @@ fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {
             if let Some(response_phase) = agent.get("response_phase").and_then(Value::as_str) {
                 row["response_phase"] = Value::String(response_phase.to_string());
             }
+            if let Some(model_capabilities) = agent.get("model_capabilities") {
+                row["model_capabilities"] = model_capabilities.clone();
+            }
             if let Some(session_id) = agent.get("session_id").and_then(Value::as_str) {
                 row["session_id"] = Value::String(session_id.to_string());
             }

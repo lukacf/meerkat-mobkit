@@ -6,9 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
-use meerkat_mob::{MobHandle, SpawnMemberSpec};
+use meerkat_mob::{MobHandle, MobSessionService, SpawnMemberSpec};
 
-use crate::mob_handle_runtime::{content_input_has_images, model_capabilities_for_role};
+use crate::mob_handle_runtime::{content_input_has_images, model_capabilities_for_member};
 
 use super::types::{
     AgentBuildDraft, AgentIdentity, AgentRuntimeId, DurableAgentSpec, SessionSnapshot,
@@ -119,6 +119,8 @@ pub struct MobSessionBridge {
     handle: MobHandle,
     /// Session store used for checkpoint (loading session data to serialize).
     session_store: Option<Arc<dyn meerkat::SessionStore>>,
+    /// Session service used to project the live effective model for capability checks.
+    session_service: Option<Arc<dyn MobSessionService>>,
 }
 
 impl MobSessionBridge {
@@ -127,6 +129,19 @@ impl MobSessionBridge {
         Self {
             handle,
             session_store: None,
+            session_service: None,
+        }
+    }
+
+    /// Create a new bridge with session-service access for live model capability checks.
+    pub fn with_session_service(
+        handle: MobHandle,
+        session_service: Arc<dyn MobSessionService>,
+    ) -> Self {
+        Self {
+            handle,
+            session_store: None,
+            session_service: Some(session_service),
         }
     }
 
@@ -138,6 +153,20 @@ impl MobSessionBridge {
         Self {
             handle,
             session_store: Some(session_store),
+            session_service: None,
+        }
+    }
+
+    /// Create a bridge with checkpoint and live capability support.
+    pub fn with_session_store_and_service(
+        handle: MobHandle,
+        session_store: Arc<dyn meerkat::SessionStore>,
+        session_service: Arc<dyn MobSessionService>,
+    ) -> Self {
+        Self {
+            handle,
+            session_store: Some(session_store),
+            session_service: Some(session_service),
         }
     }
 }
@@ -249,8 +278,12 @@ impl SessionBridge for MobSessionBridge {
             let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
                 BridgeError::Mob("member not found while checking image capability".to_string())
             })?;
-            let caps =
-                model_capabilities_for_role(self.handle.definition(), member_entry.role.as_str());
+            let caps = model_capabilities_for_member(
+                &self.handle,
+                self.session_service.as_ref(),
+                &member_entry.agent_identity,
+            )
+            .await;
             if !caps.image_input {
                 return Err(BridgeError::InvalidInput(
                     "target member model cannot accept image input".to_string(),

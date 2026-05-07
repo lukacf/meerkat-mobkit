@@ -5,6 +5,13 @@ import type {
 } from "@console-core";
 import { ConversationRichContent } from "@console-components";
 import type { ConsoleAgent } from "../types";
+import {
+  composerImageFileKey,
+  consoleBlobReferencesFromText,
+  consoleBlobUrlsFromText,
+  dedupeComposerImageFiles,
+  stripConsoleBlobReferencesFromText,
+} from "../lib/composer-attachment-text";
 
 interface ChatPaneProps {
   agent: ConsoleAgent | null;
@@ -173,15 +180,92 @@ function textSignatureForMsg(message: Msg): string {
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
 
-function imageFilesFromClipboard(data: DataTransfer): File[] {
+interface ImageTransferPayload {
+  files: File[];
+  textPayloads: string[];
+}
+
+function collectImageTransferPayload(data: DataTransfer): ImageTransferPayload {
   const directFiles = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
-  if (directFiles.length > 0) {
-    return directFiles;
-  }
-  return Array.from(data.items)
+  const itemFiles = Array.from(data.items)
     .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
     .map((item) => item.getAsFile())
     .filter((file): file is File => Boolean(file));
+  const textPayloads = [
+    data.getData("text/html"),
+    data.getData("text/uri-list"),
+    data.getData("text/plain"),
+  ].filter(Boolean);
+  return { files: dedupeComposerImageFiles([...directFiles, ...itemFiles]), textPayloads };
+}
+
+function imageTransferPayloadHasImage(payload: ImageTransferPayload): boolean {
+  return payload.files.length > 0
+    || payload.textPayloads.some((text) => (
+      imageDataUrlsFromText(text).length > 0 || consoleBlobUrlsFromText(text).length > 0
+    ));
+}
+
+async function imageFilesFromTransferPayload(payload: ImageTransferPayload): Promise<File[]> {
+  if (payload.files.length > 0) {
+    return payload.files;
+  }
+  const files: File[] = [];
+  const seen = new Set<string>();
+  for (const text of payload.textPayloads) {
+    for (const dataUrl of imageDataUrlsFromText(text)) {
+      if (seen.has(dataUrl)) continue;
+      seen.add(dataUrl);
+      const file = fileFromImageDataUrl(dataUrl);
+      if (file) files.push(file);
+    }
+    for (const blobUrl of consoleBlobUrlsFromText(text)) {
+      if (seen.has(blobUrl)) continue;
+      seen.add(blobUrl);
+      const file = await fileFromConsoleBlobUrl(blobUrl);
+      if (file) files.push(file);
+    }
+  }
+  return files;
+}
+
+function imageDataUrlsFromText(value: string): string[] {
+  const matches = value.match(/data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+/gi);
+  return matches ?? [];
+}
+
+function fileFromImageDataUrl(dataUrl: string): File | null {
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) return null;
+  const [, mediaType, base64] = match;
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    return new File([bytes], `pasted-image.${ext}`, { type: mediaType });
+  } catch {
+    return null;
+  }
+}
+
+async function fileFromConsoleBlobUrl(url: string): Promise<File | null> {
+  try {
+    const response = await fetch(url, { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim() || "";
+    if (!ALLOWED_IMAGE_TYPES.has(mediaType)) return null;
+    const blob = await response.blob();
+    const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    const slug = decodeURIComponent(new URL(url).pathname.split("/").pop() || "blob")
+      .replace(/[^A-Za-z0-9._-]/g, "-")
+      .slice(0, 80) || "blob";
+    return new File([blob], `${slug}.${ext}`, { type: mediaType });
+  } catch {
+    return null;
+  }
 }
 
 export function ChatPane({
@@ -203,7 +287,15 @@ export function ChatPane({
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
-    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    const resetTranscriptScroll = () => {
+      if (bodyRef.current) {
+        bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+        bodyRef.current.scrollLeft = 0;
+      }
+    };
+    resetTranscriptScroll();
+    const frame = window.requestAnimationFrame(resetTranscriptScroll);
+    return () => window.cancelAnimationFrame(frame);
   }, [entries.length, phase]);
 
   const messages = React.useMemo(() => {
@@ -261,10 +353,11 @@ export function ChatPane({
   const [dragActive, setDragActive] = React.useState(false);
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  const resolvedDraftBlobRefs = React.useRef("");
 
   function addFiles(fileList: FileList | File[]) {
     if (!canAttachImages) return;
-    const files = Array.from(fileList);
+    const files = dedupeComposerImageFiles(Array.from(fileList));
     const accepted: StagedAttachment[] = [];
     let error: string | null = null;
     for (const file of files) {
@@ -283,14 +376,23 @@ export function ChatPane({
       });
     }
     onStagedChange((current) => {
-      const next = [...current, ...accepted].slice(0, MAX_ATTACHMENTS);
-      if (current.length + accepted.length > MAX_ATTACHMENTS) {
-        error = `Maximum ${MAX_ATTACHMENTS} images`;
+      const currentKeys = new Set(current.map((item) => composerImageFileKey(item.file)));
+      const append: StagedAttachment[] = [];
+      for (const item of accepted) {
+        const key = composerImageFileKey(item.file);
+        if (currentKeys.has(key)) {
+          URL.revokeObjectURL(item.previewUrl);
+          continue;
+        }
+        currentKeys.add(key);
+        if (current.length + append.length >= MAX_ATTACHMENTS) {
+          URL.revokeObjectURL(item.previewUrl);
+          error = `Maximum ${MAX_ATTACHMENTS} images`;
+          continue;
+        }
+        append.push(item);
       }
-      accepted.slice(Math.max(0, MAX_ATTACHMENTS - current.length)).forEach((item) => {
-        URL.revokeObjectURL(item.previewUrl);
-      });
-      return next;
+      return [...current, ...append];
     });
     setAttachmentError(error);
   }
@@ -302,6 +404,44 @@ export function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
+
+  React.useEffect(() => {
+    if (!canAttachImages) return;
+    const refs = consoleBlobReferencesFromText(draft);
+    if (refs.length === 0) {
+      resolvedDraftBlobRefs.current = "";
+      return;
+    }
+    const signature = refs.map((ref) => ref.href).join("\n");
+    if (signature === resolvedDraftBlobRefs.current) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const files: File[] = [];
+        const seen = new Set<string>();
+        for (const ref of refs) {
+          if (seen.has(ref.href)) continue;
+          seen.add(ref.href);
+          const file = await fileFromConsoleBlobUrl(ref.href);
+          if (file) files.push(file);
+        }
+        if (cancelled) return;
+        if (files.length > 0) {
+          resolvedDraftBlobRefs.current = signature;
+          addFiles(files);
+          onDraftChange(stripConsoleBlobReferencesFromText(draft, refs));
+        } else {
+          setAttachmentError("No usable image found");
+        }
+      })();
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [canAttachImages, draft, onDraftChange]);
 
   async function submitComposer() {
     if (staged.length > 0 && !canAttachImages) {
@@ -340,7 +480,15 @@ export function ChatPane({
           <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire" disabled={!agent?.affordances?.can_retire}>Retire</button>
         </div>
       </div>
-      <div className="conv__body" ref={bodyRef}>
+      <div
+        className="conv__body"
+        onScroll={(event) => {
+          if (event.currentTarget.scrollLeft !== 0) {
+            event.currentTarget.scrollLeft = 0;
+          }
+        }}
+        ref={bodyRef}
+      >
         {messages.length === 0 && (
           <div className="msg msg--origin">
             <div className="msg__time" />
@@ -394,14 +542,27 @@ export function ChatPane({
             if (!canAttachImages) return;
             event.preventDefault();
             setDragActive(false);
-            addFiles(event.dataTransfer.files);
+            const payload = collectImageTransferPayload(event.dataTransfer);
+            void imageFilesFromTransferPayload(payload).then((files) => {
+              if (files.length > 0) {
+                addFiles(files);
+              } else {
+                setAttachmentError("No usable image found");
+              }
+            });
           }}
           onPaste={(event) => {
             if (!canAttachImages) return;
-            const files = imageFilesFromClipboard(event.clipboardData);
-            if (files.length > 0) {
+            const payload = collectImageTransferPayload(event.clipboardData);
+            if (imageTransferPayloadHasImage(payload)) {
               event.preventDefault();
-              addFiles(files);
+              void imageFilesFromTransferPayload(payload).then((files) => {
+                if (files.length > 0) {
+                  addFiles(files);
+                } else {
+                  setAttachmentError("No usable image found");
+                }
+              });
             }
           }}
         >

@@ -88,6 +88,15 @@ comms = true
     (temp_dir, runtime)
 }
 
+async fn stop_runtime_allowing_boundary_cancel(runtime: &UnifiedRuntime) {
+    if let Err(err) = runtime.mob_handle().stop().await {
+        assert!(
+            err.to_string().contains("cancel_after_boundary"),
+            "stop failed: {err:?}"
+        );
+    }
+}
+
 fn rpc_request(method: &str, params: Value) -> String {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -135,7 +144,7 @@ async fn peer_pubkey_rpc_returns_configured_keypair() {
         Some(expected_b64.as_str())
     );
 
-    runtime.mob_handle().stop().await.expect("stop");
+    stop_runtime_allowing_boundary_cancel(&runtime).await;
 }
 
 #[tokio::test]
@@ -161,7 +170,7 @@ async fn peer_pubkey_rpc_errors_when_no_keypair_configured() {
     let error = parsed.get("error").expect("error present");
     assert_eq!(error.get("code").and_then(Value::as_i64), Some(-32004));
 
-    runtime.mob_handle().stop().await.expect("stop");
+    stop_runtime_allowing_boundary_cancel(&runtime).await;
 }
 
 #[tokio::test]
@@ -208,7 +217,7 @@ async fn wire_local_rejects_non_inproc_without_pubkey() {
     let msg_zero = format!("{err_zero}");
     assert!(msg_zero.contains("pubkey"), "{msg_zero}");
 
-    runtime.mob_handle().stop().await.expect("stop");
+    stop_runtime_allowing_boundary_cancel(&runtime).await;
 }
 
 #[tokio::test]

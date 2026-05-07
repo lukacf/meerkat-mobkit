@@ -14,7 +14,6 @@ use crate::mob_handle_runtime::{
 use crate::runtime::{
     InMemoryMetadataStore, PersistentMetadataStore, RuntimeOptions, SqliteMetadataStore,
 };
-use crate::tool_overlay::validate_mobkit_tool_overlay_from_toml;
 use crate::types::{EventEnvelope, MobKitConfig, UnifiedEvent};
 
 use super::edge_types::{Discovery, EdgeDiscovery, PreSpawnHook};
@@ -209,10 +208,13 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Enable or disable the temporary MobKit image-generation bridge.
+    /// Force image-generation runtime substrate wiring.
     ///
-    /// This is default-off because Meerkat 0.6 exposes image generation as a
-    /// factory-wide machine rather than a profile-level tool override.
+    /// Definition-based builders also infer this from
+    /// `profiles.<name>.tools.image_generation`; Meerkat owns the per-profile
+    /// visibility decision. With Meerkat 0.6.1, profiles that opt into
+    /// image generation must also leave `tools.builtins = true` because
+    /// `generate_image` is registered by the builtin dispatcher.
     pub fn image_generation(mut self, enabled: bool) -> Self {
         self.capability_flags.image_generation = enabled;
         self
@@ -419,10 +421,19 @@ impl UnifiedRuntimeBuilder {
         // the bridge connects the identity-first control plane to real sessions.
         let session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>> = {
             let handle = runtime.mob_runtime.handle();
-            let bridge = if let Some(ref store) = self.custom_session_store {
-                crate::identity_first::bridge::MobSessionBridge::with_session_store(
-                    handle,
-                    store.clone(),
+            let session_service = runtime.mob_runtime.session_service().cloned();
+            let session_store = self.custom_session_store.clone();
+            let bridge = if let (Some(store), Some(service)) =
+                (session_store.clone(), session_service.clone())
+            {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store_and_service(
+                    handle, store, service,
+                )
+            } else if let Some(store) = session_store {
+                crate::identity_first::bridge::MobSessionBridge::with_session_store(handle, store)
+            } else if let Some(service) = session_service {
+                crate::identity_first::bridge::MobSessionBridge::with_session_service(
+                    handle, service,
                 )
             } else {
                 crate::identity_first::bridge::MobSessionBridge::new(handle)
@@ -491,23 +502,12 @@ impl UnifiedRuntimeBuilder {
                         path.display()
                     ))
                 })?;
-                let definition = MobDefinition::from_toml(&toml_content).map_err(|e| {
+                MobDefinition::from_toml(&toml_content).map_err(|e| {
                     UnifiedRuntimeBuilderError::DefinitionLoad(format!(
                         "failed to parse definition TOML at {}: {e}",
                         path.display()
                     ))
-                })?;
-                let overlay_config =
-                    validate_mobkit_tool_overlay_from_toml(&definition, &toml_content).map_err(
-                        |e| {
-                            UnifiedRuntimeBuilderError::DefinitionLoad(format!(
-                                "invalid MobKit tool overlay at {}: {e}",
-                                path.display()
-                            ))
-                        },
-                    )?;
-                caps.image_generation |= overlay_config.image_generation;
-                definition
+                })?
             }
             None => {
                 return Err(UnifiedRuntimeBuilderError::MissingRequiredField(
@@ -515,6 +515,8 @@ impl UnifiedRuntimeBuilder {
                 ));
             }
         };
+        caps.image_generation |=
+            crate::mob_handle_runtime::mob_definition_may_use_image_generation(&definition);
 
         let hook = self
             .session_hook

@@ -2049,7 +2049,10 @@ function normalizeAgents(experience, modules) {
       const statusRow = identityStatusByIdentity.get(entryIdentity) || identityStatusByIdentity.get(entryMemberId) || normalizeIdentityStatusRow(entry);
       const watchFields = normalizeSidebarWatchFields(entry);
       const responsePhase = normalizeResponsePhase(entry.response_phase);
-      const modelCapabilities = normalizeModelCapabilities(entry);
+      const modelCapabilities = entry.model_capabilities !== void 0 ? normalizeModelCapabilities(entry) : normalizeModelCapabilities(identityStatusRows.find((row) => {
+        const normalized = normalizeIdentityStatusRow(row);
+        return normalized?.identity === statusRow?.identity;
+      }));
       return {
         ...statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {},
         agent_id: String(entry.agent_id || statusRow?.identity || entry.identity || entry.member_id || ""),
@@ -2078,6 +2081,7 @@ function normalizeAgents(experience, modules) {
     return identityStatusRows.map((entry) => {
       const statusRow = normalizeIdentityStatusRow(entry);
       const identity = statusRow?.identity || "";
+      const modelCapabilities = normalizeModelCapabilities(entry);
       return {
         identity,
         agent_id: String(identity),
@@ -2094,7 +2098,7 @@ function normalizeAgents(experience, modules) {
         ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
         addressable: false,
         affordances: { can_send_message: false },
-        model_capabilities: { image_input: false }
+        model_capabilities: modelCapabilities
       };
     });
   }
@@ -6214,6 +6218,74 @@ function SignalsRail({ frames, collapsed, onSelect }) {
 
 // src/panels/ChatPane.tsx
 var import_react22 = __toESM(require("react"));
+
+// src/lib/composer-attachment-text.ts
+function composerImageFileKey(file) {
+  return [
+    file.name || "",
+    file.type || "",
+    String(file.size),
+    String(file.lastModified ?? 0)
+  ].join("\0");
+}
+function dedupeComposerImageFiles(files) {
+  const seen = /* @__PURE__ */ new Set();
+  const deduped = [];
+  for (const file of files) {
+    const key = composerImageFileKey(file);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(file);
+  }
+  return deduped;
+}
+function defaultBaseHref() {
+  if (typeof window !== "undefined") return window.location.href;
+  return "http://localhost/";
+}
+function defaultOrigin(baseHref) {
+  if (typeof window !== "undefined") return window.location.origin;
+  return new URL(baseHref).origin;
+}
+function normalizeConsoleBlobUrl(raw, baseHref = defaultBaseHref(), origin = defaultOrigin(baseHref)) {
+  try {
+    const url = new URL(raw.trim(), baseHref);
+    if (url.origin !== origin) return null;
+    if (!url.pathname.startsWith("/blobs/")) return null;
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+function consoleBlobReferencesFromText(value, baseHref = defaultBaseHref(), origin = defaultOrigin(baseHref)) {
+  const normalized = value.replace(/&amp;/g, "&");
+  const candidates = [
+    ...Array.from(normalized.matchAll(/\b(?:src|href)=["']([^"']+)["']/gi)).map((match) => match[1]),
+    ...Array.from(normalized.matchAll(/(?:https?:\/\/[^\s"'<>]+|\/blobs\/[^\s"'<>]+)/gi)).map((match) => match[0])
+  ];
+  const refs = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const candidate of candidates) {
+    const href = normalizeConsoleBlobUrl(candidate, baseHref, origin);
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    refs.push({ href, raw: candidate });
+  }
+  return refs;
+}
+function consoleBlobUrlsFromText(value) {
+  return consoleBlobReferencesFromText(value).map((ref) => ref.href);
+}
+function stripConsoleBlobReferencesFromText(value, references = consoleBlobReferencesFromText(value)) {
+  let next = value;
+  for (const ref of references) {
+    next = next.split(ref.raw).join("");
+    next = next.split(ref.href).join("");
+  }
+  return next.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/[ \t]{2,}/g, " ").trim();
+}
+
+// src/panels/ChatPane.tsx
 var import_jsx_runtime30 = require("react/jsx-runtime");
 var ALLOWED_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 var MAX_ATTACHMENTS = 4;
@@ -6318,12 +6390,74 @@ function textSignatureForMsg(message) {
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
-function imageFilesFromClipboard(data) {
+function collectImageTransferPayload(data) {
   const directFiles = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
-  if (directFiles.length > 0) {
-    return directFiles;
+  const itemFiles = Array.from(data.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file) => Boolean(file));
+  const textPayloads = [
+    data.getData("text/html"),
+    data.getData("text/uri-list"),
+    data.getData("text/plain")
+  ].filter(Boolean);
+  return { files: dedupeComposerImageFiles([...directFiles, ...itemFiles]), textPayloads };
+}
+function imageTransferPayloadHasImage(payload) {
+  return payload.files.length > 0 || payload.textPayloads.some((text) => imageDataUrlsFromText(text).length > 0 || consoleBlobUrlsFromText(text).length > 0);
+}
+async function imageFilesFromTransferPayload(payload) {
+  if (payload.files.length > 0) {
+    return payload.files;
   }
-  return Array.from(data.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file) => Boolean(file));
+  const files = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const text of payload.textPayloads) {
+    for (const dataUrl of imageDataUrlsFromText(text)) {
+      if (seen.has(dataUrl)) continue;
+      seen.add(dataUrl);
+      const file = fileFromImageDataUrl(dataUrl);
+      if (file) files.push(file);
+    }
+    for (const blobUrl of consoleBlobUrlsFromText(text)) {
+      if (seen.has(blobUrl)) continue;
+      seen.add(blobUrl);
+      const file = await fileFromConsoleBlobUrl(blobUrl);
+      if (file) files.push(file);
+    }
+  }
+  return files;
+}
+function imageDataUrlsFromText(value) {
+  const matches = value.match(/data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+/gi);
+  return matches ?? [];
+}
+function fileFromImageDataUrl(dataUrl) {
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) return null;
+  const [, mediaType, base64] = match;
+  try {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    return new File([bytes], `pasted-image.${ext}`, { type: mediaType });
+  } catch {
+    return null;
+  }
+}
+async function fileFromConsoleBlobUrl(url) {
+  try {
+    const response = await fetch(url, { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim() || "";
+    if (!ALLOWED_IMAGE_TYPES.has(mediaType)) return null;
+    const blob = await response.blob();
+    const ext = mediaType.split("/")[1]?.replace("jpeg", "jpg") || "png";
+    const slug = decodeURIComponent(new URL(url).pathname.split("/").pop() || "blob").replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 80) || "blob";
+    return new File([blob], `${slug}.${ext}`, { type: mediaType });
+  } catch {
+    return null;
+  }
 }
 function ChatPane({
   agent,
@@ -6344,7 +6478,15 @@ function ChatPane({
 }) {
   const bodyRef = import_react22.default.useRef(null);
   import_react22.default.useEffect(() => {
-    if (bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+    const resetTranscriptScroll = () => {
+      if (bodyRef.current) {
+        bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+        bodyRef.current.scrollLeft = 0;
+      }
+    };
+    resetTranscriptScroll();
+    const frame = window.requestAnimationFrame(resetTranscriptScroll);
+    return () => window.cancelAnimationFrame(frame);
   }, [entries.length, phase]);
   const messages = import_react22.default.useMemo(() => {
     const flat = entries.flatMap(flattenEntry);
@@ -6377,9 +6519,10 @@ function ChatPane({
   const [dragActive, setDragActive] = import_react22.default.useState(false);
   const [attachmentError, setAttachmentError] = import_react22.default.useState(null);
   const fileInputRef = import_react22.default.useRef(null);
+  const resolvedDraftBlobRefs = import_react22.default.useRef("");
   function addFiles(fileList) {
     if (!canAttachImages) return;
-    const files = Array.from(fileList);
+    const files = dedupeComposerImageFiles(Array.from(fileList));
     const accepted = [];
     let error = null;
     for (const file of files) {
@@ -6398,14 +6541,23 @@ function ChatPane({
       });
     }
     onStagedChange((current) => {
-      const next = [...current, ...accepted].slice(0, MAX_ATTACHMENTS);
-      if (current.length + accepted.length > MAX_ATTACHMENTS) {
-        error = `Maximum ${MAX_ATTACHMENTS} images`;
+      const currentKeys = new Set(current.map((item) => composerImageFileKey(item.file)));
+      const append = [];
+      for (const item of accepted) {
+        const key = composerImageFileKey(item.file);
+        if (currentKeys.has(key)) {
+          URL.revokeObjectURL(item.previewUrl);
+          continue;
+        }
+        currentKeys.add(key);
+        if (current.length + append.length >= MAX_ATTACHMENTS) {
+          URL.revokeObjectURL(item.previewUrl);
+          error = `Maximum ${MAX_ATTACHMENTS} images`;
+          continue;
+        }
+        append.push(item);
       }
-      accepted.slice(Math.max(0, MAX_ATTACHMENTS - current.length)).forEach((item) => {
-        URL.revokeObjectURL(item.previewUrl);
-      });
-      return next;
+      return [...current, ...append];
     });
     setAttachmentError(error);
   }
@@ -6416,6 +6568,41 @@ function ChatPane({
       return current.filter((item) => item.id !== id);
     });
   }
+  import_react22.default.useEffect(() => {
+    if (!canAttachImages) return;
+    const refs = consoleBlobReferencesFromText(draft);
+    if (refs.length === 0) {
+      resolvedDraftBlobRefs.current = "";
+      return;
+    }
+    const signature = refs.map((ref) => ref.href).join("\n");
+    if (signature === resolvedDraftBlobRefs.current) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const files = [];
+        const seen = /* @__PURE__ */ new Set();
+        for (const ref of refs) {
+          if (seen.has(ref.href)) continue;
+          seen.add(ref.href);
+          const file = await fileFromConsoleBlobUrl(ref.href);
+          if (file) files.push(file);
+        }
+        if (cancelled) return;
+        if (files.length > 0) {
+          resolvedDraftBlobRefs.current = signature;
+          addFiles(files);
+          onDraftChange(stripConsoleBlobReferencesFromText(draft, refs));
+        } else {
+          setAttachmentError("No usable image found");
+        }
+      })();
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [canAttachImages, draft, onDraftChange]);
   async function submitComposer() {
     if (staged.length > 0 && !canAttachImages) {
       setAttachmentError("model cannot see images");
@@ -6452,44 +6639,56 @@ function ChatPane({
         /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", disabled: !agent?.affordances?.can_retire, children: "Retire" })
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "conv__body", ref: bodyRef, children: [
-      messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg msg--origin", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__text", children: [
-          "No messages yet. Say hello to ",
-          agentLabel,
-          "."
-        ] }) })
-      ] }),
-      messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time", children: m.time }),
-        /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg__bubble", children: [
-          m.kind === "user" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
-          m.kind === "agent" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
-          m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__text", children: m.text })
-        ] })
-      ] }, m.id)),
-      phase && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
-        "div",
-        {
-          className: "msg msg--typing",
-          "data-testid": `chat-typing:${identity}`,
-          "aria-live": "polite",
-          "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
-          children: [
+    /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+      "div",
+      {
+        className: "conv__body",
+        onScroll: (event) => {
+          if (event.currentTarget.scrollLeft !== 0) {
+            event.currentTarget.scrollLeft = 0;
+          }
+        },
+        ref: bodyRef,
+        children: [
+          messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg msg--origin", children: [
             /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
-            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
-                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
-                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {})
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__text", children: [
+              "No messages yet. Say hello to ",
+              agentLabel,
+              "."
             ] }) })
-          ]
-        }
-      )
-    ] }),
+          ] }),
+          messages.map((m) => /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: `msg msg--${m.kind}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time", children: m.time }),
+            /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "msg__bubble", children: [
+              m.kind === "user" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
+              m.kind === "agent" && m.who && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__who", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("b", { children: m.who }) }),
+              m.blocks && m.blocks.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime30.jsx)(ConversationRichContent, { blocks: m.blocks }) : m.text && /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__text", children: m.text })
+            ] })
+          ] }, m.id)),
+          phase && /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
+            "div",
+            {
+              className: "msg msg--typing",
+              "data-testid": `chat-typing:${identity}`,
+              "aria-live": "polite",
+              "aria-label": `${agentLabel} is ${phaseLabel(phase)}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__time" }),
+                /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("div", { className: "msg__bubble", children: /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing", children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("span", { className: "msg__typing-dots", "aria-hidden": "true", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {}),
+                    /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", {})
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime30.jsx)("span", { className: "msg__typing-label", children: phaseLabel(phase) })
+                ] }) })
+              ]
+            }
+          )
+        ]
+      }
+    ),
     stackSlot,
     /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)("div", { className: "composer", children: [
       /* @__PURE__ */ (0, import_jsx_runtime30.jsxs)(
@@ -6506,14 +6705,27 @@ function ChatPane({
             if (!canAttachImages) return;
             event.preventDefault();
             setDragActive(false);
-            addFiles(event.dataTransfer.files);
+            const payload = collectImageTransferPayload(event.dataTransfer);
+            void imageFilesFromTransferPayload(payload).then((files) => {
+              if (files.length > 0) {
+                addFiles(files);
+              } else {
+                setAttachmentError("No usable image found");
+              }
+            });
           },
           onPaste: (event) => {
             if (!canAttachImages) return;
-            const files = imageFilesFromClipboard(event.clipboardData);
-            if (files.length > 0) {
+            const payload = collectImageTransferPayload(event.clipboardData);
+            if (imageTransferPayloadHasImage(payload)) {
               event.preventDefault();
-              addFiles(files);
+              void imageFilesFromTransferPayload(payload).then((files) => {
+                if (files.length > 0) {
+                  addFiles(files);
+                } else {
+                  setAttachmentError("No usable image found");
+                }
+              });
             }
           },
           children: [

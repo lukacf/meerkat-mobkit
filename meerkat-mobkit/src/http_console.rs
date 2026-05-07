@@ -18,7 +18,7 @@ use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
 use crate::mob_handle_runtime::{
-    assert_member_accepts_images, member_entry_to_json, model_capabilities_for_role,
+    assert_member_accepts_images, member_entry_to_json, model_capabilities_for_member,
     send_message_on_mob_with_mode,
 };
 use serde_json::{Value, json};
@@ -42,7 +42,9 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
-use crate::unified_runtime::console_events::ConsoleEventStore;
+use crate::unified_runtime::console_events::{
+    ConsoleEventStore, is_empty_web_search_annotations_event,
+};
 use crate::unified_runtime::mob_events::MobEventsStore;
 use crate::unified_runtime::{EventLogStore, EventQuery, PersistedEvent};
 
@@ -996,11 +998,26 @@ fn json_rpc_error_value(id: Value, code: i64, message: impl Into<String>) -> Val
 fn project_query_events_for_console(events: Vec<PersistedEvent>, query: &EventQuery) -> Value {
     let mut projected = Vec::new();
     for event in events {
+        if persisted_event_is_empty_web_search_annotations(&event) {
+            continue;
+        }
         let assistant_images = assistant_image_events_from_persisted(&event, query);
         projected.push(serde_json::to_value(&event).unwrap_or(Value::Null));
         projected.extend(assistant_images);
     }
     Value::Array(projected)
+}
+
+fn persisted_event_is_empty_web_search_annotations(event: &PersistedEvent) -> bool {
+    let crate::types::UnifiedEvent::Agent {
+        event_type,
+        payload,
+        ..
+    } = &event.event
+    else {
+        return false;
+    };
+    is_empty_web_search_annotations_event(event_type, payload.as_ref())
 }
 
 fn assistant_image_events_from_persisted(event: &PersistedEvent, query: &EventQuery) -> Vec<Value> {
@@ -1090,6 +1107,19 @@ fn is_allowed_image_media_type(media_type: &str) -> bool {
     )
 }
 
+fn image_upload_part_name<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    context: &str,
+) -> Result<&'a str, String> {
+    object
+        .get("upload_id")
+        .or_else(|| object.get("part_name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{context}.upload_id or {context}.part_name is required"))
+}
+
 async fn externalize_image_upload_placeholders(
     params: &mut Value,
     files: std::collections::BTreeMap<String, MultipartImageUpload>,
@@ -1176,12 +1206,10 @@ async fn externalize_single_image_upload(
     {
         return Err("upload.type must be image_upload".to_string());
     }
-    let upload_id = upload
-        .get("upload_id")
-        .or_else(|| upload.get("part_name"))
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| "upload.upload_id required".to_string())?;
+    let upload_object = upload
+        .as_object()
+        .ok_or_else(|| "upload must be an object".to_string())?;
+    let upload_id = image_upload_part_name(upload_object, "upload")?;
     let Some(file) = files.get(upload_id) else {
         return Err(format!(
             "image_upload placeholder missing file part: {upload_id}"
@@ -1229,12 +1257,7 @@ fn collect_image_upload_placeholders(
         }
         Value::Object(object) => {
             if object.get("type").and_then(Value::as_str) == Some("image_upload") {
-                let upload_id = object
-                    .get("upload_id")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "image_upload.upload_id is required".to_string())?;
+                let upload_id = image_upload_part_name(object, "image_upload")?;
                 let media_type = object
                     .get("media_type")
                     .and_then(Value::as_str)
@@ -1270,10 +1293,7 @@ fn replace_image_upload_placeholders(
         }
         Value::Object(object) => {
             if object.get("type").and_then(Value::as_str) == Some("image_upload") {
-                let upload_id = object
-                    .get("upload_id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| "image_upload.upload_id is required".to_string())?;
+                let upload_id = image_upload_part_name(object, "image_upload")?;
                 let replacement = refs
                     .get(upload_id)
                     .ok_or_else(|| format!("missing blob replacement for {upload_id}"))?;
@@ -1333,16 +1353,23 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
     )
 }
 
-fn member_entry_to_console_json(
-    definition: &meerkat_mob::MobDefinition,
+async fn member_entry_to_console_json(
+    runtime: &MobRuntime,
     entry: &meerkat_mob::runtime::MobMemberListEntry,
 ) -> Value {
     let mut value = member_entry_to_json(entry);
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "model_capabilities".to_string(),
-            serde_json::to_value(model_capabilities_for_role(definition, entry.role.as_str()))
-                .unwrap_or(Value::Null),
+            serde_json::to_value(
+                model_capabilities_for_member(
+                    &runtime.handle(),
+                    runtime.session_service(),
+                    &entry.agent_identity,
+                )
+                .await,
+            )
+            .unwrap_or(Value::Null),
         );
     }
     value
@@ -1382,10 +1409,10 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
     )
 }
 
-/// Optional JSON-RPC param `handling_mode: "queue" | "steer"`. Anything
-/// else (missing, null, unknown string) maps to `Queue` so the default
-/// stays untouched. The console's pending-message stack uses `"steer"`
-/// to power its "cut the line" affordance; everything else stays Queue.
+/// Optional JSON-RPC param `handling_mode: "queue" | "steer"`.
+/// Missing/null defaults to `Queue`; unknown strings remain invalid params.
+/// The direct MobKit send path normalizes `Steer` to `Queue` until a
+/// runtime-backed steering surface is available.
 fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
     let Some(raw) = params.get("handling_mode") else {
         return Ok(meerkat_core::types::HandlingMode::Queue);
@@ -1645,7 +1672,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_including_retiring().await;
             let mut members = Vec::with_capacity(entries.len());
             for entry in &entries {
-                members.push(member_entry_to_console_json(handle.definition(), entry));
+                members.push(member_entry_to_console_json(runtime, entry).await);
             }
             response_value(response_id, Some(Value::Array(members)), None)
         }
@@ -1659,7 +1686,7 @@ async fn handle_console_runtime_rpc(
             match entries.into_iter().find(|e| e.agent_identity == identity) {
                 Some(entry) => response_value(
                     response_id,
-                    Some(member_entry_to_console_json(handle.definition(), &entry)),
+                    Some(member_entry_to_console_json(runtime, &entry).await),
                     None,
                 ),
                 None => invalid_params(response_id, format!("member not found: {member_id}")),
@@ -1685,7 +1712,7 @@ async fn handle_console_runtime_rpc(
             let entries = handle.list_members_matching(filter).await;
             let mut matches = Vec::with_capacity(entries.len());
             for entry in &entries {
-                matches.push(member_entry_to_console_json(handle.definition(), entry));
+                matches.push(member_entry_to_console_json(runtime, entry).await);
             }
             response_value(response_id, Some(Value::Array(matches)), None)
         }
@@ -1716,8 +1743,13 @@ async fn handle_console_runtime_rpc(
                 Ok(mode) => mode,
                 Err(message) => return invalid_params(response_id, message),
             };
-            if let Err(err) =
-                assert_member_accepts_images(&runtime.handle(), member_id, &content).await
+            if let Err(err) = assert_member_accepts_images(
+                &runtime.handle(),
+                runtime.session_service(),
+                member_id,
+                &content,
+            )
+            .await
             {
                 return invalid_params(response_id, err.to_string());
             }
@@ -3010,8 +3042,12 @@ async fn build_live_snapshot(
             .resolve_bridge_session_id(&entry.agent_identity)
             .await
             .map(|s| s.to_string());
-        let model_capabilities =
-            model_capabilities_for_role(handle.definition(), entry.role.as_str());
+        let model_capabilities = model_capabilities_for_member(
+            &handle,
+            runtime.session_service(),
+            &entry.agent_identity,
+        )
+        .await;
         members.push(crate::runtime::ConsoleMember {
             agent_identity: entry.agent_identity.to_string(),
             role: entry.role.to_string(),
@@ -3204,6 +3240,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multipart_blob_upload_accepts_part_name_alias()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "image-field".to_string(),
+            MultipartImageUpload {
+                media_type: "image/png".to_string(),
+                bytes: Bytes::from_static(b"png-data"),
+            },
+        );
+        let result = externalize_single_image_upload(
+            &json!({
+                "upload": {
+                    "type": "image_upload",
+                    "part_name": "image-field",
+                    "media_type": "image/png"
+                }
+            }),
+            files,
+            store,
+        )
+        .await
+        .map_err(std::io::Error::other)?;
+
+        assert_eq!(result["media_type"], json!("image/png"));
+        assert!(
+            result["blob_id"]
+                .as_str()
+                .is_some_and(|value| value.starts_with("sha256:"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn multipart_blob_upload_rejects_media_mismatch() -> Result<(), Box<dyn std::error::Error>>
     {
         let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
@@ -3315,6 +3386,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multipart_send_accepts_part_name_placeholder() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
+        let mut files = BTreeMap::new();
+        files.insert(
+            "image-field".to_string(),
+            MultipartImageUpload {
+                media_type: "image/png".to_string(),
+                bytes: Bytes::from_static(b"png-data"),
+            },
+        );
+        let mut params = json!({
+            "member_id": "analyst",
+            "content": [
+                { "type": "text", "text": "describe" },
+                {
+                    "type": "image_upload",
+                    "part_name": "image-field",
+                    "media_type": "image/png"
+                }
+            ]
+        });
+
+        externalize_image_upload_placeholders(&mut params, files, store)
+            .await
+            .map_err(std::io::Error::other)?;
+
+        assert_eq!(params["content"][1]["type"], json!("image"));
+        assert_eq!(params["content"][1]["source"], json!("blob"));
+        assert_eq!(params["content"][1]["media_type"], json!("image/png"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn multipart_send_rejects_placeholder_without_file()
     -> Result<(), Box<dyn std::error::Error>> {
         let store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
@@ -3385,6 +3490,37 @@ mod tests {
         assert_eq!(items[1]["event_type"], "assistant_image");
         assert_eq!(items[1]["identity"], "identity:luka");
         assert_eq!(items[1]["data"]["blob_id"], "generated-blob-1");
+        Ok(())
+    }
+
+    #[test]
+    fn query_events_hides_empty_web_search_annotation_history()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let events = vec![PersistedEvent {
+            id: "evt-annotation".to_string(),
+            seq: 8,
+            timestamp_ms: 42,
+            member_id: Some("rt:identity:luka:0".to_string()),
+            event: UnifiedEvent::Agent {
+                agent_id: "rt:identity:luka:0".to_string(),
+                event_type: "server_tool_content".to_string(),
+                payload: Some(serde_json::json!({
+                    "id": "msg-1",
+                    "name": "web_search_annotations",
+                    "content": {
+                        "type": "message_annotations",
+                        "annotations": []
+                    }
+                })),
+            },
+        }];
+
+        let projected = project_query_events_for_console(events, &EventQuery::default());
+        let serde_json::Value::Array(items) = projected else {
+            return Err(std::io::Error::other("array projection").into());
+        };
+
+        assert!(items.is_empty());
         Ok(())
     }
 }

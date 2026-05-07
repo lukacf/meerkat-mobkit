@@ -38,7 +38,12 @@ export function normalizeAgents(
         normalizeIdentityStatusRow(entry);
       const watchFields = normalizeSidebarWatchFields(entry);
       const responsePhase = normalizeResponsePhase(entry.response_phase);
-      const modelCapabilities = normalizeModelCapabilities(entry);
+      const modelCapabilities = entry.model_capabilities !== undefined
+        ? normalizeModelCapabilities(entry)
+        : normalizeModelCapabilities(identityStatusRows.find((row) => {
+          const normalized = normalizeIdentityStatusRow(row);
+          return normalized?.identity === statusRow?.identity;
+        }));
 
       return {
         ...(statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {}),
@@ -85,6 +90,7 @@ export function normalizeAgents(
     return identityStatusRows.map((entry) => {
       const statusRow = normalizeIdentityStatusRow(entry);
       const identity = statusRow?.identity || "";
+      const modelCapabilities = normalizeModelCapabilities(entry);
 
       return {
         identity,
@@ -102,7 +108,7 @@ export function normalizeAgents(
         ...(statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {}),
         addressable: false,
         affordances: { can_send_message: false },
-        model_capabilities: { image_input: false },
+        model_capabilities: modelCapabilities,
       };
     });
   }

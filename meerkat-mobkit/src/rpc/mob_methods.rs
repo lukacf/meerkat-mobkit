@@ -67,9 +67,9 @@ fn extract_content(params: &Value) -> Result<Option<ContentInput>, String> {
 }
 
 /// Optional `handling_mode: "queue" | "steer"` JSON-RPC parameter.
-/// Defaults to `Queue` when missing or null. Used by the console's
-/// pending-message stack to power its "Steer" affordance; everything
-/// else stays on the historical queue path.
+/// Defaults to `Queue` when missing or null; unknown strings remain invalid.
+/// The direct MobKit send path normalizes `Steer` to `Queue` until a
+/// runtime-backed steering surface is available.
 fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
     let Some(raw) = params.get("handling_mode") else {
         return Ok(meerkat_core::types::HandlingMode::Queue);
@@ -123,8 +123,13 @@ pub(super) async fn handle_send_message(
 
     match (member_id, content) {
         (Some(member_id), Some(content)) if !member_id.is_empty() => {
-            if let Err(err) =
-                assert_member_accepts_images(&runtime.mob_handle(), member_id, &content).await
+            if let Err(err) = assert_member_accepts_images(
+                &runtime.mob_handle(),
+                runtime.mob_runtime().session_service(),
+                member_id,
+                &content,
+            )
+            .await
             {
                 return JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),

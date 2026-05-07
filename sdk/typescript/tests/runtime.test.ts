@@ -5,7 +5,7 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { MobKitRuntime, MobHandle, ToolCaller, NotConnectedError, RpcError } from "../dist/index.js";
+import { MobKitRuntime, MobHandle, ToolCaller, NotConnectedError, RpcError, TransportError } from "../dist/index.js";
 
 // ---------------------------------------------------------------------------
 // Mock RPC helper
@@ -445,6 +445,29 @@ describe("MobHandle.uploadBlob()", () => {
         (err: unknown) => err instanceof RpcError
           && err.code === -32602
           && err.method === "mobkit/blob/upload",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("maps multipart non-JSON HTTP failures to TransportError", async () => {
+    const { rt, handle } = createMockRuntime();
+    rt.setRustHttpBase("http://127.0.0.1:8765");
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () =>
+        new Response("payload too large", {
+          status: 413,
+          statusText: "Payload Too Large",
+          headers: { "content-type": "text/plain" },
+        })) as typeof fetch;
+
+      await assert.rejects(
+        () => handle.uploadBlob(new Blob(["x"], { type: "image/png" })),
+        (err: unknown) => err instanceof TransportError
+          && err.message.includes("status=413")
+          && err.message.includes("payload too large"),
       );
     } finally {
       globalThis.fetch = originalFetch;

@@ -68,6 +68,7 @@ fn http_error(status: StatusCode, message: &str) -> (StatusCode, Json<Value>) {
 fn map_runtime_error(error: &MobRuntimeError) -> (StatusCode, Json<Value>) {
     match error {
         MobRuntimeError::InvalidInput(message) => http_error(StatusCode::BAD_REQUEST, message),
+        MobRuntimeError::InvalidConfig(message) => http_error(StatusCode::BAD_REQUEST, message),
         MobRuntimeError::Mob(_) => {
             let text = error.to_string();
             if text.contains("not found") {

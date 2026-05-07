@@ -700,7 +700,28 @@ export class MobHandle {
       method: "POST",
       body: form,
     });
-    const body = await response.json() as Record<string, unknown>;
+    const responseText = await response.text();
+    let body: Record<string, unknown> | null = null;
+    if (responseText.trim() !== "") {
+      try {
+        body = JSON.parse(responseText) as Record<string, unknown>;
+      } catch {
+        if (!response.ok) {
+          throw new TransportError(
+            `multipart RPC failed (status=${response.status}): ${responseText}`,
+          );
+        }
+        throw new TransportError("multipart RPC returned non-JSON response");
+      }
+    }
+    if (!response.ok && body === null) {
+      throw new TransportError(
+        `multipart RPC failed (status=${response.status}): ${response.statusText}`,
+      );
+    }
+    if (body === null) {
+      throw new TransportError("multipart RPC returned an empty response");
+    }
     if ("error" in body) {
       const err = body.error as Record<string, unknown>;
       throw new RpcError(
@@ -709,6 +730,11 @@ export class MobHandle {
         id,
         method,
         err.data,
+      );
+    }
+    if (!response.ok) {
+      throw new TransportError(
+        `multipart RPC failed (status=${response.status}): ${responseText}`,
       );
     }
     return body.result;
