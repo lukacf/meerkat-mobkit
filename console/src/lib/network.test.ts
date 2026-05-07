@@ -9,6 +9,7 @@ import {
   sendConsole,
   sendConsoleMultipart,
   subscribeIdentityEvents,
+  subscribeTimelineEvents,
 } from "./network";
 
 test("queryEvents uses fallback events from no_event_log_configured envelopes", async () => {
@@ -541,6 +542,54 @@ test("subscribeIdentityEvents keeps consuming frames after terminal events", asy
     unsubscribe();
     assert.deepEqual(seen, ["evt-1", "evt-2"]);
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("subscribeTimelineEvents reconnects with the latest aggregate cursor", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const seen: string[] = [];
+  let unsubscribe = () => {};
+
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (calls.length === 1) {
+      return new Response([
+        "id: console:10",
+        "event: snapshot_complete",
+        'data: {"type":"snapshot_complete","cursor":"console:10"}',
+        "",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response([
+      "id: console:11",
+      "event: console_frame",
+      'data: {"type":"console_frame","frame":{"id":"console-frame-11","cursor":"console:11","dedupe_key":"event-11","timestamp_ms":11,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"after reconnect"},"source":{"kind":"console_event"}}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    unsubscribe = subscribeTimelineEvents("http://127.0.0.1:7000", {}, (frame) => {
+      seen.push(frame.event);
+      if (frame.cursor === "console:11") {
+        unsubscribe();
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A10");
+    assert.deepEqual(seen, ["snapshot_complete", "text_complete"]);
+  } finally {
+    unsubscribe();
     globalThis.fetch = originalFetch;
   }
 });

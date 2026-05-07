@@ -608,14 +608,20 @@ async fn query_timeline_snapshot(
     mut query: ConsoleTimelineQuery,
 ) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
     const MAX_SNAPSHOT_PAGES: usize = 100;
+    const STORE_PAGE_LIMIT: usize = 1_000;
+    const DEFAULT_SNAPSHOT_LIMIT: usize = 200;
     let mut frames = Vec::new();
     let mut latest_cursor = query.after.clone();
-    if query.limit == 0 {
-        query.limit = 200;
-    }
     if query.after.is_none() {
-        return query_fresh_timeline_snapshot(aggregator, query).await;
+        query.limit = if query.limit == 0 {
+            DEFAULT_SNAPSHOT_LIMIT
+        } else {
+            query.limit
+        }
+        .clamp(1, STORE_PAGE_LIMIT);
+        return query_fresh_timeline_snapshot(aggregator, query, STORE_PAGE_LIMIT).await;
     }
+    query.limit = STORE_PAGE_LIMIT;
     let query_identity = query.identity.clone();
     for page_idx in 0..MAX_SNAPSHOT_PAGES {
         let page = aggregator.store().query_frames(query.clone()).await?;
@@ -628,7 +634,7 @@ async fn query_timeline_snapshot(
             visible_snapshot_frames(aggregator, page.frames, query_identity.as_deref()).await?,
         );
         query.after = latest_cursor.clone();
-        if page_len < query.limit {
+        if page_len < STORE_PAGE_LIMIT {
             break;
         }
         if page_idx + 1 == MAX_SNAPSHOT_PAGES {
@@ -643,9 +649,10 @@ async fn query_timeline_snapshot(
 async fn query_fresh_timeline_snapshot(
     aggregator: &MobKitConsoleAggregator,
     mut query: ConsoleTimelineQuery,
+    store_page_limit: usize,
 ) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
     let requested_limit = query.limit;
-    query.limit = query.limit.max(1_000);
+    query.limit = store_page_limit;
     let query_identity = query.identity.clone();
     let mut latest_cursor = None;
     let mut tail = std::collections::VecDeque::with_capacity(requested_limit);
@@ -4270,6 +4277,62 @@ mod tests {
         assert_eq!(frames[0].identity, "sparse-agent");
         assert_eq!(frames[0].payload["text"], json!("still visible"));
         assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timeline_snapshot_clamps_requested_limit_to_store_page_size()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for idx in 0..2_500 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("clamp-event-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Completed,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("clamp-event-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await?;
+        }
+
+        let (frames, cursor) = query_timeline_snapshot(
+            &aggregator,
+            ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                after: Some(ConsoleCursor::from("console:100")),
+                limit: 5_000,
+                ..ConsoleTimelineQuery::default()
+            },
+        )
+        .await?;
+
+        assert_eq!(frames.len(), 2_400);
+        assert_eq!(
+            frames.first().and_then(|frame| frame.cursor.seq()),
+            Some(101)
+        );
+        assert_eq!(
+            frames.last().and_then(|frame| frame.cursor.seq()),
+            Some(2_500)
+        );
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(2_500));
         Ok(())
     }
 

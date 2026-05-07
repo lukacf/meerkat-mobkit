@@ -989,17 +989,88 @@ export function subscribeConsoleEvents(
   return () => controller.abort();
 }
 
+function timelineStreamPath(target: { identity?: string; conversationId?: string; after?: string }): string {
+  const params = new URLSearchParams();
+  if (target.identity?.trim()) params.set("identity", target.identity.trim());
+  if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
+  if (target.after?.trim()) params.set("after", target.after.trim());
+  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+}
+
+function cursorFromTimelineFrame(frame: ConsoleFrame): string | undefined {
+  const cursor = frame.cursor?.trim();
+  if (cursor) return cursor;
+  if (frame.event === "snapshot_complete") {
+    const id = frame.id?.trim();
+    if (id?.startsWith("console:")) return id;
+  }
+  return undefined;
+}
+
+function replayUnavailableFrame(error: unknown): ConsoleFrame {
+  const replayError = (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError;
+  return {
+    id: `replay_unavailable:${Date.now()}`,
+    event: "replay_unavailable",
+    data: replayError || {
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export function subscribeTimelineEvents(
   baseUrl: string,
   target: { identity?: string; conversationId?: string; after?: string },
   onFrame: (frame: ConsoleFrame) => void,
 ): () => void {
-  const params = new URLSearchParams();
-  if (target.identity?.trim()) params.set("identity", target.identity.trim());
-  if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  if (target.after?.trim()) params.set("after", target.after.trim());
-  const path = `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
-  return subscribeConsoleEvents(baseUrl, path, onFrame);
+  let stopped = false;
+  let controller: AbortController | null = null;
+  let after = target.after?.trim() || undefined;
+
+  void (async () => {
+    let retryDelayMs = 250;
+    while (!stopped) {
+      controller = new AbortController();
+      try {
+        await streamFramesFromResponse(
+          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+            method: "GET",
+            headers: { "content-type": "application/json" },
+            signal: controller.signal,
+          }),
+          {
+            stopOnTerminal: false,
+            onFrame: (frame) => {
+              const nextCursor = cursorFromTimelineFrame(frame);
+              if (nextCursor) {
+                after = nextCursor;
+              }
+              onFrame(frame);
+            },
+          },
+        );
+        retryDelayMs = 250;
+      } catch (error) {
+        if (stopped || controller.signal.aborted) {
+          break;
+        }
+        onFrame(replayUnavailableFrame(error));
+      }
+      if (!stopped) {
+        await sleep(retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 2_000);
+      }
+    }
+  })();
+
+  return () => {
+    stopped = true;
+    controller?.abort();
+  };
 }
 
 export function subscribeIdentityEvents(

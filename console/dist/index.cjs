@@ -3741,27 +3741,78 @@ function normalizeConsoleTimelineAccepted(accepted, fallbackIdentity) {
 async function callConsoleRpc(baseUrl, method, params = {}) {
   return rpc(baseUrl, method, params);
 }
-function subscribeConsoleEvents(baseUrl, path, onFrame, options) {
-  const controller = new AbortController();
-  void (async () => {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method: options?.method || "GET",
-      headers: { "content-type": "application/json" },
-      ...options?.body ? { body: JSON.stringify(options.body) } : {},
-      signal: controller.signal
-    });
-    await streamFramesFromResponse(response, { onFrame, stopOnTerminal: false });
-  })().catch(() => {
-  });
-  return () => controller.abort();
-}
-function subscribeTimelineEvents(baseUrl, target, onFrame) {
+function timelineStreamPath(target) {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
   if (target.after?.trim()) params.set("after", target.after.trim());
-  const path = `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
-  return subscribeConsoleEvents(baseUrl, path, onFrame);
+  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+}
+function cursorFromTimelineFrame(frame) {
+  const cursor = frame.cursor?.trim();
+  if (cursor) return cursor;
+  if (frame.event === "snapshot_complete") {
+    const id = frame.id?.trim();
+    if (id?.startsWith("console:")) return id;
+  }
+  return void 0;
+}
+function replayUnavailableFrame(error) {
+  const replayError = error.replayError;
+  return {
+    id: `replay_unavailable:${Date.now()}`,
+    event: "replay_unavailable",
+    data: replayError || {
+      message: error instanceof Error ? error.message : String(error)
+    }
+  };
+}
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function subscribeTimelineEvents(baseUrl, target, onFrame) {
+  let stopped = false;
+  let controller = null;
+  let after = target.after?.trim() || void 0;
+  void (async () => {
+    let retryDelayMs = 250;
+    while (!stopped) {
+      controller = new AbortController();
+      try {
+        await streamFramesFromResponse(
+          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+            method: "GET",
+            headers: { "content-type": "application/json" },
+            signal: controller.signal
+          }),
+          {
+            stopOnTerminal: false,
+            onFrame: (frame) => {
+              const nextCursor = cursorFromTimelineFrame(frame);
+              if (nextCursor) {
+                after = nextCursor;
+              }
+              onFrame(frame);
+            }
+          }
+        );
+        retryDelayMs = 250;
+      } catch (error) {
+        if (stopped || controller.signal.aborted) {
+          break;
+        }
+        onFrame(replayUnavailableFrame(error));
+      }
+      if (!stopped) {
+        await sleep(retryDelayMs);
+        retryDelayMs = Math.min(retryDelayMs * 2, 2e3);
+      }
+    }
+  })();
+  return () => {
+    stopped = true;
+    controller?.abort();
+  };
 }
 
 // src/icon.tsx
