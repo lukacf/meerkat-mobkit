@@ -497,9 +497,7 @@ skills = ["comms_protocol", "commander_role"]
 peer_description = "Incident commander coordinating the CardinalPay outage response"
 
 [profiles.commander.tools]
-# Meerkat 0.6.1 registers generate_image through the builtin dispatcher, so
-# image-generation profiles must keep builtins enabled until upstream splits it.
-builtins = true
+builtins = false
 comms = true
 image_generation = true
 
@@ -1309,6 +1307,7 @@ mod tests {
                 to: scribe_peer_route,
                 intent: "request_summary".to_string(),
                 params: json!({ "body": "Summarize the incident." }),
+                blocks: None,
                 handling_mode: meerkat_core::types::HandlingMode::Queue,
                 stream: meerkat_core::comms::InputStreamMode::None,
             })

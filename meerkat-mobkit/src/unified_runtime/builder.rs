@@ -213,9 +213,7 @@ impl UnifiedRuntimeBuilder {
     ///
     /// Definition-based builders also infer this from
     /// `profiles.<name>.tools.image_generation`; Meerkat owns the per-profile
-    /// visibility decision. With Meerkat 0.6.1, profiles that opt into
-    /// image generation must also leave `tools.builtins = true` because
-    /// `generate_image` is registered by the builtin dispatcher.
+    /// visibility decision.
     pub fn image_generation(mut self, enabled: bool) -> Self {
         self.capability_flags.image_generation = enabled;
         self

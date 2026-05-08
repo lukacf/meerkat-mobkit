@@ -262,13 +262,6 @@ fn sanitize_message_for_stateless_replay(message: Message) -> Message {
                     {
                         None
                     }
-                    AssistantBlock::Image { blob_ref, .. } => Some(AssistantBlock::Text {
-                        text: format!(
-                            "[Generated image omitted from provider replay: {}]",
-                            blob_ref.blob_id
-                        ),
-                        meta: None,
-                    }),
                     other => Some(other),
                 })
                 .collect();
@@ -276,84 +269,6 @@ fn sanitize_message_for_stateless_replay(message: Message) -> Message {
         }
         other => other,
     }
-}
-
-fn assistant_block_requires_factory_replay_guard(block: &AssistantBlock) -> bool {
-    match block {
-        AssistantBlock::Image { .. } => true,
-        AssistantBlock::ServerToolContent { name, content, .. } => {
-            is_replay_unsafe_server_tool_content(name, content)
-        }
-        _ => false,
-    }
-}
-
-fn message_requires_factory_replay_guard(message: &Message) -> bool {
-    match message {
-        Message::BlockAssistant(assistant) => assistant
-            .blocks
-            .iter()
-            .any(assistant_block_requires_factory_replay_guard),
-        _ => false,
-    }
-}
-
-fn history_page_requires_factory_replay_guard(page: &SessionHistoryPage) -> bool {
-    page.messages
-        .iter()
-        .any(message_requires_factory_replay_guard)
-}
-
-fn replay_guard_error() -> SessionError {
-    SessionError::FailedWithData {
-        message: "this session contains generated-image or provider-evidence transcript blocks that MobKit cannot safely replay through Meerkat 0.6.1's factory-resolved provider path; start a new session or send the image to another agent until Meerkat owns provider replay projection".to_string(),
-        data: serde_json::json!({
-            "code": "mobkit_replay_projection_guard",
-            "reason": "meerkat_0_6_1_missing_factory_resolved_client_projection_hook",
-        }),
-    }
-}
-
-fn guard_create_session_request_replay_history(
-    req: &CreateSessionRequest,
-) -> Result<(), SessionError> {
-    if req.initial_turn != meerkat_core::service::InitialTurnPolicy::RunImmediately {
-        return Ok(());
-    }
-    let Some(resume_session) = req
-        .build
-        .as_ref()
-        .and_then(|build| build.resume_session.as_ref())
-    else {
-        return Ok(());
-    };
-    if resume_session
-        .messages()
-        .iter()
-        .any(message_requires_factory_replay_guard)
-    {
-        return Err(replay_guard_error());
-    }
-    Ok(())
-}
-
-async fn guard_factory_resolved_replay_history(
-    service: &Arc<dyn MobSessionService>,
-    id: &meerkat_core::types::SessionId,
-) -> Result<(), SessionError> {
-    let page = service
-        .read_history(
-            id,
-            SessionHistoryQuery {
-                offset: 0,
-                limit: None,
-            },
-        )
-        .await?;
-    if history_page_requires_factory_replay_guard(&page) {
-        return Err(replay_guard_error());
-    }
-    Ok(())
 }
 
 /// Open the persistent runtime store that holds the authoritative
@@ -434,7 +349,7 @@ fn summarize_runtime_prompt(prompt: &meerkat_core::ContentInput) -> String {
 }
 
 /// Whether the session factory should wire the image-generation substrate for
-/// this definition. Meerkat 0.6.1 owns the per-profile visibility decision via
+/// this definition. Meerkat owns the per-profile visibility decision via
 /// `profile.tools.image_generation`; MobKit only needs to make the runtime
 /// machine available when a profile opts in, or when a realm profile may resolve
 /// to an opt-in profile at spawn time.
@@ -446,43 +361,17 @@ pub fn mob_definition_may_use_image_generation(definition: &MobDefinition) -> bo
     })
 }
 
-fn validate_image_generation_tool_config(
-    definition: &MobDefinition,
-) -> Result<(), MobRuntimeError> {
-    let mut invalid_profiles = Vec::new();
-    for (profile_name, binding) in &definition.profiles {
-        let Some(profile) = binding.as_inline() else {
-            continue;
-        };
-        if profile.tools.image_generation && !profile.tools.builtins {
-            invalid_profiles.push(profile_name.to_string());
-        }
-    }
-
-    if invalid_profiles.is_empty() {
-        return Ok(());
-    }
-
-    invalid_profiles.sort();
-    Err(MobRuntimeError::InvalidConfig(format!(
-        "Meerkat 0.6.1 requires profiles with tools.image_generation = true to also set tools.builtins = true because generate_image is registered through the builtin dispatcher; invalid profile(s): {}",
-        invalid_profiles.join(", ")
-    )))
-}
-
 fn normalize_runtime_turn_request(
-    req: meerkat_core::service::StartTurnRequest,
+    mut req: meerkat_core::service::StartTurnRequest,
 ) -> meerkat_core::service::StartTurnRequest {
-    meerkat_core::service::StartTurnRequest {
-        // Queue/Steer and render metadata are runtime-owned semantics. By the
-        // time apply_runtime_turn() invokes the session service, the runtime
-        // has already chosen the boundary and recorded the metadata it needs.
-        // The direct agent/session path is queue-only, so forward a normalized
-        // turn request to avoid re-injecting runtime-only semantics.
-        handling_mode: meerkat_core::types::HandlingMode::Queue,
-        render_metadata: None,
-        ..req
-    }
+    // Queue/Steer and render metadata are runtime-owned semantics. By the
+    // time apply_runtime_turn() invokes the session service, the runtime
+    // has already chosen the boundary and recorded the metadata it needs.
+    // The direct agent/session path is queue-only, so forward a normalized
+    // turn request to avoid re-injecting runtime-only semantics.
+    req.runtime.handling_mode = meerkat_core::types::HandlingMode::Queue;
+    req.runtime.render_metadata = None;
+    req
 }
 
 fn normalize_direct_member_delivery_mode(
@@ -509,7 +398,6 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
                 (self.hook)(&mut req).await?;
                 sanitize_create_session_request_llm_override(&mut req);
-                guard_create_session_request_replay_history(&req)?;
 
                 // Capture context before create_session consumes the request.
                 let ctx = SessionCreatedContext {
@@ -532,7 +420,6 @@ macro_rules! delegate_mob_session_service {
                 id: &meerkat_core::types::SessionId,
                 req: meerkat_core::service::StartTurnRequest,
             ) -> Result<meerkat_core::types::RunResult, SessionError> {
-                guard_factory_resolved_replay_history(&self.inner, id).await?;
                 self.inner.start_turn(id, req).await
             }
             async fn interrupt(
@@ -785,7 +672,6 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         mut req: CreateSessionRequest,
     ) -> Result<meerkat_core::types::RunResult, SessionError> {
         sanitize_create_session_request_llm_override(&mut req);
-        guard_create_session_request_replay_history(&req)?;
         // Capture pre-create context from the request (before inner consumes it).
         // The inner service's pre-build hooks may mutate the request further,
         // but we capture here because we can't read the request after inner
@@ -809,7 +695,6 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
         id: &meerkat_core::types::SessionId,
         req: meerkat_core::service::StartTurnRequest,
     ) -> Result<meerkat_core::types::RunResult, SessionError> {
-        guard_factory_resolved_replay_history(&self.inner, id).await?;
         self.inner.start_turn(id, req).await
     }
     async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
@@ -1443,7 +1328,6 @@ pub struct MobRuntime {
 
 impl MobRuntime {
     pub async fn bootstrap(spec: MobBootstrapSpec) -> Result<Self, MobRuntimeError> {
-        validate_image_generation_tool_config(&spec.definition)?;
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
         let binary_blob_store = spec.binary_blob_store.clone();
@@ -1869,7 +1753,7 @@ image_generation = false
     }
 
     #[test]
-    fn image_generation_profiles_must_leave_builtins_enabled_for_meerkat_061() {
+    fn image_generation_profiles_can_disable_builtins_with_meerkat_062() {
         let definition = meerkat_mob::MobDefinition::from_toml(
             r#"
 [mob]
@@ -1885,15 +1769,12 @@ image_generation = true
         )
         .unwrap_or_else(|e| panic!("{e}"));
 
-        let err = validate_image_generation_tool_config(&definition)
-            .expect_err("image_generation without builtins should be rejected");
+        let commander = definition.profiles["commander"].as_inline().unwrap();
+        assert!(!commander.tools.builtins);
+        assert!(commander.tools.image_generation);
         assert!(
-            err.to_string().contains("commander"),
-            "error should name the invalid profile"
-        );
-        assert!(
-            err.to_string().contains("tools.builtins = true"),
-            "error should explain the Meerkat 0.6.1 coupling"
+            mob_definition_may_use_image_generation(&definition),
+            "image generation now has its own Meerkat tool gate"
         );
     }
 
@@ -1979,7 +1860,7 @@ realm_profile = "worker-v2"
     }
 
     #[test]
-    fn sanitize_llm_request_leaves_canonical_request_unchanged() {
+    fn sanitize_llm_request_preserves_generated_images_for_meerkat_062() {
         let request = meerkat_client::LlmRequest::new(
             "gpt-5.5",
             vec![meerkat_core::Message::BlockAssistant(
@@ -2014,11 +1895,11 @@ realm_profile = "worker-v2"
             panic!("expected sanitized block assistant");
         };
         assert!(
-            sanitized_assistant.blocks.iter().any(
-                |block| matches!(block, meerkat_core::AssistantBlock::Text { text, .. }
-                    if text.contains("Generated image omitted from provider replay"))
-            ),
-            "sanitized replay view should replace generated images with text placeholders"
+            sanitized_assistant
+                .blocks
+                .iter()
+                .any(|block| matches!(block, meerkat_core::AssistantBlock::Image { .. })),
+            "Meerkat 0.6.2 owns provider replay projection for generated images"
         );
     }
 
@@ -2141,7 +2022,7 @@ realm_profile = "worker-v2"
     }
 
     #[test]
-    fn sanitize_message_projects_assistant_image_to_replay_placeholder() {
+    fn sanitize_message_preserves_assistant_image_blocks() {
         let message =
             meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
                 vec![
@@ -2164,267 +2045,12 @@ realm_profile = "worker-v2"
             assistant.blocks[0],
             meerkat_core::AssistantBlock::Text { .. }
         ));
-        let meerkat_core::AssistantBlock::Text { text, .. } = &assistant.blocks[1] else {
-            panic!("generated image should become a text replay placeholder");
-        };
         assert!(
-            text.contains("sha256:test-generated-image"),
-            "placeholder should preserve the durable blob id"
-        );
-    }
-
-    struct GuardProbeMobSessionService {
-        history: std::sync::Mutex<Vec<meerkat_core::Message>>,
-        start_turn_calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl GuardProbeMobSessionService {
-        fn new(history: Vec<meerkat_core::Message>) -> Self {
-            Self {
-                history: std::sync::Mutex::new(history),
-                start_turn_calls: std::sync::atomic::AtomicUsize::new(0),
-            }
-        }
-
-        fn start_turn_calls(&self) -> usize {
-            self.start_turn_calls
-                .load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    #[async_trait]
-    impl meerkat_core::service::SessionService for GuardProbeMobSessionService {
-        async fn create_session(
-            &self,
-            _req: CreateSessionRequest,
-        ) -> Result<meerkat_core::RunResult, SessionError> {
-            Err(SessionError::Unsupported("create_session".to_string()))
-        }
-
-        async fn start_turn(
-            &self,
-            id: &meerkat_core::SessionId,
-            _req: meerkat_core::service::StartTurnRequest,
-        ) -> Result<meerkat_core::RunResult, SessionError> {
-            self.start_turn_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(meerkat_core::RunResult {
-                text: "ok".to_string(),
-                session_id: id.clone(),
-                usage: meerkat_core::Usage::default(),
-                turns: 1,
-                tool_calls: 0,
-                terminal_cause_kind: None,
-                structured_output: None,
-                extraction_error: None,
-                schema_warnings: None,
-                skill_diagnostics: None,
-            })
-        }
-
-        async fn interrupt(&self, _id: &meerkat_core::SessionId) -> Result<(), SessionError> {
-            Ok(())
-        }
-
-        async fn read(
-            &self,
-            _id: &meerkat_core::SessionId,
-        ) -> Result<meerkat_core::service::SessionView, SessionError> {
-            Err(SessionError::Unsupported("read".to_string()))
-        }
-
-        async fn list(
-            &self,
-            _query: meerkat_core::service::SessionQuery,
-        ) -> Result<Vec<meerkat_core::service::SessionSummary>, SessionError> {
-            Ok(Vec::new())
-        }
-
-        async fn archive(&self, _id: &meerkat_core::SessionId) -> Result<(), SessionError> {
-            Ok(())
-        }
-    }
-
-    #[async_trait]
-    impl meerkat_core::service::SessionServiceCommsExt for GuardProbeMobSessionService {}
-
-    #[async_trait]
-    impl meerkat_core::service::SessionServiceControlExt for GuardProbeMobSessionService {
-        async fn append_system_context(
-            &self,
-            _id: &meerkat_core::SessionId,
-            _req: meerkat_core::service::AppendSystemContextRequest,
-        ) -> Result<
-            meerkat_core::service::AppendSystemContextResult,
-            meerkat_core::service::SessionControlError,
-        > {
-            Err(meerkat_core::service::SessionControlError::Session(
-                SessionError::Unsupported("append_system_context".to_string()),
-            ))
-        }
-    }
-
-    #[async_trait]
-    impl meerkat_core::service::SessionServiceHistoryExt for GuardProbeMobSessionService {
-        async fn read_history(
-            &self,
-            id: &meerkat_core::SessionId,
-            query: meerkat_core::service::SessionHistoryQuery,
-        ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
-            let history = self
-                .history
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            Ok(meerkat_core::service::SessionHistoryPage::from_messages(
-                id.clone(),
-                &history,
-                query,
-            ))
-        }
-    }
-
-    impl MobSessionService for GuardProbeMobSessionService {}
-
-    fn start_turn_request_for_test() -> meerkat_core::service::StartTurnRequest {
-        meerkat_core::service::StartTurnRequest {
-            prompt: meerkat_core::ContentInput::Text("next turn".to_string()),
-            system_prompt: None,
-            render_metadata: None,
-            handling_mode: meerkat_core::types::HandlingMode::Queue,
-            event_tx: None,
-            skill_references: None,
-            flow_tool_overlay: None,
-            pre_turn_context_appends: Vec::new(),
-            turn_metadata: None,
-        }
-    }
-
-    fn no_op_hook() -> PreBuildHook {
-        Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
-    }
-
-    #[tokio::test]
-    async fn factory_replay_guard_blocks_start_turn_after_assistant_image() {
-        let probe = Arc::new(GuardProbeMobSessionService::new(vec![
-            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
-                vec![generated_image_block_for_test()],
-                meerkat_core::StopReason::EndTurn,
-            )),
-        ]));
-        let inner: Arc<dyn MobSessionService> = probe.clone();
-        let wrapped = PreBuildMobSessionService {
-            inner,
-            hook: no_op_hook(),
-            after_create_hook: None,
-        };
-
-        let result = meerkat_core::service::SessionService::start_turn(
-            &wrapped,
-            &meerkat_core::SessionId::new(),
-            start_turn_request_for_test(),
-        )
-        .await;
-
-        let Err(SessionError::FailedWithData { data, .. }) = result else {
-            panic!("expected replay guard error, got {result:?}");
-        };
-        assert_eq!(data["code"], "mobkit_replay_projection_guard");
-        assert_eq!(
-            probe.start_turn_calls(),
-            0,
-            "guard must fail before the provider-backed session turn starts"
-        );
-    }
-
-    #[tokio::test]
-    async fn factory_replay_guard_allows_plain_text_history() {
-        let probe = Arc::new(GuardProbeMobSessionService::new(vec![
-            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
-                vec![meerkat_core::AssistantBlock::Text {
-                    text: "plain history".to_string(),
-                    meta: None,
-                }],
-                meerkat_core::StopReason::EndTurn,
-            )),
-        ]));
-        let inner: Arc<dyn MobSessionService> = probe.clone();
-        let wrapped = PreBuildMobSessionService {
-            inner,
-            hook: no_op_hook(),
-            after_create_hook: None,
-        };
-
-        meerkat_core::service::SessionService::start_turn(
-            &wrapped,
-            &meerkat_core::SessionId::new(),
-            start_turn_request_for_test(),
-        )
-        .await
-        .expect("plain text history should pass the guard");
-
-        assert_eq!(probe.start_turn_calls(), 1);
-    }
-
-    #[tokio::test]
-    async fn bootstrap_spec_new_wraps_raw_session_service_with_replay_guard() {
-        let probe = Arc::new(GuardProbeMobSessionService::new(vec![
-            meerkat_core::Message::BlockAssistant(meerkat_core::BlockAssistantMessage::new(
-                vec![generated_image_block_for_test()],
-                meerkat_core::StopReason::EndTurn,
-            )),
-        ]));
-        let service: Arc<dyn MobSessionService> = probe.clone();
-        let definition = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n")
-            .unwrap_or_else(|e| panic!("{e}"));
-        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
-
-        let result = spec
-            .session_service
-            .start_turn(
-                &meerkat_core::SessionId::new(),
-                start_turn_request_for_test(),
-            )
-            .await;
-
-        let Err(SessionError::FailedWithData { data, .. }) = result else {
-            panic!("expected replay guard error, got {result:?}");
-        };
-        assert_eq!(data["code"], "mobkit_replay_projection_guard");
-        assert_eq!(
-            probe.start_turn_calls(),
-            0,
-            "MobBootstrapSpec::new must guard raw gateway-provided services before turns start"
-        );
-    }
-
-    #[tokio::test]
-    async fn bootstrap_rejects_image_generation_when_builtins_are_disabled() {
-        let definition = meerkat_mob::MobDefinition::from_toml(
-            r#"
-[mob]
-id = "test"
-
-[profiles.commander]
-model = "gpt-5.5"
-
-[profiles.commander.tools]
-builtins = false
-image_generation = true
-"#,
-        )
-        .unwrap_or_else(|e| panic!("{e}"));
-        let service: Arc<dyn MobSessionService> =
-            Arc::new(GuardProbeMobSessionService::new(Vec::new()));
-        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), service);
-
-        let Err(err) = MobRuntime::bootstrap(spec).await else {
-            panic!("invalid image_generation/builtins config should fail before mob build");
-        };
-
-        assert!(
-            err.to_string().contains("commander"),
-            "bootstrap error should name the invalid profile"
+            matches!(
+                assistant.blocks[1],
+                meerkat_core::AssistantBlock::Image { .. }
+            ),
+            "generated image blocks should reach Meerkat's provider projection"
         );
     }
 
@@ -2708,16 +2334,18 @@ image_generation = true
         let req = meerkat_core::service::StartTurnRequest {
             prompt: meerkat_core::ContentInput::Text("checkpoint".to_string()),
             system_prompt: Some("system".to_string()),
-            render_metadata: Some(meerkat_core::types::RenderMetadata {
-                class: meerkat_core::types::RenderClass::OpsProgress,
-                salience: meerkat_core::types::RenderSalience::Urgent,
-            }),
-            handling_mode: meerkat_core::types::HandlingMode::Steer,
             event_tx: None,
-            skill_references: None,
-            flow_tool_overlay: None,
-            pre_turn_context_appends: Vec::new(),
-            turn_metadata: None,
+            runtime: meerkat_core::service::StartTurnRuntimeSemantics {
+                render_metadata: Some(meerkat_core::types::RenderMetadata {
+                    class: meerkat_core::types::RenderClass::OpsProgress,
+                    salience: meerkat_core::types::RenderSalience::Urgent,
+                }),
+                handling_mode: meerkat_core::types::HandlingMode::Steer,
+                skill_references: None,
+                flow_tool_overlay: None,
+                pre_turn_context_appends: Vec::new(),
+                turn_metadata: None,
+            },
         };
 
         let expected_prompt = req.prompt.clone();
@@ -2726,12 +2354,12 @@ image_generation = true
         let normalized = normalize_runtime_turn_request(req);
 
         assert_eq!(
-            normalized.handling_mode,
+            normalized.runtime.handling_mode,
             meerkat_core::types::HandlingMode::Queue,
             "runtime-applied turns must downgrade Steer before reaching direct session services"
         );
         assert!(
-            normalized.render_metadata.is_none(),
+            normalized.runtime.render_metadata.is_none(),
             "runtime-owned render metadata must not be forwarded through the direct agent path"
         );
         assert_eq!(normalized.prompt, expected_prompt);

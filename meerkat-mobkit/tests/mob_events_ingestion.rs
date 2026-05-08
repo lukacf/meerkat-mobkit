@@ -215,6 +215,8 @@ fn all_mob_event_kinds_project_with_kind_label() {
         step_id: step_id.clone(),
         target: runtime_id.clone(),
         reason: "fail".to_string(),
+        error_report: None,
+        error: None,
     });
     assert_eq!(m.kind, "step_target_failed");
 
