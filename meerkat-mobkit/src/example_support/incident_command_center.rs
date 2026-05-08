@@ -497,7 +497,7 @@ skills = ["comms_protocol", "commander_role"]
 peer_description = "Incident commander coordinating the CardinalPay outage response"
 
 [profiles.commander.tools]
-builtins = false
+builtins = true
 comms = true
 image_generation = true
 
