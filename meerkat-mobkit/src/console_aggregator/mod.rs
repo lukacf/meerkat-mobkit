@@ -1170,9 +1170,18 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
 
 fn stable_value_fingerprint(value: &Value) -> String {
     match value {
-        Value::String(text) => text.trim().to_string(),
+        Value::String(text) => normalize_transcript_fingerprint_text(text),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+fn normalize_transcript_fingerprint_text(text: &str) -> String {
+    let trimmed = text.trim();
+    trimmed
+        .strip_prefix("[EVENT via rpc] ")
+        .unwrap_or(trimmed)
+        .trim()
+        .to_string()
 }
 
 async fn frame_is_visible(
@@ -1574,6 +1583,66 @@ mod tests {
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:1006".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_rpc_wrapped_user_prompts() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "live-user-input".to_string(),
+                timestamp_ms: 2_000,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "content": "hello from operator" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("live-user-input".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append live input");
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-user-input".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({ "content": "[EVENT via rpc] hello from operator" }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:2".to_string()),
             },
             source_event_id: None,
             interaction_id: None,

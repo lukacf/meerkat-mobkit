@@ -7942,6 +7942,20 @@ function ConsoleApp({ baseUrl }) {
     log.hasServerLog = available;
     for (const frame of frames) appendFrame(identity, frame);
   }
+  async function queryIdentityTimeline(identity) {
+    const frames = [];
+    let available = true;
+    let after;
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const page = await queryTimeline(baseUrl, { identity, after }, 1e3);
+      available = page.available;
+      frames.push(...page.frames);
+      const next = page.nextCursor?.trim();
+      if (!next || next === after || page.frames.length === 0) break;
+      after = next;
+    }
+    return { frames, available };
+  }
   function getSortedFrames(identity) {
     const log = identityLogRef.current[identity];
     if (!log) return [];
@@ -8197,7 +8211,7 @@ function ConsoleApp({ baseUrl }) {
         return;
       }
       try {
-        const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
+        const { frames, available } = await queryIdentityTimeline(identity);
         reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
@@ -8214,7 +8228,7 @@ function ConsoleApp({ baseUrl }) {
       if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
-          const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
+          const { frames, available } = await queryIdentityTimeline(identity);
           reconcileServerLog(identity, frames, available);
           forceRender();
         } catch {
@@ -8410,7 +8424,7 @@ function ConsoleApp({ baseUrl }) {
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
   function findChatTargetFor(identity) {
-    for (const panel of dock.viewState.panels) {
+    for (const panel of dockRef.current.viewState.panels) {
       const t = panel.target;
       if (!t || t.kind !== "agent-chat") continue;
       if ((t.identity || t.memberId) === identity) {

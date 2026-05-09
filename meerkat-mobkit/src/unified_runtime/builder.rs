@@ -658,17 +658,9 @@ comms = true
 
         let builder = UnifiedRuntimeBuilder::default().definition(definition);
         let spec = builder.resolve_mob_spec().await.expect("spec resolves");
-        // Adapter is wired both via spec.runtime_adapter (explicit gateway
-        // pattern) AND via the session service's runtime_store (so
-        // archive/retire control ops succeed). Both ride a persistent
-        // SqliteRuntimeStore at <store_path>/runtime.sqlite.
         assert!(
             spec.runtime_adapter.is_some(),
-            "definition-based ephemeral specs must provide spec.runtime_adapter directly",
-        );
-        assert!(
-            spec.session_service.runtime_adapter().is_some(),
-            "session service must own a runtime_store so archive/retire control ops succeed",
+            "definition-based ephemeral specs should expose runtime authority",
         );
     }
 }

@@ -373,6 +373,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     for (const frame of frames) appendFrame(identity, frame);
   }
 
+  async function queryIdentityTimeline(identity: string): Promise<{ frames: ConsoleFrame[]; available: boolean }> {
+    const frames: ConsoleFrame[] = [];
+    let available = true;
+    let after: string | undefined;
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const page = await queryTimeline(baseUrl, { identity, after }, 1000);
+      available = page.available;
+      frames.push(...page.frames);
+      const next = page.nextCursor?.trim();
+      if (!next || next === after || page.frames.length === 0) break;
+      after = next;
+    }
+    return { frames, available };
+  }
+
   /// Render-time chat view: aggregate cursor is the canonical order. The
   /// server admits user input before dispatch, so cursor order preserves
   /// causality without timestamp-only restore drift.
@@ -703,7 +718,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return;
       }
       try {
-        const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
+        const { frames, available } = await queryIdentityTimeline(identity);
         reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
@@ -728,7 +743,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
-          const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
+          const { frames, available } = await queryIdentityTimeline(identity);
           reconcileServerLog(identity, frames, available);
           forceRender();
         } catch { /* silent */ }
@@ -1010,7 +1025,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const animMs = (ms: number) => reducedMotion ? 0 : ms;
 
   function findChatTargetFor(identity: string): { panelId: string; target: MobKitDockTarget } | null {
-    for (const panel of dock.viewState.panels) {
+    // This is also called from the long-lived SSE subscription closure via
+    // maybeDrainHead(); read the dock ref so pending queue auto-drain sees
+    // panels opened after the first render.
+    for (const panel of dockRef.current.viewState.panels) {
       const t = panel.target as MobKitDockTarget | null;
       if (!t || t.kind !== "agent-chat") continue;
       if ((t.identity || t.memberId) === identity) {

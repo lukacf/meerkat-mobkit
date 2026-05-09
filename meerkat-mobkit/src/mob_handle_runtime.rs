@@ -117,12 +117,33 @@ impl meerkat_core::AgentLlmClient for ReplaySanitizingAgentLlmClient {
 
 #[async_trait]
 impl LlmClient for ReplaySanitizingLlmClient {
+    fn project_replay_messages(
+        &self,
+        messages: &[Message],
+    ) -> Result<Vec<Message>, meerkat_client::LlmError> {
+        let sanitized: Vec<Message> = messages
+            .iter()
+            .cloned()
+            .map(sanitize_message_for_stateless_replay)
+            .collect();
+        self.inner.project_replay_messages(&sanitized)
+    }
+
     fn stream<'a>(&'a self, request: &'a LlmRequest) -> LlmStream<'a> {
         let inner = Arc::clone(&self.inner);
         let sanitized = sanitize_llm_request_for_stateless_replay(request);
         Box::pin(async_stream::stream! {
             let mut stream = inner.stream(&sanitized);
             while let Some(event) = stream.next().await {
+                if runtime_turn_diagnostics_enabled()
+                    && let Err(error) = &event
+                {
+                    tracing::error!(
+                        error = %error,
+                        error_debug = ?error,
+                        "mobkit llm client stream error"
+                    );
+                }
                 yield event;
             }
         })
@@ -200,6 +221,7 @@ struct PreBuildMobSessionService {
     inner: Arc<dyn MobSessionService>,
     hook: PreBuildHook,
     after_create_hook: Option<AfterCreateHook>,
+    runtime_adapter_override: Option<Arc<meerkat_runtime::MeerkatMachine>>,
 }
 
 fn no_op_pre_build_hook() -> PreBuildHook {
@@ -405,7 +427,6 @@ macro_rules! delegate_mob_session_service {
                     labels: req.labels.clone().unwrap_or_default(),
                     system_prompt: req.system_prompt.clone(),
                 };
-
                 let result = self.inner.create_session(req).await?;
 
                 // Best-effort after_create — errors logged, not propagated.
@@ -558,7 +579,9 @@ macro_rules! delegate_mob_session_service {
                 self.inner.supports_persistent_sessions()
             }
             fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
-                self.inner.runtime_adapter()
+                self.runtime_adapter_override
+                    .clone()
+                    .or_else(|| self.inner.runtime_adapter())
             }
             async fn session_belongs_to_mob(
                 &self,
@@ -598,6 +621,7 @@ macro_rules! delegate_mob_session_service {
                         boundary = ?boundary,
                         contributing_inputs = contributing_input_ids.len(),
                         prompt = %summary,
+                        runtime = ?req.runtime,
                         "mobkit runtime turn start"
                     );
                 }
@@ -632,6 +656,7 @@ macro_rules! delegate_mob_session_service {
                             session_id = %session_id,
                             run_id = %run_id_for_log,
                             error = %error,
+                            error_debug = ?error,
                             "mobkit runtime turn error"
                         ),
                     }
@@ -893,6 +918,7 @@ impl MobBootstrapSpec {
             inner: session_service,
             hook: no_op_pre_build_hook(),
             after_create_hook: None,
+            runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
         Self {
             definition,
@@ -1027,6 +1053,7 @@ impl MobBootstrapSpec {
             inner: session_service,
             hook,
             after_create_hook,
+            runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
         let mut spec = Self::new(definition, storage, session_service);
         spec.binary_blob_store = Some(binary_blob_store);
@@ -1154,6 +1181,7 @@ impl MobBootstrapSpec {
             inner: session_service,
             hook,
             after_create_hook,
+            runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
         let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_adapter = Some(runtime_adapter);
@@ -1177,12 +1205,13 @@ impl MobBootstrapSpec {
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-        // Ephemeral mode: an in-memory runtime_store is fine — there is no
-        // restart to survive. But it MUST be passed as `Some(...)` to the
-        // session service so meerkat's `load_persisted_session_for_control`
-        // resolves through the runtime authority and archive/retire control
-        // ops succeed within the session lifetime. See `persistent_inner`
-        // for the durable counterpart.
+        // Runtime-backed ephemeral mode keeps the live EphemeralSessionService
+        // as the comms authority, but registers each created session with the
+        // same in-memory machine used by image generation. Meerkat 0.6.4's
+        // persistent runtime-backed create path does not expose member comms
+        // handles early enough for mob edge reconciliation; this bounded bridge
+        // preserves live comms while avoiding the old "image tool sees the
+        // session as destroyed" split-machine bug.
         let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
@@ -1201,19 +1230,26 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
-        let session_service: Arc<dyn MobSessionService> =
-            Arc::new(meerkat_session::PersistentSessionService::new(
-                builder,
-                max_sessions,
-                session_store,
-                Some(runtime_store),
-                blob_store,
-            ));
+        let session_service: Arc<dyn MobSessionService> = Arc::new(
+            meerkat_session::EphemeralSessionService::new(builder, max_sessions),
+        );
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
+        let runtime_adapter_for_after_create = runtime_adapter.clone();
+        let combined_after_create_hook: AfterCreateHook = Arc::new(move |session_id, ctx| {
+            let runtime_adapter = runtime_adapter_for_after_create.clone();
+            let after_create_hook = after_create_hook.clone();
+            Box::pin(async move {
+                runtime_adapter.register_session(session_id.clone()).await;
+                if let Some(after_create_hook) = after_create_hook {
+                    after_create_hook(session_id, ctx).await;
+                }
+            })
+        });
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
-            after_create_hook,
+            after_create_hook: Some(combined_after_create_hook),
+            runtime_adapter_override: Some(runtime_adapter.clone()),
         }) as Arc<dyn MobSessionService>;
         let mut spec = Self::new(definition, storage, session_service);
         spec.runtime_adapter = Some(runtime_adapter);
@@ -1904,6 +1940,96 @@ realm_profile = "worker-v2"
     }
 
     #[derive(Default)]
+    struct CapturingLlmClient {
+        projected_messages: std::sync::Mutex<Vec<meerkat_core::Message>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for CapturingLlmClient {
+        fn project_replay_messages(
+            &self,
+            messages: &[meerkat_core::Message],
+        ) -> Result<Vec<meerkat_core::Message>, meerkat_client::LlmError> {
+            *self
+                .projected_messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = messages.to_vec();
+            Ok(messages.to_vec())
+        }
+
+        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
+            Box::pin(futures::stream::iter([Ok(
+                meerkat_client::LlmEvent::Done {
+                    outcome: meerkat_client::LlmDoneOutcome::Success {
+                        stop_reason: meerkat_core::StopReason::EndTurn,
+                    },
+                },
+            )]))
+        }
+
+        fn provider(&self) -> &'static str {
+            "openai"
+        }
+
+        async fn health_check(&self) -> Result<(), meerkat_client::LlmError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn replay_sanitizing_llm_client_delegates_provider_projection() {
+        let capture = Arc::new(CapturingLlmClient::default());
+        let inner: Arc<dyn LlmClient> = capture.clone();
+        let wrapped = ReplaySanitizingLlmClient::new(inner);
+        let messages = vec![meerkat_core::Message::BlockAssistant(
+            meerkat_core::BlockAssistantMessage::new(
+                vec![
+                    meerkat_core::AssistantBlock::Text {
+                        text: "visible".to_string(),
+                        meta: None,
+                    },
+                    meerkat_core::AssistantBlock::ServerToolContent {
+                        id: Some("ws-stream".to_string()),
+                        name: "web_search".to_string(),
+                        content: serde_json::json!({
+                            "type": "response.web_search_call.searching",
+                            "item_id": "ws_123"
+                        }),
+                        meta: None,
+                    },
+                ],
+                meerkat_core::StopReason::EndTurn,
+            ),
+        )];
+
+        let projected = wrapped
+            .project_replay_messages(&messages)
+            .expect("wrapped client should delegate provider projection");
+
+        let seen = capture
+            .projected_messages
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let meerkat_core::Message::BlockAssistant(assistant) = &seen[0] else {
+            panic!("expected block assistant");
+        };
+        assert_eq!(
+            assistant.blocks.len(),
+            1,
+            "MobKit sanitization must happen before Meerkat provider projection"
+        );
+        assert!(matches!(
+            assistant.blocks[0],
+            meerkat_core::AssistantBlock::Text { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(&projected).expect("projected messages serialize"),
+            serde_json::to_value(&seen).expect("seen messages serialize")
+        );
+    }
+
+    #[derive(Default)]
     struct CapturingAgentLlmClient {
         seen_messages: std::sync::Mutex<Vec<meerkat_core::Message>>,
     }
@@ -2184,6 +2310,7 @@ realm_profile = "worker-v2"
             inner,
             hook,
             after_create_hook: None,
+            runtime_adapter_override: None,
         };
 
         let req = CreateSessionRequest {
@@ -2269,12 +2396,11 @@ realm_profile = "worker-v2"
         );
     }
 
-    /// Ephemeral counterpart: an in-memory runtime_store is fine (no
-    /// restart to survive) but it MUST be `Some(...)` on the session
-    /// service so archive/retire control ops succeed within the session
-    /// lifetime.
+    /// Ephemeral counterpart: runtime-backed ephemeral builds must use a
+    /// single in-memory machine authority for session service, comms, and
+    /// image-generation tooling.
     #[test]
-    fn ephemeral_runtime_backed_passes_runtime_store_to_session_service() {
+    fn ephemeral_runtime_backed_uses_session_service_runtime_adapter() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n") else {
@@ -2291,12 +2417,11 @@ realm_profile = "worker-v2"
         );
         assert!(
             spec.runtime_adapter.is_some(),
-            "ephemeral_runtime_backed_inner must provide a runtime adapter via spec.runtime_adapter"
+            "ephemeral_runtime_backed_inner must expose the shared runtime authority"
         );
         assert!(
             spec.session_service.runtime_adapter().is_some(),
-            "session service must own a runtime_store (in-memory is fine here) \
-             so archive/retire control ops succeed in-session"
+            "session service must still expose a runtime adapter so autonomous-host comms can wire"
         );
     }
 
