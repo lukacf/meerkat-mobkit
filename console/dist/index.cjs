@@ -7893,18 +7893,25 @@ function ConsoleApp({ baseUrl }) {
     });
   }
   const identityLogRef = import_react25.default.useRef({});
+  const optimisticUserByPanelKeyRef = import_react25.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
     if (!log) {
       log = {
         events: [],
         byKey: /* @__PURE__ */ new Map(),
-        hasServerLog: null,
-        optimisticUser: null
+        hasServerLog: null
       };
       identityLogRef.current[identity] = log;
     }
     return log;
+  }
+  function clearOptimisticUserByInteraction(interactionId) {
+    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+      if (optimistic.interactionId !== interactionId) continue;
+      optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
+    }
   }
   function frameKey(frame) {
     if (frame.id) return frame.id;
@@ -7931,9 +7938,8 @@ function ConsoleApp({ baseUrl }) {
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
-    if ((frame.event === "interaction_started" || frame.event === "user_input") && log.optimisticUser && log.optimisticUser.interactionId && frame.interactionId === log.optimisticUser.interactionId) {
-      log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-      log.optimisticUser = null;
+    if ((frame.event === "interaction_started" || frame.event === "user_input") && frame.interactionId) {
+      clearOptimisticUserByInteraction(frame.interactionId);
     }
     return true;
   }
@@ -7968,6 +7974,35 @@ function ConsoleApp({ baseUrl }) {
       if (ta !== tb) return ta - tb;
       return a.index - b.index;
     }).map((entry) => entry.frame);
+  }
+  function frameOrigin(frame) {
+    if (!frame.data || typeof frame.data !== "object") return null;
+    const origin = frame.data.origin;
+    return typeof origin === "string" ? origin : null;
+  }
+  function frameVisibleInPanel(frame, panelId) {
+    if (frame.event !== "user_input" && frame.event !== "interaction_started") return true;
+    const origin = frameOrigin(frame);
+    if (!origin?.startsWith("console:")) return true;
+    return origin === `console:${panelId}`;
+  }
+  function framesVisibleInPanel(frames, panelId) {
+    const hiddenInteractionIds = /* @__PURE__ */ new Set();
+    const visibleFrames = [];
+    for (const frame of frames) {
+      if (frameVisibleInPanel(frame, panelId)) {
+        visibleFrames.push(frame);
+        continue;
+      }
+      const interactionId = frame.interactionId?.trim();
+      if (interactionId) hiddenInteractionIds.add(interactionId);
+    }
+    if (hiddenInteractionIds.size === 0) return visibleFrames;
+    return visibleFrames.filter((frame) => {
+      if (frame.event !== "run_started") return true;
+      const interactionId = frame.interactionId?.trim();
+      return !interactionId || !hiddenInteractionIds.has(interactionId);
+    });
   }
   const activityRef = import_react25.default.useRef([]);
   const liveFramesRef = import_react25.default.useRef([]);
@@ -8312,7 +8347,7 @@ function ConsoleApp({ baseUrl }) {
     );
     setSendingPanels((c) => new Set(c).add(panelKey));
     const log = getOrCreateLog(identity);
-    log.optimisticUser = {
+    optimisticUserByPanelKeyRef.current[panelKey] = {
       interactionId: "",
       entry: userEntry,
       sentAtMs: Date.now(),
@@ -8333,26 +8368,28 @@ function ConsoleApp({ baseUrl }) {
           createIdempotencyKey(),
           handlingMode
         );
-        if (log.optimisticUser) {
-          log.optimisticUser.interactionId = result.interaction_id;
+        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+        if (optimisticUser) {
+          optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
             (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
           );
           if (matched) {
-            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            log.optimisticUser = null;
+            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
       } else if (attachments.length > 0) {
         const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
-        if (log.optimisticUser) {
-          log.optimisticUser.interactionId = result.interaction_id || "";
+        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+        if (optimisticUser) {
+          optimisticUser.interactionId = result.interaction_id || "";
           const matched = result.interaction_id ? log.events.some(
             (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id
           ) : false;
           if (matched) {
-            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            log.optimisticUser = null;
+            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
       } else if (id) {
@@ -8364,14 +8401,15 @@ function ConsoleApp({ baseUrl }) {
           createIdempotencyKey(),
           handlingMode
         );
-        if (log.optimisticUser) {
-          log.optimisticUser.interactionId = result.interaction_id;
+        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+        if (optimisticUser) {
+          optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
             (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
           );
           if (matched) {
-            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            log.optimisticUser = null;
+            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
       } else {
@@ -8379,8 +8417,8 @@ function ConsoleApp({ baseUrl }) {
       }
       return true;
     } catch (submitError) {
-      log.optimisticUser?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-      log.optimisticUser = null;
+      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
       setError(errorMessage(submitError));
@@ -8605,14 +8643,14 @@ function ConsoleApp({ baseUrl }) {
     const panelKey = buildPanelConversationKey(panel.id, target);
     const identity = target.identity || target.memberId;
     const agent = agents.find((c) => c.member_id === target.memberId) || null;
-    const sortedFrames = getSortedFrames(identity);
+    const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panel.id);
     const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
       renderTextDeltas: true,
       blobBaseUrl: baseUrl
     });
-    const log = getOrCreateLog(identity);
-    const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
+    const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey] ?? null;
+    const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
     const entries = sanitizeConversationEntries(sortConversationTimelineEntries([
       ...conversationEntries,
       ...optimisticEntry ? [optimisticEntry] : []

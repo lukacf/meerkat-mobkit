@@ -482,6 +482,46 @@ async function main() {
     await panelAlpha.getByTestId("chat-pane:incident-commander").waitFor({ state: "visible" });
     await panelBravo.getByTestId("chat-pane:incident-commander").waitFor({ state: "visible" });
     await screenshot(page, "split-commander-panes");
+    await waitForTimelineQuiet(baseUrl, "incident-commander", 5000, 120000);
+    await waitForComposerIdle(panelAlpha, "incident-commander");
+    await waitForComposerIdle(panelBravo, "incident-commander");
+
+    const alphaBefore = await panelAlpha.innerText();
+    const bravoBefore = await panelBravo.innerText();
+
+    await sendPanelMessage(panelAlpha, "incident-commander", alphaFollowUpPrompt);
+    await waitForPanelChange(panelAlpha, alphaBefore);
+    await assertEventually(async () => {
+      const alphaMessages = await transcriptMessages(panelAlpha);
+      return alphaMessages.filter((entry) =>
+        entry.className.includes("msg--user")
+        && entry.text.includes(alphaFollowUpPrompt)
+      ).length === 1;
+    }, "alpha panel must render its own prompt exactly once", 60000, 250);
+    const bravoAfterAlphaMessages = await transcriptMessages(panelBravo);
+    assert.equal(bravoAfterAlphaMessages.filter((entry) =>
+      entry.className.includes("msg--user")
+      && entry.text.includes(alphaFollowUpPrompt)
+    ).length, 0, "bravo panel must not receive alpha user prompt");
+    await waitForTimelineQuiet(baseUrl, "incident-commander", 5000, 120000);
+    await waitForComposerIdle(panelBravo, "incident-commander");
+
+    await sendPanelMessage(panelBravo, "incident-commander", bravoFollowUpPrompt);
+    await waitForPanelChange(panelBravo, bravoBefore);
+    await assertEventually(async () => {
+      const bravoMessages = await transcriptMessages(panelBravo);
+      return bravoMessages.filter((entry) =>
+        entry.className.includes("msg--user")
+        && entry.text.includes(bravoFollowUpPrompt)
+      ).length === 1;
+    }, "bravo panel must render its own prompt exactly once", 60000, 250);
+    const alphaAfterBravoMessages = await transcriptMessages(panelAlpha);
+    assert.equal(alphaAfterBravoMessages.filter((entry) =>
+      entry.className.includes("msg--user")
+      && entry.text.includes(bravoFollowUpPrompt)
+    ).length, 0, "alpha panel must not receive bravo user prompt");
+    await waitForComposerIdle(panelAlpha, "incident-commander");
+    await waitForComposerIdle(panelBravo, "incident-commander");
 
     console.log("smoke:scribe");
     await selectSidebarItem(page, "Scribe");

@@ -583,6 +583,24 @@ macro_rules! delegate_mob_session_service {
                     .clone()
                     .or_else(|| self.inner.runtime_adapter())
             }
+            async fn interrupt_with_machine_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                authority: meerkat_runtime::MachineSessionControlAuthority,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .interrupt_with_machine_authority(session_id, authority)
+                    .await
+            }
+            async fn cancel_after_boundary_with_machine_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                authority: meerkat_runtime::MachineSessionControlAuthority,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .cancel_after_boundary_with_machine_authority(session_id, authority)
+                    .await
+            }
             async fn session_belongs_to_mob(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -851,6 +869,24 @@ impl MobSessionService for AfterCreateMobSessionService {
     fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
         self.inner.runtime_adapter()
     }
+    async fn interrupt_with_machine_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .interrupt_with_machine_authority(session_id, authority)
+            .await
+    }
+    async fn cancel_after_boundary_with_machine_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        authority: meerkat_runtime::MachineSessionControlAuthority,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .cancel_after_boundary_with_machine_authority(session_id, authority)
+            .await
+    }
     async fn session_belongs_to_mob(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -1020,7 +1056,7 @@ impl MobBootstrapSpec {
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
-        let image_generation_machine = if caps.image_generation {
+        let runtime_adapter = if caps.image_generation {
             let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
                 Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
             Some(Arc::new(meerkat_runtime::MeerkatMachine::persistent(
@@ -1036,7 +1072,7 @@ impl MobBootstrapSpec {
             .mob(caps.mob)
             .comms(caps.comms)
             .memory(caps.memory);
-        if let Some(machine) = image_generation_machine {
+        if let Some(machine) = runtime_adapter.clone() {
             factory = factory.with_image_generation_machine(machine);
         }
         let config = Config::default();
@@ -1049,13 +1085,32 @@ impl MobBootstrapSpec {
             meerkat_session::EphemeralSessionService::new(builder, max_sessions),
         );
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
+        let after_create_hook = if let Some(runtime_adapter) = runtime_adapter.clone() {
+            let user_after_create_hook = after_create_hook.clone();
+            Some(Arc::new(
+                move |session_id: meerkat_core::types::SessionId, ctx: SessionCreatedContext| {
+                    let runtime_adapter = runtime_adapter.clone();
+                    let user_after_create_hook = user_after_create_hook.clone();
+                    Box::pin(async move {
+                        runtime_adapter.register_session(session_id.clone()).await;
+                        if let Some(user_after_create_hook) = user_after_create_hook {
+                            user_after_create_hook(session_id, ctx).await;
+                        }
+                    })
+                        as std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                },
+            ) as AfterCreateHook)
+        } else {
+            after_create_hook
+        };
         let session_service = Arc::new(PreBuildMobSessionService {
             inner: session_service,
             hook,
             after_create_hook,
-            runtime_adapter_override: None,
+            runtime_adapter_override: runtime_adapter.clone(),
         }) as Arc<dyn MobSessionService>;
         let mut spec = Self::new(definition, storage, session_service);
+        spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec
     }
@@ -2425,10 +2480,10 @@ realm_profile = "worker-v2"
         );
     }
 
-    /// Regression: definition-based ephemeral builds must also carry a runtime
-    /// adapter so autonomous-host members can process peer-delivered work.
+    /// Regression: public ephemeral builds without image generation stay on the
+    /// lighter direct session-service path.
     #[test]
-    fn ephemeral_bootstrap_provides_runtime_adapter() {
+    fn ephemeral_bootstrap_without_image_generation_stays_direct() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
         let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
@@ -2448,7 +2503,51 @@ realm_profile = "worker-v2"
         );
         assert!(
             spec.runtime_adapter.is_none(),
-            "raw ephemeral_inner stays bare; builder must layer the adapter on top"
+            "public ephemeral builds only need a runtime adapter when the definition may use image generation"
+        );
+    }
+
+    /// Regression: public ephemeral image-generation builds must expose the same
+    /// runtime adapter through the spec and the session service. The generated
+    /// image tool consults runtime session/image-operation state by session id,
+    /// so a fresh, tool-only MeerkatMachine cannot be used here.
+    #[test]
+    fn ephemeral_bootstrap_with_image_generation_shares_runtime_adapter() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "test"
+
+[profiles.commander]
+model = "gpt-5.5"
+
+[profiles.commander.tools]
+builtins = true
+image_generation = true
+"#,
+        ) else {
+            panic!("failed to parse image-generation definition");
+        };
+        let spec = MobBootstrapSpec::ephemeral(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            None,
+        );
+        let spec_adapter = spec
+            .runtime_adapter
+            .as_ref()
+            .expect("image-generation ephemeral builds must expose a runtime adapter");
+        let service_adapter = spec
+            .session_service
+            .runtime_adapter()
+            .expect("session service must expose the same runtime adapter");
+        assert!(
+            spec_adapter.shares_runtime_persistence_with(&service_adapter),
+            "image-generation tool state and session state must share one runtime authority"
         );
     }
 
