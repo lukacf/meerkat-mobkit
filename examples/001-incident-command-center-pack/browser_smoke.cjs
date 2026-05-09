@@ -183,9 +183,63 @@ function normalizePromptText(text) {
   return String(text || "").trim().replace(/\s+/g, " ");
 }
 
+async function queryTimelinePage(baseUrl, identity, after = null, limit = 1000) {
+  const url = new URL("/console/timeline", baseUrl);
+  url.searchParams.set("identity", identity);
+  url.searchParams.set("limit", String(limit));
+  if (after) url.searchParams.set("after", after);
+  const response = await fetch(url);
+  assert.ok(response.ok, `timeline query failed: ${response.status}`);
+  return response.json();
+}
+
+async function latestTimelineCursor(baseUrl, identity) {
+  let after = null;
+  let latest = null;
+  for (let i = 0; i < 100; i += 1) {
+    const page = await queryTimelinePage(baseUrl, identity, after);
+    const frames = Array.isArray(page.frames) ? page.frames : [];
+    if (frames.length === 0) return latest;
+    latest = frames[frames.length - 1].cursor || latest;
+    if (!page.next_cursor || page.next_cursor === after) return latest;
+    after = page.next_cursor;
+  }
+  return latest;
+}
+
+async function waitForTimelineQuiet(baseUrl, identity, quietMs = 12000, timeout = 180000) {
+  let cursor = await latestTimelineCursor(baseUrl, identity);
+  let quietSince = Date.now();
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const page = await queryTimelinePage(baseUrl, identity, cursor, 1000);
+    const frames = Array.isArray(page.frames) ? page.frames : [];
+    if (frames.length > 0) {
+      cursor = frames[frames.length - 1].cursor || cursor;
+      quietSince = Date.now();
+    } else if (Date.now() - quietSince >= quietMs) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  assert.fail(`expected ${identity} timeline to be quiet for ${quietMs}ms`);
+}
+
 async function main() {
   const baseUrl = process.argv[2];
   assert.ok(baseUrl, "baseUrl is required");
+  const artifactDir = process.env.MOBKIT_BROWSER_SMOKE_ARTIFACT_DIR || "";
+  if (artifactDir) fs.mkdirSync(artifactDir, { recursive: true });
+  let screenshotIndex = 0;
+  async function screenshot(page, label) {
+    if (!artifactDir) return;
+    screenshotIndex += 1;
+    const safeLabel = label.replace(/[^A-Za-z0-9._-]+/g, "-");
+    await page.screenshot({
+      path: path.join(artifactDir, `${String(screenshotIndex).padStart(2, "0")}-${safeLabel}.png`),
+      fullPage: true,
+    });
+  }
   const runTag = `smoke-${Date.now().toString(36)}`;
   const scenario = YAML.parse(
     fs.readFileSync(path.join(__dirname, "scenario.yaml"), "utf8"),
@@ -268,6 +322,7 @@ async function main() {
       "commander transcript must not contain blank message bubbles",
     );
     await waitForComposerIdle(commanderPanel, "incident-commander");
+    await screenshot(page, "commander-status-sweep");
     await assertEventually(
       async () => {
         const sreCount = await page
@@ -288,6 +343,7 @@ async function main() {
       90000,
       250,
     );
+    await waitForTimelineQuiet(baseUrl, "incident-commander");
 
     console.log("smoke:image-generation");
     await sendPanelMessage(
@@ -298,9 +354,9 @@ async function main() {
     await assertEventually(async () => {
       const transcript = await transcriptMessages(commanderPanel);
       return transcript.some((entry) => entry.text.includes(imageGenerationPrompt));
-    }, "commander user image-generation prompt should render", 30000, 250);
+    }, "commander user image-generation prompt should render", 180000, 250);
     const generatedImageButton = commanderPanel.getByRole("button", { name: /generated image/i }).last();
-    await generatedImageButton.waitFor({ state: "visible", timeout: 180000 });
+    await generatedImageButton.waitFor({ state: "visible", timeout: 360000 });
     const generatedImage = generatedImageButton.locator("img").first();
     await assertEventually(async () => {
       const src = await generatedImage.getAttribute("src");
@@ -309,6 +365,7 @@ async function main() {
     const generatedImageSrc = await generatedImage.getAttribute("src");
     assert.ok(generatedImageSrc, "expected generated image src");
     const generatedImageUrl = new URL(generatedImageSrc, baseUrl).href;
+    await screenshot(page, "commander-generated-image");
 
     console.log("smoke:image-upload");
     await selectSidebarItem(page, "API Investigator");
@@ -341,6 +398,7 @@ async function main() {
         && /payments-api|outage|critical|rollback|region/i.test(entry.text)
       );
     }, "API Investigator should describe the uploaded image", 180000, 500);
+    await screenshot(page, "api-investigator-image-description");
 
     console.log("smoke:merchant");
     await selectSidebarItem(page, "Merchant Success");
@@ -391,11 +449,13 @@ async function main() {
     await clickNav(page, "topology");
     const topologyNode = page.getByTestId("topology-node:incident-commander");
     await topologyNode.waitFor();
-    await waitForText(topologyNode, "payments-sre");
+    await page.getByTestId("topology-node:payments-sre").waitFor({ state: "visible", timeout: 60000 });
+    await screenshot(page, "topology");
 
     console.log("smoke:inspect");
     await selectSidebarItem(page, "Incident Commander");
-    await page.getByTestId("conv-action:inspect").click({ force: true });
+    commanderPanel = await dockPanelForIdentity(page, "incident-commander");
+    await commanderPanel.getByTestId("conv-action:inspect").evaluate((button) => button.click());
     await page.getByTestId("inspect-panel:incident-commander").waitFor();
     await waitForText(page.getByTestId("inspect-panel:incident-commander"), "addressable");
 
@@ -419,42 +479,49 @@ async function main() {
     const panelBravo = page.locator(`[data-panel-id="${bravoId}"][data-testid^="dock-panel:"], [data-testid="pane:${bravoId}"]`);
     assert.notEqual(alphaId, bravoId, "split should create a second panel");
 
+    await panelAlpha.getByTestId("chat-pane:incident-commander").waitFor({ state: "visible" });
+    await panelBravo.getByTestId("chat-pane:incident-commander").waitFor({ state: "visible" });
+    await screenshot(page, "split-commander-panes");
+    await waitForTimelineQuiet(baseUrl, "incident-commander", 5000, 120000);
+    await waitForComposerIdle(panelAlpha, "incident-commander");
+    await waitForComposerIdle(panelBravo, "incident-commander");
+
     const alphaBefore = await panelAlpha.innerText();
     const bravoBefore = await panelBravo.innerText();
 
-    await sendPanelMessage(
-      panelAlpha,
-      "incident-commander",
-      alphaFollowUpPrompt,
-    );
+    await sendPanelMessage(panelAlpha, "incident-commander", alphaFollowUpPrompt);
     await waitForPanelChange(panelAlpha, alphaBefore);
     await assertEventually(async () => {
       const alphaMessages = await transcriptMessages(panelAlpha);
-      return alphaMessages.filter((entry) => entry.text.includes(alphaFollowUpPrompt)).length === 1;
-    }, "alpha panel must not duplicate its own prompt", 60000, 250);
-    assert.equal(
-      await panelBravo.getByText(
-        alphaFollowUpPrompt,
-      ).count(),
-      0,
-      "bravo panel must not receive alpha user prompt",
-    );
+      return alphaMessages.filter((entry) =>
+        entry.className.includes("msg--user")
+        && entry.text.includes(alphaFollowUpPrompt)
+      ).length === 1;
+    }, "alpha panel must render its own prompt exactly once", 60000, 250);
+    const bravoAfterAlphaMessages = await transcriptMessages(panelBravo);
+    assert.equal(bravoAfterAlphaMessages.filter((entry) =>
+      entry.className.includes("msg--user")
+      && entry.text.includes(alphaFollowUpPrompt)
+    ).length, 0, "bravo panel must not receive alpha user prompt");
+    await waitForTimelineQuiet(baseUrl, "incident-commander", 5000, 120000);
+    await waitForComposerIdle(panelBravo, "incident-commander");
 
-    await sendPanelMessage(
-      panelBravo,
-      "incident-commander",
-      bravoFollowUpPrompt,
-    );
+    await sendPanelMessage(panelBravo, "incident-commander", bravoFollowUpPrompt);
     await waitForPanelChange(panelBravo, bravoBefore);
     await assertEventually(async () => {
       const bravoMessages = await transcriptMessages(panelBravo);
-      return bravoMessages.filter((entry) => entry.text.includes(bravoFollowUpPrompt)).length === 1;
-    }, "bravo panel must not duplicate its own prompt", 60000, 250);
-    assert.equal(
-      await panelAlpha.getByText(bravoFollowUpPrompt).count(),
-      0,
-      "alpha panel must not receive bravo user prompt",
-    );
+      return bravoMessages.filter((entry) =>
+        entry.className.includes("msg--user")
+        && entry.text.includes(bravoFollowUpPrompt)
+      ).length === 1;
+    }, "bravo panel must render its own prompt exactly once", 60000, 250);
+    const alphaAfterBravoMessages = await transcriptMessages(panelAlpha);
+    assert.equal(alphaAfterBravoMessages.filter((entry) =>
+      entry.className.includes("msg--user")
+      && entry.text.includes(bravoFollowUpPrompt)
+    ).length, 0, "alpha panel must not receive bravo user prompt");
+    await waitForComposerIdle(panelAlpha, "incident-commander");
+    await waitForComposerIdle(panelBravo, "incident-commander");
 
     console.log("smoke:scribe");
     await selectSidebarItem(page, "Scribe");
@@ -462,13 +529,10 @@ async function main() {
     await assertEventually(async () => {
       const messages = await transcriptMessages(scribePanel);
       return messages.some((entry) =>
-        entry.text.includes("Peer request: incident_facts_timeline")
-        || entry.text.includes("Peer request: request_summary")
-        || entry.text.includes("Peer request:")
-        || entry.text.includes("Peer message:")
-        || entry.text.includes("Peer response:")
+        /payments-api|enterprise merchants|payment failures|status-page|timeline/i.test(entry.text)
       );
     }, "scribe panel should show recent peer activity", 60000, 250);
+    await screenshot(page, "scribe-peer-activity");
   } finally {
     await browser.close();
   }

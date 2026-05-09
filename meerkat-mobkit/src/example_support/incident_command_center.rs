@@ -254,6 +254,7 @@ pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario)
         )
         .await
         .context("reconcile incident roster")?;
+    wait_for_scenario_wiring(runtime, &scenario.links).await?;
 
     for route in &scenario.routes {
         runtime
@@ -310,6 +311,69 @@ pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario)
     }
 
     Ok(())
+}
+
+async fn wait_for_scenario_wiring(runtime: &UnifiedRuntime, links: &[IncidentLink]) -> Result<()> {
+    if links.is_empty() {
+        return Ok(());
+    }
+
+    const MAX_EDGE_RECONCILE_ATTEMPTS: usize = 30;
+    let mut last_missing = Vec::new();
+    let mut last_report = None;
+    for attempt in 0..MAX_EDGE_RECONCILE_ATTEMPTS {
+        let report = runtime.reconcile_edges().await;
+        let entries = runtime.mob_handle().list_members_including_retiring().await;
+        let wired_to = entries
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry.agent_identity.to_string(),
+                    entry
+                        .wired_to
+                        .into_iter()
+                        .map(|peer| peer.to_string())
+                        .collect::<BTreeSet<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        last_missing = missing_scenario_links(links, &wired_to);
+        if last_missing.is_empty() {
+            return Ok(());
+        }
+        last_report = Some(report);
+        if attempt + 1 < MAX_EDGE_RECONCILE_ATTEMPTS {
+            sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    bail!(
+        "incident runtime wiring incomplete after retries; missing links: {}; last edge report: {:?}",
+        last_missing.join(", "),
+        last_report
+    )
+}
+
+fn missing_scenario_links(
+    links: &[IncidentLink],
+    wired_to: &BTreeMap<String, BTreeSet<String>>,
+) -> Vec<String> {
+    links
+        .iter()
+        .filter_map(|link| {
+            let from_has_to = wired_to
+                .get(&link.from)
+                .is_some_and(|peers| peers.contains(&link.to));
+            let to_has_from = wired_to
+                .get(&link.to)
+                .is_some_and(|peers| peers.contains(&link.from));
+            if from_has_to || to_has_from {
+                None
+            } else {
+                Some(format!("{} -> {}", link.from, link.to))
+            }
+        })
+        .collect()
 }
 
 pub async fn seed_escalation_chain(
@@ -497,8 +561,6 @@ skills = ["comms_protocol", "commander_role"]
 peer_description = "Incident commander coordinating the CardinalPay outage response"
 
 [profiles.commander.tools]
-# Meerkat 0.6.1 registers generate_image through the builtin dispatcher, so
-# image-generation profiles must keep builtins enabled until upstream splits it.
 builtins = true
 comms = true
 image_generation = true
@@ -1309,6 +1371,7 @@ mod tests {
                 to: scribe_peer_route,
                 intent: "request_summary".to_string(),
                 params: json!({ "body": "Summarize the incident." }),
+                blocks: None,
                 handling_mode: meerkat_core::types::HandlingMode::Queue,
                 stream: meerkat_core::comms::InputStreamMode::None,
             })

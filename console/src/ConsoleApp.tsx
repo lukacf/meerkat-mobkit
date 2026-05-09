@@ -86,7 +86,6 @@ interface IdentityLog {
   /// runtime has an EventLogStore (we'll fetch backfill); `false`
   /// once we've observed `available: false` (SSE is the only source).
   hasServerLog: boolean | null;
-  optimisticUser: OptimisticUserMessage | null;
 }
 
 // --- Visibility helpers (unchanged) ---
@@ -289,6 +288,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // wholesale replacement, no live-overlay wipe). The renderer makes
   // exactly one adapter pass over the merged log.
   const identityLogRef = React.useRef<Record<string, IdentityLog>>({});
+  const optimisticUserByPanelKeyRef = React.useRef<Record<string, OptimisticUserMessage>>({});
 
   function getOrCreateLog(identity: string): IdentityLog {
     let log = identityLogRef.current[identity];
@@ -297,11 +297,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         events: [],
         byKey: new Map(),
         hasServerLog: null,
-        optimisticUser: null,
       };
       identityLogRef.current[identity] = log;
     }
     return log;
+  }
+
+  function clearOptimisticUserByInteraction(interactionId: string): void {
+    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+      if (optimistic.interactionId !== interactionId) continue;
+      optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
+    }
   }
 
   /// Stable identity for a frame across RPC and SSE pipelines. Both
@@ -343,12 +350,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     log.events.push(frame);
     if (
       (frame.event === "interaction_started" || frame.event === "user_input")
-      && log.optimisticUser
-      && log.optimisticUser.interactionId
-      && frame.interactionId === log.optimisticUser.interactionId
+      && frame.interactionId
     ) {
-      log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-      log.optimisticUser = null;
+      clearOptimisticUserByInteraction(frame.interactionId);
     }
     return true;
   }
@@ -373,6 +377,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     for (const frame of frames) appendFrame(identity, frame);
   }
 
+  async function queryIdentityTimeline(identity: string): Promise<{ frames: ConsoleFrame[]; available: boolean }> {
+    const frames: ConsoleFrame[] = [];
+    let available = true;
+    let after: string | undefined;
+    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+      const page = await queryTimeline(baseUrl, { identity, after }, 1000);
+      available = page.available;
+      frames.push(...page.frames);
+      const next = page.nextCursor?.trim();
+      if (!next || next === after || page.frames.length === 0) break;
+      after = next;
+    }
+    return { frames, available };
+  }
+
   /// Render-time chat view: aggregate cursor is the canonical order. The
   /// server admits user input before dispatch, so cursor order preserves
   /// causality without timestamp-only restore drift.
@@ -391,6 +410,38 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return a.index - b.index;
       })
       .map((entry) => entry.frame);
+  }
+
+  function frameOrigin(frame: ConsoleFrame): string | null {
+    if (!frame.data || typeof frame.data !== "object") return null;
+    const origin = (frame.data as Record<string, unknown>).origin;
+    return typeof origin === "string" ? origin : null;
+  }
+
+  function frameVisibleInPanel(frame: ConsoleFrame, panelId: string): boolean {
+    if (frame.event !== "user_input" && frame.event !== "interaction_started") return true;
+    const origin = frameOrigin(frame);
+    if (!origin?.startsWith("console:")) return true;
+    return origin === `console:${panelId}`;
+  }
+
+  function framesVisibleInPanel(frames: ConsoleFrame[], panelId: string): ConsoleFrame[] {
+    const hiddenInteractionIds = new Set<string>();
+    const visibleFrames: ConsoleFrame[] = [];
+    for (const frame of frames) {
+      if (frameVisibleInPanel(frame, panelId)) {
+        visibleFrames.push(frame);
+        continue;
+      }
+      const interactionId = frame.interactionId?.trim();
+      if (interactionId) hiddenInteractionIds.add(interactionId);
+    }
+    if (hiddenInteractionIds.size === 0) return visibleFrames;
+    return visibleFrames.filter((frame) => {
+      if (frame.event !== "run_started") return true;
+      const interactionId = frame.interactionId?.trim();
+      return !interactionId || !hiddenInteractionIds.has(interactionId);
+    });
   }
 
   // Activity rail (global, unchanged)
@@ -703,7 +754,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return;
       }
       try {
-        const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
+        const { frames, available } = await queryIdentityTimeline(identity);
         reconcileServerLog(identity, frames, available);
         clearPhaseForIdentity(identity);
         forceRender();
@@ -728,7 +779,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (log.hasServerLog !== null) continue;
       void (async () => {
         try {
-          const { frames, available } = await queryTimeline(baseUrl, { identity }, 400);
+          const { frames, available } = await queryIdentityTimeline(identity);
           reconcileServerLog(identity, frames, available);
           forceRender();
         } catch { /* silent */ }
@@ -873,7 +924,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
     setSendingPanels((c) => new Set(c).add(panelKey));
     const log = getOrCreateLog(identity);
-    log.optimisticUser = {
+    optimisticUserByPanelKeyRef.current[panelKey] = {
       interactionId: "",
       entry: userEntry,
       sentAtMs: Date.now(),
@@ -900,28 +951,30 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           createIdempotencyKey(),
           handlingMode,
         );
-        if (log.optimisticUser) {
-          log.optimisticUser.interactionId = result.interaction_id;
+        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+        if (optimisticUser) {
+          optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
             (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
           );
           if (matched) {
-            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            log.optimisticUser = null;
+            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
       } else if (attachments.length > 0) {
         const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
-        if (log.optimisticUser) {
-          log.optimisticUser.interactionId = result.interaction_id || "";
+        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+        if (optimisticUser) {
+          optimisticUser.interactionId = result.interaction_id || "";
           const matched = result.interaction_id
             ? log.events.some(
                 (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
               )
             : false;
           if (matched) {
-            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            log.optimisticUser = null;
+            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
       } else if (id) {
@@ -933,16 +986,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           createIdempotencyKey(),
           handlingMode,
         );
-        if (log.optimisticUser) {
-          log.optimisticUser.interactionId = result.interaction_id;
+        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+        if (optimisticUser) {
+          optimisticUser.interactionId = result.interaction_id;
           // The interaction_started frame may have arrived between
           // the send and the RPC response — reconcile retroactively.
           const matched = log.events.some(
             (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
           );
           if (matched) {
-            log.optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            log.optimisticUser = null;
+            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
       } else {
@@ -950,8 +1004,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
       return true;
     } catch (submitError) {
-      log.optimisticUser?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-      log.optimisticUser = null;
+      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
       setError(errorMessage(submitError));
@@ -1010,7 +1064,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const animMs = (ms: number) => reducedMotion ? 0 : ms;
 
   function findChatTargetFor(identity: string): { panelId: string; target: MobKitDockTarget } | null {
-    for (const panel of dock.viewState.panels) {
+    // This is also called from the long-lived SSE subscription closure via
+    // maybeDrainHead(); read the dock ref so pending queue auto-drain sees
+    // panels opened after the first render.
+    for (const panel of dockRef.current.viewState.panels) {
       const t = panel.target as MobKitDockTarget | null;
       if (!t || t.kind !== "agent-chat") continue;
       if ((t.identity || t.memberId) === identity) {
@@ -1208,7 +1265,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // Text deltas are rendered as the interaction streams; the
     // adapter's `streamedText === terminalText` check suppresses the
     // duplicate when text_complete/interaction_complete arrives.
-    const sortedFrames = getSortedFrames(identity);
+    const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panel.id);
     const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
       renderInteractionStartsAsUser: true,
       renderTextDeltas: true,
@@ -1219,8 +1276,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // with the matching interaction_id is appended to the log (which
     // clears it via appendFrame). Until then, it sits at the tail of
     // the conversation as a synthetic entry.
-    const log = getOrCreateLog(identity);
-    const optimisticEntry = log.optimisticUser ? log.optimisticUser.entry : null;
+    const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey] ?? null;
+    const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
 
     const entries = sanitizeConversationEntries(sortConversationTimelineEntries([
       ...conversationEntries,
