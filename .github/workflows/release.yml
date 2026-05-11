@@ -67,18 +67,23 @@ jobs:
           - runs-on: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive_ext: tar.gz
+            cargo_jobs: 0
           - runs-on: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive_ext: tar.gz
+            cargo_jobs: 0
           - runs-on: macos-15
             target: aarch64-apple-darwin
             archive_ext: tar.gz
+            cargo_jobs: 0
           - runs-on: macos-15-large
             target: x86_64-apple-darwin
             archive_ext: tar.gz
-          - runs-on: windows-latest
+            cargo_jobs: 0
+          - runs-on: windows-2022
             target: x86_64-pc-windows-msvc
             archive_ext: zip
+            cargo_jobs: 2
 
     steps:
       - name: Checkout
@@ -94,7 +99,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}"
+          if [[ "${{ matrix.cargo_jobs }}" != "0" ]]; then
+            cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
+          else
+            cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}"
+          fi
 
       - name: Package artifacts
         shell: bash

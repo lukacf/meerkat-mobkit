@@ -31,12 +31,13 @@
 //! is unauthenticated, but the artifacts it produces (peer descriptors)
 //! are signature-checked at every subsequent comms ingress.
 
-use std::path::Path;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
+#[cfg(unix)]
+use tokio::net::{UnixListener, UnixStream};
 
 use super::cross_mob_remote::{RemoteEndpoint, RemoteMobError};
 
@@ -115,6 +116,7 @@ pub enum ControlResponse {
 /// codec-agnostic helpers below.
 enum ControlStream {
     Tcp(TcpStream),
+    #[cfg(unix)]
     Uds(UnixStream),
 }
 
@@ -130,6 +132,7 @@ impl ControlStream {
                 s.write_all(payload).await?;
                 s.flush().await
             }
+            #[cfg(unix)]
             Self::Uds(s) => {
                 s.write_all(&header).await?;
                 s.write_all(payload).await?;
@@ -142,6 +145,7 @@ impl ControlStream {
         let mut header = [0u8; 4];
         match self {
             Self::Tcp(s) => s.read_exact(&mut header).await?,
+            #[cfg(unix)]
             Self::Uds(s) => s.read_exact(&mut header).await?,
         };
         let len = u32::from_be_bytes(header);
@@ -154,6 +158,7 @@ impl ControlStream {
         let mut buf = vec![0u8; len as usize];
         match self {
             Self::Tcp(s) => s.read_exact(&mut buf).await?,
+            #[cfg(unix)]
             Self::Uds(s) => s.read_exact(&mut buf).await?,
         };
         Ok(buf)
@@ -194,11 +199,19 @@ impl RemoteControlClient {
                     .await
                     .map_err(|err| io_error("connect", endpoint, err))?,
             ),
+            #[cfg(unix)]
             RemoteEndpoint::Uds(path) => ControlStream::Uds(
-                UnixStream::connect(Path::new(path))
+                UnixStream::connect(std::path::Path::new(path))
                     .await
                     .map_err(|err| io_error("connect", endpoint, err))?,
             ),
+            #[cfg(not(unix))]
+            RemoteEndpoint::Uds(_) => {
+                return Err(RemoteMobError::UnsupportedTransport {
+                    mob_id: String::new(),
+                    transport: endpoint.comms_address(),
+                });
+            }
         };
         let payload =
             serde_json::to_vec(request).map_err(|err| encode_error(endpoint, err.to_string()))?;
@@ -482,6 +495,7 @@ pub async fn serve_tcp_control(listener: TcpListener, handler: std::sync::Arc<dy
 }
 
 /// Same as `serve_tcp_control` but for Unix-domain sockets.
+#[cfg(unix)]
 pub async fn serve_uds_control(
     listener: UnixListener,
     handler: std::sync::Arc<dyn ControlHandler>,
@@ -504,6 +518,7 @@ async fn serve_one_tcp(stream: TcpStream, handler: std::sync::Arc<dyn ControlHan
     serve_one(&mut s, handler).await;
 }
 
+#[cfg(unix)]
 async fn serve_one_uds(stream: UnixStream, handler: std::sync::Arc<dyn ControlHandler>) {
     let mut s = ControlStream::Uds(stream);
     serve_one(&mut s, handler).await;
