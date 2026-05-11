@@ -293,7 +293,9 @@ fn build_console_experience_contract(
                         .get("display_name")
                         .cloned()
                         .unwrap_or_else(|| member.agent_identity.clone());
-                    let addressable = member
+                    let is_active = member.state == "active";
+                    let addressable = is_active
+                        && member
                         .labels
                         .get("addressable")
                         .map(|v| v != "false")
@@ -343,7 +345,7 @@ fn build_console_experience_contract(
                         "affordances": {
                             "addressable": addressable,
                             "can_send_message": addressable,
-                            "can_retire": !is_aggregate_console && !singleton,
+                            "can_retire": is_active && !is_aggregate_console && !singleton,
                             "can_respawn": !is_aggregate_console,
                             "runtime_mode": if is_aggregate_console { "console_aggregator" } else { "mob_agent" },
                         },
@@ -638,7 +640,7 @@ fn build_console_experience_contract(
                 // Mob runtime: identity-native topology from members.
                 serde_json::json!({
                     "nodes": live_snapshot.members.iter().map(|member| {
-                        let addressable = member
+                        let addressable = member.state == "active" && member
                             .labels
                             .get("addressable")
                             .map(|value| value != "false")

@@ -2837,6 +2837,23 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
     text
   };
 }
+function userEntryTextSignature(entry) {
+  if (entry.kind !== "message") return "";
+  if ("text" in entry && typeof entry.text === "string") {
+    return entry.text.replace(/\s+/g, " ").trim();
+  }
+  if ("blocks" in entry && Array.isArray(entry.blocks)) {
+    return JSON.stringify(entry.blocks);
+  }
+  return "";
+}
+function userEntryDedupeKey(frame, entry) {
+  const interactionId = frame.interactionId?.trim();
+  if (interactionId) return `interaction:${interactionId}`;
+  const signature = userEntryTextSignature(entry);
+  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
+  return signature ? `content:${timestamp}:${signature}` : "";
+}
 function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
     return [];
@@ -3170,12 +3187,73 @@ function extractEmbeddedRpcPrompt(text) {
   const match = text.match(/^\[EVENT via rpc\]\s*(.+)$/im);
   return match?.[1]?.trim() || null;
 }
+function historyMessageText(message) {
+  if (!message || typeof message !== "object") {
+    return { role: null, text: "" };
+  }
+  const record = message;
+  const role = typeof record.role === "string" ? record.role : null;
+  switch (role) {
+    case "user": {
+      const text = extractTextFromContentBlocks(record.content);
+      if (text.startsWith("[COMMS")) {
+        const blocks = parseIncomingCommsBlocks(text);
+        if (blocks.length > 0) {
+          return { role: "meta", text: summarizeCommsTransport(text), blocks };
+        }
+        return { role: "meta", text: summarizeCommsTransport(text) };
+      }
+      return { role: "user", text: stripRpcEventPrefix(text) };
+    }
+    case "assistant":
+      return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
+    case "block_assistant": {
+      const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+      const text = blocks.map((block) => {
+        if (!block || typeof block !== "object") return "";
+        const item = block;
+        const blockType = typeof item.block_type === "string" ? item.block_type : typeof item.type === "string" ? item.type : "";
+        const data = item.data && typeof item.data === "object" ? item.data : {};
+        if (blockType === "text") {
+          if (typeof data.text === "string") return data.text;
+          if (typeof item.text === "string") return item.text;
+        }
+        return "";
+      }).filter((value) => value.trim().length > 0).join("");
+      return { role: "assistant", text };
+    }
+    case "system":
+      return { role: "system", text: typeof record.content === "string" ? record.content : "" };
+    default:
+      return { role: null, text: "" };
+  }
+}
+function renderSessionHistoryTextCompleteEntry(agent, frame, entryId) {
+  if (frame.sourceKind !== "session_history") return null;
+  const record = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const parsed = historyMessageText(record.message);
+  const text = parsed.text.trim();
+  if (parsed.role !== "assistant" || !text) return null;
+  if (/^I have acknowledged the addition of the following peers:/i.test(text)) {
+    return null;
+  }
+  const blocks = parseConversationRichBlocks(text);
+  return {
+    kind: "message",
+    id: entryId,
+    identity: agentIdentity(agent),
+    variant: blocks.length > 0 ? "rich" : "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...blocks.length > 0 ? { blocks } : { text }
+  };
+}
 function mapFramesToTimelineEntries(agent, frames, options = {}) {
   const orderedFrames = options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames;
   const entries = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = /* @__PURE__ */ new Set();
   const emittedImages = /* @__PURE__ */ new Set();
+  const emittedUserInputs = /* @__PURE__ */ new Set();
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt;
@@ -3255,6 +3333,11 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
+        const userKey = userEntryDedupeKey(frame, userEntry);
+        if (userKey && emittedUserInputs.has(userKey)) {
+          continue;
+        }
+        if (userKey) emittedUserInputs.add(userKey);
         entries.push(userEntry);
       }
       continue;
@@ -3270,6 +3353,11 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       }
     }
     if (frame.event === "text_complete") {
+      const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId);
+      if (historyEntry) {
+        flushPendingText();
+        entries.push(historyEntry);
+      }
       continue;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
@@ -3489,6 +3577,7 @@ function timelineFrameToConsoleFrame(raw) {
   const record = raw;
   const cursor = typeof record.cursor === "string" ? record.cursor : void 0;
   const payload = "payload" in record ? record.payload : record;
+  const source = record.source && typeof record.source === "object" ? record.source : null;
   if (record.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
     const updated = timelineFrameToConsoleFrame(payload.frame);
     return {
@@ -3501,6 +3590,7 @@ function timelineFrameToConsoleFrame(raw) {
       runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : updated.runtimeKey,
       sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
       status: typeof record.status === "string" ? record.status : updated.status,
+      sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
       frameVersion: typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
       updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : updated.updatedAtMs,
       turnId: typeof record.turn_id === "string" ? record.turn_id : updated.turnId,
@@ -3518,6 +3608,7 @@ function timelineFrameToConsoleFrame(raw) {
     runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : void 0,
     sessionId: typeof record.session_id === "string" ? record.session_id : void 0,
     status: typeof record.status === "string" ? record.status : void 0,
+    sourceKind: source && typeof source.kind === "string" ? source.kind : void 0,
     frameVersion: typeof record.frame_version === "number" ? record.frame_version : void 0,
     updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : void 0,
     turnId: typeof record.turn_id === "string" ? record.turn_id : void 0,
@@ -6167,6 +6258,24 @@ function visibleNavKinds() {
   if (hide.size > 0) return ALL_NAV.filter((k) => !hide.has(k));
   return ALL_NAV;
 }
+function isWorkerish(a) {
+  const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes("worker") || haystack.includes("delegate") || haystack.includes("helper");
+}
+function isCommanderLike(a) {
+  if (isWorkerish(a)) return false;
+  const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes("commander") || haystack.includes("coordinator");
+}
+function isSpawnedDelegateLike(a, host) {
+  if (!isWorkerish(a)) return false;
+  const wiredTo = new Set((a.wired_to || []).map((peer) => peer.toLowerCase()));
+  const hostKeys = [host?.identity, host?.member_id, host?.agent_id].filter((value) => Boolean(value)).map((value) => value.toLowerCase());
+  if (hostKeys.some((key) => wiredTo.has(key))) return true;
+  const role = (a.role || "").toLowerCase();
+  const group = (a.group || "").toLowerCase();
+  return !group || group === role || group === "worker" || group === "delegate" || group.includes("helper");
+}
 function bucketOf(a) {
   const g = (a.group || "").toLowerCase();
   const p = (a.role || a.kind || "").toLowerCase();
@@ -6179,7 +6288,7 @@ function bucketOf(a) {
 var SECTION_ORDER = ["Personal", "Coordinators", "Domains", "Internal", "Other"];
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
-  if (state === "retired" || state === "stopped") return "retired";
+  if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
   const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || agent.lease_healthy === false;
   if (degraded) return "degraded";
   return "active";
@@ -6226,10 +6335,22 @@ function Sidebar({
   }, [agents, q]);
   const grouped = import_react19.default.useMemo(() => {
     const g = /* @__PURE__ */ new Map();
+    const host = filtered.find(isCommanderLike);
     for (const a of filtered) {
-      const key = bucketOf(a);
+      const childOfHost = Boolean(host && host.member_id !== a.member_id && isSpawnedDelegateLike(a, host));
+      const key = childOfHost && host ? bucketOf(host) : bucketOf(a);
       if (!g.has(key)) g.set(key, []);
-      g.get(key).push(a);
+      g.get(key).push({ agent: a, childOfHost });
+    }
+    if (host) {
+      for (const rows of g.values()) {
+        rows.sort((a, b) => {
+          if (a.agent.member_id === host.member_id) return -1;
+          if (b.agent.member_id === host.member_id) return 1;
+          if (a.childOfHost !== b.childOfHost) return a.childOfHost ? -1 : 1;
+          return a.agent.label.localeCompare(b.agent.label);
+        });
+      }
     }
     return g;
   }, [filtered]);
@@ -6283,15 +6404,16 @@ function Sidebar({
           /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-spacer" }),
           /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-count", children: list.length })
         ] }),
-        list.map((agent) => {
+        list.map(({ agent, childOfHost }) => {
           const stateAttr = deriveStateAttr(agent);
           const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
           const inbox = inboxCount(agent);
           return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
             "div",
             {
-              className: `agent ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
+              className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
               "data-state": stateAttr,
+              "data-child-of-host": childOfHost ? "true" : void 0,
               "data-testid": `sidebar-agent:${agent.member_id}`,
               onClick: () => onSelect(agent),
               role: "button",
@@ -7040,7 +7162,8 @@ function ChatPane({
         last.blocks = [...lastBlocks, ...mBlocks];
         last.id = `${last.id}+${m.id}`;
       } else {
-        if (last && m.kind === "agent" && last.kind === "agent" && last.who === m.who) {
+        const canDedupeAdjacent = m.kind === "user" && last?.kind === "user" || m.kind === "agent" && last?.kind === "agent" && last.who === m.who;
+        if (last && canDedupeAdjacent) {
           const lastSignature = textSignatureForMsg(last);
           const nextSignature = textSignatureForMsg(m);
           if (lastSignature && lastSignature === nextSignature) {
@@ -7175,6 +7298,7 @@ function ChatPane({
     try {
       const sent = await onSend(files);
       if (sent) {
+        onDraftChange("");
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
@@ -8172,6 +8296,7 @@ var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "state_changed",
   "member_ready",
   "member_retired",
+  "topology_updated",
   "gating_decision",
   "route_changed"
 ]);
@@ -8312,10 +8437,57 @@ function ConsoleApp({ baseUrl }) {
     return log;
   }
   function clearOptimisticUserByInteraction(interactionId) {
+    const clearedPanelKeys = [];
     for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
       if (optimistic.interactionId !== interactionId) continue;
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       delete optimisticUserByPanelKeyRef.current[panelKey];
+      clearedPanelKeys.push(panelKey);
+    }
+    if (clearedPanelKeys.length > 0) {
+      setSendingPanels((current) => {
+        const next = new Set(current);
+        for (const panelKey of clearedPanelKeys) next.delete(panelKey);
+        return next;
+      });
+    }
+  }
+  function clearSendingPanelsForIdentity(identity) {
+    if (!identity.trim()) return;
+    setSendingPanels((current) => {
+      let changed = false;
+      const next = new Set(current);
+      const suffix = `:agent-chat:${identity}`;
+      for (const panelKey of current) {
+        if (panelKey.endsWith(suffix)) {
+          next.delete(panelKey);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }
+  function clearOptimisticUserByContent(identity, frame) {
+    if (frame.event !== "interaction_started" && frame.event !== "user_input") return;
+    const record = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    if (!content) return;
+    const clearedPanelKeys = [];
+    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+      if (!panelKey.endsWith(`:agent-chat:${identity}`)) continue;
+      if (optimistic.interactionId) continue;
+      if (!("text" in optimistic.entry) || typeof optimistic.entry.text !== "string") continue;
+      if (optimistic.entry.text.trim() !== content) continue;
+      optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
+      clearedPanelKeys.push(panelKey);
+    }
+    if (clearedPanelKeys.length > 0) {
+      setSendingPanels((current) => {
+        const next = new Set(current);
+        for (const panelKey of clearedPanelKeys) next.delete(panelKey);
+        return next;
+      });
     }
   }
   function frameKey(frame) {
@@ -8345,6 +8517,8 @@ function ConsoleApp({ baseUrl }) {
     log.events.push(frame);
     if ((frame.event === "interaction_started" || frame.event === "user_input") && frame.interactionId) {
       clearOptimisticUserByInteraction(frame.interactionId);
+    } else {
+      clearOptimisticUserByContent(identity, frame);
     }
     return true;
   }
@@ -8651,6 +8825,35 @@ function ConsoleApp({ baseUrl }) {
       })();
     }
   }, [baseUrl, dock.viewState.panels, forceRender]);
+  import_react24.default.useEffect(() => {
+    const refreshOpenChatPanels = async () => {
+      const identities = /* @__PURE__ */ new Set();
+      for (const panel of dock.viewState.panels) {
+        const target = panel.target;
+        if (!target || target.kind !== "agent-chat") continue;
+        identities.add(target.identity || target.memberId);
+      }
+      if (identities.size === 0) return;
+      let changed = false;
+      for (const identity of identities) {
+        const log = getOrCreateLog(identity);
+        if (log.hasServerLog === false) continue;
+        try {
+          const { frames, available } = await queryIdentityTimeline(identity);
+          const before = log.events.length;
+          reconcileServerLog(identity, frames, available);
+          if (log.events.length !== before) changed = true;
+        } catch {
+        }
+      }
+      if (changed) forceRender();
+    };
+    const timer = window.setInterval(() => {
+      void refreshOpenChatPanels();
+    }, 2e3);
+    void refreshOpenChatPanels();
+    return () => window.clearInterval(timer);
+  }, [baseUrl, dock.viewState.panels, forceRender]);
   const scheduleHistoryRefreshRef = import_react24.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
   const scheduleExperienceRefreshRef = import_react24.default.useRef(scheduleExperienceRefresh);
@@ -8686,6 +8889,7 @@ function ConsoleApp({ baseUrl }) {
           identityBusyRef.current[identity] = true;
         } else if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
           identityBusyRef.current[identity] = false;
+          clearSendingPanelsForIdentity(identity);
           if (wasBusy) maybeDrainHead(identity);
         }
       }

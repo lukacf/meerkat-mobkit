@@ -175,7 +175,7 @@ function cursorSeq(cursor: string | undefined): number | null {
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
   "interaction_complete", "interaction_failed", "state_changed",
-  "member_ready", "member_retired", "gating_decision", "route_changed",
+  "member_ready", "member_retired", "topology_updated", "gating_decision", "route_changed",
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
   "user_input", "interaction_started", "interaction_complete", "interaction_failed",
@@ -303,10 +303,59 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   function clearOptimisticUserByInteraction(interactionId: string): void {
+    const clearedPanelKeys: string[] = [];
     for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
       if (optimistic.interactionId !== interactionId) continue;
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       delete optimisticUserByPanelKeyRef.current[panelKey];
+      clearedPanelKeys.push(panelKey);
+    }
+    if (clearedPanelKeys.length > 0) {
+      setSendingPanels((current) => {
+        const next = new Set(current);
+        for (const panelKey of clearedPanelKeys) next.delete(panelKey);
+        return next;
+      });
+    }
+  }
+
+  function clearSendingPanelsForIdentity(identity: string): void {
+    if (!identity.trim()) return;
+    setSendingPanels((current) => {
+      let changed = false;
+      const next = new Set(current);
+      const suffix = `:agent-chat:${identity}`;
+      for (const panelKey of current) {
+        if (panelKey.endsWith(suffix)) {
+          next.delete(panelKey);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }
+
+  function clearOptimisticUserByContent(identity: string, frame: ConsoleFrame): void {
+    if (frame.event !== "interaction_started" && frame.event !== "user_input") return;
+    const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    if (!content) return;
+    const clearedPanelKeys: string[] = [];
+    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+      if (!panelKey.endsWith(`:agent-chat:${identity}`)) continue;
+      if (optimistic.interactionId) continue;
+      if (!("text" in optimistic.entry) || typeof optimistic.entry.text !== "string") continue;
+      if (optimistic.entry.text.trim() !== content) continue;
+      optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
+      clearedPanelKeys.push(panelKey);
+    }
+    if (clearedPanelKeys.length > 0) {
+      setSendingPanels((current) => {
+        const next = new Set(current);
+        for (const panelKey of clearedPanelKeys) next.delete(panelKey);
+        return next;
+      });
     }
   }
 
@@ -352,6 +401,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       && frame.interactionId
     ) {
       clearOptimisticUserByInteraction(frame.interactionId);
+    } else {
+      clearOptimisticUserByContent(identity, frame);
     }
     return true;
   }
@@ -765,6 +816,39 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, dock.viewState.panels, forceRender]);
 
+  React.useEffect(() => {
+    const refreshOpenChatPanels = async () => {
+      const identities = new Set<string>();
+      for (const panel of dock.viewState.panels) {
+        const target = panel.target as MobKitDockTarget | null;
+        if (!target || target.kind !== "agent-chat") continue;
+        identities.add(target.identity || target.memberId);
+      }
+      if (identities.size === 0) return;
+      let changed = false;
+      for (const identity of identities) {
+        const log = getOrCreateLog(identity);
+        if (log.hasServerLog === false) continue;
+        try {
+          const { frames, available } = await queryIdentityTimeline(identity);
+          const before = log.events.length;
+          reconcileServerLog(identity, frames, available);
+          if (log.events.length !== before) changed = true;
+        } catch {
+          // Keep the panel usable; the next refresh will retry.
+        }
+      }
+      if (changed) forceRender();
+    };
+
+    const timer = window.setInterval(() => {
+      void refreshOpenChatPanels();
+    }, 2_000);
+    void refreshOpenChatPanels();
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseUrl, dock.viewState.panels, forceRender]);
+
   // =========================================================================
   // GLOBAL SSE EVENT STREAM — the core event loop
   // =========================================================================
@@ -828,6 +912,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           || frame.event === "message_delivery_failed"
         ) {
           identityBusyRef.current[identity] = false;
+          clearSendingPanelsForIdentity(identity);
           // busy → idle transition: drain the head item if the
           // user has stacked something while we were busy.
           if (wasBusy) maybeDrainHead(identity);

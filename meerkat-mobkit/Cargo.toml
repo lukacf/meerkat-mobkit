@@ -47,6 +47,7 @@ meerkat-core = "0.6.5"
 meerkat-client = "0.6.5"
 meerkat-contracts = "0.6.5"
 meerkat-mob = "0.6.5"
+meerkat-mob-mcp = "0.6.5"
 meerkat-mcp = "0.6.5"
 meerkat-models = "0.6.5"
 meerkat = { version = "0.6.5", features = ["comms", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }

@@ -53,6 +53,49 @@ function visibleNavKinds(): NavKind[] {
 }
 
 type Bucket = "Personal" | "Coordinators" | "Domains" | "Internal" | "Other";
+interface AgentRow {
+  agent: ConsoleAgent;
+  childOfHost: boolean;
+}
+
+function isWorkerish(a: ConsoleAgent): boolean {
+  const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
+  return (
+    haystack.includes("worker")
+    || haystack.includes("delegate")
+    || haystack.includes("helper")
+  );
+}
+
+function isCommanderLike(a: ConsoleAgent): boolean {
+  if (isWorkerish(a)) return false;
+  const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes("commander") || haystack.includes("coordinator");
+}
+
+function isSpawnedDelegateLike(a: ConsoleAgent, host: ConsoleAgent | null): boolean {
+  if (!isWorkerish(a)) return false;
+  const wiredTo = new Set((a.wired_to || []).map((peer) => peer.toLowerCase()));
+  const hostKeys = [host?.identity, host?.member_id, host?.agent_id]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => value.toLowerCase());
+  if (hostKeys.some((key) => wiredTo.has(key))) return true;
+
+  const role = (a.role || "").toLowerCase();
+  const group = (a.group || "").toLowerCase();
+  return (
+    !group
+    || group === role
+    || group === "worker"
+    || group === "delegate"
+    || group.includes("helper")
+  );
+}
+
+export const __sidebarTest = {
+  isCommanderLike,
+  isSpawnedDelegateLike,
+};
 
 function bucketOf(a: ConsoleAgent): Bucket {
   const g = (a.group || "").toLowerCase();
@@ -68,7 +111,7 @@ const SECTION_ORDER: Bucket[] = ["Personal", "Coordinators", "Domains", "Interna
 
 function deriveStateAttr(agent: ConsoleAgent): "active" | "degraded" | "retired" {
   const state = (agent.state || "").toLowerCase();
-  if (state === "retired" || state === "stopped") return "retired";
+  if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
   const degraded = agent.labels?.console_degraded === "true" ||
                    state.includes("degrade") ||
                    agent.lease_healthy === false;
@@ -125,11 +168,23 @@ export function Sidebar({
   }, [agents, q]);
 
   const grouped = React.useMemo(() => {
-    const g = new Map<Bucket, ConsoleAgent[]>();
+    const g = new Map<Bucket, AgentRow[]>();
+    const host = filtered.find(isCommanderLike);
     for (const a of filtered) {
-      const key = bucketOf(a);
+      const childOfHost = Boolean(host && host.member_id !== a.member_id && isSpawnedDelegateLike(a, host));
+      const key = childOfHost && host ? bucketOf(host) : bucketOf(a);
       if (!g.has(key)) g.set(key, []);
-      g.get(key)!.push(a);
+      g.get(key)!.push({ agent: a, childOfHost });
+    }
+    if (host) {
+      for (const rows of g.values()) {
+        rows.sort((a, b) => {
+          if (a.agent.member_id === host.member_id) return -1;
+          if (b.agent.member_id === host.member_id) return 1;
+          if (a.childOfHost !== b.childOfHost) return a.childOfHost ? -1 : 1;
+          return a.agent.label.localeCompare(b.agent.label);
+        });
+      }
     }
     return g;
   }, [filtered]);
@@ -193,15 +248,16 @@ export function Sidebar({
               <span className="sidebar__sec-spacer" />
               <span className="sidebar__sec-count">{list.length}</span>
             </div>
-            {list.map((agent) => {
+            {list.map(({ agent, childOfHost }) => {
               const stateAttr = deriveStateAttr(agent);
               const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
               const inbox = inboxCount(agent);
               return (
                 <div
                   key={agent.member_id}
-                  className={`agent ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
+                  className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
                   data-state={stateAttr}
+                  data-child-of-host={childOfHost ? "true" : undefined}
                   data-testid={`sidebar-agent:${agent.member_id}`}
                   onClick={() => onSelect(agent)}
                   role="button"

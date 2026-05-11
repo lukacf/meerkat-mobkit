@@ -1658,6 +1658,23 @@ svg[data-svg="fit"],
   background: var(--bg-elev-1);
   box-shadow: inset 2px 0 0 var(--accent);
 }
+.agent--child {
+  grid-template-columns: 18px 7px 1fr auto;
+  padding-left: 18px;
+}
+.agent--child::before {
+  content: "";
+  width: 10px;
+  height: 18px;
+  border-left: 1px solid var(--line-strong);
+  border-bottom: 1px solid var(--line-strong);
+  justify-self: end;
+  align-self: start;
+  opacity: 0.75;
+}
+.agent--child .agent__dot { grid-column: 2; }
+.agent--child .agent__body { grid-column: 3; }
+.agent--child .agent__meta { grid-column: 4; }
 .agent__dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--ink-faint);

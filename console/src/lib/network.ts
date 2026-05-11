@@ -89,6 +89,9 @@ function timelineFrameToConsoleFrame(raw: unknown): ConsoleFrame {
   const record = raw as Record<string, unknown>;
   const cursor = typeof record.cursor === "string" ? record.cursor : undefined;
   const payload = "payload" in record ? record.payload : record;
+  const source = record.source && typeof record.source === "object"
+    ? record.source as Record<string, unknown>
+    : null;
   if (
     record.kind === "frame_updated" &&
     payload &&
@@ -107,6 +110,7 @@ function timelineFrameToConsoleFrame(raw: unknown): ConsoleFrame {
       runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : updated.runtimeKey,
       sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
       status: typeof record.status === "string" ? record.status : updated.status,
+      sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
       frameVersion:
         typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
       updatedAtMs:
@@ -126,6 +130,7 @@ function timelineFrameToConsoleFrame(raw: unknown): ConsoleFrame {
     runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : undefined,
     sessionId: typeof record.session_id === "string" ? record.session_id : undefined,
     status: typeof record.status === "string" ? record.status : undefined,
+    sourceKind: source && typeof source.kind === "string" ? source.kind : undefined,
     frameVersion: typeof record.frame_version === "number" ? record.frame_version : undefined,
     updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : undefined,
     turnId: typeof record.turn_id === "string" ? record.turn_id : undefined,

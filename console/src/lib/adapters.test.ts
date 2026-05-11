@@ -893,6 +893,78 @@ test("mapFramesToTimelineEntries renders aggregate user_input frames as user mes
   assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Run a status sweep.");
 });
 
+test("mapFramesToTimelineEntries renders session-history assistant text_complete frames", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "full-tool-worker",
+      member_id: "full-tool-worker",
+      label: "full-tool-worker",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "history-assistant",
+        event: "text_complete",
+        identity: "full-tool-worker",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "text",
+                data: { text: "Ready and standing by. Readiness reported." },
+              },
+            ],
+          },
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "full-tool-worker");
+  const renderedText = entries[0] && "text" in entries[0]
+    ? entries[0].text
+    : entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      : "";
+  assert.equal(
+    renderedText,
+    "Ready and standing by. Readiness reported.",
+  );
+});
+
+test("mapFramesToTimelineEntries deduplicates paired user_input and interaction_started frames", () => {
+  const entries = mapFramesToTimelineEntries(
+    null,
+    [
+      {
+        id: "console-frame-1",
+        event: "user_input",
+        interactionId: "turn-1",
+        timestampMs: 10,
+        data: { content: "Retire rollback-risk-worker please" },
+      },
+      {
+        id: "evt-1",
+        event: "interaction_started",
+        interactionId: "turn-1",
+        timestampMs: 10,
+        data: { content: "Retire rollback-risk-worker please" },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(
+    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    "Retire rollback-risk-worker please",
+  );
+});
+
 test("mapFramesToTimelineEntries renders user image content blocks inline", () => {
   const entries = mapFramesToTimelineEntries(
     null,

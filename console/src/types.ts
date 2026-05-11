@@ -28,6 +28,7 @@ export interface ConsoleFrame {
   runtimeKey?: string;
   sessionId?: string;
   status?: string;
+  sourceKind?: string;
   frameVersion?: number;
   updatedAtMs?: number;
   turnId?: string;

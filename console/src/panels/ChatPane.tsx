@@ -442,7 +442,10 @@ export function ChatPane({
         last.blocks = [...lastBlocks, ...mBlocks];
         last.id = `${last.id}+${m.id}`;
       } else {
-        if (last && m.kind === "agent" && last.kind === "agent" && last.who === m.who) {
+        const canDedupeAdjacent =
+          (m.kind === "user" && last?.kind === "user")
+          || (m.kind === "agent" && last?.kind === "agent" && last.who === m.who);
+        if (last && canDedupeAdjacent) {
           const lastSignature = textSignatureForMsg(last);
           const nextSignature = textSignatureForMsg(m);
           if (lastSignature && lastSignature === nextSignature) {
@@ -583,6 +586,7 @@ export function ChatPane({
     try {
       const sent = await onSend(files);
       if (sent) {
+        onDraftChange("");
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);

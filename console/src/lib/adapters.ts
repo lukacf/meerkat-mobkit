@@ -977,6 +977,25 @@ function renderHistoryUserEntry(
   };
 }
 
+function userEntryTextSignature(entry: ConversationTimelineEntry): string {
+  if (entry.kind !== "message") return "";
+  if ("text" in entry && typeof entry.text === "string") {
+    return entry.text.replace(/\s+/g, " ").trim();
+  }
+  if ("blocks" in entry && Array.isArray(entry.blocks)) {
+    return JSON.stringify(entry.blocks);
+  }
+  return "";
+}
+
+function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntry): string {
+  const interactionId = frame.interactionId?.trim();
+  if (interactionId) return `interaction:${interactionId}`;
+  const signature = userEntryTextSignature(entry);
+  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
+  return signature ? `content:${timestamp}:${signature}` : "";
+}
+
 function renderRunStartedPromptEntries(
   frame: ConsoleFrame,
   entryId: string,
@@ -1452,6 +1471,32 @@ function historyMessageText(message: unknown): { role: "user" | "assistant" | "s
   }
 }
 
+function renderSessionHistoryTextCompleteEntry(
+  agent: ConsoleAgent | null,
+  frame: ConsoleFrame,
+  entryId: string,
+): ConversationTimelineEntry | null {
+  if (frame.sourceKind !== "session_history") return null;
+  const record = frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : {};
+  const parsed = historyMessageText(record.message);
+  const text = parsed.text.trim();
+  if (parsed.role !== "assistant" || !text) return null;
+  if (/^I have acknowledged the addition of the following peers:/i.test(text)) {
+    return null;
+  }
+  const blocks = parseConversationRichBlocks(text);
+  return {
+    kind: "message",
+    id: entryId,
+    identity: agentIdentity(agent),
+    variant: blocks.length > 0 ? "rich" : "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...(blocks.length > 0 ? { blocks } : { text }),
+  };
+}
+
 export function mapSessionHistoryToTimelineEntries(
   historyPage: unknown,
   agent: ConsoleAgent | null,
@@ -1605,6 +1650,7 @@ export function mapFramesToTimelineEntries(
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = new Set<string>();
   const emittedImages = new Set<string>();
+  const emittedUserInputs = new Set<string>();
 
   let pendingText = "";
   let pendingId = "";
@@ -1716,6 +1762,11 @@ export function mapFramesToTimelineEntries(
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
+        const userKey = userEntryDedupeKey(frame, userEntry);
+        if (userKey && emittedUserInputs.has(userKey)) {
+          continue;
+        }
+        if (userKey) emittedUserInputs.add(userKey);
         entries.push(userEntry);
       }
       continue;
@@ -1735,6 +1786,11 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "text_complete") {
+      const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId);
+      if (historyEntry) {
+        flushPendingText();
+        entries.push(historyEntry);
+      }
       continue;
     }
 
