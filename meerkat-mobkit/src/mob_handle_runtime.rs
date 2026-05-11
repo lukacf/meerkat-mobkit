@@ -229,6 +229,7 @@ fn no_op_pre_build_hook() -> PreBuildHook {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeTurnTrace {
     pub(crate) session_id: String,
@@ -336,6 +337,7 @@ fn record_runtime_turn_trace(trace: RuntimeTurnTrace) {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 #[allow(clippy::expect_used)]
 pub(crate) fn take_runtime_turn_traces() -> Vec<RuntimeTurnTrace> {
     std::mem::take(

@@ -8,7 +8,7 @@ import type {
 } from "@console-core";
 import type { ConsoleAgent } from "../types";
 import type { MobKitDockTarget } from "../lib/adapters";
-import { buildControlTarget, buildDockTarget, buildInspectTarget } from "../lib/adapters";
+import { buildControlTarget, buildDockTarget } from "../lib/adapters";
 import type { NavKind } from "./Sidebar";
 
 interface MobKitDockProps {
@@ -315,10 +315,9 @@ function PaneMenu({ agents, visibleControls, onClose, onPick }: PaneMenuProps): 
   const controls = ([
     ["topology", "Topology"],
     ["timeline", "Today"],
-    ["gating", "Gating"],
+    ["gating", "Approvals"],
     ["roster", "Roster"],
     ["routing", "Routing"],
-    ["gates", "Gates"],
     ["logs", "Logs"],
     ["health", "Health"],
   ] as const).filter(([kind]) => !visibleControls || visibleControls.includes(kind));

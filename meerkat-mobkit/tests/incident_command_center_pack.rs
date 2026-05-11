@@ -21,13 +21,15 @@ use axum::http::{Request, StatusCode};
 use futures::{Stream, stream};
 use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::StopReason;
-use meerkat_mobkit::example_support::incident_command_center::{
-    build_runtime_bundle_with_default_client, scenario_path,
-};
 use serde_json::{Value, json};
 use std::pin::Pin;
 use std::sync::Arc;
 use tower::ServiceExt;
+
+#[path = "../../examples/001-incident-command-center-pack/incident_command_center.rs"]
+mod incident_command_center;
+
+use incident_command_center::{build_runtime_bundle_with_default_client, scenario_path};
 
 struct IncidentPackTestClient;
 

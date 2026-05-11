@@ -1080,6 +1080,9 @@
 .cc-tool-call__header:hover {
   background: var(--_cc-surface-hover, rgba(255,255,255,0.06));
 }
+.cc-tool-call__header--incoming-peer {
+  align-items: flex-start;
+}
 .cc-tool-call__chevron {
   font-size: 10px;
   width: 12px;
@@ -1129,6 +1132,18 @@
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+}
+.cc-tool-call__peer-summary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.cc-tool-call__peer-summary .cc-tool-call__preview {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 /* Generic same-name tool group */

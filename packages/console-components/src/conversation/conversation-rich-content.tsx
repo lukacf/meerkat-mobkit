@@ -309,16 +309,25 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
     return (
       <section className={clsx("cc-tool-call cc-tool-call--peer", block.peerIncoming && "cc-tool-call--incoming", statusClass)}>
         <button
-          className="cc-tool-call__header"
+          className={clsx("cc-tool-call__header", block.peerIncoming && "cc-tool-call__header--incoming-peer")}
           type="button"
           onClick={() => setExpanded((prev) => !prev)}
           aria-expanded={expanded}
         >
           <span className="cc-tool-call__chevron">{expanded ? "▾" : "▸"}</span>
           <span className="cc-tool-call__icon">{arrow}</span>
-          <span className="cc-tool-call__name">{block.peerIncoming ? `Received from ${target}` : target}</span>
-          {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
-          {content && <span className="cc-tool-call__preview">{content}</span>}
+          {block.peerIncoming ? (
+            <span className="cc-tool-call__peer-summary">
+              <span className="cc-tool-call__name">Received from {target}</span>
+              {content && <span className="cc-tool-call__preview">{content}</span>}
+            </span>
+          ) : (
+            <>
+              <span className="cc-tool-call__name">{target}</span>
+              {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
+              {content && <span className="cc-tool-call__preview">{content}</span>}
+            </>
+          )}
           <span className="cc-tool-call__status">{statusIcon}</span>
           <CopyBtn text={toolBlockCopyText(block)} />
         </button>

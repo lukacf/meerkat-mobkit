@@ -1,7 +1,7 @@
 import React from "react";
 import type { ConsoleAgent, ConsoleFrame } from "../types";
 
-export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "gates" | "logs" | "health";
+export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health";
 
 interface SidebarProps {
   agents: ConsoleAgent[];
@@ -10,7 +10,6 @@ interface SidebarProps {
   collapsed: boolean;
   visibleControls?: NavKind[];
   onSelect: (agent: ConsoleAgent) => void;
-  onInspect: (agent: ConsoleAgent) => void;
   onOpenControl: (kind: NavKind) => void;
 }
 
@@ -22,14 +21,13 @@ interface SidebarProps {
 ///
 /// Embedders can drop the query string into the iframe URL without
 /// touching the React tree. Reads once on mount; reload to change.
-const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"];
+const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "logs", "health"];
 const NAV_LABEL: Record<NavKind, string> = {
   topology: "Topology",
   timeline: "Today",
-  gating: "Gating",
+  gating: "Approvals",
   roster: "Roster",
   routing: "Routing",
-  gates: "Gates",
   logs: "Logs",
   health: "Health",
 };
@@ -104,7 +102,6 @@ export function Sidebar({
   collapsed,
   visibleControls,
   onSelect,
-  onInspect,
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
@@ -151,9 +148,15 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" data-testid="sidebar-root">
+      <div className="sidebar__mast">
+        <div>
+          <div className="sidebar__mast-title">Roster</div>
+          <div className="sidebar__mast-sub">{agents.length} agents</div>
+        </div>
+      </div>
       <div className="sidebar__search">
         <input
-          placeholder="Search agents, profiles, ids…"
+          placeholder="Search roster..."
           value={q}
           onChange={(e) => setQ(e.target.value)}
           data-testid="sidebar-search"
@@ -161,10 +164,11 @@ export function Sidebar({
       </div>
 
       {navKinds.length > 0 && (
-        <div className="sidebar__section sidebar__section--nav">
-          <div className="sidebar__sec-head">
-            <span className="sidebar__sec-label">Views</span>
+          <div className="sidebar__section sidebar__section--nav">
+            <div className="sidebar__sec-head">
+            <span className="sidebar__sec-label">Workbench</span>
           </div>
+          <div className="sidebar__navgrid">
           {navKinds.map((kind) => (
             <button
               key={kind}
@@ -175,6 +179,7 @@ export function Sidebar({
               {NAV_LABEL[kind]}
             </button>
           ))}
+          </div>
         </div>
       )}
 
@@ -199,7 +204,6 @@ export function Sidebar({
                   data-state={stateAttr}
                   data-testid={`sidebar-agent:${agent.member_id}`}
                   onClick={() => onSelect(agent)}
-                  onContextMenu={(e) => { e.preventDefault(); onInspect(agent); }}
                   role="button"
                   tabIndex={0}
                 >

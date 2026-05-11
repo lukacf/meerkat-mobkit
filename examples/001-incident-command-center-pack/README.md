@@ -10,6 +10,13 @@ This pack uses:
 - stock routing, delivery, inspect, lifecycle, topology, and gating methods
 - a live provider-backed MobKit runtime with synthetic incident data and deterministic tool fixtures
 
+## Source layout
+
+- `scenario.yaml` — roster, links, seeded routes, gating, and smoke expectations
+- `incident_command_center.rs` — scenario loader, runtime bundle, profile prompts, and tool fixtures
+- `server.rs` — runnable console server entrypoint exposed as Cargo example `incident_command_center`
+- `browser_smoke.cjs`, `ts_smoke.ts`, `python_smoke.py` — pack smoke tests
+
 ## What it proves
 
 - identity-native chat over `mobkit/interact` + `/console/identity/stream`

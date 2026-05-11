@@ -3,6 +3,9 @@ import type {
   ConversationTimelineEntry,
   ConversationRichBlock,
 } from "@console-core";
+import {
+  conversationRichBlocksToText,
+} from "@console-core";
 import { ConversationRichContent } from "@console-components";
 import type { ConsoleAgent } from "../types";
 import {
@@ -50,9 +53,12 @@ interface Msg {
   id: string;
   kind: MsgKind;
   time: string;
+  createdAt?: string;
   who?: string;
   text?: string;
   blocks?: ConversationRichBlock[];
+  workedFor?: string;
+  workedForCopyText?: string;
 }
 
 function phaseLabel(_phase: "waiting" | "tool-executing" | "generating"): string {
@@ -70,6 +76,60 @@ function formatTime(iso?: string): string {
   const mm = String(d.getMinutes()).padStart(2, "0");
   const ss = String(d.getSeconds()).padStart(2, "0");
   return `${hh}:${mm}:${ss}`;
+}
+
+function parseTimeMs(iso?: string): number | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function formatWorkedDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  if (totalSeconds < 1) return "under 1s";
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (totalMinutes < 60) {
+    return seconds ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
+function msgCopyText(message: Msg): string {
+  if (message.text) return message.text.trim();
+  return conversationRichBlocksToText(message.blocks).trim();
+}
+
+function msgHasTextualPayload(message: Msg): boolean {
+  if (message.text?.trim()) return true;
+  return Boolean(message.blocks?.some((block) => (
+    block.type === "paragraph"
+    || block.type === "heading"
+    || block.type === "divider"
+    || block.type === "code"
+    || block.type === "command"
+  )));
+}
+
+function transcriptCopyText(messages: Msg[]): string {
+  return messages
+    .map((message) => {
+      const text = msgCopyText(message);
+      if (!text) return "";
+      const label = message.kind === "user"
+        ? "You"
+        : message.kind === "agent"
+          ? message.who || "Agent"
+          : message.kind.toUpperCase();
+      const time = message.time ? `[${message.time}] ` : "";
+      const worked = message.workedFor ? `\nWorked for ${message.workedFor}` : "";
+      return `${time}${label}: ${text}${worked}`.trim();
+    })
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /// Classify a single rich block into the row "kind" used by the
@@ -91,6 +151,7 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
       id: entry.id,
       kind: "origin",
       time: formatTime(entry.createdAt),
+      createdAt: entry.createdAt,
       text: `${entry.title} (+${entry.plus}/-${entry.minus})`,
     }];
   }
@@ -100,6 +161,7 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
       id: entry.id,
       kind: "origin",
       time: formatTime(entry.createdAt),
+      createdAt: entry.createdAt,
       text: entry.text || "",
     }];
   }
@@ -124,6 +186,7 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
         id: `${entry.id}:${groupStart}-${endIndex - 1}`,
         kind: groupKind,
         time,
+        createdAt: entry.createdAt,
         who: groupKind === "agent" ? label : undefined,
         blocks: groupBlocks,
       });
@@ -147,6 +210,7 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
           id: entry.id,
           kind: isUser ? "user" : "agent",
           time,
+          createdAt: entry.createdAt,
           who: isUser ? undefined : label,
           text: "",
         }];
@@ -156,6 +220,7 @@ function flattenEntry(entry: ConversationTimelineEntry): Msg[] {
     id: entry.id,
     kind: isUser ? "user" : "agent",
     time,
+    createdAt: entry.createdAt,
     who: isUser ? undefined : label,
     text: entry.text || "",
   }];
@@ -268,6 +333,48 @@ async function fileFromConsoleBlobUrl(url: string): Promise<File | null> {
   }
 }
 
+function CopyInlineButton({
+  text,
+  label,
+  className = "",
+}: {
+  text: string;
+  label: string;
+  className?: string;
+}) {
+  const [copied, setCopied] = React.useState(false);
+  const disabled = !text.trim();
+
+  async function copy() {
+    if (disabled) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Clipboard can be unavailable in some browser contexts; no-op keeps
+      // the hover affordance from breaking the conversation.
+    }
+  }
+
+  return (
+    <button
+      aria-label={copied ? "Copied" : label}
+      className={`msg__copy ${className}`}
+      data-copied={copied ? "true" : undefined}
+      disabled={disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        void copy();
+      }}
+      title={copied ? "Copied" : label}
+      type="button"
+    >
+      {copied ? "✓" : "⎘"}
+    </button>
+  );
+}
+
 export function ChatPane({
   agent,
   agentLabel,
@@ -345,8 +452,29 @@ export function ChatPane({
         merged.push({ ...m });
       }
     }
-    return merged;
+    let pendingUserStartedAt: number | null = null;
+    return merged.map((message) => {
+      if (message.kind === "user") {
+        pendingUserStartedAt = parseTimeMs(message.createdAt);
+        return message;
+      }
+      if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
+        return message;
+      }
+      const finishedAt = parseTimeMs(message.createdAt);
+      if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
+        return message;
+      }
+      const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
+      pendingUserStartedAt = null;
+      return {
+        ...message,
+        workedFor,
+        workedForCopyText: `Worked for ${workedFor}`,
+      };
+    });
   }, [entries]);
+  const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
   const canAttachImages = agent?.model_capabilities?.image_input === true;
@@ -475,7 +603,7 @@ export function ChatPane({
           </div>
         </div>
         <div className="conv__actions">
-          <button className="conv__action" onClick={onInspect} data-testid="conv-action:inspect">Inspect</button>
+          <button className="conv__action" onClick={onInspect} data-testid="conv-action:details">Details</button>
           {agent?.affordances?.can_respawn && onRespawn ? (
             <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn">Respawn</button>
           ) : null}
@@ -493,6 +621,11 @@ export function ChatPane({
         }}
         ref={bodyRef}
       >
+        <CopyInlineButton
+          className="msg__copy--transcript"
+          label="Copy transcript"
+          text={transcriptText}
+        />
         {messages.length === 0 && (
           <div className="msg msg--origin">
             <div className="msg__time" />
@@ -503,12 +636,23 @@ export function ChatPane({
           <div className={`msg msg--${m.kind}`} key={m.id}>
             <div className="msg__time">{m.time}</div>
             <div className="msg__bubble">
-              {m.kind === "user" && m.who && <span className="msg__who"><b>{m.who}</b></span>}
-              {m.kind === "agent" && m.who && <span className="msg__who"><b>{m.who}</b></span>}
+              {(m.kind === "user" || m.kind === "agent") && (
+                <CopyInlineButton label={`Copy ${m.kind === "user" ? "message" : "turn"}`} text={msgCopyText(m)} />
+              )}
               {m.blocks && m.blocks.length > 0 ? (
                 <ConversationRichContent blocks={m.blocks} />
               ) : (
                 m.text && <span className="msg__text">{m.text}</span>
+              )}
+              {m.workedFor && (
+                <div className="msg__worked">
+                  <span>Worked for {m.workedFor}</span>
+                  <CopyInlineButton
+                    className="msg__copy--inline"
+                    label="Copy work time"
+                    text={m.workedForCopyText || `Worked for ${m.workedFor}`}
+                  />
+                </div>
               )}
             </div>
           </div>

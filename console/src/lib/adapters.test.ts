@@ -468,8 +468,15 @@ test("mapSessionHistoryToTimelineEntries preserves session ordering while turnin
 
   assert.equal(entries.length, 3);
   assert.equal(entries[0]?.identity.label, "You");
-  assert.equal(entries[1]?.identity.label, "System");
-  assert.equal("text" in (entries[1] || {}) ? entries[1]?.text : "", "Peer message: Please summarize the timeline.");
+  assert.equal(entries[1]?.identity.id, "comms");
+  assert.equal(
+    entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
+      ? entries[1].blocks[0]?.type === "tool-call"
+        ? entries[1].blocks[0].peerIntent
+        : ""
+      : "",
+    "Please summarize the timeline.",
+  );
   assert.equal(entries[2]?.identity.label, "Scribe");
   assert.equal(
     entries[2] && "blocks" in entries[2] && Array.isArray(entries[2].blocks)
@@ -538,9 +545,54 @@ test("mapSessionHistoryToTimelineEntries anchors receiver panes on recent peer a
   );
 
   assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.identity.label, "System");
-  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Peer request: request_summary");
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "tool-call"
+        ? entries[0].blocks[0].peerIntent
+        : ""
+      : "",
+    "request_summary",
+  );
   assert.equal(entries[1]?.identity.label, "Scribe");
+});
+
+test("mapSessionHistoryToTimelineEntries hides checksum_token on inbound peer requests", () => {
+  const entries = mapSessionHistoryToTimelineEntries(
+    {
+      session_id: "session-1",
+      message_count: 2,
+      offset: 0,
+      has_more: false,
+      messages: [
+        {
+          role: "user",
+          content: "[COMMS REQUEST from incident-command-center/incident_commander/incident-commander]\nIntent: checksum_token\nParams: {\n  \"subject\": \"Reply exactly: peer smoke ok\"\n}",
+        },
+        {
+          role: "block_assistant",
+          blocks: [{ block_type: "text", data: { text: "Sent the exact reply back." } }],
+          stop_reason: "end_turn",
+        },
+      ],
+    },
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(block?.type, "tool-call");
+  if (block?.type === "tool-call") {
+    assert.equal(block.peerIntent, undefined);
+    assert.equal(block.peerBody, "Reply exactly: peer smoke ok");
+  }
 });
 
 test("mapSessionHistoryToTimelineEntries strips rpc transport prefix from operator prompts", () => {
@@ -593,7 +645,7 @@ test("mapSessionHistoryToTimelineEntries extracts embedded rpc prompts from mixe
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.label, "You");
   assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Ask scribe for a concise update and tell me the answer.");
-  assert.equal(entries[1]?.identity.label, "System");
+  assert.equal(entries[1]?.identity.id, "comms");
 });
 
 test("sortConversationTimelineEntries keeps optimistic user messages after older assistant replies", () => {
@@ -707,6 +759,103 @@ test("mapFramesToTimelineEntries renders tool turns without raw tool lifecycle s
   );
 });
 
+test("mapFramesToTimelineEntries hides technical peer request intents and previews human params", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-peers-done",
+        event: "tool_execution_completed",
+        data: {
+          id: "peers-1",
+          name: "peers",
+          result: JSON.stringify({
+            peers: [{ peer_id: "peer-scribe-1", name: "incident-command-center/scribe/scribe" }],
+          }),
+        },
+      },
+      {
+        id: "evt-request",
+        event: "tool_call_requested",
+        data: {
+          id: "call-1",
+          name: "send_request",
+          args: {
+            peer_id: "peer-scribe-1",
+            intent: "checksum_token",
+            params: { subject: "Reply exactly: peer smoke ok" },
+          },
+        },
+      },
+      {
+        id: "evt-request-done",
+        event: "tool_execution_completed",
+        data: { id: "call-1", name: "send_request", result: "{\"status\":\"sent\"}" },
+      },
+    ],
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(block?.type, "tool-call");
+  if (block?.type === "tool-call") {
+    assert.equal(block.peerTarget, "scribe");
+    assert.equal(block.peerIntent, undefined);
+    assert.equal(block.peerBody, "Reply exactly: peer smoke ok");
+  }
+});
+
+test("mapFramesToTimelineEntries previews checksum peer responses by token instead of raw JSON", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-response",
+        event: "tool_call_requested",
+        data: {
+          id: "call-1",
+          name: "send_response",
+          args: {
+            peer_id: "peer-commander-1",
+            display_name: "incident-command-center/commander/incident-commander",
+            in_reply_to: "req-1",
+            result: {
+              request_intent: "checksum_token",
+              request_subject: "peer smoke ok",
+              token: "peer smoke ok",
+            },
+          },
+        },
+      },
+      {
+        id: "evt-response-done",
+        event: "tool_execution_completed",
+        data: { id: "call-1", name: "send_response", result: "{\"status\":\"sent\"}" },
+      },
+    ],
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(block?.type, "tool-call");
+  if (block?.type === "tool-call") {
+    assert.equal(block.peerTarget, "incident-commander");
+    assert.equal(block.peerBody, "peer smoke ok");
+  }
+});
+
 test("mapFramesToTimelineEntries can render historical interaction_started frames as user messages", () => {
   const entries = mapFramesToTimelineEntries(
     null,
@@ -816,6 +965,135 @@ test("mapFramesToTimelineEntries renders assistant_image frames with API blob UR
   assert.equal(block?.src, "http://127.0.0.1:7000/blobs/sha256%3Aabc%2Fdef");
 });
 
+test("mapFramesToTimelineEntries renders assistant_image_appended frames without raw metadata", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-image-appended",
+        event: "assistant_image_appended",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          image: {
+            blob_ref: { blob_id: "sha256:generated", media_type: "image/png" },
+            height: 1024,
+            image_id: "image-1",
+            media_type: "image/png",
+            meta: { response_id: "resp_123" },
+            width: 1024,
+          },
+          source_event_type: "assistant_image_appended",
+          type: "assistant_image_appended",
+        },
+      },
+    ],
+    { blobBaseUrl: "http://127.0.0.1:7000/" },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "image");
+  assert.equal(block?.src, "http://127.0.0.1:7000/blobs/sha256%3Agenerated");
+});
+
+test("mapFramesToTimelineEntries deduplicates assistant image and appended image events for the same blob", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-image",
+        event: "assistant_image",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          blob_id: "sha256:generated",
+          media_type: "image/png",
+          width: 1024,
+          height: 1024,
+        },
+      },
+      {
+        id: "evt-image-appended",
+        event: "assistant_image_appended",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          image: {
+            blob_ref: { blob_id: "sha256:generated", media_type: "image/png" },
+            height: 1024,
+            image_id: "image-1",
+            media_type: "image/png",
+            width: 1024,
+          },
+        },
+      },
+    ],
+    { blobBaseUrl: "http://127.0.0.1:7000/" },
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "image");
+  assert.equal(block?.src, "http://127.0.0.1:7000/blobs/sha256%3Agenerated");
+});
+
+test("mapFramesToTimelineEntries suppresses spawn scaffold interaction prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-spawn",
+        event: "interaction_started",
+        interactionId: "spawn-turn",
+        timestampMs: 10,
+        data: {
+          content: "You have been spawned as 'incident-commander' (role: commander) in mob 'incident-command-center'.",
+        },
+      },
+      {
+        id: "evt-delta",
+        event: "text_delta",
+        interactionId: "spawn-turn",
+        timestampMs: 20,
+        data: { delta: "Acknowledged." },
+      },
+      {
+        id: "evt-complete",
+        event: "interaction_complete",
+        interactionId: "spawn-turn",
+        timestampMs: 30,
+        data: { result: "Acknowledged." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "assistant");
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "paragraph"
+        ? entries[0].blocks[0].text
+        : ""
+      : "",
+    "Acknowledged.",
+  );
+});
+
 test("mapFramesToTimelineEntries surfaces inbound comms requests from run_started prompts", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -844,8 +1122,99 @@ test("mapFramesToTimelineEntries surfaces inbound comms requests from run_starte
 
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.kind, "message");
-  assert.equal(entries[0]?.identity.id, "system");
-  assert.match(entries[0]?.text || "", /Peer request:/);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "tool-call"
+        ? entries[0].blocks[0].peerIncoming
+        : false
+      : false,
+    true,
+  );
+  assert.equal(entries[1]?.identity.id, "scribe");
+});
+
+test("mapFramesToTimelineEntries surfaces inbound one-line peer messages while rendering chat history", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-1",
+        event: "run_started",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          prompt: "[COMMS MESSAGE from incident-command-center/commander/incident-commander] Please describe what you see in the attached image.",
+        },
+      },
+      {
+        id: "evt-2",
+        event: "interaction_complete",
+        timestampMs: Date.parse("2026-04-06T23:00:02.000Z"),
+        data: { result: "The image shows a winged fox commander." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "tool-call"
+        ? entries[0].blocks[0].peerIntent
+        : ""
+      : "",
+    "Please describe what you see in the attached image.",
+  );
+  assert.equal(entries[1]?.identity.id, "scribe");
+});
+
+test("mapFramesToTimelineEntries surfaces inbound peer messages from content-block prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "scribe",
+      member_id: "scribe",
+      label: "Scribe",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-1",
+        event: "run_started",
+        timestampMs: Date.parse("2026-04-06T23:00:00.000Z"),
+        data: {
+          prompt: [
+            { type: "text", text: "[COMMS MESSAGE from incident-command-center/commander/incident-commander]" },
+            { type: "text", text: "Please describe this generated self-portrait image." },
+            { type: "image", data: "base64-image-data", media_type: "image/png" },
+          ],
+        },
+      },
+      {
+        id: "evt-2",
+        event: "interaction_complete",
+        timestampMs: Date.parse("2026-04-06T23:00:02.000Z"),
+        data: { result: "The image shows a winged fox commander." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "tool-call"
+        ? entries[0].blocks[0].peerIntent
+        : ""
+      : "",
+    "Please describe this generated self-portrait image.",
+  );
   assert.equal(entries[1]?.identity.id, "scribe");
 });
 

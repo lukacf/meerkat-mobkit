@@ -10,7 +10,6 @@ pub mod console_aggregator;
 pub mod console_contracts;
 pub mod contact_directory;
 pub mod decisions;
-pub mod example_support;
 pub mod governance;
 pub mod http_auth;
 pub mod http_console;

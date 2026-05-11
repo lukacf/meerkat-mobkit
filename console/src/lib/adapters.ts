@@ -120,7 +120,7 @@ export function buildInspectTarget(agent: ConsoleAgent): IdentityInspectTarget {
     kind: "identity-inspect",
     identity: agent.identity || agent.member_id,
     memberId: agent.member_id,
-    title: `${agent.label} Inspect`,
+    title: `${agent.label} Details`,
     subtitle: agent.identity || agent.member_id,
     iconName: "i-terminal",
   };
@@ -135,7 +135,7 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
     case "routing":
       return { id: "routing", kind, title: "Routing", subtitle: "Routes and delivery history", iconName: "i-swap" };
     case "gating":
-      return { id: "gating", kind, title: "Gating", subtitle: "Pending approvals and audit", iconName: "i-bolt" };
+      return { id: "gating", kind, title: "Approvals", subtitle: "Pending approvals, audit, and policies", iconName: "i-bolt" };
     case "topology":
       return { id: "topology", kind, title: "Topology", subtitle: "Identity connectivity", iconName: "i-team" };
     case "health":
@@ -145,7 +145,7 @@ export function buildControlTarget(kind: ControlTargetKind): MobKitDockTarget {
     case "roster":
       return { id: "roster", kind, title: "Roster", subtitle: "All agents", iconName: "i-team" };
     case "gates":
-      return { id: "gates", kind, title: "Gates", subtitle: "Approval policies", iconName: "i-bolt" };
+      return { id: "gating", kind: "gating", title: "Approvals", subtitle: "Pending approvals, audit, and policies", iconName: "i-bolt" };
     case "logs":
       return { id: "logs", kind, title: "Logs", subtitle: "Event stream", iconName: "i-terminal" };
     default:
@@ -230,7 +230,7 @@ export function buildSidebarViewState(args: {
         actions: [
           {
             id: "inspect_identity",
-            label: "Inspect identity",
+            label: "Open roster details",
             iconName: "i-terminal",
           },
           {
@@ -356,6 +356,7 @@ function eventSortRank(event: string | undefined): number {
     case "tool_execution_completed":
       return 30;
     case "assistant_image":
+    case "assistant_image_appended":
       return 35;
     case "text_delta":
       return 40;
@@ -488,6 +489,112 @@ function parseToolArguments(frame: ConsoleFrame): string {
   return JSON.stringify(record || {});
 }
 
+const TECHNICAL_PEER_INTENTS = new Set(["checksum_token"]);
+const PEER_PAYLOAD_TEXT_KEYS = [
+  "message",
+  "body",
+  "text",
+  "summary",
+  "reply",
+  "content",
+  "subject",
+  "question",
+  "prompt",
+  "description",
+  "request",
+  "request_subject",
+  "token",
+  "status_line",
+];
+
+function isTechnicalPeerIntent(intent: string | undefined): boolean {
+  return Boolean(intent && TECHNICAL_PEER_INTENTS.has(intent.trim()));
+}
+
+function displayPeerIntent(intent: string | undefined): string | undefined {
+  if (!intent) return undefined;
+  const trimmed = intent.trim();
+  if (!trimmed || isTechnicalPeerIntent(trimmed)) return undefined;
+  return trimmed;
+}
+
+function parseJsonPayload(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function summarizePeerPayload(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (
+      (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+      (trimmed.startsWith("[") && trimmed.endsWith("]")) ||
+      (trimmed.startsWith("\"") && trimmed.endsWith("\""))
+    ) {
+      const parsed = parseJsonPayload(trimmed);
+      if (parsed !== null) {
+        return summarizePeerPayload(parsed) || trimmed;
+      }
+    }
+    return trimmed.replace(/^["']|["']$/g, "");
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((item) => summarizePeerPayload(item))
+      .filter((item): item is string => Boolean(item));
+    return parts.length ? parts.join(" ") : undefined;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of PEER_PAYLOAD_TEXT_KEYS) {
+      const summary = summarizePeerPayload(record[key]);
+      if (summary) return summary;
+    }
+    return JSON.stringify(record);
+  }
+  return undefined;
+}
+
+function extractLabeledCommsValue(lines: string[], label: string): string | undefined {
+  const labelPattern = new RegExp(`\\b${label}:\\s*(.*)$`);
+  const startIndex = lines.findIndex((line) => labelPattern.test(line));
+  if (startIndex < 0) return undefined;
+  const match = lines[startIndex]?.match(labelPattern);
+  const first = match?.[1]?.trim() || "";
+  if (!first) return undefined;
+
+  const chunks = [first];
+  const startsJson = first.startsWith("{") || first.startsWith("[");
+  if (!startsJson || parseJsonPayload(first) !== null) {
+    return first;
+  }
+
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    const next = lines[i].trim();
+    if (/^(Intent|Body|Params|Request ID|Status|Result):\s*/.test(next)) break;
+    chunks.push(next);
+    const candidate = chunks.join("\n").trim();
+    if (parseJsonPayload(candidate) !== null) return candidate;
+  }
+
+  return chunks.join("\n").trim();
+}
+
+function extractPeerBodyFromArgs(argsRecord: Record<string, unknown> | null): string | undefined {
+  if (!argsRecord) return undefined;
+  const directBody = summarizePeerPayload(argsRecord.body);
+  if (directBody) return directBody;
+  const paramsBody = summarizePeerPayload(argsRecord.params);
+  if (paramsBody) return paramsBody;
+  const resultBody = summarizePeerPayload(argsRecord.result);
+  if (resultBody) return resultBody;
+  return undefined;
+}
+
 function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
   const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
   const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
@@ -608,16 +715,11 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
               : typeof argsRecord?.to === "string"
                 ? lastSegment(argsRecord.to)
                 : undefined;
-      const peerIntent = isPeerTool && typeof argsRecord?.intent === "string"
+      const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string"
         ? argsRecord.intent as string
         : undefined;
-      const peerBody = isPeerTool
-        ? typeof argsRecord?.body === "string"
-          ? argsRecord.body as string
-          : typeof argsRecord?.params === "object" && argsRecord.params !== null
-            ? JSON.stringify(argsRecord.params)
-            : undefined
-        : undefined;
+      const peerIntent = displayPeerIntent(rawPeerIntent);
+      const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : undefined;
 
       toolCalls.set(toolCallId, {
         type: "tool-call",
@@ -750,12 +852,26 @@ function renderAssistantImageEntry(
   const data = frame.data && typeof frame.data === "object"
     ? frame.data as Record<string, unknown>
     : {};
-  const blobId = typeof data.blob_id === "string" ? data.blob_id : "";
+  const image = data.image && typeof data.image === "object"
+    ? data.image as Record<string, unknown>
+    : data;
+  const blobRef = image.blob_ref && typeof image.blob_ref === "object"
+    ? image.blob_ref as Record<string, unknown>
+    : null;
+  const blobId = typeof image.blob_id === "string"
+    ? image.blob_id
+    : typeof blobRef?.blob_id === "string"
+      ? blobRef.blob_id
+      : "";
   if (!blobId) return null;
-  const mediaType = typeof data.media_type === "string" ? data.media_type : "image/png";
-  const width = typeof data.width === "number" ? data.width : undefined;
-  const height = typeof data.height === "number" ? data.height : undefined;
-  const imageId = typeof data.image_id === "string" ? data.image_id : undefined;
+  const mediaType = typeof image.media_type === "string"
+    ? image.media_type
+    : typeof blobRef?.media_type === "string"
+      ? blobRef.media_type
+      : "image/png";
+  const width = typeof image.width === "number" ? image.width : undefined;
+  const height = typeof image.height === "number" ? image.height : undefined;
+  const imageId = typeof image.image_id === "string" ? image.image_id : undefined;
   return {
     kind: "message",
     id: entryId,
@@ -775,8 +891,32 @@ function renderAssistantImageEntry(
   };
 }
 
+function imageEntryKey(entry: ConversationTimelineEntry): string | null {
+  if (entry.kind !== "message" || entry.variant !== "rich" || !("blocks" in entry)) {
+    return null;
+  }
+  const block = entry.blocks?.[0];
+  if (!block || block.type !== "image") return null;
+  if (typeof block.blobId === "string" && block.blobId.trim()) {
+    return `blob:${block.blobId.trim()}`;
+  }
+  if (typeof block.imageId === "string" && block.imageId.trim()) {
+    return `image:${block.imageId.trim()}`;
+  }
+  if (typeof block.src === "string" && block.src.trim()) {
+    return `src:${block.src.trim()}`;
+  }
+  return null;
+}
+
 function normalizeComparableText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function isScaffoldUserText(text: string): boolean {
+  return text.startsWith("## Incident Comms Protocol")
+    || text.startsWith("You have been spawned as")
+    || text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]");
 }
 
 export function buildQuickPromptSuggestions(agent: ConsoleAgent | null): ConversationEmptySuggestion[] {
@@ -826,6 +966,7 @@ function renderHistoryUserEntry(
   }
   const text = extractTextFromContentBlocks(content).trim();
   if (!text) return null;
+  if (isScaffoldUserText(text)) return null;
   return {
     kind: "message",
     id: entryId,
@@ -845,7 +986,7 @@ function renderRunStartedPromptEntries(
     return [];
   }
   const record = frame.data as Record<string, unknown>;
-  const prompt = typeof record.prompt === "string" ? record.prompt.trim() : "";
+  const prompt = extractPromptText(record.prompt).trim();
   if (!prompt) {
     return [];
   }
@@ -864,19 +1005,7 @@ function renderRunStartedPromptEntries(
     });
   }
 
-  if (prompt.startsWith("[COMMS")) {
-    const summarized = summarizeCommsTransport(prompt).trim();
-    if (summarized) {
-      entries.push({
-        kind: "message",
-        id: entryId,
-        identity: SYSTEM_IDENTITY,
-        variant: "meta",
-        ...(createdAt ? { createdAt } : {}),
-        text: summarized,
-      });
-    }
-  } else if (prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
+  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
     const incomingBlocks = parseIncomingCommsBlocks(prompt);
     if (incomingBlocks.length > 0) {
       // All blocks from a single prompt go into one entry (they're batched)
@@ -924,6 +1053,22 @@ function extractTextFromContentBlocks(blocks: unknown): string {
     })
     .filter((value) => value.trim().length > 0)
     .join("");
+}
+
+function extractPromptText(prompt: unknown): string {
+  if (typeof prompt === "string") return prompt;
+  if (!Array.isArray(prompt)) return "";
+  return prompt
+    .map((block) => {
+      if (typeof block === "string") return block;
+      if (!block || typeof block !== "object") return "";
+      const record = block as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.content === "string") return record.content;
+      return "";
+    })
+    .filter((value) => value.trim().length > 0)
+    .join("\n");
 }
 
 function contentToUserBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
@@ -1009,14 +1154,21 @@ function summarizeCommsTransport(text: string): string {
     .filter((line) => !line.startsWith("[EVENT via rpc]"));
   if (header.startsWith("[COMMS REQUEST")) {
     const intentLine = body.find((line) => line.startsWith("Intent:"));
+    const bodyPayload = extractLabeledCommsValue(body, "Body");
+    const paramsPayload = extractLabeledCommsValue(body, "Params");
+    const requestSummary =
+      summarizePeerPayload(paramsPayload) ||
+      summarizePeerPayload(bodyPayload);
     if (intentLine) {
       const intent = intentLine.replace(/^Intent:\s*/, "").trim();
       if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
         return "";
       }
-      return `Peer request: ${intent}`;
+      if (requestSummary) return `Peer request: ${requestSummary}`;
+      const visibleIntent = displayPeerIntent(intent);
+      return visibleIntent ? `Peer request: ${visibleIntent}` : "Peer request received";
     }
-    return "Peer request received";
+    return requestSummary ? `Peer request: ${requestSummary}` : "Peer request received";
   }
   if (header.startsWith("[COMMS RESPONSE")) {
     // Extract status line
@@ -1053,6 +1205,11 @@ function summarizeCommsTransport(text: string): string {
     return joined ? `Peer message: ${joined}` : "Peer message received";
   }
   return text;
+}
+
+function commsHeaderTail(header: string): string {
+  const bracketIndex = header.indexOf("]");
+  return bracketIndex >= 0 ? header.slice(bracketIndex + 1).trim() : "";
 }
 
 /// Recognize the start of a peer-comms section in a run prompt.
@@ -1122,7 +1279,11 @@ function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock
     }
     if (!sender) continue;
 
-    const body = lines.slice(1).filter((l) => !isCommsHeaderLine(l) && !l.startsWith("[EVENT via rpc]"));
+    const headerTail = isLegacy ? commsHeaderTail(header) : "";
+    const body = [
+      ...(headerTail ? [headerTail] : []),
+      ...lines.slice(1),
+    ].filter((l) => !isCommsHeaderLine(l) && !l.startsWith("[EVENT via rpc]"));
     counter++;
 
     // Classify the section. Both shapes carry the same semantics; we
@@ -1180,32 +1341,40 @@ function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock
       // expanded row shows the actual content of the request, not
       // just the intent/status.
       const requestIdMatch = haystack.match(/Request ID:\s*([0-9a-fA-F-]+)/);
-      const paramsMatch = haystack.match(/Params:\s*(\{[\s\S]*?\}|"[^"]*"|[^.\n]+)/);
+      const paramsPayload = extractLabeledCommsValue([header, ...body], "Params");
+      const bodyPayload = extractLabeledCommsValue([header, ...body], "Body");
       const requestId = requestIdMatch ? requestIdMatch[1].trim() : "";
       let paramsBody = "";
-      if (paramsMatch) {
-        const raw = paramsMatch[1].trim();
+      let argumentsBody = "";
+      if (paramsPayload) {
+        const raw = paramsPayload.trim();
+        argumentsBody = raw;
         try {
           const parsed = JSON.parse(raw);
-          paramsBody = typeof parsed === "object" && parsed !== null
+          paramsBody = summarizePeerPayload(parsed) || raw;
+          argumentsBody = typeof parsed === "object" && parsed !== null
             ? JSON.stringify(parsed)
             : raw;
         } catch {
-          paramsBody = raw;
+          paramsBody = summarizePeerPayload(raw) || raw;
         }
+      }
+      if (!paramsBody && bodyPayload) {
+        paramsBody = summarizePeerPayload(bodyPayload) || "";
       }
       const peerBody = [
         paramsBody,
-        requestId ? `(req: ${requestId.slice(0, 8)})` : "",
+        !paramsBody && requestId ? `(req: ${requestId.slice(0, 8)})` : "",
       ].filter(Boolean).join(" ").trim();
+      const visibleIntent = displayPeerIntent(intent);
       blocks.push({
         type: "tool-call",
         toolCallId: `incoming-${sender}-${counter}`,
         name: "request",
-        arguments: paramsBody,
+        arguments: argumentsBody || paramsBody,
         status: "success",
         peerTarget: sender,
-        peerIntent: intent || "request",
+        ...(visibleIntent ? { peerIntent: visibleIntent } : {}),
         ...(peerBody ? { peerBody } : {}),
         peerIncoming: true,
       });
@@ -1242,6 +1411,10 @@ function historyMessageText(message: unknown): { role: "user" | "assistant" | "s
     case "user": {
       const text = extractTextFromContentBlocks(record.content);
       if (text.startsWith("[COMMS")) {
+        const blocks = parseIncomingCommsBlocks(text);
+        if (blocks.length > 0) {
+          return { role: "meta", text: summarizeCommsTransport(text), blocks };
+        }
         return { role: "meta", text: summarizeCommsTransport(text) };
       }
       return { role: "user", text: stripRpcEventPrefix(text) };
@@ -1292,6 +1465,7 @@ export function mapSessionHistoryToTimelineEntries(
   for (const [index, message] of messages.entries()) {
     const parsed = historyMessageText(message);
     const text = parsed.text.trim();
+    const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
     const messageRecord = message && typeof message === "object"
       ? message as Record<string, unknown>
       : null;
@@ -1301,18 +1475,14 @@ export function mapSessionHistoryToTimelineEntries(
       : typeof messageRecord?.createdAt === "string"
         ? messageRecord.createdAt
         : undefined;
-    if (!text) {
+    if (!text && parsedBlocks.length === 0) {
       continue;
     }
     if (parsed.role === "system") {
       continue;
     }
     if (parsed.role === "user") {
-      if (
-        text.startsWith("## Incident Comms Protocol")
-        || text.startsWith("You have been spawned as")
-        || text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]")
-      ) {
+      if (isScaffoldUserText(text)) {
         continue;
       }
     }
@@ -1327,6 +1497,17 @@ export function mapSessionHistoryToTimelineEntries(
           ...(createdAt ? { createdAt } : {}),
           text: embeddedPrompt,
         });
+      }
+      if (parsedBlocks.length > 0) {
+        entries.push({
+          kind: "message",
+          id: `history:${index}`,
+          identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
+          variant: "rich",
+          ...(createdAt ? { createdAt } : {}),
+          blocks: parsedBlocks,
+        });
+        continue;
       }
       if (!text) {
         continue;
@@ -1384,6 +1565,16 @@ export function mapSessionHistoryToTimelineEntries(
     ) {
       lastPeerActivityIndex = index;
     }
+    if (
+      entry?.kind === "message"
+      && entry.identity.id === "comms"
+      && entry.variant === "rich"
+      && "blocks" in entry
+      && Array.isArray(entry.blocks)
+      && entry.blocks.some((block) => block.type === "tool-call" && block.peerIncoming === true)
+    ) {
+      lastPeerActivityIndex = index;
+    }
   }
   if (lastOperatorPromptIndex >= 0) {
     return entries.slice(lastOperatorPromptIndex);
@@ -1413,7 +1604,7 @@ export function mapFramesToTimelineEntries(
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const emittedToolCalls = new Set<string>();
-
+  const emittedImages = new Set<string>();
 
   let pendingText = "";
   let pendingId = "";
@@ -1451,10 +1642,15 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    if (frame.event === "assistant_image") {
+    if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
       flushPendingText();
       const imageEntry = renderAssistantImageEntry(agent, frame, entryId, options.blobBaseUrl);
       if (imageEntry) {
+        const key = imageEntryKey(imageEntry);
+        if (key && emittedImages.has(key)) {
+          continue;
+        }
+        if (key) emittedImages.add(key);
         entries.push(imageEntry);
       }
       continue;

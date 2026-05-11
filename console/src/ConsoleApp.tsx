@@ -20,7 +20,6 @@ import {
   buildConversationViewState,
   buildDockTarget,
   buildQuickPromptSuggestions,
-  buildInspectTarget,
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
@@ -55,7 +54,6 @@ import { TimelinePanel } from "./panels/TimelinePanel";
 import { GatingInboxPanel } from "./panels/GatingInboxPanel";
 import { RosterPanel } from "./panels/RosterPanel";
 import { RoutingPanel } from "./panels/RoutingPanel";
-import { GatesPanel } from "./panels/GatesPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
 import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
@@ -181,7 +179,7 @@ const REFRESH_TRIGGER_EVENTS = new Set([
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
   "user_input", "interaction_started", "interaction_complete", "interaction_failed",
-  "assistant_image",
+  "assistant_image", "assistant_image_appended",
   "text_delta", "text_complete",
   "tool_call_requested", "tool_call", "tool_result_received",
   "tool_execution_started", "tool_execution_completed",
@@ -193,9 +191,9 @@ const HISTORY_REFRESH_EVENTS = new Set([
 // Events filtered from the activity rail — don't buffer them
 const ACTIVITY_SKIP_EVENTS = new Set([
   "subscribed", "run_started", "run_completed", "turn_started", "turn_completed",
-  "text_complete", "reasoning_delta", "reasoning_complete", "interaction_started",
-  "run_failed", "keep-alive", "tool_config_changed", "tool_scope_changed",
-  "user_input", "text_delta", "tool_call_requested", "tool_call", "tool_execution_started",
+  "text_complete", "reasoning_delta", "reasoning_complete",
+  "run_failed", "keep-alive", "tool_config_changed", "tool_scope_changed", "frame_updated",
+  "text_delta", "tool_call", "tool_execution_started",
   "tool_result_received", "tool_execution_completed",
 ]);
 
@@ -215,6 +213,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [routingData, setRoutingData] = React.useState<RoutingPanelData>({ routes: [], deliveries: [] });
   const [gatingData, setGatingData] = React.useState<GatingPanelData>({ pending: [], audit: [] });
   const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("all");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [theme, setTheme] = React.useState<ConsoleTheme>(() => {
@@ -412,36 +411,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       .map((entry) => entry.frame);
   }
 
-  function frameOrigin(frame: ConsoleFrame): string | null {
-    if (!frame.data || typeof frame.data !== "object") return null;
-    const origin = (frame.data as Record<string, unknown>).origin;
-    return typeof origin === "string" ? origin : null;
-  }
-
-  function frameVisibleInPanel(frame: ConsoleFrame, panelId: string): boolean {
-    if (frame.event !== "user_input" && frame.event !== "interaction_started") return true;
-    const origin = frameOrigin(frame);
-    if (!origin?.startsWith("console:")) return true;
-    return origin === `console:${panelId}`;
-  }
-
   function framesVisibleInPanel(frames: ConsoleFrame[], panelId: string): ConsoleFrame[] {
-    const hiddenInteractionIds = new Set<string>();
-    const visibleFrames: ConsoleFrame[] = [];
-    for (const frame of frames) {
-      if (frameVisibleInPanel(frame, panelId)) {
-        visibleFrames.push(frame);
-        continue;
-      }
-      const interactionId = frame.interactionId?.trim();
-      if (interactionId) hiddenInteractionIds.add(interactionId);
-    }
-    if (hiddenInteractionIds.size === 0) return visibleFrames;
-    return visibleFrames.filter((frame) => {
-      if (frame.event !== "run_started") return true;
-      const interactionId = frame.interactionId?.trim();
-      return !interactionId || !hiddenInteractionIds.has(interactionId);
-    });
+    void panelId;
+    // Panel ids are ephemeral UI instance ids. Persisted user_input frames
+    // keep the original `console:<panel-id>` origin, so filtering by the
+    // current panel id hides the operator's historical prompts after a
+    // refresh or reopen. Identity-scoped logs are already routed before
+    // this point, so every frame in the identity log belongs in the pane.
+    return frames;
   }
 
   // Activity rail (global, unchanged)
@@ -691,7 +668,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const visibleControls = React.useMemo<NavKind[]>(
     () => hasMobControlSurface
-      ? ["topology", "timeline", "gating", "roster", "routing", "gates", "logs", "health"]
+      ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"]
       : ["topology", "timeline", "roster", "logs", "health"],
     [hasMobControlSurface],
   );
@@ -718,7 +695,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ]);
       setRoutingData(buildRoutingSectionView({ routesResponse: routes, historyResponse: history }));
     }
-    if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating")) {
+    if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating" || t.kind === "gates")) {
       const [p, a] = await Promise.all([
         callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
         callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
@@ -1240,7 +1217,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // BUILD VIEW STATES
   // =========================================================================
 
-  const focusedMemberId = dock.focusedTarget?.kind === "agent-chat" ? dock.focusedTarget.memberId : "";
+  const focusedMemberId = dock.focusedTarget?.kind === "agent-chat"
+    ? dock.focusedTarget.memberId
+    : selectedRosterMemberId;
   const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
   const activityVS = buildActivityRailViewState({
     agents,
@@ -1343,7 +1322,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
         onStagedChange={(action) => setStagedAttachmentsForIdentity(identity, action)}
         onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
-        onInspect={() => { if (agent) dock.openTarget(buildInspectTarget(agent), "new_tab"); }}
+        onInspect={() => { if (agent) handleShowRosterDetails(agent); }}
         onRespawn={canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : undefined}
         onRetire={canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : undefined}
         stackSlot={stackSlot}
@@ -1403,8 +1382,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
   }
 
-  function handleInspectAgent(agent: ConsoleAgent) {
-    dock.openTarget(buildInspectTarget(agent), "new_tab");
+  function handleShowRosterDetails(agent: ConsoleAgent) {
+    setSelectedRosterMemberId(agent.member_id);
+    dock.openTarget(buildControlTarget("roster"), "replace_focused");
   }
 
   // =========================================================================
@@ -1424,7 +1404,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const target = panel.target as MobKitDockTarget | null;
     if (!target) return <div className="console-panel">No panel target</div>;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
-    if (target.kind === "identity-inspect") return renderInspectPanel(target);
+    if (target.kind === "identity-inspect") {
+      const agent = agents.find((candidate) => candidate.member_id === target.memberId || candidate.identity === target.identity);
+      return (
+        <RosterPanel
+          agents={agents}
+          selectedMemberId={agent?.member_id || selectedRosterMemberId}
+          onSelect={(a) => setSelectedRosterMemberId(a.member_id)}
+          onChat={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
+          onDetails={(a) => setSelectedRosterMemberId(a.member_id)}
+          onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
+          canResetLifecycle={hasMobControlSurface}
+        />
+      );
+    }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
       return <div className="console-panel">This view requires a mob runtime control surface.</div>;
     }
@@ -1448,13 +1441,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (target.kind === "roster") return (
       <RosterPanel
         agents={agents}
-        onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
-        onInspect={handleInspectAgent}
+        selectedMemberId={selectedRosterMemberId}
+        onSelect={(a) => setSelectedRosterMemberId(a.member_id)}
+        onChat={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
+        onDetails={(a) => setSelectedRosterMemberId(a.member_id)}
         onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
         canResetLifecycle={hasMobControlSurface}
       />
     );
-    if (target.kind === "gates") return <GatesPanel audit={gatingData.audit} />;
+    if (target.kind === "gates") return (
+      <GatingInboxPanel
+        pending={gatingData.pending}
+        audit={gatingData.audit}
+        onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
+      />
+    );
     if (target.kind === "logs") return <LogsPanel frames={activityRef.current} />;
     return <div className="console-panel">Unsupported panel</div>;
   }
@@ -1489,7 +1490,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           collapsed={sidebarCollapsed}
           visibleControls={visibleControls}
           onSelect={(a) => dock.openTarget(buildDockTarget(a), "replace_focused")}
-          onInspect={(a) => dock.openTarget(buildInspectTarget(a), "replace_focused")}
           onOpenControl={(kind) => {
             if (!visibleControls.includes(kind)) return;
             dock.openTarget(buildControlTarget(kind), "replace_focused");

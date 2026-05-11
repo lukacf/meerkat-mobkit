@@ -3,8 +3,10 @@ import type { ConsoleAgent } from "../types";
 
 interface RosterPanelProps {
   agents: ConsoleAgent[];
+  selectedMemberId?: string;
   onSelect: (agent: ConsoleAgent) => void;
-  onInspect: (agent: ConsoleAgent) => void;
+  onChat: (agent: ConsoleAgent) => void;
+  onDetails: (agent: ConsoleAgent) => void;
   onLifecycle: (identity: string, method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset") => void;
   canResetLifecycle?: boolean;
 }
@@ -25,10 +27,24 @@ function stateLabel(state?: string): string {
   return (state || "unknown").toLowerCase();
 }
 
-export function RosterPanel({ agents, onSelect, onInspect, onLifecycle, canResetLifecycle = false }: RosterPanelProps): React.JSX.Element {
+function displayPeer(peer: unknown): string {
+  if (typeof peer === "string") return peer.split("/").pop() || peer;
+  if (peer && typeof peer === "object") {
+    const record = peer as Record<string, unknown>;
+    const value = record.label ?? record.display_name ?? record.name ?? record.identity ?? record.member_id ?? record.id;
+    if (typeof value === "string") return value.split("/").pop() || value;
+  }
+  return "";
+}
+
+export function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDetails, onLifecycle, canResetLifecycle = false }: RosterPanelProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
   const [role, setRole] = React.useState<Role>("all");
   const [sel, setSel] = React.useState<string>(agents[0]?.member_id || "");
+
+  React.useEffect(() => {
+    if (selectedMemberId) setSel(selectedMemberId);
+  }, [selectedMemberId]);
 
   const rows = React.useMemo(() => {
     return agents.filter((a) => {
@@ -41,6 +57,7 @@ export function RosterPanel({ agents, onSelect, onInspect, onLifecycle, canReset
 
   const active = rows.find((r) => r.member_id === sel) || rows[0];
   const activeIdentity = active?.identity || active?.member_id || "";
+  const activePeers = (active?.wired_to || []).map(displayPeer).filter(Boolean);
 
   return (
     <div className="view roster" data-testid="roster-panel">
@@ -115,10 +132,22 @@ export function RosterPanel({ agents, onSelect, onInspect, onLifecycle, canReset
                 <dt>Generation</dt><dd className="mono">{active.generation ?? "—"}</dd>
                 <dt>Checkpoint</dt><dd className="mono">{active.checkpoint_version ?? "—"}</dd>
                 <dt>Lease</dt><dd className="mono">{active.lease_healthy === false ? "unhealthy" : "ok"}</dd>
-                <dt>Wired</dt><dd className="mono">{(active.wired_to || []).length} peers</dd>
+                <dt>Wired</dt>
+                <dd>
+                  {activePeers.length > 0 ? (
+                    <span className="rd__peers">
+                      {activePeers.map((peer) => (
+                        <span className="chip" key={peer}>{peer}</span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="mono dim">none</span>
+                  )}
+                </dd>
               </dl>
               <div className="rd__actions">
-                <button onClick={() => onInspect(active)}>Inspect</button>
+                <button onClick={() => onDetails(active)}>Show in roster</button>
+                <button onClick={() => onChat(active)}>Open chat</button>
                 {active.affordances?.can_respawn ? (
                   <button onClick={() => onLifecycle(activeIdentity, "mobkit/respawn")}>Respawn</button>
                 ) : null}

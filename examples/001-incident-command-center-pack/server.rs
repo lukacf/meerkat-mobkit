@@ -16,7 +16,10 @@
     clippy::useless_vec
 )]
 
-use meerkat_mobkit::example_support::incident_command_center::{
+#[path = "incident_command_center.rs"]
+mod incident_command_center;
+
+use incident_command_center::{
     build_runtime_bundle, incident_image_model, incident_model, scenario_path,
 };
 
