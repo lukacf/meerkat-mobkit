@@ -451,6 +451,12 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner.interrupt(id).await
             }
+            async fn cancel_after_boundary(
+                &self,
+                id: &meerkat_core::types::SessionId,
+            ) -> Result<(), SessionError> {
+                self.inner.cancel_after_boundary(id).await
+            }
             async fn set_session_client(
                 &self,
                 id: &meerkat_core::types::SessionId,
@@ -483,11 +489,29 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner.update_session_keep_alive(id, keep_alive).await
             }
+            async fn update_session_mob_authority_context(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                authority_context: Option<meerkat_core::service::MobToolAuthorityContext>,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .update_session_mob_authority_context(id, authority_context)
+                    .await
+            }
             async fn has_live_session(
                 &self,
                 id: &meerkat_core::types::SessionId,
             ) -> Result<bool, SessionError> {
                 self.inner.has_live_session(id).await
+            }
+            async fn set_session_tool_visibility_state(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                state: Option<meerkat_core::SessionToolVisibilityState>,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .set_session_tool_visibility_state(id, state)
+                    .await
             }
             async fn set_session_tool_filter(
                 &self,
@@ -562,6 +586,13 @@ macro_rules! delegate_mob_session_service {
             > {
                 self.inner.append_system_context(id, req).await
             }
+            async fn stage_tool_results(
+                &self,
+                id: &meerkat_core::types::SessionId,
+                req: meerkat_core::service::StageToolResultsRequest,
+            ) -> Result<meerkat_core::service::StageToolResultsResult, SessionError> {
+                self.inner.stage_tool_results(id, req).await
+            }
         }
 
         #[async_trait]
@@ -615,6 +646,48 @@ macro_rules! delegate_mob_session_service {
                 session_id: &meerkat_core::types::SessionId,
             ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
                 self.inner.load_persisted_session(session_id).await
+            }
+            async fn subscribe_session_events(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
+                meerkat_mob::MobSessionService::subscribe_session_events(
+                    self.inner.as_ref(),
+                    session_id,
+                )
+                .await
+            }
+            async fn archive_with_mob_lifecycle_authority(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .archive_with_mob_lifecycle_authority(session_id)
+                    .await
+            }
+            async fn execution_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::agent::AgentExecutionSnapshot>, SessionError> {
+                self.inner.execution_snapshot(session_id).await
+            }
+            async fn tool_scope_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::ToolScopeSnapshot>, SessionError> {
+                self.inner.tool_scope_snapshot(session_id).await
+            }
+            async fn external_tool_surface_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::ExternalToolSurfaceSnapshot>, SessionError> {
+                self.inner.external_tool_surface_snapshot(session_id).await
+            }
+            async fn peer_ingress_runtime_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<meerkat_core::PeerIngressRuntimeSnapshot>, SessionError> {
+                self.inner.peer_ingress_runtime_snapshot(session_id).await
             }
             async fn apply_runtime_turn(
                 &self,
@@ -683,6 +756,49 @@ macro_rules! delegate_mob_session_service {
                 }
                 result
             }
+            async fn apply_runtime_context_appends(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                run_id: meerkat_core::lifecycle::RunId,
+                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+                contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
+            ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+                self.inner
+                    .apply_runtime_context_appends(
+                        session_id,
+                        run_id,
+                        appends,
+                        contributing_input_ids,
+                    )
+                    .await
+            }
+            async fn apply_runtime_context_appends_with_boundary(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                run_id: meerkat_core::lifecycle::RunId,
+                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+                boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
+                contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
+            ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+                self.inner
+                    .apply_runtime_context_appends_with_boundary(
+                        session_id,
+                        run_id,
+                        appends,
+                        boundary,
+                        contributing_input_ids,
+                    )
+                    .await
+            }
+            async fn apply_runtime_system_context_for_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .apply_runtime_system_context_for_turn(session_id, appends)
+                    .await
+            }
             async fn discard_live_session(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -745,6 +861,12 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
     async fn interrupt(&self, id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
         self.inner.interrupt(id).await
     }
+    async fn cancel_after_boundary(
+        &self,
+        id: &meerkat_core::types::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner.cancel_after_boundary(id).await
+    }
     async fn set_session_client(
         &self,
         id: &meerkat_core::types::SessionId,
@@ -777,11 +899,29 @@ impl meerkat_core::service::SessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner.update_session_keep_alive(id, keep_alive).await
     }
+    async fn update_session_mob_authority_context(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        authority_context: Option<meerkat_core::service::MobToolAuthorityContext>,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .update_session_mob_authority_context(id, authority_context)
+            .await
+    }
     async fn has_live_session(
         &self,
         id: &meerkat_core::types::SessionId,
     ) -> Result<bool, SessionError> {
         self.inner.has_live_session(id).await
+    }
+    async fn set_session_tool_visibility_state(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        state: Option<meerkat_core::SessionToolVisibilityState>,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .set_session_tool_visibility_state(id, state)
+            .await
     }
     async fn set_session_tool_filter(
         &self,
@@ -850,6 +990,13 @@ impl meerkat_core::service::SessionServiceControlExt for AfterCreateMobSessionSe
     > {
         self.inner.append_system_context(id, req).await
     }
+    async fn stage_tool_results(
+        &self,
+        id: &meerkat_core::types::SessionId,
+        req: meerkat_core::service::StageToolResultsRequest,
+    ) -> Result<meerkat_core::service::StageToolResultsResult, SessionError> {
+        self.inner.stage_tool_results(id, req).await
+    }
 }
 
 #[async_trait]
@@ -902,6 +1049,45 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<Option<meerkat_core::session::Session>, SessionError> {
         self.inner.load_persisted_session(session_id).await
     }
+    async fn subscribe_session_events(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::comms::EventStream, meerkat_core::comms::StreamError> {
+        meerkat_mob::MobSessionService::subscribe_session_events(self.inner.as_ref(), session_id)
+            .await
+    }
+    async fn archive_with_mob_lifecycle_authority(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .archive_with_mob_lifecycle_authority(session_id)
+            .await
+    }
+    async fn execution_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::agent::AgentExecutionSnapshot>, SessionError> {
+        self.inner.execution_snapshot(session_id).await
+    }
+    async fn tool_scope_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::ToolScopeSnapshot>, SessionError> {
+        self.inner.tool_scope_snapshot(session_id).await
+    }
+    async fn external_tool_surface_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::ExternalToolSurfaceSnapshot>, SessionError> {
+        self.inner.external_tool_surface_snapshot(session_id).await
+    }
+    async fn peer_ingress_runtime_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<meerkat_core::PeerIngressRuntimeSnapshot>, SessionError> {
+        self.inner.peer_ingress_runtime_snapshot(session_id).await
+    }
     async fn apply_runtime_turn(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -912,6 +1098,44 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
         self.inner
             .apply_runtime_turn(session_id, run_id, req, boundary, contributing_input_ids)
+            .await
+    }
+    async fn apply_runtime_context_appends(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        run_id: meerkat_core::lifecycle::RunId,
+        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+        contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
+    ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+        self.inner
+            .apply_runtime_context_appends(session_id, run_id, appends, contributing_input_ids)
+            .await
+    }
+    async fn apply_runtime_context_appends_with_boundary(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        run_id: meerkat_core::lifecycle::RunId,
+        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+        boundary: meerkat_core::lifecycle::run_primitive::RunApplyBoundary,
+        contributing_input_ids: Vec<meerkat_core::lifecycle::InputId>,
+    ) -> Result<meerkat_core::lifecycle::core_executor::CoreApplyOutput, SessionError> {
+        self.inner
+            .apply_runtime_context_appends_with_boundary(
+                session_id,
+                run_id,
+                appends,
+                boundary,
+                contributing_input_ids,
+            )
+            .await
+    }
+    async fn apply_runtime_system_context_for_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .apply_runtime_system_context_for_turn(session_id, appends)
             .await
     }
     async fn discard_live_session(
@@ -2397,6 +2621,165 @@ realm_profile = "worker-v2"
             prompt.as_deref(),
             Some("injected-prompt"),
             "hook must set the system prompt"
+        );
+    }
+
+    #[derive(Default)]
+    struct ForwardingProbe {
+        calls: Mutex<Vec<&'static str>>,
+    }
+
+    impl ForwardingProbe {
+        fn record(&self, call: &'static str) {
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(call);
+        }
+
+        fn calls(&self) -> Vec<&'static str> {
+            self.calls
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionService for ForwardingProbe {
+        async fn create_session(
+            &self,
+            _req: CreateSessionRequest,
+        ) -> Result<meerkat_core::types::RunResult, SessionError> {
+            Err(SessionError::Unsupported("create_session".to_string()))
+        }
+
+        async fn start_turn(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StartTurnRequest,
+        ) -> Result<meerkat_core::types::RunResult, SessionError> {
+            Err(SessionError::Unsupported("start_turn".to_string()))
+        }
+
+        async fn interrupt(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            self.record("interrupt");
+            Ok(())
+        }
+
+        async fn read(
+            &self,
+            id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::service::SessionView, SessionError> {
+            Err(SessionError::NotFound { id: id.clone() })
+        }
+
+        async fn list(
+            &self,
+            _query: meerkat_core::service::SessionQuery,
+        ) -> Result<Vec<meerkat_core::service::SessionSummary>, SessionError> {
+            Ok(Vec::new())
+        }
+
+        async fn archive(&self, _id: &meerkat_core::types::SessionId) -> Result<(), SessionError> {
+            self.record("archive");
+            Ok(())
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceCommsExt for ForwardingProbe {}
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceControlExt for ForwardingProbe {
+        async fn append_system_context(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::AppendSystemContextRequest,
+        ) -> Result<
+            meerkat_core::service::AppendSystemContextResult,
+            meerkat_core::service::SessionControlError,
+        > {
+            self.record("append_system_context");
+            Ok(meerkat_core::service::AppendSystemContextResult {
+                status: meerkat_core::service::AppendSystemContextStatus::Applied,
+            })
+        }
+
+        async fn stage_tool_results(
+            &self,
+            _id: &meerkat_core::types::SessionId,
+            _req: meerkat_core::service::StageToolResultsRequest,
+        ) -> Result<meerkat_core::service::StageToolResultsResult, SessionError> {
+            self.record("stage_tool_results");
+            Ok(meerkat_core::service::StageToolResultsResult {
+                accepted_result_count: 7,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl meerkat_core::service::SessionServiceHistoryExt for ForwardingProbe {
+        async fn read_history(
+            &self,
+            id: &meerkat_core::types::SessionId,
+            _query: meerkat_core::service::SessionHistoryQuery,
+        ) -> Result<meerkat_core::service::SessionHistoryPage, SessionError> {
+            Err(SessionError::NotFound { id: id.clone() })
+        }
+    }
+
+    #[async_trait]
+    impl MobSessionService for ForwardingProbe {
+        fn supports_persistent_sessions(&self) -> bool {
+            true
+        }
+
+        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+            Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral()))
+        }
+
+        async fn archive_with_mob_lifecycle_authority(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<(), SessionError> {
+            self.record("archive_with_mob_lifecycle_authority");
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_build_wrapper_forwards_mob_authority_and_control_extensions() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let wrapped = PreBuildMobSessionService {
+            inner,
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+
+        MobSessionService::archive_with_mob_lifecycle_authority(&wrapped, &session_id)
+            .await
+            .expect("archive_with_mob_lifecycle_authority should forward to inner service");
+        let staged = meerkat_core::service::SessionServiceControlExt::stage_tool_results(
+            &wrapped,
+            &session_id,
+            meerkat_core::service::StageToolResultsRequest {
+                results: Vec::new(),
+            },
+        )
+        .await
+        .expect("stage_tool_results should forward to inner service");
+
+        assert_eq!(staged.accepted_result_count, 7);
+        assert_eq!(
+            probe.calls(),
+            vec!["archive_with_mob_lifecycle_authority", "stage_tool_results",]
         );
     }
 
