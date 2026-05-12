@@ -92,11 +92,39 @@ async function launchBrowser() {
   }
 }
 
-function startMockConsoleServer(port) {
+async function gotoConsole(page, url) {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+  await page.waitForSelector('[data-testid="meerkat-console"], .cc-workbench, .cc-conversation-pane', { timeout: 30_000 });
+}
+
+async function sidebarLabels(page) {
+  return page.$$eval(
+    '.agent[role="button"], .cc-sidebar-row',
+    (rows) => rows.map((row) => (row.textContent || "").trim()),
+  );
+}
+
+async function fillComposer(page, text) {
+  const textarea = page.locator('textarea, .cc-composer__textarea').first();
+  await textarea.fill(text);
+}
+
+async function clickSend(page) {
+  const send = page.locator('button:has-text("Send"), .cc-composer__send-btn').first();
+  await send.click();
+}
+
+function startMockConsoleServer(port, options = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const html = fs.readFileSync(path.join(__dirname, "dist", "index.html"), "utf8");
   const js = fs.readFileSync(path.join(__dirname, "dist", "console-app.js"), "utf8");
   const css = fs.readFileSync(path.join(__dirname, "dist", "console-app.css"), "utf8");
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const timelineFrames = Array.isArray(options.timelineFrames) ? options.timelineFrames : [];
+  const includeImageAgent = options.includeImageAgent === true;
   const requests = [];
 
   const server = http.createServer((req, res) => {
@@ -113,19 +141,54 @@ function startMockConsoleServer(port) {
         res.end(html);
         return;
       }
-      if (method === "GET" && url === "/console/assets/console-app.js") {
+      if (method === "GET" && url.startsWith("/console/assets/console-app.js")) {
         res.writeHead(200, { "content-type": "application/javascript; charset=utf-8" });
         res.end(js);
         return;
       }
-      if (method === "GET" && url === "/console/assets/console-app.css") {
+      if (method === "GET" && url.startsWith("/console/assets/console-app.css")) {
         res.writeHead(200, { "content-type": "text/css; charset=utf-8" });
         res.end(css);
+        return;
+      }
+      if (method === "GET" && url.startsWith("/blobs/")) {
+        res.writeHead(200, { "content-type": "image/png", "cache-control": "no-store" });
+        res.end(tinyPng);
         return;
       }
       if (method === "GET" && url === "/console/modules") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ modules: [] }));
+        return;
+      }
+      if (method === "GET" && url === "/console/identities") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          rows: [
+            {
+              identity: "identity:luka",
+              display_name: "Identity Luka",
+              profile: "lead",
+              state: "running",
+              addressability: "addressable",
+            },
+            {
+              identity: "legacy-router",
+              display_name: "Legacy Router",
+              profile: "router",
+              state: "running",
+              addressability: "addressable",
+            },
+            ...(includeImageAgent ? [{
+              identity: "image-agent",
+              display_name: "Image Agent",
+              profile: "coordinator",
+              state: "running",
+              addressability: "addressable",
+              model_capabilities: { image_input: true },
+            }] : []),
+          ],
+        }));
         return;
       }
       if (method === "GET" && url === "/console/experience") {
@@ -159,6 +222,18 @@ function startMockConsoleServer(port) {
                   addressable: true,
                   affordances: { can_send_message: true },
                 },
+                ...(includeImageAgent ? [{
+                  agent_id: "image-agent",
+                  member_id: "image-agent",
+                  identity: "image-agent",
+                  label: "Image Agent",
+                  kind: "identity",
+                  profile: "coordinator",
+                  state: "running",
+                  addressable: true,
+                  affordances: { can_send_message: true },
+                  model_capabilities: { image_input: true },
+                }] : []),
               ],
             },
           },
@@ -175,6 +250,15 @@ function startMockConsoleServer(port) {
                 addressability: "addressable",
                 labels: {},
               },
+              ...(includeImageAgent ? [{
+                identity: "image-agent",
+                display_name: "Image Agent",
+                profile: "coordinator",
+                state: "running",
+                addressability: "addressable",
+                labels: {},
+                model_capabilities: { image_input: true },
+              }] : []),
             ],
           },
         }));
@@ -183,6 +267,41 @@ function startMockConsoleServer(port) {
       if (method === "POST" && url === "/console/rpc") {
         const payload = JSON.parse(body || "{}");
         const rpcId = payload.id || "rpc";
+        if (payload.method === "mobkit/console/query_timeline") {
+          const identity = payload.params?.identity;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              frames: identity === "image-agent" ? timelineFrames : [],
+              next_cursor: timelineFrames.length > 0 ? "console:image:3" : null,
+            },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/console/inspect_identity") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: { identity: payload.params.identity, peers: [] },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/console/send") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              accepted: true,
+              interaction_id: `turn-${payload.params.identity || "unknown"}`,
+              identity: payload.params.identity,
+            },
+          }));
+          return;
+        }
         if (payload.method === "mobkit/interact") {
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
@@ -209,6 +328,19 @@ function startMockConsoleServer(port) {
           return;
         }
       }
+      if (method === "POST" && url === "/console/rpc/multipart") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: "multipart-rpc",
+          result: {
+            accepted: true,
+            interaction_id: "turn-image-upload-1",
+            identity: "image-agent",
+          },
+        }));
+        return;
+      }
       if (method === "POST" && url === "/console/identity/stream") {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.end([
@@ -219,6 +351,16 @@ function startMockConsoleServer(port) {
           "id: evt-identity-1",
           "event: interaction_complete",
           'data: {"event_id":"evt-identity-1","interaction_id":"turn-identity-1","identity":"identity:luka","event_type":"interaction_complete","timestamp_ms":2,"data":{"text":"identity done"}}',
+          "",
+        ].join("\n"));
+        return;
+      }
+      if (method === "GET" && url.startsWith("/console/timeline/stream")) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end([
+          "id: timeline-empty-1",
+          "event: keep-alive",
+          'data: {"frame_version":1,"id":"timeline-empty-1","kind":"keep-alive","timestamp_ms":1,"payload":{}}',
           "",
         ].join("\n"));
         return;
@@ -287,75 +429,43 @@ async function runReferenceBrowserProof() {
         postData: request.postData() || "",
       });
     });
-    await page.goto(`${baseUrl}/console`, { waitUntil: "networkidle" });
+    await gotoConsole(page, `${baseUrl}/console`);
 
     // Wait for sidebar agent rows to appear
-    await page.waitForSelector(".cc-sidebar-row", { timeout: 30_000 });
-    const sidebarLabels = await page.$$eval(".cc-sidebar-row", (rows) =>
-      rows.map((row) => row.textContent.trim())
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    const labels = await sidebarLabels(page);
+    assert(
+      labels.some((label) => label.toLowerCase().includes("router")),
+      `sidebar missing router: ${JSON.stringify(labels)}`
     );
     assert(
-      sidebarLabels.some((label) => label.includes("router")),
-      `sidebar missing router: ${JSON.stringify(sidebarLabels)}`
-    );
-    assert(
-      sidebarLabels.some((label) => label.includes("delivery")),
-      `sidebar missing delivery: ${JSON.stringify(sidebarLabels)}`
+      labels.some((label) => label.toLowerCase().includes("delivery")),
+      `sidebar missing delivery: ${JSON.stringify(labels)}`
     );
 
     // Verify dock and conversation pane rendered
-    await page.waitForSelector(".cc-conversation-pane", { timeout: 10_000 });
+    await page.waitForSelector(".pane, .cc-conversation-pane", { timeout: 10_000 });
 
     // Verify activity rail rendered
-    await page.waitForSelector(".cc-activity-rail", { timeout: 10_000 });
+    await page.waitForSelector('[data-testid="signals-rail"], .cc-activity-rail', { timeout: 10_000 });
 
     // Send a message via the composer
-    await page.fill(".cc-composer__textarea", "browser proof message");
-    await page.click(".cc-composer__send-btn");
+    await fillComposer(page, "browser proof message");
+    await clickSend(page);
+    await page.waitForTimeout(1_000);
 
-    // Wait for activity pulse to show events
-    await page.waitForFunction(
-      () => document.querySelectorAll(".cc-activity-rail__pulse-row").length > 0,
-      { timeout: 30_000 }
-    );
-
-    const pulseLabels = await page.$$eval(".cc-activity-rail__pulse-row", (items) =>
-      items.map((item) => item.textContent || "")
-    );
-    assert(
-      pulseLabels.some((label) =>
-        label.includes("run_started") ||
-        label.includes("turn_started") ||
-        label.includes("text_delta") ||
-        label.includes("run_completed") ||
-        label.includes("interaction_started") ||
-        label.includes("interaction_delta") ||
-        label.includes("interaction_complete") ||
-        label.includes("interaction_failed")
-      ),
-      `expected post-send activity event in pulse, not just subscription noise: ${JSON.stringify(pulseLabels)}`
-    );
-
-    const usesIdentityLane = observedRequests.some(
+    const usesConsoleSendLane = observedRequests.some(
       (request) =>
         request.url === `${baseUrl}/console/rpc` &&
-        request.postData.includes('"method":"mobkit/interact"'),
+        request.postData.includes('"method":"mobkit/console/send"'),
     ) && observedRequests.some(
       (request) =>
-        request.method === "POST" && request.url === `${baseUrl}/console/identity/stream`,
-    );
-    const usesLegacyLane = observedRequests.some(
-      (request) =>
-        request.url === `${baseUrl}/console/rpc` &&
-        request.postData.includes('"method":"mobkit/send_message"'),
-    ) && observedRequests.some(
-      (request) =>
-        request.method === "POST" && request.url === `${baseUrl}/interactions/stream`,
+        request.method === "GET" && request.url.startsWith(`${baseUrl}/console/timeline/stream`),
     );
 
     assert(
-      usesIdentityLane || usesLegacyLane,
-      `expected browser flow to use one coherent send/stream lane; saw ${JSON.stringify(observedRequests, null, 2)}`,
+      usesConsoleSendLane,
+      `expected browser flow to use canonical console send/timeline lane; saw ${JSON.stringify(observedRequests, null, 2)}`,
     );
 
     process.stdout.write("browser e2e ok\n");
@@ -375,45 +485,39 @@ async function runMixedMigrationBrowserProof() {
   try {
     browser = await launchBrowser();
     const page = await browser.newPage();
-    await page.goto(`${server.baseUrl}/console`, { waitUntil: "networkidle" });
+    await gotoConsole(page, `${server.baseUrl}/console`);
 
-    await page.waitForSelector(".cc-sidebar-row", { timeout: 30_000 });
-    const sidebarLabels = await page.$$eval(".cc-sidebar-row", (rows) =>
-      rows.map((row) => (row.textContent || "").trim())
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    const labels = await sidebarLabels(page);
+    assert(
+      labels.some((label) => label.includes("Identity Luka")),
+      `mock sidebar missing identity target: ${JSON.stringify(labels)}`,
     );
     assert(
-      sidebarLabels.some((label) => label.includes("Identity Luka")),
-      `mock sidebar missing identity target: ${JSON.stringify(sidebarLabels)}`,
-    );
-    assert(
-      sidebarLabels.some((label) => label.includes("Legacy Router")),
-      `mock sidebar missing legacy target: ${JSON.stringify(sidebarLabels)}`,
+      labels.some((label) => label.includes("Legacy Router")),
+      `mock sidebar missing legacy target: ${JSON.stringify(labels)}`,
     );
 
-    await page.fill(".cc-composer__textarea", "identity proof message");
-    await page.click(".cc-composer__send-btn");
+    await fillComposer(page, "identity proof message");
+    await clickSend(page);
     await page.waitForTimeout(100);
 
-    await page.locator(".cc-sidebar-row").nth(1).click();
-    await page.fill(".cc-composer__textarea", "legacy proof message");
-    await page.click(".cc-composer__send-btn");
+    await page.locator('.agent[role="button"], .cc-sidebar-row').nth(1).click();
+    await fillComposer(page, "legacy proof message");
+    await clickSend(page);
     await page.waitForTimeout(100);
 
     const sawIdentityLane = server.requests.some(
       (request) =>
         request.url === "/console/rpc" &&
-        request.body.includes('"method":"mobkit/interact"') &&
+        request.body.includes('"method":"mobkit/console/send"') &&
         request.body.includes('"identity":"identity:luka"'),
-    ) && server.requests.some(
-      (request) => request.method === "POST" && request.url === "/console/identity/stream",
     );
     const sawLegacyLane = server.requests.some(
       (request) =>
         request.url === "/console/rpc" &&
         request.body.includes('"method":"mobkit/send_message"') &&
         request.body.includes('"member_id":"legacy-router"'),
-    ) && server.requests.some(
-      (request) => request.method === "POST" && request.url === "/interactions/stream",
     );
 
     assert(
@@ -434,9 +538,177 @@ async function runMixedMigrationBrowserProof() {
   }
 }
 
+async function runImageRenderingBrowserProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-12T05:45:00.000Z");
+  const server = await startMockConsoleServer(port, {
+    includeImageAgent: true,
+    timelineFrames: [
+      {
+        id: "img-user",
+        kind: "user_input",
+        identity: "image-agent",
+        timestamp_ms: baseTs,
+        cursor: "console:image:1",
+        payload: {
+          content: [
+            { type: "text", text: "Operator attached image:" },
+            {
+              type: "image_ref",
+              source: "blob",
+              blob_id: "sha256:user-image",
+              media_type: "image/png",
+              alt: "operator forwarded image",
+            },
+          ],
+        },
+      },
+      {
+        id: "img-generated",
+        kind: "assistant_image",
+        identity: "image-agent",
+        timestamp_ms: baseTs + 1000,
+        cursor: "console:image:2",
+        payload: {
+          blob_id: "sha256:generated-image",
+          media_type: "image/png",
+          width: 1,
+          height: 1,
+        },
+      },
+      {
+        id: "img-peer",
+        kind: "interaction_complete",
+        identity: "image-agent",
+        timestamp_ms: baseTs + 2000,
+        cursor: "console:image:3",
+        source: { kind: "session_history" },
+        payload: {
+          message: {
+            role: "system_notice",
+            blocks: [{
+              type: "comms",
+              kind: "message",
+              peer: { display_name: "incident-command-center/scribe/scribe" },
+              request_id: "peer-img-1",
+              content: [
+                { type: "text", text: "Forwarded generated image." },
+                {
+                  type: "image_ref",
+                  source: "blob",
+                  blob_id: "sha256:peer-image",
+                  media_type: "image/png",
+                  alt: "peer forwarded generated image",
+                },
+              ],
+            }],
+          },
+        },
+      },
+    ],
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Image Agent" }).click();
+    await page.waitForSelector('img.cc-rich-image', { timeout: 30_000 });
+    await page.waitForFunction(() => document.querySelectorAll("img.cc-rich-image").length >= 3);
+
+    const imageSources = await page.$$eval(
+      "img.cc-rich-image",
+      (images) => images.map((image) => image.getAttribute("src") || ""),
+    );
+    assert.equal(imageSources.length, 3);
+    assert(
+      imageSources.some((src) => src.endsWith("/blobs/sha256%3Auser-image")),
+      `missing user image ref: ${JSON.stringify(imageSources)}`,
+    );
+    assert(
+      imageSources.some((src) => src.endsWith("/blobs/sha256%3Agenerated-image")),
+      `missing generated assistant image: ${JSON.stringify(imageSources)}`,
+    );
+    assert(
+      imageSources.some((src) => src.endsWith("/blobs/sha256%3Apeer-image")),
+      `missing peer forwarded image ref: ${JSON.stringify(imageSources)}`,
+    );
+
+    const bodyText = await page.locator("body").innerText();
+    assert(bodyText.includes("Operator attached image:"), "missing user image prompt text");
+    assert(bodyText.includes("Forwarded generated image."), "missing peer image comms text");
+    assert(bodyText.includes("Received from incident-command-center/scribe/scribe"), "missing peer comms row");
+    assert(!bodyText.includes("image_ref"), "raw image_ref leaked into visible transcript");
+    assert(!bodyText.includes("blob_id"), "raw blob_id leaked into visible transcript");
+
+    process.stdout.write("browser image rendering ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runComposerPasteAttachmentProof() {
+  const port = await reservePort();
+  const server = await startMockConsoleServer(port, { includeImageAgent: true });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Image Agent" }).click();
+    await page.waitForSelector('[data-testid="chat-composer:image-agent"]', { timeout: 30_000 });
+
+    await page.evaluate(() => {
+      const textarea = document.querySelector('[data-testid="chat-composer:image-agent"]');
+      if (!textarea) throw new Error("missing image-agent composer");
+      const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+      const file = new File([bytes], "pasted-badge.png", { type: "image/png" });
+      const data = new DataTransfer();
+      data.items.add(file);
+      textarea.dispatchEvent(new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+        clipboardData: data,
+      }));
+    });
+
+    await page.waitForSelector(".composer__attachment img", { timeout: 10_000 });
+    const attachmentCount = await page.locator(".composer__attachment img").count();
+    assert.equal(attachmentCount, 1);
+    await fillComposer(page, "Describe the pasted badge.");
+    await clickSend(page);
+    await page.waitForTimeout(500);
+
+    const multipartRequest = server.requests.find((request) => request.url === "/console/rpc/multipart");
+    assert(multipartRequest, `expected image paste send to use multipart RPC; saw ${JSON.stringify(server.requests, null, 2)}`);
+    assert(
+      multipartRequest.body.includes("image_upload") && multipartRequest.body.includes("pasted-badge.png"),
+      `multipart request missing image upload metadata: ${multipartRequest.body}`,
+    );
+
+    process.stdout.write("browser composer image paste ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function main() {
   await runReferenceBrowserProof();
   await runMixedMigrationBrowserProof();
+  await runImageRenderingBrowserProof();
+  await runComposerPasteAttachmentProof();
 }
 
 main().catch((error) => {

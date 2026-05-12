@@ -171,6 +171,11 @@ smoke:
       inspect_service with {"service":"payments-api"} and analyze_customer_impact with
       {"cohort":"enterprise-merchants"}. Wait for at least one peer reply before answering,
       and mention which teammates you consulted in one concise operator-facing paragraph.
+    delegate_probe: >
+      Create one visible worker meerkat in the existing incident-command-center mob using the
+      worker profile and your mob tools. Do not create a new profile or a new mob. Ask it to
+      summarize one fictional payments-api rollback risk, then answer in one sentence with the
+      created worker identity and what it was asked to check.
     merchant_status: >
       Give a one-sentence merchant-success update for the current fictional incident. Be concise.
     alpha_follow_up: >

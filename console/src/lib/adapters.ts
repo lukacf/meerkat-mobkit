@@ -310,6 +310,13 @@ const SYSTEM_IDENTITY: ConversationIdentity = {
   showLabel: true,
 };
 
+const COMMS_IDENTITY: ConversationIdentity = {
+  id: "comms",
+  label: "",
+  role: "system",
+  showLabel: false,
+};
+
 function summarizeFrameData(data: unknown): string {
   if (typeof data === "string") {
     const trimmed = data.trim();
@@ -489,6 +496,67 @@ function parseToolArguments(frame: ConsoleFrame): string {
   return JSON.stringify(record || {});
 }
 
+function normalizeToolArgumentsForSignature(argumentsText: string | undefined): string {
+  const trimmed = (argumentsText || "").trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.stringify(JSON.parse(trimmed));
+  } catch {
+    return trimmed.replace(/\s+/g, " ");
+  }
+}
+
+function toolBlockSignature(block: ConversationRichToolCallBlock): string {
+  return `${block.name}\u0000${normalizeToolArgumentsForSignature(block.arguments)}`;
+}
+
+function addToolSignatureCount(
+  counts: Map<string, number>,
+  block: ConversationRichToolCallBlock,
+): void {
+  const key = toolBlockSignature(block);
+  counts.set(key, (counts.get(key) || 0) + 1);
+}
+
+function consumeToolSignatureCount(
+  counts: Map<string, number>,
+  block: ConversationRichToolCallBlock,
+): boolean {
+  const key = toolBlockSignature(block);
+  const count = counts.get(key) || 0;
+  if (count <= 0) return false;
+  if (count === 1) counts.delete(key);
+  else counts.set(key, count - 1);
+  return true;
+}
+
+function liveToolDedupeState(
+  frames: ConsoleFrame[],
+  toolBlocks: Map<string, ConversationRichToolCallBlock>,
+): { liveToolCallIds: Set<string>; liveToolSignatureCounts: Map<string, number> } {
+  const liveToolCallIds = new Set<string>();
+  const liveToolSignatureCounts = new Map<string, number>();
+
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    if (
+      frame.event !== "tool_call_requested"
+      && frame.event !== "tool_call"
+      && frame.event !== "tool_execution_started"
+    ) {
+      continue;
+    }
+    const toolCallId = parseToolCallId(frame);
+    if (!toolCallId || liveToolCallIds.has(toolCallId)) continue;
+    const block = toolBlocks.get(toolCallId);
+    if (!block) continue;
+    liveToolCallIds.add(toolCallId);
+    addToolSignatureCount(liveToolSignatureCounts, block);
+  }
+
+  return { liveToolCallIds, liveToolSignatureCounts };
+}
+
 const TECHNICAL_PEER_INTENTS = new Set(["checksum_token"]);
 const PEER_PAYLOAD_TEXT_KEYS = [
   "message",
@@ -550,6 +618,14 @@ function summarizePeerPayload(value: unknown): string | undefined {
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (type === "image" || type === "image_ref" || type === "image_upload") {
+      return typeof record.alt === "string" && record.alt.trim()
+        ? record.alt.trim()
+        : type === "image_ref"
+          ? "referenced image"
+          : "attached image";
+    }
     for (const key of PEER_PAYLOAD_TEXT_KEYS) {
       const summary = summarizePeerPayload(record[key]);
       if (summary) return summary;
@@ -593,6 +669,43 @@ function extractPeerBodyFromArgs(argsRecord: Record<string, unknown> | null): st
   const resultBody = summarizePeerPayload(argsRecord.result);
   if (resultBody) return resultBody;
   return undefined;
+}
+
+function capturePeersResult(peerRegistry: Map<string, string>, rawResult: unknown): void {
+  const resultText = typeof rawResult === "string"
+    ? rawResult
+    : rawResult && typeof rawResult === "object"
+      ? JSON.stringify(rawResult)
+      : "";
+  if (!resultText) return;
+  try {
+    const parsed = JSON.parse(resultText) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
+    if (!Array.isArray(parsed.peers)) return;
+    for (const peer of parsed.peers) {
+      if (typeof peer.peer_id === "string" && typeof peer.name === "string") {
+        peerRegistry.set(peer.peer_id, peer.name);
+      }
+    }
+  } catch {
+    // ignore non-JSON peers payloads
+  }
+}
+
+function peerTargetFromArgs(
+  argsRecord: Record<string, unknown> | null,
+  peerRegistry?: Map<string, string>,
+): string | undefined {
+  const peerId = typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id.trim() : "";
+  const registryName = peerId ? peerRegistry?.get(peerId) : undefined;
+  return registryName
+    ? peerLastSegment(registryName)
+    : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim()
+      ? peerLastSegment(argsRecord.display_name.trim())
+      : typeof argsRecord?.to === "string" && argsRecord.to.trim()
+        ? peerLastSegment(argsRecord.to.trim())
+        : peerId
+          ? peerId.slice(0, 8)
+          : undefined;
 }
 
 function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
@@ -645,8 +758,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   // listing whenever possible. The list is ordered, so by the time a
   // send_request appears the relevant peers result has already been
   // processed.
-  const peerRegistry = new Map<string, string>();
-  const lastSegment = (s: string): string => s.split("/").pop() || s;
+  const peerRegistry = buildPeerRegistry(frames);
 
   for (const frame of frames) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
@@ -654,21 +766,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       const data = frame.data as Record<string, unknown> | undefined;
       // Capture peer registry from the `peers` tool result.
       if (data && (data.name === "peers" || data.tool_name === "peers")) {
-        const rawResult = typeof data.result === "string" ? data.result : null;
-        if (rawResult) {
-          try {
-            const parsed = JSON.parse(rawResult) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
-            if (Array.isArray(parsed.peers)) {
-              for (const p of parsed.peers) {
-                if (typeof p.peer_id === "string" && typeof p.name === "string") {
-                  peerRegistry.set(p.peer_id, p.name);
-                }
-              }
-            }
-          } catch {
-            // ignore non-JSON peers payloads
-          }
-        }
+        capturePeersResult(peerRegistry, data.result);
       }
       if (!toolCallId) continue;
       const parsed = parseToolResult(frame);
@@ -701,20 +799,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       // from the most recent `peers` tool result. Fall back order:
       // registry → display_name → short peer_id → legacy `to` field.
       const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
-      const registryName = isPeerTool && typeof argsRecord?.peer_id === "string"
-        ? peerRegistry.get(argsRecord.peer_id.trim())
-        : undefined;
-      const peerTarget = !isPeerTool
-        ? undefined
-        : registryName
-          ? lastSegment(registryName)
-          : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim()
-            ? lastSegment(argsRecord.display_name.trim())
-            : typeof argsRecord?.peer_id === "string" && argsRecord.peer_id.trim()
-              ? argsRecord.peer_id.trim().slice(0, 8)
-              : typeof argsRecord?.to === "string"
-                ? lastSegment(argsRecord.to)
-                : undefined;
+      const peerTarget = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : undefined;
       const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string"
         ? argsRecord.intent as string
         : undefined;
@@ -736,6 +821,17 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   }
 
   return toolCalls;
+}
+
+function buildPeerRegistry(frames: ConsoleFrame[]): Map<string, string> {
+  const peerRegistry = new Map<string, string>();
+  for (const frame of frames) {
+    if (frame.event !== "tool_result_received" && frame.event !== "tool_execution_completed") continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+    if (!data || (data.name !== "peers" && data.tool_name !== "peers")) continue;
+    capturePeersResult(peerRegistry, data.result);
+  }
+  return peerRegistry;
 }
 
 function parsePeerSummary(text: string): { verb: string; summary: string } | null {
@@ -836,6 +932,33 @@ function renderTerminalEntry(
   return null;
 }
 
+function terminalFrameVisibleText(frame: ConsoleFrame): string {
+  if (frame.event === "text_complete") {
+    const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+    if (typeof record?.content === "string") return record.content;
+    if (typeof record?.text === "string") return record.text;
+  }
+  if (
+    frame.event === "interaction_complete"
+    || frame.event === "run_completed"
+    || frame.event === "text_complete"
+  ) {
+    return summarizeFrameData(frame.data);
+  }
+  return "";
+}
+
+function liveAssistantTerminalTextSignatures(frames: ConsoleFrame[]): Set<string> {
+  const signatures = new Set<string>();
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const text = terminalFrameVisibleText(frame).trim();
+    if (!text) continue;
+    signatures.add(normalizeComparableText(text));
+  }
+  return signatures;
+}
+
 function buildBlobUrl(blobId: string, baseUrl?: string): string {
   const path = `/blobs/${encodeURIComponent(blobId)}`;
   const base = baseUrl?.trim();
@@ -913,12 +1036,6 @@ function normalizeComparableText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function isScaffoldUserText(text: string): boolean {
-  return text.startsWith("## Incident Comms Protocol")
-    || text.startsWith("You have been spawned as")
-    || text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]");
-}
-
 export function buildQuickPromptSuggestions(agent: ConsoleAgent | null): ConversationEmptySuggestion[] {
   const labels = agent?.labels ?? {};
   const suggestions: ConversationEmptySuggestion[] = [];
@@ -966,7 +1083,22 @@ function renderHistoryUserEntry(
   }
   const text = extractTextFromContentBlocks(content).trim();
   if (!text) return null;
-  if (isScaffoldUserText(text)) return null;
+  const commsBlocks = frame.sourceKind === "session_history"
+    ? [
+        ...parseLegacyCommsBlocks(text),
+        ...parseLegacySystemNoticeBlocks(text),
+      ]
+    : [];
+  if (commsBlocks.length > 0) {
+    return {
+      kind: "message",
+      id: entryId,
+      identity: COMMS_IDENTITY,
+      variant: "rich",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      blocks: commsBlocks,
+    };
+  }
   return {
     kind: "message",
     id: entryId,
@@ -975,6 +1107,28 @@ function renderHistoryUserEntry(
     createdAt: isoFromTimestampMs(frame.timestampMs),
     text,
   };
+}
+
+function userEntryTextSignature(entry: ConversationTimelineEntry): string {
+  if (entry.kind !== "message") return "";
+  if ("text" in entry && typeof entry.text === "string") {
+    return entry.text.replace(/\s+/g, " ").trim();
+  }
+  if ("blocks" in entry && Array.isArray(entry.blocks)) {
+    return JSON.stringify(entry.blocks);
+  }
+  return "";
+}
+
+function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntry): string {
+  const interactionId = frame.interactionId?.trim();
+  if (interactionId) return `interaction:${interactionId}`;
+  const signature = userEntryTextSignature(entry);
+  if (frame.sourceKind === "session_history" && /^You are\b/i.test(signature)) {
+    return `history-kickoff:${signature}`;
+  }
+  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
+  return signature ? `content:${timestamp}:${signature}` : "";
 }
 
 function renderRunStartedPromptEntries(
@@ -993,46 +1147,19 @@ function renderRunStartedPromptEntries(
   const createdAt = isoFromTimestampMs(frame.timestampMs);
   const entries: ConversationTimelineEntry[] = [];
 
-  const embeddedPrompt = extractEmbeddedRpcPrompt(prompt);
-  if (embeddedPrompt && !options.suppressEmbeddedRpcPrompt) {
-    entries.push({
-      kind: "message",
-      id: `${entryId}:event`,
-      identity: USER_IDENTITY,
-      variant: "plain",
-      ...(createdAt ? { createdAt } : {}),
-      text: embeddedPrompt,
-    });
-  }
-
-  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
-    const incomingBlocks = parseIncomingCommsBlocks(prompt);
-    if (incomingBlocks.length > 0) {
-      // All blocks from a single prompt go into one entry (they're batched)
-      entries.push({
-        kind: "message",
-        id: entryId,
-        identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
-        variant: "rich",
-        ...(createdAt ? { createdAt } : {}),
-        blocks: incomingBlocks,
-      });
-    } else {
-      const summarized = summarizeCommsTransport(prompt).trim();
-      if (summarized) {
-        entries.push({
-          kind: "message",
-          id: entryId,
-          identity: SYSTEM_IDENTITY,
-          variant: "meta",
-          ...(createdAt ? { createdAt } : {}),
-          text: summarized,
-        });
-      }
-    }
-  }
+  void options;
+  void createdAt;
 
   return entries;
+}
+
+function renderInteractionCommsEntry(
+  frame: ConsoleFrame,
+  entryId: string,
+): ConversationTimelineEntry | null {
+  void frame;
+  void entryId;
+  return null;
 }
 
 function extractTextFromContentBlocks(blocks: unknown): string {
@@ -1073,7 +1200,7 @@ function extractPromptText(prompt: unknown): string {
 
 function contentToUserBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
   if (typeof content === "string") {
-    return parseConversationRichBlocks(stripRpcEventPrefix(content));
+    return parseConversationRichBlocks(content);
   }
   if (!Array.isArray(content)) {
     return [];
@@ -1081,7 +1208,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
   const blocks: ConversationRichBlock[] = [];
   for (const block of content) {
     if (typeof block === "string") {
-      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(block)));
+      blocks.push(...parseConversationRichBlocks(block));
       continue;
     }
     if (!block || typeof block !== "object") continue;
@@ -1093,10 +1220,10 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
         : typeof record.content === "string"
           ? record.content
           : "";
-      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(text)));
+      blocks.push(...parseConversationRichBlocks(text));
       continue;
     }
-    if (type === "image") {
+    if (type === "image" || type === "image_ref") {
       const source = typeof record.source === "string" ? record.source : "";
       const blobId = typeof record.blob_id === "string"
         ? record.blob_id
@@ -1121,7 +1248,9 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
       if (!src) continue;
       const alt = typeof record.alt === "string" && record.alt.trim()
         ? record.alt.trim()
-        : "attached image";
+        : type === "image_ref"
+          ? "referenced image"
+          : "attached image";
       const width = typeof record.width === "number" ? record.width : undefined;
       const height = typeof record.height === "number" ? record.height : undefined;
       blocks.push({
@@ -1138,270 +1267,247 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
   return blocks;
 }
 
-function stripRpcEventPrefix(text: string): string {
-  return text.replace(/^\[EVENT via rpc\]\s*/i, "").trim();
+function peerLastSegment(value: string): string {
+  return value.split("/").pop() || value;
 }
 
-function summarizeCommsTransport(text: string): string {
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) {
-    return "";
+function blockAssistantToolBlocks(
+  blocks: unknown[],
+  peerRegistry?: Map<string, string>,
+): ConversationRichToolCallBlock[] {
+  const toolBlocks: ConversationRichToolCallBlock[] = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const item = block as Record<string, unknown>;
+    const blockType = typeof item.block_type === "string"
+      ? item.block_type
+      : typeof item.type === "string"
+        ? item.type
+        : "";
+    if (blockType !== "tool_use") continue;
+    const data = item.data && typeof item.data === "object"
+      ? item.data as Record<string, unknown>
+      : item;
+    const name = typeof data.name === "string" && data.name.trim()
+      ? data.name.trim()
+      : "tool";
+    const id = typeof data.id === "string" && data.id.trim()
+      ? data.id.trim()
+      : `history-tool-${toolBlocks.length + 1}`;
+    const args = data.args !== undefined ? data.args : data.arguments;
+    const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : null;
+    const argumentsText = args === undefined
+      ? ""
+      : typeof args === "string"
+        ? args
+        : JSON.stringify(args);
+    const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
+    const peerTarget = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : undefined;
+    const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string"
+      ? argsRecord.intent
+      : undefined;
+    const peerIntent = displayPeerIntent(rawPeerIntent);
+    const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : undefined;
+    toolBlocks.push({
+      type: "tool-call",
+      toolCallId: id,
+      name,
+      arguments: argumentsText,
+      status: "success",
+      ...(peerTarget ? { peerTarget } : {}),
+      ...(peerIntent ? { peerIntent } : {}),
+      ...(peerBody ? { peerBody } : {}),
+    });
   }
-  const header = lines[0] || "";
-  const headerTail = header.includes("]") ? header.slice(header.indexOf("]") + 1).trim() : "";
-  const body = lines
-    .slice(1)
-    .filter((line) => !line.startsWith("[EVENT via rpc]"));
-  if (header.startsWith("[COMMS REQUEST")) {
-    const intentLine = body.find((line) => line.startsWith("Intent:"));
-    const bodyPayload = extractLabeledCommsValue(body, "Body");
-    const paramsPayload = extractLabeledCommsValue(body, "Params");
-    const requestSummary =
-      summarizePeerPayload(paramsPayload) ||
-      summarizePeerPayload(bodyPayload);
-    if (intentLine) {
-      const intent = intentLine.replace(/^Intent:\s*/, "").trim();
-      if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
-        return "";
-      }
-      if (requestSummary) return `Peer request: ${requestSummary}`;
-      const visibleIntent = displayPeerIntent(intent);
-      return visibleIntent ? `Peer request: ${visibleIntent}` : "Peer request received";
+  return toolBlocks;
+}
+
+function textFromUnknown(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function typedNoticeContentBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
+  return contentToUserBlocks(content, blobBaseUrl);
+}
+
+function typedNoticeBlockText(block: Record<string, unknown>): string {
+  const parts = [
+    textFromUnknown(block.summary),
+    textFromUnknown(block.body),
+    textFromUnknown(block.detail),
+    textFromUnknown(block.state),
+    textFromUnknown(block.status),
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
+function typedSystemNoticeBlocksToRich(
+  blocks: unknown,
+  body: unknown,
+  blobBaseUrl?: string,
+): ConversationRichBlock[] {
+  const rich: ConversationRichBlock[] = [];
+  const bodyText = textFromUnknown(body);
+  if (!Array.isArray(blocks)) {
+    if (bodyText) rich.push({ type: "paragraph", text: bodyText });
+    return rich;
+  }
+
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const record = block as Record<string, unknown>;
+    const type = textFromUnknown(record.type);
+    if (type === "comms") {
+      const peer = record.peer && typeof record.peer === "object"
+        ? record.peer as Record<string, unknown>
+        : {};
+      const peerLabel = textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer";
+      const kind = textFromUnknown(record.kind) || "message";
+      const intent = textFromUnknown(record.intent);
+      const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
+      const contentText = contentBlocks
+        .map((item) => item.type === "paragraph" ? item.text : "")
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      rich.push({
+        type: "tool-call",
+        toolCallId: requestId,
+        name: `peer_${kind}`,
+        arguments: JSON.stringify(record.payload ?? {}, null, 2),
+        status: "success",
+        peerIncoming: true,
+        peerTarget: peerLabel,
+        ...(intent ? { peerIntent: intent } : {}),
+        peerBody: contentText || typedNoticeBlockText(record) || undefined,
+      });
+      rich.push(...contentBlocks.filter((item) => item.type !== "paragraph"));
+      continue;
     }
-    return requestSummary ? `Peer request: ${requestSummary}` : "Peer request received";
-  }
-  if (header.startsWith("[COMMS RESPONSE")) {
-    // Extract status line
-    const statusLine = body.find((line) => line.startsWith("Status:"));
-    const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
-    // Extract result JSON and parse it cleanly
-    const resultIndex = body.findIndex((line) => line.startsWith("Result:"));
-    if (resultIndex >= 0) {
-      // Collect result lines until we hit another control line (Status:, [COMMS, etc.)
-      const resultLines: string[] = [];
-      for (let i = resultIndex; i < body.length; i++) {
-        const line = body[i];
-        if (i > resultIndex && (line.startsWith("Status:") || line.startsWith("[COMMS "))) break;
-        resultLines.push(line);
-      }
-      const resultText = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
-      let summary = resultText;
-      try {
-        const parsed = JSON.parse(resultText);
-        if (typeof parsed === "string") {
-          summary = parsed;
-        } else if (typeof parsed === "object" && parsed !== null) {
-          const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
-          if (typeof val === "string") summary = val;
-        }
-      } catch { /* use raw */ }
-      const label = status ? `Peer response (${status})` : "Peer response";
-      return `${label}: ${summary}`;
+    if (type === "external_event") {
+      const source = textFromUnknown(record.source);
+      const eventType = textFromUnknown(record.event_type);
+      const text = typedNoticeBlockText(record) || [source, eventType].filter(Boolean).join(": ");
+      if (text) rich.push({ type: "paragraph", text });
+      rich.push(...typedNoticeContentBlocks(record.content, blobBaseUrl));
+      continue;
     }
-    return status ? `Peer response (${status})` : "Peer response received";
+    if (type === "tool_config" || type === "mcp") {
+      const payload = record.payload && typeof record.payload === "object"
+        ? record.payload as Record<string, unknown>
+        : record;
+      const label = type === "mcp" ? "MCP" : "Tool config";
+      const text = typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
+      rich.push({ type: "divider", text });
+      continue;
+    }
+    if (type === "background_job" || type === "auth" || type === "runtime_notice") {
+      const text = typedNoticeBlockText(record) || type.replace(/_/g, " ");
+      rich.push({ type: "paragraph", text });
+      continue;
+    }
+    rich.push({ type: "divider", text: typedNoticeBlockText(record) || "Runtime metadata" });
   }
-  if (header.startsWith("[COMMS MESSAGE")) {
-    const joined = [headerTail, ...body].join(" ").trim();
-    return joined ? `Peer message: ${joined}` : "Peer message received";
-  }
-  return text;
+  if (rich.length === 0 && bodyText) rich.push({ type: "paragraph", text: bodyText });
+  return rich;
 }
 
-function commsHeaderTail(header: string): string {
-  const bracketIndex = header.indexOf("]");
-  return bracketIndex >= 0 ? header.slice(bracketIndex + 1).trim() : "";
-}
+function parseLegacyCommsBlocks(text: string): ConversationRichToolCallBlock[] {
+  const trimmed = text.trim();
+  if (!/^\[COMMS\s+/i.test(trimmed)) return [];
+  const lines = trimmed.split("\n");
+  const sections: Array<{ kind: string; source: string; body: string[] }> = [];
+  let current: { kind: string; source: string; body: string[] } | null = null;
 
-/// Recognize the start of a peer-comms section in a run prompt.
-/// Supports both the legacy projection header `[COMMS REQUEST/MESSAGE/RESPONSE`
-/// and the newer system-notice shape minted by `meerkat-core/handles.rs`:
-/// `[SYSTEM NOTICE][PEER_REQUEST]`, `[SYSTEM NOTICE][PEER_RESPONSE_TERMINAL]`,
-/// `[SYSTEM NOTICE][PEER_RESPONSE_PROGRESS]`, `[SYSTEM NOTICE][PEER_MESSAGE]`.
-function isCommsHeaderLine(line: string): boolean {
-  const trimmed = line.trimStart();
-  if (trimmed.startsWith("[COMMS ")) return true;
-  if (trimmed.startsWith("[SYSTEM NOTICE][PEER_")) return true;
-  return false;
-}
-
-/// Pull a `display_name: <name>` segment out of the new system-notice
-/// shape. Falls back to a shortened `peer_id` if no display name was
-/// supplied. Returns `null` if neither is present.
-function extractSystemNoticeSender(header: string, body: string[]): string | null {
-  // The whole prompt for a single section is one header line followed by
-  // body lines, but the new format crams everything onto one line:
-  //   `... from peer_id <uuid>(display_name: <name>). Intent: ping. ...`
-  // So we search both the header and body for `display_name:` / `peer_id`.
-  const merged = [header, ...body].join(" ");
-  const displayMatch = merged.match(/display_name:\s*([^).]+?)(?=\)|\.|$)/i);
-  if (displayMatch) {
-    const raw = displayMatch[1].trim();
-    // Display names may be comms paths like `mob/role/agent` — keep the
-    // last segment for the bubble label, mirroring the legacy parser.
-    const last = raw.split("/").pop() || raw;
-    if (last) return last;
-  }
-  const peerIdMatch = merged.match(/peer_id\s+([0-9a-f-]{6,})/i);
-  if (peerIdMatch) return peerIdMatch[1].slice(0, 8);
-  return null;
-}
-
-function parseIncomingCommsBlocks(prompt: string): ConversationRichToolCallBlock[] {
-  // Split prompt into individual sections. A new section begins at the
-  // first comms-header line we recognize.
-  const sections: string[] = [];
-  let current = "";
-  for (const line of prompt.split("\n")) {
-    if (isCommsHeaderLine(line) && current) {
+  for (const line of lines) {
+    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
+    if (header) {
+      if (current) sections.push(current);
+      current = {
+        kind: header[1].toLowerCase(),
+        source: header[2].trim(),
+        body: header[3].trim() ? [header[3].trim()] : [],
+      };
+      continue;
+    }
+    if (!current) return [];
+    if (/^\[EVENT via /i.test(line.trim())) {
       sections.push(current);
-      current = line + "\n";
-    } else {
-      current += line + "\n";
+      current = null;
+      continue;
     }
+    current.body.push(line);
   }
-  if (current.trim()) sections.push(current);
+  if (current) sections.push(current);
 
-  const blocks: ConversationRichToolCallBlock[] = [];
-  let counter = 0;
-
-  for (const section of sections) {
-    const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
-    const header = lines[0] || "";
-    if (!isCommsHeaderLine(header)) continue;
-
-    const isLegacy = header.startsWith("[COMMS");
-    let sender: string | null;
-    if (isLegacy) {
-      const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
-      sender = senderMatch ? senderMatch[1] : null;
-    } else {
-      sender = extractSystemNoticeSender(header, lines.slice(1));
-    }
-    if (!sender) continue;
-
-    const headerTail = isLegacy ? commsHeaderTail(header) : "";
-    const body = [
-      ...(headerTail ? [headerTail] : []),
-      ...lines.slice(1),
-    ].filter((l) => !isCommsHeaderLine(l) && !l.startsWith("[EVENT via rpc]"));
-    counter++;
-
-    // Classify the section. Both shapes carry the same semantics; we
-    // collapse them to one of: response (terminal+progress), request,
-    // or message.
-    const isResponse =
-      header.startsWith("[COMMS RESPONSE") ||
-      header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_TERMINAL]") ||
-      header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_PROGRESS]");
-    const isRequest =
-      header.startsWith("[COMMS REQUEST") ||
-      header.startsWith("[SYSTEM NOTICE][PEER_REQUEST]");
-    const isMessage =
-      header.startsWith("[COMMS MESSAGE") ||
-      header.startsWith("[SYSTEM NOTICE][PEER_MESSAGE]");
-
-    if (isResponse) {
-      // Status / Result might be on the header line (new shape) or on
-      // body lines (legacy). Search both.
-      const haystack = [header, ...body].join("\n");
-      const statusMatch = haystack.match(/Status:\s*([A-Za-z_]+)/);
-      const status = statusMatch ? statusMatch[1].trim() : "";
-      const resultMatch = haystack.match(/Result:\s*([\s\S]+?)(?:\n\[|\.\s*$|$)/);
-      let resultSummary = "";
-      if (resultMatch) {
-        const raw = resultMatch[1].trim().replace(/\.$/, "");
-        try {
-          const parsed = JSON.parse(raw);
-          if (typeof parsed === "string") {
-            resultSummary = parsed;
-          } else if (typeof parsed === "object" && parsed !== null) {
-            const val =
-              parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ??
-              parsed.reply ?? parsed.result ?? parsed.content;
-            resultSummary = typeof val === "string" ? val : raw;
-          } else { resultSummary = raw; }
-        } catch { resultSummary = raw; }
-      }
-      blocks.push({
-        type: "tool-call",
-        toolCallId: `incoming-${sender}-${counter}`,
-        name: "response",
-        arguments: "",
-        status: status === "failed" ? "error" : "success",
-        peerTarget: sender,
-        peerIntent: resultSummary || status || "response",
-        peerIncoming: true,
-      });
-    } else if (isRequest) {
-      const haystack = [header, ...body].join("\n");
-      const intentMatch = haystack.match(/Intent:\s*([^.\n]+?)(?:\.\s|\n|$)/);
-      const intent = intentMatch ? intentMatch[1].trim() : "";
-      if (intent === "mob.peer_added" || intent === "mob.peer_removed") continue;
-      // Pull Params + Request ID into peerBody so the PeerToolGroup
-      // expanded row shows the actual content of the request, not
-      // just the intent/status.
-      const requestIdMatch = haystack.match(/Request ID:\s*([0-9a-fA-F-]+)/);
-      const paramsPayload = extractLabeledCommsValue([header, ...body], "Params");
-      const bodyPayload = extractLabeledCommsValue([header, ...body], "Body");
-      const requestId = requestIdMatch ? requestIdMatch[1].trim() : "";
-      let paramsBody = "";
-      let argumentsBody = "";
-      if (paramsPayload) {
-        const raw = paramsPayload.trim();
-        argumentsBody = raw;
-        try {
-          const parsed = JSON.parse(raw);
-          paramsBody = summarizePeerPayload(parsed) || raw;
-          argumentsBody = typeof parsed === "object" && parsed !== null
-            ? JSON.stringify(parsed)
-            : raw;
-        } catch {
-          paramsBody = summarizePeerPayload(raw) || raw;
-        }
-      }
-      if (!paramsBody && bodyPayload) {
-        paramsBody = summarizePeerPayload(bodyPayload) || "";
-      }
-      const peerBody = [
-        paramsBody,
-        !paramsBody && requestId ? `(req: ${requestId.slice(0, 8)})` : "",
-      ].filter(Boolean).join(" ").trim();
-      const visibleIntent = displayPeerIntent(intent);
-      blocks.push({
-        type: "tool-call",
-        toolCallId: `incoming-${sender}-${counter}`,
-        name: "request",
-        arguments: argumentsBody || paramsBody,
-        status: "success",
-        peerTarget: sender,
-        ...(visibleIntent ? { peerIntent: visibleIntent } : {}),
-        ...(peerBody ? { peerBody } : {}),
-        peerIncoming: true,
-      });
-    } else if (isMessage) {
-      const joined = body.join(" ").trim();
-      blocks.push({
-        type: "tool-call",
-        toolCallId: `incoming-${sender}-${counter}`,
-        name: "message",
-        arguments: "",
-        status: "success",
-        peerTarget: sender,
-        peerIntent: joined || "message",
-        peerIncoming: true,
-      });
-    }
-  }
-
-  return blocks;
+  return sections.map((section, index) => {
+    const body = section.body.join("\n").trim();
+    const peerTarget = section.source.split(/[/:]/).filter(Boolean).pop() || section.source;
+    const name = section.kind === "request"
+      ? "peer_request"
+      : section.kind === "response"
+        ? "peer_response"
+        : "peer_message";
+    return {
+      type: "tool-call" as const,
+      toolCallId: `legacy-comms:${section.kind}:${section.source}:${index}:${body}`.slice(0, 180),
+      name,
+      arguments: "",
+      status: "success" as const,
+      peerIncoming: true,
+      peerTarget,
+      ...(body ? { peerBody: body, peerIntent: body } : {}),
+    };
+  });
 }
 
-function extractEmbeddedRpcPrompt(text: string): string | null {
-  const match = text.match(/^\[EVENT via rpc\]\s*(.+)$/im);
-  return match?.[1]?.trim() || null;
+function parseLegacySystemNoticeBlocks(text: string): ConversationRichToolCallBlock[] {
+  const trimmed = text.trim();
+  const notice = trimmed.match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
+  if (!notice) return [];
+
+  const kind = notice[1].toLowerCase();
+  const body = notice[2] || "";
+  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
+  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
+  const peerLabel = displayNameMatch?.[1]?.trim()
+    ? peerLastSegment(displayNameMatch[1].trim())
+    : peerIdMatch?.[1]
+      ? peerIdMatch[1].slice(0, 8)
+      : "peer";
+  const intentMatch = body.match(/\bIntent:\s*([^.\n]+)[.\n]/i);
+  const intent = displayPeerIntent(intentMatch?.[1]);
+  const requestId = body.match(/\bRequest ID:\s*([0-9a-f-]{8,})/i)?.[1]
+    || `legacy-system-notice:${kind}:${peerLabel}:${trimmed.length}`;
+  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
+  const paramsBody = paramsMatch?.[1]?.trim() || "";
+  const peerBody = paramsBody
+    ? summarizePeerPayload(parseJsonPayload(paramsBody) ?? paramsBody)
+    : undefined;
+  const name = kind === "request"
+    ? "peer_request"
+    : kind === "response"
+      ? "peer_response"
+      : "peer_message";
+  return [{
+    type: "tool-call",
+    toolCallId: requestId,
+    name,
+    arguments: paramsBody,
+    status: "success",
+    peerIncoming: true,
+    peerTarget: peerLabel,
+    ...(intent ? { peerIntent: intent } : {}),
+    ...(peerBody ? { peerBody } : {}),
+  }];
 }
 
-function historyMessageText(message: unknown): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichToolCallBlock[] } {
+function historyMessageText(
+  message: unknown,
+  peerRegistry?: Map<string, string>,
+  blobBaseUrl?: string,
+): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichBlock[] } {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
@@ -1410,19 +1516,27 @@ function historyMessageText(message: unknown): { role: "user" | "assistant" | "s
   switch (role) {
     case "user": {
       const text = extractTextFromContentBlocks(record.content);
-      if (text.startsWith("[COMMS")) {
-        const blocks = parseIncomingCommsBlocks(text);
-        if (blocks.length > 0) {
-          return { role: "meta", text: summarizeCommsTransport(text), blocks };
-        }
-        return { role: "meta", text: summarizeCommsTransport(text) };
+      const blocks = [
+        ...parseLegacyCommsBlocks(text),
+        ...parseLegacySystemNoticeBlocks(text),
+      ];
+      if (blocks.length > 0) {
+        return { role: "meta", text, blocks };
       }
-      return { role: "user", text: stripRpcEventPrefix(text) };
+      return { role: "user", text };
+    }
+    case "system_notice": {
+      const blocks = typedSystemNoticeBlocksToRich(record.blocks, record.body, blobBaseUrl);
+      const text = typeof record.body === "string"
+        ? record.body
+        : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
+      return { role: "meta", text, ...(blocks.length > 0 ? { blocks } : {}) };
     }
     case "assistant":
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -1442,14 +1556,77 @@ function historyMessageText(message: unknown): { role: "user" | "assistant" | "s
           return "";
         })
         .filter((value) => value.trim().length > 0)
-        .join("");
-      return { role: "assistant", text };
+        .join("\n\n");
+      return { role: "assistant", text, ...(toolBlocks.length > 0 ? { blocks: toolBlocks } : {}) };
     }
     case "system":
       return { role: "system", text: typeof record.content === "string" ? record.content : "" };
     default:
       return { role: null, text: "" };
   }
+}
+
+function renderSessionHistoryTextCompleteEntry(
+  agent: ConsoleAgent | null,
+  frame: ConsoleFrame,
+  entryId: string,
+  options: {
+    consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
+    peerRegistry?: Map<string, string>;
+    blobBaseUrl?: string;
+  } = {},
+): ConversationTimelineEntry | null {
+  if (frame.sourceKind !== "session_history") return null;
+  const record = frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : {};
+  const parsed = historyMessageText(record.message, options.peerRegistry, options.blobBaseUrl);
+  const text = parsed.text.trim();
+  const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  if (parsed.role === "meta") {
+    const filteredParsedBlocks = options.consumeDuplicateToolBlock
+      ? parsedBlocks.filter((block) => {
+          if (block.type !== "tool-call") return true;
+          return !options.consumeDuplicateToolBlock?.(block);
+        })
+      : parsedBlocks;
+    if (!text && filteredParsedBlocks.length === 0) return null;
+    const blocks = [
+      ...filteredParsedBlocks,
+      ...parseConversationRichBlocks(text),
+    ];
+    return {
+      kind: "message",
+      id: entryId,
+      identity: COMMS_IDENTITY,
+      variant: blocks.length > 0 ? "rich" : "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      ...(blocks.length > 0 ? { blocks } : { text }),
+    };
+  }
+  if (parsed.role !== "assistant" || (!text && parsedBlocks.length === 0)) return null;
+  if (/^I have acknowledged the addition of the following peers:/i.test(text)) {
+    return null;
+  }
+  const filteredParsedBlocks = options.consumeDuplicateToolBlock
+    ? parsedBlocks.filter((block) => {
+        if (block.type !== "tool-call") return true;
+        return !options.consumeDuplicateToolBlock?.(block);
+      })
+    : parsedBlocks;
+  if (!text && filteredParsedBlocks.length === 0) return null;
+  const blocks = [
+    ...filteredParsedBlocks,
+    ...parseConversationRichBlocks(text),
+  ];
+  return {
+    kind: "message",
+    id: entryId,
+    identity: agentIdentity(agent),
+    variant: blocks.length > 0 ? "rich" : "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...(blocks.length > 0 ? { blocks } : { text }),
+  };
 }
 
 export function mapSessionHistoryToTimelineEntries(
@@ -1481,28 +1658,12 @@ export function mapSessionHistoryToTimelineEntries(
     if (parsed.role === "system") {
       continue;
     }
-    if (parsed.role === "user") {
-      if (isScaffoldUserText(text)) {
-        continue;
-      }
-    }
     if (parsed.role === "meta") {
-      const embeddedPrompt = rawContent ? extractEmbeddedRpcPrompt(rawContent) : null;
-      if (embeddedPrompt) {
-        entries.push({
-          kind: "message",
-          id: `history:${index}:event`,
-          identity: USER_IDENTITY,
-          variant: "plain",
-          ...(createdAt ? { createdAt } : {}),
-          text: embeddedPrompt,
-        });
-      }
       if (parsedBlocks.length > 0) {
         entries.push({
           kind: "message",
           id: `history:${index}`,
-          identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
+          identity: COMMS_IDENTITY,
           variant: "rich",
           ...(createdAt ? { createdAt } : {}),
           blocks: parsedBlocks,
@@ -1576,11 +1737,9 @@ export function mapSessionHistoryToTimelineEntries(
       lastPeerActivityIndex = index;
     }
   }
-  if (lastOperatorPromptIndex >= 0) {
-    return entries.slice(lastOperatorPromptIndex);
-  }
-  if (lastPeerActivityIndex >= 0) {
-    return entries.slice(lastPeerActivityIndex);
+  const anchorIndex = Math.max(lastOperatorPromptIndex, lastPeerActivityIndex);
+  if (anchorIndex >= 0) {
+    return entries.slice(anchorIndex);
   }
   return entries.slice(-8);
 }
@@ -1603,8 +1762,15 @@ export function mapFramesToTimelineEntries(
     : frames;
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
+  const peerRegistry = buildPeerRegistry(orderedFrames);
   const emittedToolCalls = new Set<string>();
+  const {
+    liveToolCallIds,
+    liveToolSignatureCounts,
+  } = liveToolDedupeState(orderedFrames, toolBlocks);
+  const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
   const emittedImages = new Set<string>();
+  const emittedUserInputs = new Set<string>();
 
   let pendingText = "";
   let pendingId = "";
@@ -1712,10 +1878,22 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
+    const interactionCommsEntry = renderInteractionCommsEntry(frame, entryId);
+    if (interactionCommsEntry) {
+      flushPendingText();
+      entries.push(interactionCommsEntry);
+      continue;
+    }
+
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
+        const userKey = userEntryDedupeKey(frame, userEntry);
+        if (userKey && emittedUserInputs.has(userKey)) {
+          continue;
+        }
+        if (userKey) emittedUserInputs.add(userKey);
         entries.push(userEntry);
       }
       continue;
@@ -1735,6 +1913,27 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "text_complete") {
+      const historyText = frame.sourceKind === "session_history"
+        ? terminalFrameVisibleText(frame).trim()
+        : "";
+      if (
+        historyText
+        && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
+      ) {
+        continue;
+      }
+      const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+        peerRegistry,
+        blobBaseUrl: options.blobBaseUrl,
+        consumeDuplicateToolBlock: (block) => (
+          liveToolCallIds.has(block.toolCallId)
+          || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        ),
+      });
+      if (historyEntry) {
+        flushPendingText();
+        entries.push(historyEntry);
+      }
       continue;
     }
 
@@ -1745,6 +1944,27 @@ export function mapFramesToTimelineEntries(
     ) {
       const streamedText = pendingText;
       flushPendingText();
+      if (frame.sourceKind === "session_history") {
+        const historyText = terminalFrameVisibleText(frame).trim();
+        if (
+          historyText
+          && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
+        ) {
+          continue;
+        }
+        const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+          peerRegistry,
+          blobBaseUrl: options.blobBaseUrl,
+          consumeDuplicateToolBlock: (block) => (
+            liveToolCallIds.has(block.toolCallId)
+            || consumeToolSignatureCount(liveToolSignatureCounts, block)
+          ),
+        });
+        if (historyEntry) {
+          entries.push(historyEntry);
+        }
+        continue;
+      }
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
       if (terminalEntry) {
         entries.push(terminalEntry);
@@ -1863,12 +2083,18 @@ export function inferResponsePhaseFromFrames(
       case "text_delta":
         phase = "generating";
         break;
+      case "text_complete":
       case "interaction_complete":
       case "interaction_failed":
       case "run_completed":
       case "run_failed":
         phase = null;
         break;
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+        if (data.stop_reason === "end_turn") phase = null;
+        break;
+      }
       default:
         break;
     }
@@ -1923,6 +2149,9 @@ export function buildActivityRailViewState(args: {
 
   const filteredFrames = args.eventFrames.filter((frame) => {
     if (ACTIVITY_HIDDEN_EVENTS.has(frame.event)) {
+      return false;
+    }
+    if (frame.sourceKind === "session_history") {
       return false;
     }
     const frameIdentity = frame.identity?.trim();

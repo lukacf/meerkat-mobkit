@@ -421,7 +421,7 @@ test("parseSseFrames unwraps aggregate timeline frames", () => {
   const frames = parseSseFrames([
     "id: console:4",
     "event: console_frame",
-    'data: {"type":"console_frame","frame":{"id":"console-frame-4","cursor":"console:4","dedupe_key":"event-4","timestamp_ms":4,"runtime_key":"runtime-a","identity":"agent-a","kind":"user_input","status":"accepted","frame_version":1,"payload":{"content":"hello"},"source":{"kind":"send"},"interaction_id":"turn-4"}}',
+    'data: {"type":"console_frame","frame":{"id":"console-frame-4","cursor":"console:4","dedupe_key":"event-4","timestamp_ms":4,"runtime_key":"runtime-a","identity":"agent-a","kind":"user_input","status":"accepted","frame_version":1,"payload":{"content":"hello"},"source":{"kind":"session_history"},"interaction_id":"turn-4"}}',
     "",
   ].join("\n"));
 
@@ -430,6 +430,7 @@ test("parseSseFrames unwraps aggregate timeline frames", () => {
   assert.equal(frames[0]?.event, "user_input");
   assert.equal(frames[0]?.cursor, "console:4");
   assert.equal(frames[0]?.frameVersion, 1);
+  assert.equal(frames[0]?.sourceKind, "session_history");
   assert.deepEqual(frames[0]?.data, { content: "hello" });
 });
 

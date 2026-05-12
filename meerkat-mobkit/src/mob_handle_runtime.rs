@@ -228,6 +228,132 @@ fn no_op_pre_build_hook() -> PreBuildHook {
     Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
 }
 
+struct AutoWireParentMobToolsFactory {
+    inner: Arc<dyn meerkat_core::service::MobToolsFactory>,
+    state: Arc<meerkat_mob_mcp::MobMcpState>,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
+    async fn build_mob_tools(
+        &self,
+        args: meerkat_core::service::MobToolsBuildArgs,
+    ) -> Result<Arc<dyn meerkat_core::AgentToolDispatcher>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let owner_identity = args
+            .comms_name
+            .as_deref()
+            .and_then(owner_identity_from_comms_name);
+        let inner = self.inner.build_mob_tools(args).await?;
+        Ok(Arc::new(AutoWireParentMobToolDispatcher {
+            inner,
+            state: Arc::clone(&self.state),
+            owner_identity,
+        }))
+    }
+}
+
+struct AutoWireParentMobToolDispatcher {
+    inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
+    state: Arc<meerkat_mob_mcp::MobMcpState>,
+    owner_identity: Option<String>,
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
+    fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+        self.inner.tools()
+    }
+
+    async fn dispatch(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if call.name != "mob_spawn_member" {
+            return self.inner.dispatch(call).await;
+        }
+
+        let mut args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let mut auto_wire_parent = true;
+        if let Some(object) = args.as_object_mut() {
+            auto_wire_parent = object
+                .get("auto_wire_parent")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            object
+                .entry("auto_wire_parent".to_string())
+                .or_insert(Value::Bool(true));
+        }
+        let mob_id = args
+            .get("mob_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let member_id = args
+            .get("member_id")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let call = meerkat_core::types::ToolCallView {
+            id: call.id,
+            name: call.name,
+            args: &args,
+        };
+        let outcome = self.inner.dispatch(call).await?;
+        if auto_wire_parent
+            && let (Some(mob_id), Some(member_id), Some(owner_identity)) =
+                (mob_id, member_id, self.owner_identity.as_deref())
+            && member_id != owner_identity
+        {
+            self.state
+                .mob_wire(
+                    &meerkat_mob::MobId::from(mob_id.as_str()),
+                    meerkat_mob::AgentIdentity::from(member_id.as_str()),
+                    meerkat_mob::PeerTarget::Local(meerkat_mob::AgentIdentity::from(
+                        owner_identity,
+                    )),
+                )
+                .await
+                .map_err(|error| {
+                    meerkat_core::ToolError::execution_failed(format!(
+                        "spawned member but failed to wire to spawning agent: {error}"
+                    ))
+                })?;
+        }
+        Ok(outcome)
+    }
+}
+
+fn owner_identity_from_comms_name(name: &str) -> Option<String> {
+    name.rsplit('/')
+        .next()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn install_agent_mob_tools(
+    slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
+    session_service: Arc<dyn MobSessionService>,
+) -> Arc<meerkat_mob_mcp::MobMcpState> {
+    let state = Arc::new(meerkat_mob_mcp::MobMcpState::new(session_service));
+    let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
+        Arc::clone(&state),
+    ));
+    let factory = Arc::new(AutoWireParentMobToolsFactory {
+        inner,
+        state: Arc::clone(&state),
+    });
+    *slot
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
+    state
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -1158,6 +1284,7 @@ pub struct MobBootstrapSpec {
     pub storage: MobStorage,
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
+    pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -1187,6 +1314,7 @@ impl MobBootstrapSpec {
             storage,
             session_service,
             binary_blob_store: None,
+            agent_mob_mcp_state: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -1307,6 +1435,7 @@ impl MobBootstrapSpec {
         if let Some(store) = session_store {
             builder.default_session_store = Some(store);
         }
+        let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
         let session_service: Arc<dyn MobSessionService> = Arc::new(
             meerkat_session::EphemeralSessionService::new(builder, max_sessions),
         );
@@ -1335,7 +1464,12 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: runtime_adapter.clone(),
         }) as Arc<dyn MobSessionService>;
+        let agent_mob_mcp_state = Some(install_agent_mob_tools(
+            mob_tools_slot,
+            Arc::clone(&session_service),
+        ));
         let mut spec = Self::new(definition, storage, session_service);
+        spec.agent_mob_mcp_state = agent_mob_mcp_state;
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -1449,6 +1583,7 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
+        let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
         let session_service: Arc<dyn MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 builder,
@@ -1464,7 +1599,12 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
+        let agent_mob_mcp_state = Some(install_agent_mob_tools(
+            mob_tools_slot,
+            Arc::clone(&session_service),
+        ));
         let mut spec = Self::new(definition, storage, session_service);
+        spec.agent_mob_mcp_state = agent_mob_mcp_state;
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -1511,6 +1651,7 @@ impl MobBootstrapSpec {
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
+        let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
         let session_service: Arc<dyn MobSessionService> = Arc::new(
             meerkat_session::EphemeralSessionService::new(builder, max_sessions),
         );
@@ -1532,7 +1673,12 @@ impl MobBootstrapSpec {
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
         }) as Arc<dyn MobSessionService>;
+        let agent_mob_mcp_state = Some(install_agent_mob_tools(
+            mob_tools_slot,
+            Arc::clone(&session_service),
+        ));
         let mut spec = Self::new(definition, storage, session_service);
+        spec.agent_mob_mcp_state = agent_mob_mcp_state;
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -1637,6 +1783,7 @@ pub type RealMobRuntime = MobRuntime;
 pub struct MobRuntime {
     handle: MobHandle,
     session_service: Option<Arc<dyn MobSessionService>>,
+    agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
@@ -1648,6 +1795,8 @@ impl MobRuntime {
         let ephemeral_dir = spec._ephemeral_dir.clone();
         let session_service = spec.session_service.clone();
         let binary_blob_store = spec.binary_blob_store.clone();
+        let mob_id = spec.definition.id.clone();
+        let agent_mob_mcp_state = spec.agent_mob_mcp_state.clone();
         let effective_runtime_adapter = spec
             .runtime_adapter
             .clone()
@@ -1675,9 +1824,13 @@ impl MobRuntime {
         }
 
         let handle = builder.create().await?;
+        if let Some(state) = agent_mob_mcp_state.as_ref() {
+            state.mob_insert_handle(mob_id, handle.clone()).await;
+        }
         Ok(Self {
             handle,
             session_service: Some(session_service),
+            agent_mob_mcp_state,
             binary_blob_store,
             _ephemeral_dir: ephemeral_dir,
         })
@@ -1687,6 +1840,7 @@ impl MobRuntime {
         Self {
             handle,
             session_service: None,
+            agent_mob_mcp_state: None,
             binary_blob_store: None,
             _ephemeral_dir: None,
         }
@@ -1694,6 +1848,10 @@ impl MobRuntime {
 
     pub fn handle(&self) -> MobHandle {
         self.handle.clone()
+    }
+
+    pub fn agent_mob_mcp_state(&self) -> Option<Arc<meerkat_mob_mcp::MobMcpState>> {
+        self.agent_mob_mcp_state.clone()
     }
 
     pub async fn read_session_history(

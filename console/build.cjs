@@ -2,6 +2,7 @@
 
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { build } = require("esbuild");
 
 const outDir = path.join(__dirname, "dist");
@@ -22,21 +23,27 @@ const alias = {
 // Shared packages import clsx etc. — resolve from console/node_modules
 const nodePaths = [path.resolve(__dirname, "node_modules")];
 
-const html = `<!doctype html>
+function assetVersion(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex").slice(0, 12);
+}
+
+function renderHtml({ jsVersion, cssVersion }) {
+  return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="mobkit-base-url" content="" />
     <title>MobKit Console</title>
-    <link rel="stylesheet" href="/console/assets/console-app.css" />
+    <link rel="stylesheet" href="/console/assets/console-app.css?v=${cssVersion}" />
   </head>
   <body>
     <div id="root"></div>
-    <script src="/console/assets/console-app.js" defer></script>
+    <script src="/console/assets/console-app.js?v=${jsVersion}" defer></script>
   </body>
 </html>
 `;
+}
 
 async function main() {
   await fs.mkdir(outDir, { recursive: true });
@@ -79,7 +86,18 @@ async function main() {
     minify: true,
   });
 
-  await fs.writeFile(htmlPath, html, "utf8");
+  const [appBundle, cssBundle] = await Promise.all([
+    fs.readFile(appBundlePath),
+    fs.readFile(path.join(outDir, "console-app.css")),
+  ]);
+  await fs.writeFile(
+    htmlPath,
+    renderHtml({
+      jsVersion: assetVersion(appBundle),
+      cssVersion: assetVersion(cssBundle),
+    }),
+    "utf8",
+  );
 
   await Promise.all([
     fs.copyFile(appBundlePath, path.join(embeddedOutDir, "console-app.js")),

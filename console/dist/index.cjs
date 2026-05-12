@@ -1758,7 +1758,11 @@ function ToolCallBlock({ block }) {
               ] }),
               content && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: content })
             ] }) : /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(import_jsx_runtime5.Fragment, { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__name", children: target }),
+              /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__name", children: [
+                block.name,
+                " \u2192 ",
+                target
+              ] }),
               block.peerIntent && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-intent", children: block.peerIntent }),
               content && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__preview", children: content })
             ] }),
@@ -1894,7 +1898,7 @@ function PeerToolGroup({ blocks }) {
   const statusClass = anyError ? "cc-tool-call--error" : allSuccess ? "cc-tool-call--success" : "cc-tool-call--pending";
   const isIncoming = blocks[0]?.peerIncoming;
   const arrow = isIncoming ? "\u2199" : "\u2197";
-  const label = isIncoming ? `Received from ${targets.join(", ")}` : `Sent to ${targets.join(", ")}`;
+  const label = isIncoming ? `Received from ${targets.join(", ")}` : blocks.length === 1 ? `${blocks[0]?.name || "peer"} \u2192 ${targets[0] || "peer"}` : `Sent to ${targets.join(", ")}`;
   return /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("section", { className: clsx_default("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass), children: [
     /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)(
       "button",
@@ -1913,6 +1917,7 @@ function PeerToolGroup({ blocks }) {
       }
     ),
     expanded && /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("div", { className: "cc-tool-call__body", children: blocks.map((block, i) => /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("div", { className: "cc-tool-call__peer-row", children: [
+      /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("span", { className: "cc-tool-call__peer-intent", children: block.name }),
       /* @__PURE__ */ (0, import_jsx_runtime5.jsxs)("span", { className: "cc-tool-call__peer-target", children: [
         isIncoming ? "\u2190" : "\u2192",
         " ",
@@ -2077,7 +2082,7 @@ function normalizeAgents(experience, modules) {
   );
   const snapshotAgents = experience?.agent_sidebar?.live_snapshot?.agents;
   if (Array.isArray(snapshotAgents) && snapshotAgents.length > 0) {
-    return snapshotAgents.map((entry) => {
+    const agents = snapshotAgents.map((entry) => {
       const entryIdentity = typeof entry.identity === "string" ? entry.identity.trim() : "";
       const entryMemberId = typeof entry.member_id === "string" ? entry.member_id.trim() : "";
       const statusRow = identityStatusByIdentity.get(entryIdentity) || identityStatusByIdentity.get(entryMemberId) || normalizeIdentityStatusRow(entry);
@@ -2110,6 +2115,33 @@ function normalizeAgents(experience, modules) {
         ...watchFields
       };
     });
+    const seen = new Set(
+      agents.flatMap((agent) => [agent.identity, agent.member_id, agent.agent_id]).filter((value) => Boolean(value)).map((value) => value.toLowerCase())
+    );
+    for (const statusRow of normalizedIdentityStatusRows) {
+      if (seen.has(statusRow.identity.toLowerCase())) continue;
+      const addressable = statusRow.addressability === "addressable";
+      agents.push({
+        identity: statusRow.identity,
+        agent_id: statusRow.identity,
+        member_id: statusRow.identity,
+        label: String(statusRow.display_name || statusRow.identity),
+        kind: String(statusRow.role || "identity"),
+        ...statusRow.role !== void 0 ? { role: statusRow.role } : {},
+        state: statusRow.state,
+        addressability: statusRow.addressability,
+        ...statusRow.generation !== void 0 ? { generation: statusRow.generation } : {},
+        ...statusRow.checkpoint_version !== void 0 ? { checkpoint_version: statusRow.checkpoint_version } : {},
+        ...statusRow.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
+        ...statusRow.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
+        ...statusRow.labels?.group ? { group: statusRow.labels.group } : {},
+        addressable,
+        affordances: { can_send_message: addressable },
+        model_capabilities: { image_input: false }
+      });
+      seen.add(statusRow.identity.toLowerCase());
+    }
+    return agents;
   }
   if (Array.isArray(identityStatusRows) && identityStatusRows.length > 0) {
     return identityStatusRows.map((entry) => {
@@ -2332,6 +2364,12 @@ var SYSTEM_IDENTITY = {
   presentation: "system",
   showLabel: true
 };
+var COMMS_IDENTITY = {
+  id: "comms",
+  label: "",
+  role: "system",
+  showLabel: false
+};
 function summarizeFrameData(data) {
   if (typeof data === "string") {
     const trimmed = data.trim();
@@ -2469,6 +2507,47 @@ function parseToolArguments(frame) {
   }
   return JSON.stringify(record || {});
 }
+function normalizeToolArgumentsForSignature(argumentsText) {
+  const trimmed = (argumentsText || "").trim();
+  if (!trimmed) return "";
+  try {
+    return JSON.stringify(JSON.parse(trimmed));
+  } catch {
+    return trimmed.replace(/\s+/g, " ");
+  }
+}
+function toolBlockSignature(block) {
+  return `${block.name}\0${normalizeToolArgumentsForSignature(block.arguments)}`;
+}
+function addToolSignatureCount(counts, block) {
+  const key = toolBlockSignature(block);
+  counts.set(key, (counts.get(key) || 0) + 1);
+}
+function consumeToolSignatureCount(counts, block) {
+  const key = toolBlockSignature(block);
+  const count = counts.get(key) || 0;
+  if (count <= 0) return false;
+  if (count === 1) counts.delete(key);
+  else counts.set(key, count - 1);
+  return true;
+}
+function liveToolDedupeState(frames, toolBlocks) {
+  const liveToolCallIds = /* @__PURE__ */ new Set();
+  const liveToolSignatureCounts = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    if (frame.event !== "tool_call_requested" && frame.event !== "tool_call" && frame.event !== "tool_execution_started") {
+      continue;
+    }
+    const toolCallId = parseToolCallId(frame);
+    if (!toolCallId || liveToolCallIds.has(toolCallId)) continue;
+    const block = toolBlocks.get(toolCallId);
+    if (!block) continue;
+    liveToolCallIds.add(toolCallId);
+    addToolSignatureCount(liveToolSignatureCounts, block);
+  }
+  return { liveToolCallIds, liveToolSignatureCounts };
+}
 var TECHNICAL_PEER_INTENTS = /* @__PURE__ */ new Set(["checksum_token"]);
 var PEER_PAYLOAD_TEXT_KEYS = [
   "message",
@@ -2520,34 +2599,17 @@ function summarizePeerPayload(value) {
   }
   if (value && typeof value === "object") {
     const record = value;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (type === "image" || type === "image_ref" || type === "image_upload") {
+      return typeof record.alt === "string" && record.alt.trim() ? record.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
+    }
     for (const key of PEER_PAYLOAD_TEXT_KEYS) {
-      const summary2 = summarizePeerPayload(record[key]);
-      if (summary2) return summary2;
+      const summary = summarizePeerPayload(record[key]);
+      if (summary) return summary;
     }
     return JSON.stringify(record);
   }
   return void 0;
-}
-function extractLabeledCommsValue(lines, label) {
-  const labelPattern = new RegExp(`\\b${label}:\\s*(.*)$`);
-  const startIndex = lines.findIndex((line) => labelPattern.test(line));
-  if (startIndex < 0) return void 0;
-  const match = lines[startIndex]?.match(labelPattern);
-  const first = match?.[1]?.trim() || "";
-  if (!first) return void 0;
-  const chunks = [first];
-  const startsJson = first.startsWith("{") || first.startsWith("[");
-  if (!startsJson || parseJsonPayload(first) !== null) {
-    return first;
-  }
-  for (let i = startIndex + 1; i < lines.length; i++) {
-    const next = lines[i].trim();
-    if (/^(Intent|Body|Params|Request ID|Status|Result):\s*/.test(next)) break;
-    chunks.push(next);
-    const candidate = chunks.join("\n").trim();
-    if (parseJsonPayload(candidate) !== null) return candidate;
-  }
-  return chunks.join("\n").trim();
 }
 function extractPeerBodyFromArgs(argsRecord) {
   if (!argsRecord) return void 0;
@@ -2558,6 +2620,25 @@ function extractPeerBodyFromArgs(argsRecord) {
   const resultBody = summarizePeerPayload(argsRecord.result);
   if (resultBody) return resultBody;
   return void 0;
+}
+function capturePeersResult(peerRegistry, rawResult) {
+  const resultText = typeof rawResult === "string" ? rawResult : rawResult && typeof rawResult === "object" ? JSON.stringify(rawResult) : "";
+  if (!resultText) return;
+  try {
+    const parsed = JSON.parse(resultText);
+    if (!Array.isArray(parsed.peers)) return;
+    for (const peer of parsed.peers) {
+      if (typeof peer.peer_id === "string" && typeof peer.name === "string") {
+        peerRegistry.set(peer.peer_id, peer.name);
+      }
+    }
+  } catch {
+  }
+}
+function peerTargetFromArgs(argsRecord, peerRegistry) {
+  const peerId = typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id.trim() : "";
+  const registryName = peerId ? peerRegistry?.get(peerId) : void 0;
+  return registryName ? peerLastSegment(registryName) : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim() ? peerLastSegment(argsRecord.display_name.trim()) : typeof argsRecord?.to === "string" && argsRecord.to.trim() ? peerLastSegment(argsRecord.to.trim()) : peerId ? peerId.slice(0, 8) : void 0;
 }
 function parseToolResult(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
@@ -2594,27 +2675,13 @@ function parseToolResult(frame) {
 function buildToolBlocks(frames) {
   const toolCalls = /* @__PURE__ */ new Map();
   const pendingResults = /* @__PURE__ */ new Map();
-  const peerRegistry = /* @__PURE__ */ new Map();
-  const lastSegment2 = (s) => s.split("/").pop() || s;
+  const peerRegistry = buildPeerRegistry(frames);
   for (const frame of frames) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       const toolCallId = parseToolCallId(frame);
       const data = frame.data;
       if (data && (data.name === "peers" || data.tool_name === "peers")) {
-        const rawResult = typeof data.result === "string" ? data.result : null;
-        if (rawResult) {
-          try {
-            const parsed2 = JSON.parse(rawResult);
-            if (Array.isArray(parsed2.peers)) {
-              for (const p of parsed2.peers) {
-                if (typeof p.peer_id === "string" && typeof p.name === "string") {
-                  peerRegistry.set(p.peer_id, p.name);
-                }
-              }
-            }
-          } catch {
-          }
-        }
+        capturePeersResult(peerRegistry, data.result);
       }
       if (!toolCallId) continue;
       const parsed = parseToolResult(frame);
@@ -2637,8 +2704,7 @@ function buildToolBlocks(frames) {
       const args = frame.data && typeof frame.data === "object" ? frame.data.args : null;
       const argsRecord = args && typeof args === "object" ? args : null;
       const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
-      const registryName = isPeerTool && typeof argsRecord?.peer_id === "string" ? peerRegistry.get(argsRecord.peer_id.trim()) : void 0;
-      const peerTarget2 = !isPeerTool ? void 0 : registryName ? lastSegment2(registryName) : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim() ? lastSegment2(argsRecord.display_name.trim()) : typeof argsRecord?.peer_id === "string" && argsRecord.peer_id.trim() ? argsRecord.peer_id.trim().slice(0, 8) : typeof argsRecord?.to === "string" ? lastSegment2(argsRecord.to) : void 0;
+      const peerTarget2 = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : void 0;
       const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
       const peerIntent = displayPeerIntent(rawPeerIntent);
       const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : void 0;
@@ -2657,23 +2723,33 @@ function buildToolBlocks(frames) {
   }
   return toolCalls;
 }
+function buildPeerRegistry(frames) {
+  const peerRegistry = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (frame.event !== "tool_result_received" && frame.event !== "tool_execution_completed") continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data : null;
+    if (!data || data.name !== "peers" && data.tool_name !== "peers") continue;
+    capturePeersResult(peerRegistry, data.result);
+  }
+  return peerRegistry;
+}
 function parsePeerSummary(text) {
   const match = text.match(/Peer\s+(response|request|message):\s*(.+?)(?:\s*Status:\s|$)/s);
   if (!match) return null;
   const [, verb, body] = match;
-  let summary2 = body.trim();
+  let summary = body.trim();
   try {
-    const parsed = JSON.parse(summary2);
+    const parsed = JSON.parse(summary);
     if (typeof parsed === "object" && parsed !== null) {
-      if (typeof parsed.summary === "string") summary2 = parsed.summary;
-      else if (typeof parsed.text === "string") summary2 = parsed.text;
-      else if (typeof parsed.body === "string") summary2 = parsed.body;
-      else if (typeof parsed.message === "string") summary2 = parsed.message;
+      if (typeof parsed.summary === "string") summary = parsed.summary;
+      else if (typeof parsed.text === "string") summary = parsed.text;
+      else if (typeof parsed.body === "string") summary = parsed.body;
+      else if (typeof parsed.message === "string") summary = parsed.message;
     }
   } catch {
-    summary2 = summary2.replace(/^["']|["']$/g, "");
+    summary = summary.replace(/^["']|["']$/g, "");
   }
-  return { verb, summary: summary2 };
+  return { verb, summary };
 }
 function renderPeerEntry(frame, entryId) {
   const rawText = summarizeFrameData(frame.data);
@@ -2731,6 +2807,27 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   }
   return null;
 }
+function terminalFrameVisibleText(frame) {
+  if (frame.event === "text_complete") {
+    const record = frame.data && typeof frame.data === "object" ? frame.data : null;
+    if (typeof record?.content === "string") return record.content;
+    if (typeof record?.text === "string") return record.text;
+  }
+  if (frame.event === "interaction_complete" || frame.event === "run_completed" || frame.event === "text_complete") {
+    return summarizeFrameData(frame.data);
+  }
+  return "";
+}
+function liveAssistantTerminalTextSignatures(frames) {
+  const signatures = /* @__PURE__ */ new Set();
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const text = terminalFrameVisibleText(frame).trim();
+    if (!text) continue;
+    signatures.add(normalizeComparableText(text));
+  }
+  return signatures;
+}
 function buildBlobUrl(blobId, baseUrl) {
   const path = `/blobs/${encodeURIComponent(blobId)}`;
   const base = baseUrl?.trim();
@@ -2785,9 +2882,6 @@ function imageEntryKey(entry) {
 function normalizeComparableText(value) {
   return value.replace(/\s+/g, " ").trim();
 }
-function isScaffoldUserText(text) {
-  return text.startsWith("## Incident Comms Protocol") || text.startsWith("You have been spawned as") || text.startsWith("[SYSTEM NOTICE][TOOL_SCOPE]");
-}
 function buildQuickPromptSuggestions(agent) {
   const labels = agent?.labels ?? {};
   const suggestions = [];
@@ -2827,7 +2921,20 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
   }
   const text = extractTextFromContentBlocks(content).trim();
   if (!text) return null;
-  if (isScaffoldUserText(text)) return null;
+  const commsBlocks = frame.sourceKind === "session_history" ? [
+    ...parseLegacyCommsBlocks(text),
+    ...parseLegacySystemNoticeBlocks(text)
+  ] : [];
+  if (commsBlocks.length > 0) {
+    return {
+      kind: "message",
+      id: entryId,
+      identity: COMMS_IDENTITY,
+      variant: "rich",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      blocks: commsBlocks
+    };
+  }
   return {
     kind: "message",
     id: entryId,
@@ -2836,6 +2943,26 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
     createdAt: isoFromTimestampMs(frame.timestampMs),
     text
   };
+}
+function userEntryTextSignature(entry) {
+  if (entry.kind !== "message") return "";
+  if ("text" in entry && typeof entry.text === "string") {
+    return entry.text.replace(/\s+/g, " ").trim();
+  }
+  if ("blocks" in entry && Array.isArray(entry.blocks)) {
+    return JSON.stringify(entry.blocks);
+  }
+  return "";
+}
+function userEntryDedupeKey(frame, entry) {
+  const interactionId = frame.interactionId?.trim();
+  if (interactionId) return `interaction:${interactionId}`;
+  const signature = userEntryTextSignature(entry);
+  if (frame.sourceKind === "session_history" && /^You are\b/i.test(signature)) {
+    return `history-kickoff:${signature}`;
+  }
+  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
+  return signature ? `content:${timestamp}:${signature}` : "";
 }
 function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
@@ -2848,43 +2975,14 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   }
   const createdAt = isoFromTimestampMs(frame.timestampMs);
   const entries = [];
-  const embeddedPrompt = extractEmbeddedRpcPrompt(prompt);
-  if (embeddedPrompt && !options.suppressEmbeddedRpcPrompt) {
-    entries.push({
-      kind: "message",
-      id: `${entryId}:event`,
-      identity: USER_IDENTITY,
-      variant: "plain",
-      ...createdAt ? { createdAt } : {},
-      text: embeddedPrompt
-    });
-  }
-  if (prompt.startsWith("[COMMS") || prompt.startsWith("[SYSTEM NOTICE][PEER_")) {
-    const incomingBlocks = parseIncomingCommsBlocks(prompt);
-    if (incomingBlocks.length > 0) {
-      entries.push({
-        kind: "message",
-        id: entryId,
-        identity: { id: "comms", label: "", role: "system", showLabel: false },
-        variant: "rich",
-        ...createdAt ? { createdAt } : {},
-        blocks: incomingBlocks
-      });
-    } else {
-      const summarized = summarizeCommsTransport(prompt).trim();
-      if (summarized) {
-        entries.push({
-          kind: "message",
-          id: entryId,
-          identity: SYSTEM_IDENTITY,
-          variant: "meta",
-          ...createdAt ? { createdAt } : {},
-          text: summarized
-        });
-      }
-    }
-  }
+  void options;
+  void createdAt;
   return entries;
+}
+function renderInteractionCommsEntry(frame, entryId) {
+  void frame;
+  void entryId;
+  return null;
 }
 function extractTextFromContentBlocks(blocks) {
   if (typeof blocks === "string") {
@@ -2916,7 +3014,7 @@ function extractPromptText(prompt) {
 }
 function contentToUserBlocks(content, blobBaseUrl) {
   if (typeof content === "string") {
-    return parseConversationRichBlocks(stripRpcEventPrefix(content));
+    return parseConversationRichBlocks(content);
   }
   if (!Array.isArray(content)) {
     return [];
@@ -2924,7 +3022,7 @@ function contentToUserBlocks(content, blobBaseUrl) {
   const blocks = [];
   for (const block of content) {
     if (typeof block === "string") {
-      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(block)));
+      blocks.push(...parseConversationRichBlocks(block));
       continue;
     }
     if (!block || typeof block !== "object") continue;
@@ -2932,17 +3030,17 @@ function contentToUserBlocks(content, blobBaseUrl) {
     const type = typeof record.type === "string" ? record.type : "";
     if (type === "text") {
       const text = typeof record.text === "string" ? record.text : typeof record.content === "string" ? record.content : "";
-      blocks.push(...parseConversationRichBlocks(stripRpcEventPrefix(text)));
+      blocks.push(...parseConversationRichBlocks(text));
       continue;
     }
-    if (type === "image") {
+    if (type === "image" || type === "image_ref") {
       const source = typeof record.source === "string" ? record.source : "";
       const blobId = typeof record.blob_id === "string" ? record.blob_id : typeof record.blobId === "string" ? record.blobId : "";
       const mediaType = typeof record.media_type === "string" ? record.media_type : typeof record.mediaType === "string" ? record.mediaType : "image/png";
       const inlineData = typeof record.data === "string" ? record.data : typeof record.base64 === "string" ? record.base64 : "";
       const src = source === "blob" && blobId ? buildBlobUrl(blobId, blobBaseUrl) : inlineData ? `data:${mediaType};base64,${inlineData}` : "";
       if (!src) continue;
-      const alt = typeof record.alt === "string" && record.alt.trim() ? record.alt.trim() : "attached image";
+      const alt = typeof record.alt === "string" && record.alt.trim() ? record.alt.trim() : type === "image_ref" ? "referenced image" : "attached image";
       const width = typeof record.width === "number" ? record.width : void 0;
       const height = typeof record.height === "number" ? record.height : void 0;
       blocks.push({
@@ -2958,224 +3056,291 @@ function contentToUserBlocks(content, blobBaseUrl) {
   }
   return blocks;
 }
-function stripRpcEventPrefix(text) {
-  return text.replace(/^\[EVENT via rpc\]\s*/i, "").trim();
+function peerLastSegment(value) {
+  return value.split("/").pop() || value;
 }
-function summarizeCommsTransport(text) {
-  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (lines.length === 0) {
-    return "";
+function blockAssistantToolBlocks(blocks, peerRegistry) {
+  const toolBlocks = [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const item = block;
+    const blockType = typeof item.block_type === "string" ? item.block_type : typeof item.type === "string" ? item.type : "";
+    if (blockType !== "tool_use") continue;
+    const data = item.data && typeof item.data === "object" ? item.data : item;
+    const name = typeof data.name === "string" && data.name.trim() ? data.name.trim() : "tool";
+    const id = typeof data.id === "string" && data.id.trim() ? data.id.trim() : `history-tool-${toolBlocks.length + 1}`;
+    const args = data.args !== void 0 ? data.args : data.arguments;
+    const argsRecord = args && typeof args === "object" ? args : null;
+    const argumentsText = args === void 0 ? "" : typeof args === "string" ? args : JSON.stringify(args);
+    const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
+    const peerTarget2 = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : void 0;
+    const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
+    const peerIntent = displayPeerIntent(rawPeerIntent);
+    const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : void 0;
+    toolBlocks.push({
+      type: "tool-call",
+      toolCallId: id,
+      name,
+      arguments: argumentsText,
+      status: "success",
+      ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
+      ...peerIntent ? { peerIntent } : {},
+      ...peerBody ? { peerBody } : {}
+    });
   }
-  const header = lines[0] || "";
-  const headerTail = header.includes("]") ? header.slice(header.indexOf("]") + 1).trim() : "";
-  const body = lines.slice(1).filter((line) => !line.startsWith("[EVENT via rpc]"));
-  if (header.startsWith("[COMMS REQUEST")) {
-    const intentLine = body.find((line) => line.startsWith("Intent:"));
-    const bodyPayload = extractLabeledCommsValue(body, "Body");
-    const paramsPayload = extractLabeledCommsValue(body, "Params");
-    const requestSummary = summarizePeerPayload(paramsPayload) || summarizePeerPayload(bodyPayload);
-    if (intentLine) {
-      const intent = intentLine.replace(/^Intent:\s*/, "").trim();
-      if (intent === "mob.peer_added" || intent === "mob.peer_removed") {
-        return "";
-      }
-      if (requestSummary) return `Peer request: ${requestSummary}`;
-      const visibleIntent = displayPeerIntent(intent);
-      return visibleIntent ? `Peer request: ${visibleIntent}` : "Peer request received";
+  return toolBlocks;
+}
+function textFromUnknown(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function typedNoticeContentBlocks(content, blobBaseUrl) {
+  return contentToUserBlocks(content, blobBaseUrl);
+}
+function typedNoticeBlockText(block) {
+  const parts = [
+    textFromUnknown(block.summary),
+    textFromUnknown(block.body),
+    textFromUnknown(block.detail),
+    textFromUnknown(block.state),
+    textFromUnknown(block.status)
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
+  const rich = [];
+  const bodyText = textFromUnknown(body);
+  if (!Array.isArray(blocks)) {
+    if (bodyText) rich.push({ type: "paragraph", text: bodyText });
+    return rich;
+  }
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const record = block;
+    const type = textFromUnknown(record.type);
+    if (type === "comms") {
+      const peer = record.peer && typeof record.peer === "object" ? record.peer : {};
+      const peerLabel = textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer";
+      const kind = textFromUnknown(record.kind) || "message";
+      const intent = textFromUnknown(record.intent);
+      const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
+      const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
+      const contentText = contentBlocks.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
+      rich.push({
+        type: "tool-call",
+        toolCallId: requestId,
+        name: `peer_${kind}`,
+        arguments: JSON.stringify(record.payload ?? {}, null, 2),
+        status: "success",
+        peerIncoming: true,
+        peerTarget: peerLabel,
+        ...intent ? { peerIntent: intent } : {},
+        peerBody: contentText || typedNoticeBlockText(record) || void 0
+      });
+      rich.push(...contentBlocks.filter((item) => item.type !== "paragraph"));
+      continue;
     }
-    return requestSummary ? `Peer request: ${requestSummary}` : "Peer request received";
-  }
-  if (header.startsWith("[COMMS RESPONSE")) {
-    const statusLine = body.find((line) => line.startsWith("Status:"));
-    const status = statusLine ? statusLine.replace(/^Status:\s*/, "").trim() : "";
-    const resultIndex = body.findIndex((line) => line.startsWith("Result:"));
-    if (resultIndex >= 0) {
-      const resultLines = [];
-      for (let i = resultIndex; i < body.length; i++) {
-        const line = body[i];
-        if (i > resultIndex && (line.startsWith("Status:") || line.startsWith("[COMMS "))) break;
-        resultLines.push(line);
-      }
-      const resultText = resultLines.join(" ").replace(/^Result:\s*/, "").trim();
-      let summary2 = resultText;
-      try {
-        const parsed = JSON.parse(resultText);
-        if (typeof parsed === "string") {
-          summary2 = parsed;
-        } else if (typeof parsed === "object" && parsed !== null) {
-          const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
-          if (typeof val === "string") summary2 = val;
-        }
-      } catch {
-      }
-      const label = status ? `Peer response (${status})` : "Peer response";
-      return `${label}: ${summary2}`;
+    if (type === "external_event") {
+      const source = textFromUnknown(record.source);
+      const eventType = textFromUnknown(record.event_type);
+      const text = typedNoticeBlockText(record) || [source, eventType].filter(Boolean).join(": ");
+      if (text) rich.push({ type: "paragraph", text });
+      rich.push(...typedNoticeContentBlocks(record.content, blobBaseUrl));
+      continue;
     }
-    return status ? `Peer response (${status})` : "Peer response received";
+    if (type === "tool_config" || type === "mcp") {
+      const payload = record.payload && typeof record.payload === "object" ? record.payload : record;
+      const label = type === "mcp" ? "MCP" : "Tool config";
+      const text = typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
+      rich.push({ type: "divider", text });
+      continue;
+    }
+    if (type === "background_job" || type === "auth" || type === "runtime_notice") {
+      const text = typedNoticeBlockText(record) || type.replace(/_/g, " ");
+      rich.push({ type: "paragraph", text });
+      continue;
+    }
+    rich.push({ type: "divider", text: typedNoticeBlockText(record) || "Runtime metadata" });
   }
-  if (header.startsWith("[COMMS MESSAGE")) {
-    const joined = [headerTail, ...body].join(" ").trim();
-    return joined ? `Peer message: ${joined}` : "Peer message received";
-  }
-  return text;
+  if (rich.length === 0 && bodyText) rich.push({ type: "paragraph", text: bodyText });
+  return rich;
 }
-function commsHeaderTail(header) {
-  const bracketIndex = header.indexOf("]");
-  return bracketIndex >= 0 ? header.slice(bracketIndex + 1).trim() : "";
-}
-function isCommsHeaderLine(line) {
-  const trimmed = line.trimStart();
-  if (trimmed.startsWith("[COMMS ")) return true;
-  if (trimmed.startsWith("[SYSTEM NOTICE][PEER_")) return true;
-  return false;
-}
-function extractSystemNoticeSender(header, body) {
-  const merged = [header, ...body].join(" ");
-  const displayMatch = merged.match(/display_name:\s*([^).]+?)(?=\)|\.|$)/i);
-  if (displayMatch) {
-    const raw = displayMatch[1].trim();
-    const last = raw.split("/").pop() || raw;
-    if (last) return last;
-  }
-  const peerIdMatch = merged.match(/peer_id\s+([0-9a-f-]{6,})/i);
-  if (peerIdMatch) return peerIdMatch[1].slice(0, 8);
-  return null;
-}
-function parseIncomingCommsBlocks(prompt) {
+function parseLegacyCommsBlocks(text) {
+  const trimmed = text.trim();
+  if (!/^\[COMMS\s+/i.test(trimmed)) return [];
+  const lines = trimmed.split("\n");
   const sections = [];
-  let current = "";
-  for (const line of prompt.split("\n")) {
-    if (isCommsHeaderLine(line) && current) {
+  let current = null;
+  for (const line of lines) {
+    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
+    if (header) {
+      if (current) sections.push(current);
+      current = {
+        kind: header[1].toLowerCase(),
+        source: header[2].trim(),
+        body: header[3].trim() ? [header[3].trim()] : []
+      };
+      continue;
+    }
+    if (!current) return [];
+    if (/^\[EVENT via /i.test(line.trim())) {
       sections.push(current);
-      current = line + "\n";
-    } else {
-      current += line + "\n";
+      current = null;
+      continue;
     }
+    current.body.push(line);
   }
-  if (current.trim()) sections.push(current);
-  const blocks = [];
-  let counter = 0;
-  for (const section of sections) {
-    const lines = section.split("\n").map((l) => l.trim()).filter(Boolean);
-    const header = lines[0] || "";
-    if (!isCommsHeaderLine(header)) continue;
-    const isLegacy = header.startsWith("[COMMS");
-    let sender;
-    if (isLegacy) {
-      const senderMatch = header.match(/\[COMMS\s+\w+\s+from\s+\S+\/([^/\s\]]+)/);
-      sender = senderMatch ? senderMatch[1] : null;
-    } else {
-      sender = extractSystemNoticeSender(header, lines.slice(1));
-    }
-    if (!sender) continue;
-    const headerTail = isLegacy ? commsHeaderTail(header) : "";
-    const body = [
-      ...headerTail ? [headerTail] : [],
-      ...lines.slice(1)
-    ].filter((l) => !isCommsHeaderLine(l) && !l.startsWith("[EVENT via rpc]"));
-    counter++;
-    const isResponse = header.startsWith("[COMMS RESPONSE") || header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_TERMINAL]") || header.startsWith("[SYSTEM NOTICE][PEER_RESPONSE_PROGRESS]");
-    const isRequest = header.startsWith("[COMMS REQUEST") || header.startsWith("[SYSTEM NOTICE][PEER_REQUEST]");
-    const isMessage = header.startsWith("[COMMS MESSAGE") || header.startsWith("[SYSTEM NOTICE][PEER_MESSAGE]");
-    if (isResponse) {
-      const haystack = [header, ...body].join("\n");
-      const statusMatch = haystack.match(/Status:\s*([A-Za-z_]+)/);
-      const status = statusMatch ? statusMatch[1].trim() : "";
-      const resultMatch = haystack.match(/Result:\s*([\s\S]+?)(?:\n\[|\.\s*$|$)/);
-      let resultSummary = "";
-      if (resultMatch) {
-        const raw = resultMatch[1].trim().replace(/\.$/, "");
-        try {
-          const parsed = JSON.parse(raw);
-          if (typeof parsed === "string") {
-            resultSummary = parsed;
-          } else if (typeof parsed === "object" && parsed !== null) {
-            const val = parsed.summary ?? parsed.text ?? parsed.body ?? parsed.message ?? parsed.reply ?? parsed.result ?? parsed.content;
-            resultSummary = typeof val === "string" ? val : raw;
-          } else {
-            resultSummary = raw;
-          }
-        } catch {
-          resultSummary = raw;
-        }
-      }
-      blocks.push({
-        type: "tool-call",
-        toolCallId: `incoming-${sender}-${counter}`,
-        name: "response",
-        arguments: "",
-        status: status === "failed" ? "error" : "success",
-        peerTarget: sender,
-        peerIntent: resultSummary || status || "response",
-        peerIncoming: true
-      });
-    } else if (isRequest) {
-      const haystack = [header, ...body].join("\n");
-      const intentMatch = haystack.match(/Intent:\s*([^.\n]+?)(?:\.\s|\n|$)/);
-      const intent = intentMatch ? intentMatch[1].trim() : "";
-      if (intent === "mob.peer_added" || intent === "mob.peer_removed") continue;
-      const requestIdMatch = haystack.match(/Request ID:\s*([0-9a-fA-F-]+)/);
-      const paramsPayload = extractLabeledCommsValue([header, ...body], "Params");
-      const bodyPayload = extractLabeledCommsValue([header, ...body], "Body");
-      const requestId = requestIdMatch ? requestIdMatch[1].trim() : "";
-      let paramsBody = "";
-      let argumentsBody = "";
-      if (paramsPayload) {
-        const raw = paramsPayload.trim();
-        argumentsBody = raw;
-        try {
-          const parsed = JSON.parse(raw);
-          paramsBody = summarizePeerPayload(parsed) || raw;
-          argumentsBody = typeof parsed === "object" && parsed !== null ? JSON.stringify(parsed) : raw;
-        } catch {
-          paramsBody = summarizePeerPayload(raw) || raw;
-        }
-      }
-      if (!paramsBody && bodyPayload) {
-        paramsBody = summarizePeerPayload(bodyPayload) || "";
-      }
-      const peerBody = [
-        paramsBody,
-        !paramsBody && requestId ? `(req: ${requestId.slice(0, 8)})` : ""
-      ].filter(Boolean).join(" ").trim();
-      const visibleIntent = displayPeerIntent(intent);
-      blocks.push({
-        type: "tool-call",
-        toolCallId: `incoming-${sender}-${counter}`,
-        name: "request",
-        arguments: argumentsBody || paramsBody,
-        status: "success",
-        peerTarget: sender,
-        ...visibleIntent ? { peerIntent: visibleIntent } : {},
-        ...peerBody ? { peerBody } : {},
-        peerIncoming: true
-      });
-    } else if (isMessage) {
-      const joined = body.join(" ").trim();
-      blocks.push({
-        type: "tool-call",
-        toolCallId: `incoming-${sender}-${counter}`,
-        name: "message",
-        arguments: "",
-        status: "success",
-        peerTarget: sender,
-        peerIntent: joined || "message",
-        peerIncoming: true
-      });
-    }
-  }
-  return blocks;
+  if (current) sections.push(current);
+  return sections.map((section, index) => {
+    const body = section.body.join("\n").trim();
+    const peerTarget2 = section.source.split(/[/:]/).filter(Boolean).pop() || section.source;
+    const name = section.kind === "request" ? "peer_request" : section.kind === "response" ? "peer_response" : "peer_message";
+    return {
+      type: "tool-call",
+      toolCallId: `legacy-comms:${section.kind}:${section.source}:${index}:${body}`.slice(0, 180),
+      name,
+      arguments: "",
+      status: "success",
+      peerIncoming: true,
+      peerTarget: peerTarget2,
+      ...body ? { peerBody: body, peerIntent: body } : {}
+    };
+  });
 }
-function extractEmbeddedRpcPrompt(text) {
-  const match = text.match(/^\[EVENT via rpc\]\s*(.+)$/im);
-  return match?.[1]?.trim() || null;
+function parseLegacySystemNoticeBlocks(text) {
+  const trimmed = text.trim();
+  const notice = trimmed.match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
+  if (!notice) return [];
+  const kind = notice[1].toLowerCase();
+  const body = notice[2] || "";
+  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
+  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
+  const peerLabel = displayNameMatch?.[1]?.trim() ? peerLastSegment(displayNameMatch[1].trim()) : peerIdMatch?.[1] ? peerIdMatch[1].slice(0, 8) : "peer";
+  const intentMatch = body.match(/\bIntent:\s*([^.\n]+)[.\n]/i);
+  const intent = displayPeerIntent(intentMatch?.[1]);
+  const requestId = body.match(/\bRequest ID:\s*([0-9a-f-]{8,})/i)?.[1] || `legacy-system-notice:${kind}:${peerLabel}:${trimmed.length}`;
+  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
+  const paramsBody = paramsMatch?.[1]?.trim() || "";
+  const peerBody = paramsBody ? summarizePeerPayload(parseJsonPayload(paramsBody) ?? paramsBody) : void 0;
+  const name = kind === "request" ? "peer_request" : kind === "response" ? "peer_response" : "peer_message";
+  return [{
+    type: "tool-call",
+    toolCallId: requestId,
+    name,
+    arguments: paramsBody,
+    status: "success",
+    peerIncoming: true,
+    peerTarget: peerLabel,
+    ...intent ? { peerIntent: intent } : {},
+    ...peerBody ? { peerBody } : {}
+  }];
+}
+function historyMessageText(message, peerRegistry, blobBaseUrl) {
+  if (!message || typeof message !== "object") {
+    return { role: null, text: "" };
+  }
+  const record = message;
+  const role = typeof record.role === "string" ? record.role : null;
+  switch (role) {
+    case "user": {
+      const text = extractTextFromContentBlocks(record.content);
+      const blocks = [
+        ...parseLegacyCommsBlocks(text),
+        ...parseLegacySystemNoticeBlocks(text)
+      ];
+      if (blocks.length > 0) {
+        return { role: "meta", text, blocks };
+      }
+      return { role: "user", text };
+    }
+    case "system_notice": {
+      const blocks = typedSystemNoticeBlocksToRich(record.blocks, record.body, blobBaseUrl);
+      const text = typeof record.body === "string" ? record.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
+      return { role: "meta", text, ...blocks.length > 0 ? { blocks } : {} };
+    }
+    case "assistant":
+      return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
+    case "block_assistant": {
+      const blocks = Array.isArray(record.blocks) ? record.blocks : [];
+      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry);
+      const text = blocks.map((block) => {
+        if (!block || typeof block !== "object") return "";
+        const item = block;
+        const blockType = typeof item.block_type === "string" ? item.block_type : typeof item.type === "string" ? item.type : "";
+        const data = item.data && typeof item.data === "object" ? item.data : {};
+        if (blockType === "text") {
+          if (typeof data.text === "string") return data.text;
+          if (typeof item.text === "string") return item.text;
+        }
+        return "";
+      }).filter((value) => value.trim().length > 0).join("\n\n");
+      return { role: "assistant", text, ...toolBlocks.length > 0 ? { blocks: toolBlocks } : {} };
+    }
+    case "system":
+      return { role: "system", text: typeof record.content === "string" ? record.content : "" };
+    default:
+      return { role: null, text: "" };
+  }
+}
+function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = {}) {
+  if (frame.sourceKind !== "session_history") return null;
+  const record = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const parsed = historyMessageText(record.message, options.peerRegistry, options.blobBaseUrl);
+  const text = parsed.text.trim();
+  const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  if (parsed.role === "meta") {
+    const filteredParsedBlocks2 = options.consumeDuplicateToolBlock ? parsedBlocks.filter((block) => {
+      if (block.type !== "tool-call") return true;
+      return !options.consumeDuplicateToolBlock?.(block);
+    }) : parsedBlocks;
+    if (!text && filteredParsedBlocks2.length === 0) return null;
+    const blocks2 = [
+      ...filteredParsedBlocks2,
+      ...parseConversationRichBlocks(text)
+    ];
+    return {
+      kind: "message",
+      id: entryId,
+      identity: COMMS_IDENTITY,
+      variant: blocks2.length > 0 ? "rich" : "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      ...blocks2.length > 0 ? { blocks: blocks2 } : { text }
+    };
+  }
+  if (parsed.role !== "assistant" || !text && parsedBlocks.length === 0) return null;
+  if (/^I have acknowledged the addition of the following peers:/i.test(text)) {
+    return null;
+  }
+  const filteredParsedBlocks = options.consumeDuplicateToolBlock ? parsedBlocks.filter((block) => {
+    if (block.type !== "tool-call") return true;
+    return !options.consumeDuplicateToolBlock?.(block);
+  }) : parsedBlocks;
+  if (!text && filteredParsedBlocks.length === 0) return null;
+  const blocks = [
+    ...filteredParsedBlocks,
+    ...parseConversationRichBlocks(text)
+  ];
+  return {
+    kind: "message",
+    id: entryId,
+    identity: agentIdentity(agent),
+    variant: blocks.length > 0 ? "rich" : "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...blocks.length > 0 ? { blocks } : { text }
+  };
 }
 function mapFramesToTimelineEntries(agent, frames, options = {}) {
   const orderedFrames = options.renderInteractionStartsAsUser ? sortFramesForTranscript(frames) : frames;
   const entries = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
+  const peerRegistry = buildPeerRegistry(orderedFrames);
   const emittedToolCalls = /* @__PURE__ */ new Set();
+  const {
+    liveToolCallIds,
+    liveToolSignatureCounts
+  } = liveToolDedupeState(orderedFrames, toolBlocks);
+  const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
   const emittedImages = /* @__PURE__ */ new Set();
+  const emittedUserInputs = /* @__PURE__ */ new Set();
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt;
@@ -3251,10 +3416,21 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       continue;
     }
+    const interactionCommsEntry = renderInteractionCommsEntry(frame, entryId);
+    if (interactionCommsEntry) {
+      flushPendingText();
+      entries.push(interactionCommsEntry);
+      continue;
+    }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
+        const userKey = userEntryDedupeKey(frame, userEntry);
+        if (userKey && emittedUserInputs.has(userKey)) {
+          continue;
+        }
+        if (userKey) emittedUserInputs.add(userKey);
         entries.push(userEntry);
       }
       continue;
@@ -3270,11 +3446,39 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       }
     }
     if (frame.event === "text_complete") {
+      const historyText = frame.sourceKind === "session_history" ? terminalFrameVisibleText(frame).trim() : "";
+      if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
+        continue;
+      }
+      const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+        peerRegistry,
+        blobBaseUrl: options.blobBaseUrl,
+        consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+      });
+      if (historyEntry) {
+        flushPendingText();
+        entries.push(historyEntry);
+      }
       continue;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
       const streamedText = pendingText;
       flushPendingText();
+      if (frame.sourceKind === "session_history") {
+        const historyText = terminalFrameVisibleText(frame).trim();
+        if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
+          continue;
+        }
+        const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+          peerRegistry,
+          blobBaseUrl: options.blobBaseUrl,
+          consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        });
+        if (historyEntry) {
+          entries.push(historyEntry);
+        }
+        continue;
+      }
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
       if (terminalEntry) {
         entries.push(terminalEntry);
@@ -3389,6 +3593,9 @@ function buildActivityRailViewState(args) {
     if (ACTIVITY_HIDDEN_EVENTS.has(frame.event)) {
       return false;
     }
+    if (frame.sourceKind === "session_history") {
+      return false;
+    }
     const frameIdentity = frame.identity?.trim();
     if (!activePreset) return true;
     if (activePreset.watchedOnly && frameIdentity && !watchedIdentities.has(frameIdentity)) {
@@ -3473,6 +3680,7 @@ function unwrapConsoleEnvelope(eventName, data) {
       runtimeKey: frame.runtimeKey,
       sessionId: frame.sessionId,
       status: frame.status,
+      sourceKind: frame.sourceKind,
       frameVersion: frame.frameVersion,
       updatedAtMs: frame.updatedAtMs,
       turnId: frame.turnId,
@@ -3489,6 +3697,7 @@ function timelineFrameToConsoleFrame(raw) {
   const record = raw;
   const cursor = typeof record.cursor === "string" ? record.cursor : void 0;
   const payload = "payload" in record ? record.payload : record;
+  const source = record.source && typeof record.source === "object" ? record.source : null;
   if (record.kind === "frame_updated" && payload && typeof payload === "object" && "frame" in payload) {
     const updated = timelineFrameToConsoleFrame(payload.frame);
     return {
@@ -3501,6 +3710,7 @@ function timelineFrameToConsoleFrame(raw) {
       runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : updated.runtimeKey,
       sessionId: typeof record.session_id === "string" ? record.session_id : updated.sessionId,
       status: typeof record.status === "string" ? record.status : updated.status,
+      sourceKind: source && typeof source.kind === "string" ? source.kind : updated.sourceKind,
       frameVersion: typeof record.frame_version === "number" ? record.frame_version : updated.frameVersion,
       updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : updated.updatedAtMs,
       turnId: typeof record.turn_id === "string" ? record.turn_id : updated.turnId,
@@ -3518,6 +3728,7 @@ function timelineFrameToConsoleFrame(raw) {
     runtimeKey: typeof record.runtime_key === "string" ? record.runtime_key : void 0,
     sessionId: typeof record.session_id === "string" ? record.session_id : void 0,
     status: typeof record.status === "string" ? record.status : void 0,
+    sourceKind: source && typeof source.kind === "string" ? source.kind : void 0,
     frameVersion: typeof record.frame_version === "number" ? record.frame_version : void 0,
     updatedAtMs: typeof record.updated_at_ms === "number" ? record.updated_at_ms : void 0,
     turnId: typeof record.turn_id === "string" ? record.turn_id : void 0,
@@ -3569,6 +3780,7 @@ function parseSseFrames(rawText) {
       runtimeKey: normalized.runtimeKey,
       sessionId: normalized.sessionId,
       status: normalized.status,
+      sourceKind: normalized.sourceKind,
       frameVersion: normalized.frameVersion,
       updatedAtMs: normalized.updatedAtMs,
       turnId: normalized.turnId,
@@ -5267,6 +5479,12 @@ function TopologyPanel({
 // src/panels/TimelinePanel.tsx
 var import_react13 = __toESM(require("react"));
 var import_jsx_runtime21 = require("react/jsx-runtime");
+var INTERNAL_TIMELINE_EVENTS = /* @__PURE__ */ new Set([
+  "keep-alive",
+  "snapshot_complete",
+  "snapshot_started",
+  "subscribed"
+]);
 function classifyFrame(frame) {
   const ev = frame.event;
   if (ev === "gating_decision" || ev.startsWith("gate_")) return "gate";
@@ -5275,6 +5493,22 @@ function classifyFrame(frame) {
   if (ev === "member_ready" || ev === "member_retired" || ev === "state_changed") return "lifecycle";
   if (ev === "interaction_complete" || ev === "interaction_started") return "interaction";
   return "dispatch";
+}
+function formatType(type) {
+  switch (type) {
+    case "gate":
+      return "Gate";
+    case "warn":
+      return "Warning";
+    case "topology":
+      return "Topology";
+    case "lifecycle":
+      return "Lifecycle";
+    case "interaction":
+      return "Interaction";
+    default:
+      return "Dispatch";
+  }
 }
 function formatTime(tsMs) {
   if (!tsMs) return "\u2014";
@@ -5286,13 +5520,14 @@ function formatTime(tsMs) {
 function summarizeFrame(frame) {
   const ev = frame.event;
   const data = frame.data || {};
+  const shortInteraction = String(frame.interactionId || "").slice(0, 8);
   switch (ev) {
     case "interaction_complete":
-      return `Completed interaction ${String(frame.interactionId || "").slice(0, 8)}`;
+      return shortInteraction ? `Completed ${shortInteraction}` : "Completed";
     case "interaction_failed":
       return `Failed: ${String(data.error || data.reason || "error")}`;
     case "interaction_started":
-      return `Started interaction ${String(frame.interactionId || "").slice(0, 8)}`;
+      return shortInteraction ? `Started ${shortInteraction}` : "Started";
     case "gating_decision":
       return `Gate ${String(data.decision || "")}: ${String(data.action_id || data.pending_id || "")}`;
     case "member_ready":
@@ -5314,7 +5549,7 @@ function TimelinePanel({ frames }) {
       d.setHours(0, 0, 0, 0);
       return d.getTime();
     })();
-    return frames.filter((f) => (f.timestampMs || 0) >= todayMs).slice(0, 80).map((f) => ({
+    return frames.filter((f) => !INTERNAL_TIMELINE_EVENTS.has(f.event)).filter((f) => (f.timestampMs || 0) >= todayMs).slice(0, 80).map((f) => ({
       time: formatTime(f.timestampMs),
       type: classifyFrame(f),
       text: summarizeFrame(f),
@@ -5340,7 +5575,8 @@ function TimelinePanel({ frames }) {
         /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "tl__rail", children: /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "tl__dot" }) }),
         /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { className: "tl__card", children: [
           /* @__PURE__ */ (0, import_jsx_runtime21.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "tl__type", children: e.type }),
+            /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { className: "tl__type", children: formatType(e.type) }),
+            " ",
             /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("span", { children: e.text })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime21.jsx)("div", { className: "tl__who", children: e.who })
@@ -5871,6 +6107,16 @@ function RoutingPanel({ data }) {
 // src/panels/LogsPanel.tsx
 var import_react17 = __toESM(require("react"));
 var import_jsx_runtime25 = require("react/jsx-runtime");
+var INTERNAL_LOG_EVENTS = /* @__PURE__ */ new Set([
+  "keep-alive",
+  "snapshot_complete",
+  "snapshot_started",
+  "subscribed"
+]);
+function isLogFrameVisible(frame) {
+  if (INTERNAL_LOG_EVENTS.has(frame.event)) return false;
+  return true;
+}
 function levelFor(frame) {
   const ev = frame.event;
   if (ev.includes("failed") || ev.includes("error") || ev.includes("crash")) return "error";
@@ -5886,10 +6132,45 @@ function formatTime2(tsMs) {
   const ms = String(d.getMilliseconds()).padStart(3, "0");
   return `${hh}:${mm}:${ss}.${ms}`;
 }
-function summary(frame) {
-  const d = frame.data || {};
+var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
+  "reasoning",
+  "server_tool_content",
+  "tool_call",
+  "tool_result",
+  "tool_results",
+  "tool_use"
+]);
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function historyBlockType(record) {
+  const raw = record.block_type ?? record.type;
+  return typeof raw === "string" ? raw : void 0;
+}
+function sanitizeLogValue(value) {
+  if (Array.isArray(value)) {
+    return value.map(sanitizeLogValue).filter((item) => item !== void 0);
+  }
+  if (!isRecord(value)) return value;
+  const blockType = historyBlockType(value);
+  if (blockType && HIDDEN_HISTORY_BLOCK_TYPES.has(blockType)) {
+    return void 0;
+  }
+  const clean = {};
+  for (const [key, child] of Object.entries(value)) {
+    const sanitized = sanitizeLogValue(child);
+    if (sanitized !== void 0) clean[key] = sanitized;
+  }
+  return clean;
+}
+function sanitizeLogFrameData(data) {
+  return sanitizeLogValue(data) ?? null;
+}
+function summarizeLogFrame(frame) {
+  const sanitized = sanitizeLogFrameData(frame.data);
+  const d = isRecord(sanitized) ? sanitized : {};
   const bits = [];
-  for (const [k, v] of Object.entries(d).slice(0, 4)) {
+  for (const [k, v] of Object.entries(d).filter(([key]) => key !== "message").slice(0, 4)) {
     if (v === null || v === void 0) continue;
     let str;
     if (typeof v === "object") {
@@ -5904,7 +6185,7 @@ function summary(frame) {
   return bits.join(" ");
 }
 function formatFrameData(frame) {
-  const data = frame.data ?? null;
+  const data = sanitizeLogFrameData(frame.data ?? null);
   if (data === null || data === void 0) return "(no data)";
   try {
     const out = JSON.stringify(data, null, 2);
@@ -5930,7 +6211,7 @@ function LogsPanel({ frames }) {
     return next;
   });
   const rows = import_react17.default.useMemo(() => {
-    return frames.map((f) => ({ f, level: levelFor(f) })).filter(({ f, level }) => {
+    return frames.filter(isLogFrameVisible).map((f) => ({ f, level: levelFor(f) })).filter(({ f, level }) => {
       if (lvl !== "all" && level !== lvl) return false;
       if (!q) return true;
       const needle = q.toLowerCase();
@@ -5939,18 +6220,19 @@ function LogsPanel({ frames }) {
   }, [frames, q, lvl]);
   const counts = import_react17.default.useMemo(() => {
     const c = { info: 0, warn: 0, error: 0 };
-    frames.forEach((f) => {
+    frames.filter(isLogFrameVisible).forEach((f) => {
       c[levelFor(f)]++;
     });
     return c;
   }, [frames]);
+  const visibleTotal = counts.info + counts.warn + counts.error;
   return /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: "view logs", "data-testid": "logs-panel", children: [
     /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: "view__head", children: [
       /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("h2", { children: "Logs" }),
       /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("span", { className: "view__sub", children: [
         rows.length,
         " of ",
-        frames.length,
+        visibleTotal,
         " events \xB7 live"
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "view__spacer" }),
@@ -5966,7 +6248,7 @@ function LogsPanel({ frames }) {
       /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("div", { className: "view__segs", children: [
         /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("button", { className: lvl === "all" ? "is-active" : "", onClick: () => setLvl("all"), children: [
           "all ",
-          /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "n", children: frames.length })
+          /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "n", children: visibleTotal })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime25.jsxs)("button", { className: lvl === "info" ? "is-active" : "", onClick: () => setLvl("info"), children: [
           "info ",
@@ -6008,7 +6290,7 @@ function LogsPanel({ frames }) {
                     /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "logline__src", children: f.identity || "_system" }),
                     /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "logline__evt", children: f.event }),
                     /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "logline__ctx dim", children: f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : "" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "logline__msg", children: summary(f) }),
+                    /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "logline__msg", children: summarizeLogFrame(f) }),
                     hasStructured && /* @__PURE__ */ (0, import_jsx_runtime25.jsx)("span", { className: "logline__badge", title: "Carries structured_output", children: "\u21B3 struct" })
                   ]
                 }
@@ -6167,6 +6449,75 @@ function visibleNavKinds() {
   if (hide.size > 0) return ALL_NAV.filter((k) => !hide.has(k));
   return ALL_NAV;
 }
+function isWorkerish(a) {
+  const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes("worker") || haystack.includes("delegate") || haystack.includes("helper");
+}
+function isCommanderLike(a) {
+  if (isWorkerish(a)) return false;
+  const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
+  return haystack.includes("commander") || haystack.includes("coordinator");
+}
+function agentKeys(a) {
+  return [a?.identity, a?.member_id, a?.agent_id].filter((value) => Boolean(value)).map((value) => value.toLowerCase());
+}
+function referenceMatchesAgentKey(reference, key) {
+  const normalizedReference = reference.toLowerCase();
+  const normalizedKey = key.toLowerCase();
+  if (normalizedReference === normalizedKey) return true;
+  const compactReference = normalizedReference.replace(/[^a-z0-9]+/g, "");
+  const compactKey = normalizedKey.replace(/[^a-z0-9]+/g, "");
+  if (compactKey && compactReference === compactKey) return true;
+  const tokens = normalizedReference.split(/[/:#\s]+/).filter(Boolean);
+  if (tokens.includes(normalizedKey)) return true;
+  if (!compactKey) return false;
+  for (let start = 0; start < tokens.length; start++) {
+    let compactSlice = "";
+    for (let end = start; end < tokens.length; end++) {
+      compactSlice += tokens[end].replace(/[^a-z0-9]+/g, "");
+      if (compactSlice === compactKey) return true;
+      if (compactSlice.length > compactKey.length) break;
+    }
+  }
+  return false;
+}
+function isWiredTo(a, host) {
+  if (!host) return false;
+  const wiredTo = a.wired_to || [];
+  return agentKeys(host).some(
+    (key) => wiredTo.some((peer) => referenceMatchesAgentKey(peer, key))
+  );
+}
+function isSpawnedDelegateLike(a, host) {
+  if (!isWorkerish(a)) return false;
+  if (isWiredTo(a, host)) return true;
+  const role = (a.role || "").toLowerCase();
+  const group = (a.group || "").toLowerCase();
+  return !group || group === role || group === "worker" || group === "delegate" || group.includes("helper");
+}
+function explicitHostId(a) {
+  return a.labels?.delegate_host_identity || a.labels?.host_identity || a.labels?.parent_identity || null;
+}
+function findSpawnHost(a, agents, commander) {
+  if (!isWorkerish(a)) return null;
+  const explicitHost = explicitHostId(a);
+  if (explicitHost) {
+    const match = agents.find(
+      (candidate) => candidate.member_id !== a.member_id && agentKeys(candidate).some((key) => referenceMatchesAgentKey(explicitHost, key))
+    );
+    if (match) return match;
+  }
+  const commanderHost = agents.find(
+    (candidate) => candidate.member_id !== a.member_id && isCommanderLike(candidate) && isWiredTo(a, candidate)
+  );
+  if (commanderHost) return commanderHost;
+  const workerHost = agents.find(
+    (candidate) => candidate.member_id !== a.member_id && isWorkerish(candidate) && isWiredTo(a, candidate)
+  );
+  if (workerHost) return workerHost;
+  if (commander && commander.member_id !== a.member_id && isSpawnedDelegateLike(a, commander)) return commander;
+  return null;
+}
 function bucketOf(a) {
   const g = (a.group || "").toLowerCase();
   const p = (a.role || a.kind || "").toLowerCase();
@@ -6177,9 +6528,86 @@ function bucketOf(a) {
   return "Domains";
 }
 var SECTION_ORDER = ["Personal", "Coordinators", "Domains", "Internal", "Other"];
+function bucketForAgent(a, parentById, byId) {
+  const seen = /* @__PURE__ */ new Set();
+  let current = a;
+  while (current) {
+    if (seen.has(current.member_id)) break;
+    seen.add(current.member_id);
+    const parentId = parentById.get(current.member_id);
+    if (!parentId) break;
+    current = byId.get(parentId);
+  }
+  return bucketOf(current || a);
+}
+function depthForAgent(a, parentById) {
+  const seen = /* @__PURE__ */ new Set();
+  let depth = 0;
+  let current = a.member_id;
+  while (parentById.has(current) && !seen.has(current)) {
+    seen.add(current);
+    depth += 1;
+    current = parentById.get(current);
+  }
+  return depth;
+}
+function compareRows(host) {
+  return (a, b) => {
+    if (host) {
+      if (a.agent.member_id === host.member_id) return -1;
+      if (b.agent.member_id === host.member_id) return 1;
+    }
+    if (a.childOfHost !== b.childOfHost) return a.childOfHost ? -1 : 1;
+    return a.agent.label.localeCompare(b.agent.label);
+  };
+}
+function orderRowsPreorder(rows, parentById, host) {
+  const byParent = /* @__PURE__ */ new Map();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const roots = [];
+  for (const row of rows) {
+    const parentId = parentById.get(row.agent.member_id);
+    if (parentId && rowById.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId).push(row);
+    } else {
+      roots.push(row);
+    }
+  }
+  const sortRows = compareRows(host);
+  roots.sort(sortRows);
+  for (const children of byParent.values()) children.sort(sortRows);
+  const ordered = [];
+  const visit = (row) => {
+    ordered.push(row);
+    for (const child of byParent.get(row.agent.member_id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return ordered;
+}
+function groupSidebarAgents(filtered) {
+  const g = /* @__PURE__ */ new Map();
+  const host = filtered.find(isCommanderLike);
+  const byId = new Map(filtered.map((a) => [a.member_id, a]));
+  const parentById = /* @__PURE__ */ new Map();
+  for (const a of filtered) {
+    const parent = findSpawnHost(a, filtered, host || null);
+    if (parent) parentById.set(a.member_id, parent.member_id);
+  }
+  for (const a of filtered) {
+    const childOfHost = parentById.has(a.member_id);
+    const key = bucketForAgent(a, parentById, byId);
+    if (!g.has(key)) g.set(key, []);
+    g.get(key).push({ agent: a, childOfHost, depth: depthForAgent(a, parentById) });
+  }
+  for (const [key, rows] of g.entries()) {
+    g.set(key, orderRowsPreorder(rows, parentById, host || null));
+  }
+  return g;
+}
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
-  if (state === "retired" || state === "stopped") return "retired";
+  if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
   const degraded = agent.labels?.console_degraded === "true" || state.includes("degrade") || agent.lease_healthy === false;
   if (degraded) return "degraded";
   return "active";
@@ -6225,13 +6653,7 @@ function Sidebar({
     );
   }, [agents, q]);
   const grouped = import_react19.default.useMemo(() => {
-    const g = /* @__PURE__ */ new Map();
-    for (const a of filtered) {
-      const key = bucketOf(a);
-      if (!g.has(key)) g.set(key, []);
-      g.get(key).push(a);
-    }
-    return g;
+    return groupSidebarAgents(filtered);
   }, [filtered]);
   if (collapsed) {
     return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
@@ -6283,15 +6705,17 @@ function Sidebar({
           /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-spacer" }),
           /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-count", children: list.length })
         ] }),
-        list.map((agent) => {
+        list.map(({ agent, childOfHost, depth }) => {
           const stateAttr = deriveStateAttr(agent);
           const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
           const inbox = inboxCount(agent);
           return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
             "div",
             {
-              className: `agent ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
+              className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
               "data-state": stateAttr,
+              "data-child-of-host": childOfHost ? "true" : void 0,
+              "data-depth": childOfHost ? String(Math.min(depth, 3)) : void 0,
               "data-testid": `sidebar-agent:${agent.member_id}`,
               onClick: () => onSelect(agent),
               role: "button",
@@ -6370,6 +6794,76 @@ function isMeaningfulReply(value) {
 function lastSegment(value) {
   return value.split("/").pop() || value;
 }
+function parseLegacyCommsSignal(value) {
+  const trimmed = value.trim();
+  if (!/^\[COMMS\s+/i.test(trimmed)) return null;
+  const lines = trimmed.split("\n");
+  const targets = [];
+  const bodies = [];
+  let currentBody = null;
+  for (const line of lines) {
+    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
+    if (header) {
+      if (currentBody) {
+        const body = currentBody.join("\n").trim();
+        if (body) bodies.push(body);
+      }
+      targets.push(lastSegment(header[2].trim()));
+      currentBody = header[3].trim() ? [header[3].trim()] : [];
+      continue;
+    }
+    if (!currentBody) return null;
+    if (/^\[EVENT via /i.test(line.trim())) {
+      const body = currentBody.join("\n").trim();
+      if (body) bodies.push(body);
+      currentBody = null;
+      continue;
+    }
+    currentBody.push(line);
+  }
+  if (currentBody) {
+    const body = currentBody.join("\n").trim();
+    if (body) bodies.push(body);
+  }
+  if (targets.length === 0) return null;
+  return {
+    targets,
+    detail: bodies.join(" ")
+  };
+}
+function parseLegacyPeerNoticeSignal(value) {
+  const notice = value.trim().match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
+  if (!notice) return null;
+  const body = notice[2] || "";
+  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
+  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
+  const target = displayNameMatch?.[1]?.trim() ? lastSegment(displayNameMatch[1].trim()) : peerIdMatch?.[1] ? peerIdMatch[1].slice(0, 8) : "peer";
+  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
+  const detail = textFromValue(paramsMatch?.[1]) || textFromValue(body.match(/\bIntent:\s*([^.\n]+)[.\n]/i)?.[1]);
+  return {
+    targets: [target],
+    detail
+  };
+}
+function sessionHistoryAssistantReply(frame, data) {
+  if (frame.sourceKind !== "session_history") {
+    return textFromValue(data.result ?? data.text ?? data.content);
+  }
+  const message = recordOf(data.message);
+  const role = typeof message.role === "string" ? message.role : "";
+  if (role !== "block_assistant") {
+    return textFromValue(data.result ?? data.text ?? data.content);
+  }
+  const blocks = Array.isArray(message.blocks) ? message.blocks : [];
+  const text = blocks.map((block) => {
+    const record = recordOf(block);
+    const blockType = typeof record.block_type === "string" ? record.block_type : typeof record.type === "string" ? record.type : "";
+    if (blockType !== "text") return "";
+    const blockData = recordOf(record.data);
+    return textFromValue(blockData.text ?? record.text);
+  }).filter(Boolean).join(" ").trim();
+  return text;
+}
 function agentFor(frame) {
   return frame.identity?.trim() || "_system";
 }
@@ -6422,6 +6916,16 @@ function signalFromFrame(frame) {
       const request = textFromValue(data.content ?? data.text ?? data.prompt);
       if (!request) return null;
       if (isScaffoldRequest(request)) return null;
+      const comms = frame.sourceKind === "session_history" ? parseLegacyCommsSignal(request) || parseLegacyPeerNoticeSignal(request) : null;
+      if (comms) {
+        const from = comms.targets.map(displayName).join(", ");
+        return {
+          ...base,
+          id: `comms:${frame.id || frame.interactionId || frame.timestampMs || request}`,
+          label: `Received from ${from}`,
+          detail: truncate(comms.detail || "Peer comms")
+        };
+      }
       return {
         ...base,
         id: `user:${frame.id || frame.interactionId || frame.timestampMs || request}`,
@@ -6430,7 +6934,7 @@ function signalFromFrame(frame) {
       };
     }
     case "interaction_complete": {
-      const reply = textFromValue(data.result ?? data.text ?? data.content);
+      const reply = sessionHistoryAssistantReply(frame, data);
       if (!isMeaningfulReply(reply)) return null;
       return {
         ...base,
@@ -6482,6 +6986,14 @@ function groupKeyFor(signal) {
   if (interactionId) return `interaction:${interactionId}`;
   return `single:${signal.id}`;
 }
+function semanticSignalKey(signal) {
+  const canonical = (value) => value.replace(/\+\d+\s+-\d+\b/g, "").replace(/[\u2018\u2019]/g, "'").replace(/[\u201c\u201d]/g, '"').replace(/\s+/g, " ").replace(/[.!?\s]+$/g, "").trim().toLowerCase();
+  return [
+    canonical(signal.agent),
+    canonical(signal.label),
+    canonical(signal.detail)
+  ].join("\0");
+}
 function strongerSeverity(a, b) {
   if (a === "critical" || b === "critical") return "critical";
   if (a === "warning" || b === "warning") return "warning";
@@ -6489,19 +7001,23 @@ function strongerSeverity(a, b) {
 }
 function groupSignals(signals) {
   const groups = [];
+  const byId = /* @__PURE__ */ new Map();
   for (const signal of signals) {
     const key = groupKeyFor(signal);
-    const current = groups[groups.length - 1];
-    if (current && current.id === key) {
-      current.items.push(signal);
-      current.severity = strongerSeverity(current.severity, signal.severity);
-      current.title = titleForGroup(current.items);
-      current.detail = detailForGroup(current.items);
-      current.agent = current.items[0]?.agent || signal.agent;
-      current.at = current.items[0]?.at || signal.at;
+    const existing = byId.get(key);
+    if (existing) {
+      const seenItemKeys = new Set(existing.items.map(semanticSignalKey));
+      if (!seenItemKeys.has(semanticSignalKey(signal))) {
+        existing.items.push(signal);
+      }
+      existing.severity = strongerSeverity(existing.severity, signal.severity);
+      existing.title = titleForGroup(existing.items);
+      existing.detail = detailForGroup(existing.items);
+      existing.agent = existing.items[0]?.agent || signal.agent;
+      existing.at = existing.items[0]?.at || signal.at;
       continue;
     }
-    groups.push({
+    const group = {
       id: key,
       severity: signal.severity,
       title: titleForGroup([signal]),
@@ -6509,7 +7025,9 @@ function groupSignals(signals) {
       agent: signal.agent,
       at: signal.at,
       items: [signal]
-    });
+    };
+    byId.set(key, group);
+    groups.push(group);
   }
   return groups;
 }
@@ -6535,21 +7053,28 @@ function timeFor(tsMs) {
   if (diff < 36e5) return `${Math.floor(diff / 6e4)}m`;
   return `${Math.floor(diff / 36e5)}h`;
 }
+function buildSignalGroupsForTest(frames) {
+  const seen = /* @__PURE__ */ new Set();
+  const seenSemantic = /* @__PURE__ */ new Set();
+  const next = [];
+  for (const frame of frames.slice(0, 260)) {
+    const signal = signalFromFrame(frame);
+    if (!signal) continue;
+    if (seen.has(signal.id)) continue;
+    seen.add(signal.id);
+    const semanticKey = semanticSignalKey(signal);
+    if (seenSemantic.has(semanticKey)) continue;
+    seenSemantic.add(semanticKey);
+    next.push(signal);
+    if (next.length >= 80) break;
+  }
+  return groupSignals(next);
+}
 function SignalsRail({ frames, collapsed, onSelect }) {
   const [filter, setFilter] = import_react20.default.useState("all");
   const [expandedGroups, setExpandedGroups] = import_react20.default.useState(() => /* @__PURE__ */ new Set());
   const groups = import_react20.default.useMemo(() => {
-    const seen = /* @__PURE__ */ new Set();
-    const next = [];
-    for (const frame of frames.slice(0, 260)) {
-      const signal = signalFromFrame(frame);
-      if (!signal) continue;
-      if (seen.has(signal.id)) continue;
-      seen.add(signal.id);
-      next.push(signal);
-      if (next.length >= 80) break;
-    }
-    return groupSignals(next);
+    return buildSignalGroupsForTest(frames);
   }, [frames]);
   const counts = import_react20.default.useMemo(() => ({
     all: groups.length,
@@ -7040,7 +7565,8 @@ function ChatPane({
         last.blocks = [...lastBlocks, ...mBlocks];
         last.id = `${last.id}+${m.id}`;
       } else {
-        if (last && m.kind === "agent" && last.kind === "agent" && last.who === m.who) {
+        const canDedupeAdjacent = m.kind === "user" && last?.kind === "user" || m.kind === "agent" && last?.kind === "agent" && last.who === m.who;
+        if (last && canDedupeAdjacent) {
           const lastSignature = textSignatureForMsg(last);
           const nextSignature = textSignatureForMsg(m);
           if (lastSignature && lastSignature === nextSignature) {
@@ -7078,7 +7604,6 @@ function ChatPane({
   const canAttachImages = agent?.model_capabilities?.image_input === true;
   const [dragActive, setDragActive] = import_react21.default.useState(false);
   const [attachmentError, setAttachmentError] = import_react21.default.useState(null);
-  const fileInputRef = import_react21.default.useRef(null);
   const resolvedDraftBlobRefs = import_react21.default.useRef("");
   function addFiles(fileList) {
     if (!canAttachImages) return;
@@ -7175,6 +7700,7 @@ function ChatPane({
     try {
       const sent = await onSend(files);
       if (sent) {
+        onDraftChange("");
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
@@ -7317,7 +7843,7 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
               "textarea",
               {
-                placeholder: `Message ${agentLabel}\u2026    @ to mention, / for commands`,
+                placeholder: `Message ${agentLabel}\u2026`,
                 value: draft,
                 onChange: (e) => onDraftChange(e.target.value),
                 onKeyDown: (e) => {
@@ -7331,38 +7857,7 @@ function ChatPane({
                 "data-testid": `chat-composer:${identity}`
               }
             ),
-            /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
-              "input",
-              {
-                accept: "image/png,image/jpeg,image/webp,image/gif",
-                hidden: true,
-                multiple: true,
-                onChange: (event) => {
-                  if (event.target.files) addFiles(event.target.files);
-                  event.currentTarget.value = "";
-                },
-                ref: fileInputRef,
-                type: "file"
-              }
-            ),
             /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "composer__row", children: [
-              canAttachImages && /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
-                "button",
-                {
-                  className: "composer__chip composer__chip--button",
-                  onClick: () => fileInputRef.current?.click(),
-                  type: "button",
-                  children: "+"
-                }
-              ),
-              /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("span", { className: "composer__chip", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "k", children: "/" }),
-                " commands"
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("span", { className: "composer__chip", children: [
-                /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "k", children: "@" }),
-                " mention"
-              ] }),
               /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
               /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "composer__spacer" }),
               /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
@@ -8166,12 +8661,18 @@ function cursorSeq(cursor) {
   const parsed = Number(match[1]);
   return Number.isFinite(parsed) ? parsed : null;
 }
+function isEndTurnFrame(frame) {
+  if (frame.event !== "turn_completed") return false;
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  return data.stop_reason === "end_turn";
+}
 var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "interaction_failed",
   "state_changed",
   "member_ready",
   "member_retired",
+  "topology_updated",
   "gating_decision",
   "route_changed"
 ]);
@@ -8184,6 +8685,7 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "assistant_image_appended",
   "text_delta",
   "text_complete",
+  "turn_completed",
   "tool_call_requested",
   "tool_call",
   "tool_result_received",
@@ -8191,7 +8693,8 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed",
   "run_started",
   "run_completed",
-  "run_failed"
+  "run_failed",
+  "message_delivery_failed"
 ]);
 var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
@@ -8220,6 +8723,125 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
+function identityRowsFromLiveList(payload) {
+  const record = payload && typeof payload === "object" ? payload : {};
+  const identities = Array.isArray(record.identities) ? record.identities : [];
+  const rows = [];
+  for (const entry of identities) {
+    if (!entry || typeof entry !== "object") continue;
+    const item = entry;
+    const identity = typeof item.identity === "string" ? item.identity.trim() : "";
+    if (!identity) continue;
+    const labels = item.labels && typeof item.labels === "object" ? Object.fromEntries(
+      Object.entries(item.labels).filter(([, value]) => typeof value === "string").map(([key, value]) => [key, String(value).trim()])
+    ) : {};
+    const displayName2 = typeof item.display_name === "string" && item.display_name.trim() ? item.display_name.trim() : typeof labels.display_name === "string" && labels.display_name.trim() ? labels.display_name.trim() : void 0;
+    const health = typeof item.health === "string" ? item.health.toLowerCase() : "";
+    const visibility = typeof item.visibility === "string" ? item.visibility.toLowerCase() : "";
+    const addressable = item.addressable === true || visibility === "addressable";
+    rows.push({
+      identity,
+      state: health === "hidden_by_policy" ? "active" : health || "active",
+      addressability: addressable ? "addressable" : "internal_only",
+      labels,
+      ...displayName2 ? { display_name: displayName2 } : {},
+      ...typeof labels.role === "string" && labels.role.trim() ? { role: labels.role.trim() } : {}
+    });
+  }
+  return rows;
+}
+function compactIdentityReference(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+function referenceMatchesIdentity(reference, identity) {
+  const normalizedReference = reference.trim().toLowerCase();
+  const normalizedIdentity = identity.trim().toLowerCase();
+  if (!normalizedReference || !normalizedIdentity) return false;
+  if (normalizedReference === normalizedIdentity) return true;
+  if (compactIdentityReference(normalizedReference) === compactIdentityReference(normalizedIdentity)) {
+    return true;
+  }
+  const tokens = normalizedReference.split(/[/:#\s]+/).filter(Boolean);
+  if (tokens.includes(normalizedIdentity)) return true;
+  const compactIdentity = compactIdentityReference(normalizedIdentity);
+  for (let start = 0; start < tokens.length; start++) {
+    let compactSlice = "";
+    for (let end = start; end < tokens.length; end++) {
+      compactSlice += compactIdentityReference(tokens[end]);
+      if (compactSlice === compactIdentity) return true;
+      if (compactSlice.length > compactIdentity.length) break;
+    }
+  }
+  return false;
+}
+function sidebarIdentityKeys(experience) {
+  const keys = /* @__PURE__ */ new Set();
+  const agents = Array.isArray(experience.agent_sidebar?.live_snapshot?.agents) ? experience.agent_sidebar.live_snapshot.agents : [];
+  for (const agent of agents) {
+    for (const value of [agent.identity, agent.member_id, agent.agent_id]) {
+      if (typeof value === "string" && value.trim()) keys.add(value.trim().toLowerCase());
+    }
+  }
+  return keys;
+}
+async function enrichIdentityRowsWithPeerHosts(baseUrl, experience, rows) {
+  const sidebarKeys = sidebarIdentityKeys(experience);
+  const candidateIdentities = /* @__PURE__ */ new Set([
+    ...rows.map((row) => row.identity),
+    ...Array.isArray(experience.agent_sidebar?.live_snapshot?.agents) ? experience.agent_sidebar.live_snapshot.agents.flatMap(
+      (agent) => [agent.identity, agent.member_id, agent.agent_id].filter((value) => typeof value === "string" && value.trim().length > 0)
+    ) : []
+  ]);
+  const enriched = await Promise.all(rows.map(async (row) => {
+    if (row.labels.delegate_host_identity || sidebarKeys.has(row.identity.toLowerCase())) {
+      return row;
+    }
+    try {
+      const inspected = await callConsoleRpc(
+        baseUrl,
+        "mobkit/console/inspect_identity",
+        { identity: row.identity }
+      );
+      const record = inspected && typeof inspected === "object" ? inspected : {};
+      const peers = Array.isArray(record.peers) ? record.peers : [];
+      const host = [...candidateIdentities].find(
+        (candidate) => candidate !== row.identity && peers.some((peer) => typeof peer === "string" && referenceMatchesIdentity(peer, candidate))
+      );
+      if (!host) return row;
+      return {
+        ...row,
+        labels: {
+          ...row.labels,
+          delegate_host_identity: host
+        }
+      };
+    } catch {
+      return row;
+    }
+  }));
+  return enriched;
+}
+function mergeExperienceIdentityRows(experience, extraRows) {
+  if (extraRows.length === 0) return experience;
+  const existingRows = Array.isArray(experience.identity_status?.rows) ? experience.identity_status.rows : [];
+  const seen = new Set(
+    existingRows.map((row) => row.identity?.trim().toLowerCase()).filter((value) => Boolean(value))
+  );
+  const mergedRows = [...existingRows];
+  for (const row of extraRows) {
+    const key = row.identity.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    mergedRows.push(row);
+  }
+  return {
+    ...experience,
+    identity_status: {
+      ...experience.identity_status || {},
+      rows: mergedRows
+    }
+  };
+}
 function ConsoleApp({ baseUrl }) {
   const [experience, setExperience] = import_react24.default.useState(null);
   const [agents, setAgents] = import_react24.default.useState([]);
@@ -8298,6 +8920,7 @@ function ConsoleApp({ baseUrl }) {
     });
   }
   const identityLogRef = import_react24.default.useRef({});
+  const timelineFetchInFlightRef = import_react24.default.useRef({});
   const optimisticUserByPanelKeyRef = import_react24.default.useRef({});
   function getOrCreateLog(identity) {
     let log = identityLogRef.current[identity];
@@ -8312,10 +8935,57 @@ function ConsoleApp({ baseUrl }) {
     return log;
   }
   function clearOptimisticUserByInteraction(interactionId) {
+    const clearedPanelKeys = [];
     for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
       if (optimistic.interactionId !== interactionId) continue;
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       delete optimisticUserByPanelKeyRef.current[panelKey];
+      clearedPanelKeys.push(panelKey);
+    }
+    if (clearedPanelKeys.length > 0) {
+      setSendingPanels((current) => {
+        const next = new Set(current);
+        for (const panelKey of clearedPanelKeys) next.delete(panelKey);
+        return next;
+      });
+    }
+  }
+  function clearSendingPanelsForIdentity(identity) {
+    if (!identity.trim()) return;
+    setSendingPanels((current) => {
+      let changed = false;
+      const next = new Set(current);
+      const suffix = `:agent-chat:${identity}`;
+      for (const panelKey of current) {
+        if (panelKey.endsWith(suffix)) {
+          next.delete(panelKey);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }
+  function clearOptimisticUserByContent(identity, frame) {
+    if (frame.event !== "interaction_started" && frame.event !== "user_input") return;
+    const record = frame.data && typeof frame.data === "object" ? frame.data : {};
+    const content = typeof record.content === "string" ? record.content.trim() : "";
+    if (!content) return;
+    const clearedPanelKeys = [];
+    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+      if (!panelKey.endsWith(`:agent-chat:${identity}`)) continue;
+      if (optimistic.interactionId) continue;
+      if (!("text" in optimistic.entry) || typeof optimistic.entry.text !== "string") continue;
+      if (optimistic.entry.text.trim() !== content) continue;
+      optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      delete optimisticUserByPanelKeyRef.current[panelKey];
+      clearedPanelKeys.push(panelKey);
+    }
+    if (clearedPanelKeys.length > 0) {
+      setSendingPanels((current) => {
+        const next = new Set(current);
+        for (const panelKey of clearedPanelKeys) next.delete(panelKey);
+        return next;
+      });
     }
   }
   function frameKey(frame) {
@@ -8345,6 +9015,8 @@ function ConsoleApp({ baseUrl }) {
     log.events.push(frame);
     if ((frame.event === "interaction_started" || frame.event === "user_input") && frame.interactionId) {
       clearOptimisticUserByInteraction(frame.interactionId);
+    } else {
+      clearOptimisticUserByContent(identity, frame);
     }
     return true;
   }
@@ -8366,6 +9038,29 @@ function ConsoleApp({ baseUrl }) {
       after = next;
     }
     return { frames, available };
+  }
+  function refreshIdentityTimelineNow(identity, options = {}) {
+    const normalized = identity.trim();
+    if (!normalized) return Promise.resolve();
+    const inFlight = timelineFetchInFlightRef.current[normalized];
+    if (inFlight) {
+      return inFlight.then(() => {
+        if (options.clearPhase) {
+          clearPhaseForIdentity(normalized);
+          forceRender();
+        }
+      });
+    }
+    const request = (async () => {
+      const { frames, available } = await queryIdentityTimeline(normalized);
+      reconcileServerLog(normalized, frames, available);
+      if (options.clearPhase) clearPhaseForIdentity(normalized);
+      forceRender();
+    })().finally(() => {
+      delete timelineFetchInFlightRef.current[normalized];
+    });
+    timelineFetchInFlightRef.current[normalized] = request;
+    return request;
   }
   function getSortedFrames(identity) {
     const log = identityLogRef.current[identity];
@@ -8514,10 +9209,17 @@ function ConsoleApp({ baseUrl }) {
         commitPanelPhase(panelKey, "generating");
         break;
       }
+      case "text_complete":
       case "interaction_complete":
       case "interaction_failed":
       case "run_completed":
       case "run_failed":
+        commitPanelPhase(panelKey, null);
+        break;
+      case "turn_completed":
+        if (isEndTurnFrame(frame)) commitPanelPhase(panelKey, null);
+        break;
+      case "message_delivery_failed":
         commitPanelPhase(panelKey, null);
         break;
       default:
@@ -8543,14 +9245,24 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   const loadExperience = import_react24.default.useCallback(async () => {
-    const [experienceJson, modulesJson] = await Promise.all([
+    const [experienceJson, modulesJson, identitiesJson] = await Promise.all([
       fetchJson(baseUrl, "/console/experience"),
-      fetchJson(baseUrl, "/console/modules")
+      fetchJson(baseUrl, "/console/modules"),
+      fetchJson(baseUrl, "/console/identities").catch(() => null)
     ]);
     const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
-    setExperience(experienceJson);
-    setAgents(normalizeAgents(experienceJson, loadedModules));
-    setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
+    const identityRows = await enrichIdentityRowsWithPeerHosts(
+      baseUrl,
+      experienceJson,
+      identityRowsFromLiveList(identitiesJson)
+    );
+    const mergedExperience = mergeExperienceIdentityRows(
+      experienceJson,
+      identityRows
+    );
+    setExperience(mergedExperience);
+    setAgents(normalizeAgents(mergedExperience, loadedModules));
+    setActiveActivityPresetId((c) => c || mergedExperience.activity_feed?.active_preset_id || "all");
   }, [baseUrl]);
   import_react24.default.useEffect(() => {
     let mounted = true;
@@ -8566,11 +9278,18 @@ function ConsoleApp({ baseUrl }) {
     };
   }, [loadExperience]);
   import_react24.default.useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadExperience().catch(() => {
+      });
+    }, 2e3);
+    return () => window.clearInterval(timer);
+  }, [loadExperience]);
+  import_react24.default.useEffect(() => {
     if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
     const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
     if (!first) return;
     initialTargetOpened.current = true;
-    dock.openTarget(buildDockTarget(first), "replace_focused");
+    openAgentChat(first);
   }, [agents, dock]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const visibleControls = import_react24.default.useMemo(
@@ -8626,10 +9345,7 @@ function ConsoleApp({ baseUrl }) {
         return;
       }
       try {
-        const { frames, available } = await queryIdentityTimeline(identity);
-        reconcileServerLog(identity, frames, available);
-        clearPhaseForIdentity(identity);
-        forceRender();
+        await refreshIdentityTimelineNow(identity, { clearPhase: true });
       } catch {
       }
     }, 200);
@@ -8641,15 +9357,38 @@ function ConsoleApp({ baseUrl }) {
       const identity = target.identity || target.memberId;
       const log = getOrCreateLog(identity);
       if (log.hasServerLog !== null) continue;
-      void (async () => {
+      void refreshIdentityTimelineNow(identity).catch(() => {
+      });
+    }
+  }, [baseUrl, dock.viewState.panels, forceRender]);
+  import_react24.default.useEffect(() => {
+    const refreshOpenChatPanels = async () => {
+      const identities = /* @__PURE__ */ new Set();
+      for (const panel of dock.viewState.panels) {
+        const target = panel.target;
+        if (!target || target.kind !== "agent-chat") continue;
+        identities.add(target.identity || target.memberId);
+      }
+      if (identities.size === 0) return;
+      let changed = false;
+      for (const identity of identities) {
+        const log = getOrCreateLog(identity);
+        if (log.hasServerLog === false) continue;
         try {
           const { frames, available } = await queryIdentityTimeline(identity);
+          const before = log.events.length;
           reconcileServerLog(identity, frames, available);
-          forceRender();
+          if (log.events.length !== before) changed = true;
         } catch {
         }
-      })();
-    }
+      }
+      if (changed) forceRender();
+    };
+    const timer = window.setInterval(() => {
+      void refreshOpenChatPanels();
+    }, 2e3);
+    void refreshOpenChatPanels();
+    return () => window.clearInterval(timer);
   }, [baseUrl, dock.viewState.panels, forceRender]);
   const scheduleHistoryRefreshRef = import_react24.default.useRef(scheduleHistoryRefresh);
   scheduleHistoryRefreshRef.current = scheduleHistoryRefresh;
@@ -8684,13 +9423,14 @@ function ConsoleApp({ baseUrl }) {
         const wasBusy = identityBusyRef.current[identity] === true;
         if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
           identityBusyRef.current[identity] = true;
-        } else if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
+        } else if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed" || isEndTurnFrame(frame)) {
           identityBusyRef.current[identity] = false;
+          clearSendingPanelsForIdentity(identity);
           if (wasBusy) maybeDrainHead(identity);
         }
       }
       forceRender();
-      if (HISTORY_REFRESH_EVENTS.has(frame.event) && identity && identity !== "_system") {
+      if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
@@ -8708,9 +9448,22 @@ function ConsoleApp({ baseUrl }) {
       if (experienceTimerRef.current !== null) window.clearTimeout(experienceTimerRef.current);
     };
   }, []);
+  function openAgentChat(agent, intent = "replace_focused") {
+    const target = buildDockTarget(agent);
+    void refreshIdentityTimelineNow(target.identity || target.memberId).catch(() => {
+    });
+    dock.openTarget(target, intent);
+  }
+  function openDockTarget(target, intent = "replace_focused") {
+    if (target.kind === "agent-chat") {
+      void refreshIdentityTimelineNow(target.identity || target.memberId).catch(() => {
+      });
+    }
+    dock.openTarget(target, intent);
+  }
   function onSelectAgent(_block, _section, item) {
     const agent = agents.find((c) => c.member_id === item.id);
-    if (agent) dock.openTarget(buildDockTarget(agent), "replace_focused");
+    if (agent) openAgentChat(agent);
   }
   async function submitMessageNow(panelId, target, text, handlingMode, attachments = []) {
     if (target.kind !== "agent-chat") return false;
@@ -9177,7 +9930,7 @@ function ConsoleApp({ baseUrl }) {
           agents,
           selectedMemberId: agent?.member_id || selectedRosterMemberId,
           onSelect: (a) => setSelectedRosterMemberId(a.member_id),
-          onChat: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
+          onChat: (a) => openAgentChat(a),
           onDetails: (a) => setSelectedRosterMemberId(a.member_id),
           onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
           canResetLifecycle: hasMobControlSurface
@@ -9212,7 +9965,7 @@ function ConsoleApp({ baseUrl }) {
         agents,
         selectedMemberId: selectedRosterMemberId,
         onSelect: (a) => setSelectedRosterMemberId(a.member_id),
-        onChat: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
+        onChat: (a) => openAgentChat(a),
         onDetails: (a) => setSelectedRosterMemberId(a.member_id),
         onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
         canResetLifecycle: hasMobControlSurface
@@ -9266,7 +10019,7 @@ function ConsoleApp({ baseUrl }) {
                   recentActivity: activityRef.current,
                   collapsed: sidebarCollapsed,
                   visibleControls,
-                  onSelect: (a) => dock.openTarget(buildDockTarget(a), "replace_focused"),
+                  onSelect: (a) => openAgentChat(a),
                   onOpenControl: (kind) => {
                     if (!visibleControls.includes(kind)) return;
                     dock.openTarget(buildControlTarget(kind), "replace_focused");
@@ -9290,7 +10043,7 @@ function ConsoleApp({ baseUrl }) {
                   onResizeSplit: (id, ratio) => dock.resizeSplit(id, ratio),
                   onOpenTargetInPanel: (panelId, target) => {
                     dock.focusPanel(panelId);
-                    dock.openTarget(target, "replace_focused");
+                    openDockTarget(target);
                   }
                 }
               ) }),

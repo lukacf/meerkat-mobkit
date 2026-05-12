@@ -442,7 +442,10 @@ export function ChatPane({
         last.blocks = [...lastBlocks, ...mBlocks];
         last.id = `${last.id}+${m.id}`;
       } else {
-        if (last && m.kind === "agent" && last.kind === "agent" && last.who === m.who) {
+        const canDedupeAdjacent =
+          (m.kind === "user" && last?.kind === "user")
+          || (m.kind === "agent" && last?.kind === "agent" && last.who === m.who);
+        if (last && canDedupeAdjacent) {
           const lastSignature = textSignatureForMsg(last);
           const nextSignature = textSignatureForMsg(m);
           if (lastSignature && lastSignature === nextSignature) {
@@ -480,7 +483,6 @@ export function ChatPane({
   const canAttachImages = agent?.model_capabilities?.image_input === true;
   const [dragActive, setDragActive] = React.useState(false);
   const [attachmentError, setAttachmentError] = React.useState<string | null>(null);
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
   const resolvedDraftBlobRefs = React.useRef("");
 
   function addFiles(fileList: FileList | File[]) {
@@ -583,6 +585,7 @@ export function ChatPane({
     try {
       const sent = await onSend(files);
       if (sent) {
+        onDraftChange("");
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
@@ -725,7 +728,7 @@ export function ChatPane({
             </div>
           )}
           <textarea
-            placeholder={`Message ${agentLabel}…    @ to mention, / for commands`}
+            placeholder={`Message ${agentLabel}…`}
             value={draft}
             onChange={(e) => onDraftChange(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
@@ -733,29 +736,7 @@ export function ChatPane({
             rows={2}
             data-testid={`chat-composer:${identity}`}
           />
-          <input
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            hidden
-            multiple
-            onChange={(event) => {
-              if (event.target.files) addFiles(event.target.files);
-              event.currentTarget.value = "";
-            }}
-            ref={fileInputRef}
-            type="file"
-          />
           <div className="composer__row">
-            {canAttachImages && (
-              <button
-                className="composer__chip composer__chip--button"
-                onClick={() => fileInputRef.current?.click()}
-                type="button"
-              >
-                +
-              </button>
-            )}
-            <span className="composer__chip"><span className="k">/</span> commands</span>
-            <span className="composer__chip"><span className="k">@</span> mention</span>
             <span className="composer__chip mono">{agent?.role || "agent"}</span>
             <span className="composer__spacer" />
             <button

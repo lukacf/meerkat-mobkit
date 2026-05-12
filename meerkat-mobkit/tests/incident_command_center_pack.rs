@@ -19,6 +19,7 @@
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode};
 use futures::{Stream, stream};
+use meerkat::AgentToolDispatcher;
 use meerkat_client::{LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
 use meerkat_core::StopReason;
 use serde_json::{Value, json};
@@ -29,7 +30,9 @@ use tower::ServiceExt;
 #[path = "../../examples/001-incident-command-center-pack/incident_command_center.rs"]
 mod incident_command_center;
 
-use incident_command_center::{build_runtime_bundle_with_default_client, scenario_path};
+use incident_command_center::{
+    IncidentToolDispatcher, build_runtime_bundle_with_default_client, scenario_path,
+};
 
 struct IncidentPackTestClient;
 
@@ -73,6 +76,22 @@ async fn json_response(app: axum::Router, request: Request<Body>) -> Value {
         .await
         .expect("response body bytes");
     serde_json::from_slice(&body).expect("json body")
+}
+
+#[test]
+fn incident_local_tools_are_witnessed_for_delegate_inheritance() {
+    let tools = IncidentToolDispatcher.tools();
+    let snapshot = meerkat_mob::snapshot::ParentToolScopeSnapshot::from_tools(&tools);
+    let witnessed = snapshot.to_witnessed_tool_filter();
+
+    assert!(
+        witnessed.witnesses.contains_key("inspect_service"),
+        "inspect_service must carry provenance so delegate can inherit it"
+    );
+    assert!(
+        witnessed.witnesses.contains_key("analyze_customer_impact"),
+        "analyze_customer_impact must carry provenance so delegate can inherit it"
+    );
 }
 
 #[tokio::test]

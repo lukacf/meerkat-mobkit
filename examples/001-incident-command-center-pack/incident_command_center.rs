@@ -12,9 +12,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
 use meerkat::AgentToolDispatcher;
 use meerkat_client::LlmClient;
+use meerkat_core::ToolCategoryOverride;
 use meerkat_core::error::ToolError;
-use meerkat_core::service::{CreateSessionRequest, SessionBuildOptions};
-use meerkat_core::{ToolCallView, ToolDef, ToolDispatchOutcome, ToolResult};
+use meerkat_core::service::{CreateSessionRequest, MobToolAuthorityContext, SessionBuildOptions};
+use meerkat_core::{
+    ToolCallView, ToolDef, ToolDispatchOutcome, ToolProvenance, ToolResult, ToolSourceKind,
+};
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::{MobDefinition, ProfileName, SpawnMemberSpec};
 use schemars::JsonSchema;
@@ -248,6 +251,14 @@ fn default_incident_llm_client_from_env() -> Option<Arc<dyn LlmClient>> {
 
 pub async fn seed_runtime(runtime: &UnifiedRuntime, scenario: &IncidentScenario) -> Result<()> {
     runtime
+        .reconcile_modules(
+            vec!["router".to_string(), "delivery".to_string()],
+            Duration::from_secs(5),
+        )
+        .await
+        .context("reconcile incident modules")?;
+
+    runtime
         .reconcile(
             scenario
                 .identities
@@ -420,7 +431,7 @@ pub fn incident_image_model() -> String {
     std::env::var("RKAT_INCIDENT_IMAGE_MODEL").unwrap_or_else(|_| "gpt-image-2".to_string())
 }
 
-fn incident_definition() -> Result<MobDefinition> {
+pub(crate) fn incident_definition() -> Result<MobDefinition> {
     let model = incident_model();
     let image_model = incident_image_model();
     MobDefinition::from_toml(&format!(
@@ -463,6 +474,7 @@ HOW TO OPERATE:
 - For any operator request about current status, customer impact, rollback, or publication readiness, use `peers` first and then send concise `peer_request` questions to at least two relevant teammates before you finalize your answer.
 - Default coordination path for a status sweep: payments-sre + merchant-comms + scribe.
 - Ask api-investigator whenever root cause or rollback confidence is part of the question.
+- For visible one-off delegated investigation, use mob tools rather than only peer comms; spawned worker meerkats should appear in the shared console runtime.
 - After a meaningful exchange, send a short factual note to scribe.
 - When a teammate replies with `peer_response`, read the actual answer from the response payload fields such as `result.summary`, `result.status_line`, or `result.facts`. Do not treat a completed response as empty if those fields are present.
 - Your final operator answer should be concise, operationally useful, and mention which teammates you consulted.
@@ -559,6 +571,13 @@ JOB:
 - Never act like an operator-facing assistant.
 """
 
+[skills.worker_role]
+source = "inline"
+content = """
+You are a short-lived worker meerkat for delegated investigations inside the fictional CardinalPay incident.
+Complete exactly the assigned task, stay inside the fictional scenario, and report concisely.
+"""
+
 [profiles.commander]
 model = "{model}"
 external_addressable = true
@@ -570,6 +589,8 @@ peer_description = "Incident commander coordinating the CardinalPay outage respo
 builtins = true
 comms = true
 image_generation = true
+mob = true
+mob_tasks = true
 
 [profiles.payments_sre]
 model = "{model}"
@@ -640,6 +661,23 @@ peer_description = "Internal health monitor for the incident"
 
 [profiles.health_monitor.tools]
 comms = true
+
+[profiles.worker]
+model = "{model}"
+external_addressable = true
+runtime_mode = "autonomous_host"
+skills = ["comms_protocol", "worker_role"]
+peer_description = "Short-lived worker for delegated incident investigations"
+
+[profiles.worker.tools]
+builtins = true
+shell = true
+comms = true
+memory = true
+mob = true
+mob_tasks = true
+schedule = true
+image_generation = true
 "#,
     ))
     .map_err(|error| anyhow!("incident command center definition must parse: {error}"))
@@ -692,6 +730,13 @@ fn example_module_config(scenario: &IncidentScenario) -> Result<MobKitConfig> {
 fn fixture_binary_path() -> Result<PathBuf> {
     if let Ok(path) = std::env::var("CARGO_BIN_EXE_mcp_fixture") {
         return Ok(PathBuf::from(path));
+    }
+
+    if let Ok(target_dir) = std::env::var("CARGO_TARGET_DIR") {
+        let binary_path = PathBuf::from(target_dir).join("debug").join("mcp_fixture");
+        if binary_path.exists() {
+            return Ok(binary_path);
+        }
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -811,6 +856,24 @@ impl EdgeDiscovery for ScenarioEdgeDiscovery {
 #[derive(Clone)]
 struct IncidentSessionHook;
 
+fn is_incident_commander(labels: &BTreeMap<String, String>) -> bool {
+    labels
+        .get("display_name")
+        .is_some_and(|value| value == "Incident Commander")
+        || labels.get("group").is_some_and(|value| value == "Command")
+}
+
+fn is_incident_commander_request(
+    req: &CreateSessionRequest,
+    labels: &BTreeMap<String, String>,
+) -> bool {
+    is_incident_commander(labels)
+        || req
+            .system_prompt
+            .as_deref()
+            .is_some_and(|prompt| prompt.contains("You are the incident commander"))
+}
+
 #[async_trait]
 impl SessionHook for IncidentSessionHook {
     async fn before_create(
@@ -818,8 +881,17 @@ impl SessionHook for IncidentSessionHook {
         req: &mut CreateSessionRequest,
     ) -> Result<(), meerkat_core::SessionError> {
         let labels = req.labels.clone().unwrap_or_default();
+        let is_commander = is_incident_commander_request(req, &labels);
         let build = req.build.get_or_insert_with(SessionBuildOptions::default);
         build.external_tools = Some(Arc::new(IncidentToolDispatcher));
+        if is_commander {
+            build.override_mob = ToolCategoryOverride::Enable;
+            build.resume_override_mask.override_mob = true;
+            build.mob_tool_authority_context = Some(
+                MobToolAuthorityContext::create_only_generated()
+                    .with_managed_mob_scope(["incident-command-center"]),
+            );
+        }
         if labels
             .get("addressable")
             .is_some_and(|value| value.eq_ignore_ascii_case("false"))
@@ -857,25 +929,33 @@ impl SessionHook for IncidentSessionHook {
 }
 
 #[derive(Clone)]
-struct IncidentToolDispatcher;
+pub(crate) struct IncidentToolDispatcher;
+
+fn incident_tool_provenance() -> ToolProvenance {
+    ToolProvenance {
+        kind: ToolSourceKind::Callback,
+        source_id: "incident-command-center".into(),
+    }
+}
 
 #[async_trait]
 impl AgentToolDispatcher for IncidentToolDispatcher {
     fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+        let provenance = incident_tool_provenance();
         vec![
             Arc::new(ToolDef {
                 name: "inspect_service".into(),
                 description: "Inspect the current health and saturation of a named service"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<InspectServiceArgs>(),
-                provenance: None,
+                provenance: Some(provenance.clone()),
             }),
             Arc::new(ToolDef {
                 name: "analyze_customer_impact".into(),
                 description: "Estimate customer-facing impact for a named merchant cohort"
                     .to_string(),
                 input_schema: meerkat_tools::schema_for::<AnalyzeImpactArgs>(),
-                provenance: None,
+                provenance: Some(provenance),
             }),
         ]
         .into()

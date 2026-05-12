@@ -6,6 +6,7 @@ import {
   buildQuickPromptSuggestions,
   buildRoutingSectionView,
   buildSidebarViewState,
+  inferResponsePhaseFromFrames,
   mapSessionHistoryToTimelineEntries,
   mapFramesToTimelineEntries,
   mergeConversationFrames,
@@ -179,6 +180,64 @@ test("mapFramesToTimelineEntries suppresses duplicate terminal text after stream
   );
 });
 
+test("mapFramesToTimelineEntries suppresses session-history terminal text already delivered live", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-live-delta",
+        event: "text_delta",
+        timestampMs: 10,
+        data: { delta: "Acknowledged. Standing by." },
+      },
+      {
+        id: "evt-live-complete",
+        event: "interaction_complete",
+        timestampMs: 20,
+        data: { result: "Acknowledged. Standing by." },
+      },
+      {
+        id: "history-user",
+        event: "user_input",
+        sourceKind: "session_history",
+        timestampMs: 30,
+        data: { content: "You have been spawned as incident-commander." },
+      },
+      {
+        id: "history-assistant",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: 31,
+        data: {
+          text: "Acknowledged. Standing by.",
+          result: "Acknowledged. Standing by.",
+          source_event_type: "session_history",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const assistantTexts = entries
+    .filter((entry) => entry.kind === "message" && entry.identity.role === "assistant")
+    .map((entry) => {
+      if ("text" in entry) return entry.text;
+      if ("blocks" in entry && Array.isArray(entry.blocks)) {
+        return entry.blocks
+          .map((block) => block.type === "paragraph" ? block.text : "")
+          .join("");
+      }
+      return "";
+    });
+
+  assert.deepEqual(assistantTexts, ["Acknowledged. Standing by."]);
+});
+
 test("mapFramesToTimelineEntries ignores text_complete so the terminal event does not duplicate the same answer", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -241,6 +300,32 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
         : ""
       : "",
     "Status is stable.",
+  );
+});
+
+test("inferResponsePhaseFromFrames clears working state on terminal text and end-turn frames", () => {
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "text_delta", data: { delta: "Done." } },
+      { id: "evt-2", event: "text_complete", data: { content: "Done." } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "text_delta", data: { delta: "Done." } },
+      { id: "evt-2", event: "turn_completed", data: { stop_reason: "end_turn" } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "tool_execution_started", data: {} },
+      { id: "evt-2", event: "turn_completed", data: { stop_reason: "tool_use" } },
+    ]),
+    "tool-executing",
   );
 });
 
@@ -421,7 +506,7 @@ test("mapFramesToTimelineEntries renders image-tool turns without duplicating fi
   assert.equal(imageEntries.length, 1);
 });
 
-test("mapSessionHistoryToTimelineEntries preserves session ordering while turning comms transport into meta messages", () => {
+test("mapSessionHistoryToTimelineEntries renders old comms transport text as comms metadata", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
@@ -466,29 +551,68 @@ test("mapSessionHistoryToTimelineEntries preserves session ordering while turnin
     },
   );
 
-  assert.equal(entries.length, 3);
-  assert.equal(entries[0]?.identity.label, "You");
-  assert.equal(entries[1]?.identity.id, "comms");
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const commsBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(commsBlock?.type, "tool-call");
+  assert.equal(commsBlock?.peerIncoming, true);
+  assert.equal(commsBlock?.peerTarget, "incident-commander");
+  assert.equal(commsBlock?.peerBody, "Please summarize the timeline.");
+  assert.equal(entries[1]?.identity.label, "Scribe");
   assert.equal(
     entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "tool-call"
-        ? entries[1].blocks[0].peerIntent
-        : ""
-      : "",
-    "Please summarize the timeline.",
-  );
-  assert.equal(entries[2]?.identity.label, "Scribe");
-  assert.equal(
-    entries[2] && "blocks" in entries[2] && Array.isArray(entries[2].blocks)
-      ? entries[2].blocks[0]?.type === "paragraph"
-        ? entries[2].blocks[0].text
+      ? entries[1].blocks[0]?.type === "paragraph"
+        ? entries[1].blocks[0].text
         : ""
       : "",
     "Scribe is preparing a summary.",
   );
 });
 
-test("mapSessionHistoryToTimelineEntries drops bootstrap scaffolding and tool-scope chatter", () => {
+test("mapSessionHistoryToTimelineEntries renders typed system-notice peer requests as comms metadata", () => {
+  const entries = mapSessionHistoryToTimelineEntries(
+    {
+      session_id: "session-1",
+      message_count: 1,
+      offset: 0,
+      has_more: false,
+      messages: [
+        {
+          role: "system_notice",
+          kind: "comms",
+          body: "Peer request: ping",
+          blocks: [{
+            type: "comms",
+            kind: "request",
+            direction: "incoming",
+            peer: { id: "11111111-2222-3333-4444-555555555555", display_name: "incident-worker-full-1" },
+            intent: "ping",
+            request_id: "req-1",
+            payload: { body: "check readiness" },
+            content: [{ type: "text", text: "check readiness" }],
+          }],
+        },
+      ],
+    },
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const firstBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(firstBlock?.type, "tool-call");
+  assert.equal(firstBlock?.peerTarget, "incident-worker-full-1");
+  assert.equal(firstBlock?.peerIncoming, true);
+});
+
+test("mapSessionHistoryToTimelineEntries treats old bootstrap-looking user text as user-authored", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
@@ -515,10 +639,14 @@ test("mapSessionHistoryToTimelineEntries drops bootstrap scaffolding and tool-sc
     },
   );
 
-  assert.deepEqual(entries.map((entry) => entry.identity.label), ["Incident Commander"]);
+  assert.deepEqual(entries.map((entry) => entry.identity.label), ["You", "Incident Commander"]);
+  assert.equal(
+    "text" in (entries[0] || {}) ? entries[0]?.text : "",
+    "You have been spawned as 'incident-commander' (role: commander) in mob 'incident-command-center'.",
+  );
 });
 
-test("mapSessionHistoryToTimelineEntries anchors receiver panes on recent peer activity instead of bootstrap chatter", () => {
+test("mapSessionHistoryToTimelineEntries renders old peer request prefixes as comms metadata", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
@@ -546,18 +674,14 @@ test("mapSessionHistoryToTimelineEntries anchors receiver panes on recent peer a
 
   assert.equal(entries.length, 2);
   assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(
-    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "tool-call"
-        ? entries[0].blocks[0].peerIntent
-        : ""
-      : "",
-    "request_summary",
-  );
+  const requestBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(requestBlock?.type, "tool-call");
+  assert.equal(requestBlock?.peerIncoming, true);
+  assert.equal(requestBlock?.peerTarget, "incident-commander");
   assert.equal(entries[1]?.identity.label, "Scribe");
 });
 
-test("mapSessionHistoryToTimelineEntries hides checksum_token on inbound peer requests", () => {
+test("mapSessionHistoryToTimelineEntries renders checksum_token old prefixes as comms metadata", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
@@ -584,18 +708,14 @@ test("mapSessionHistoryToTimelineEntries hides checksum_token on inbound peer re
     },
   );
 
-  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-    ? entries[0].blocks[0]
-    : null;
   assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(block?.type, "tool-call");
-  if (block?.type === "tool-call") {
-    assert.equal(block.peerIntent, undefined);
-    assert.equal(block.peerBody, "Reply exactly: peer smoke ok");
-  }
+  const checksumBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(checksumBlock?.type, "tool-call");
+  assert.equal(checksumBlock?.peerIncoming, true);
+  assert.equal(checksumBlock?.peerTarget, "incident-commander");
 });
 
-test("mapSessionHistoryToTimelineEntries strips rpc transport prefix from operator prompts", () => {
+test("mapSessionHistoryToTimelineEntries keeps old rpc transport prefix as user text", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
@@ -617,10 +737,10 @@ test("mapSessionHistoryToTimelineEntries strips rpc transport prefix from operat
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.identity.label, "You");
   assert.equal(entries[0]?.variant, "plain");
-  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Ask scribe for a concise update and tell me the answer.");
+  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "[EVENT via rpc] Ask scribe for a concise update and tell me the answer.");
 });
 
-test("mapSessionHistoryToTimelineEntries extracts embedded rpc prompts from mixed comms blobs", () => {
+test("mapSessionHistoryToTimelineEntries splits mixed old comms blobs into comms metadata", () => {
   const entries = mapSessionHistoryToTimelineEntries(
     {
       session_id: "session-1",
@@ -642,10 +762,14 @@ test("mapSessionHistoryToTimelineEntries extracts embedded rpc prompts from mixe
     },
   );
 
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.identity.label, "You");
-  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Ask scribe for a concise update and tell me the answer.");
-  assert.equal(entries[1]?.identity.id, "comms");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0]?.type, "tool-call");
+  assert.equal(blocks[0]?.peerTarget, "scribe");
+  assert.equal(blocks[1]?.type, "tool-call");
+  assert.equal(blocks[1]?.peerTarget, "merchant-comms");
 });
 
 test("sortConversationTimelineEntries keeps optimistic user messages after older assistant replies", () => {
@@ -893,6 +1017,304 @@ test("mapFramesToTimelineEntries renders aggregate user_input frames as user mes
   assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Run a status sweep.");
 });
 
+test("mapFramesToTimelineEntries renders session-history assistant text_complete frames", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "full-tool-worker",
+      member_id: "full-tool-worker",
+      label: "full-tool-worker",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "history-assistant",
+        event: "text_complete",
+        identity: "full-tool-worker",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "text",
+                data: { text: "Ready and standing by. Readiness reported." },
+              },
+            ],
+          },
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "full-tool-worker");
+  const renderedText = entries[0] && "text" in entries[0]
+    ? entries[0].text
+    : entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      : "";
+  assert.equal(
+    renderedText,
+    "Ready and standing by. Readiness reported.",
+  );
+});
+
+test("mapFramesToTimelineEntries renders session-history interaction completions from text blocks only", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-worker-1",
+      member_id: "incident-worker-1",
+      label: "incident-worker-1",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "history-reasoning-only",
+        event: "interaction_complete",
+        identity: "incident-worker-1",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "reasoning",
+                data: { text: "**Deciding on communication approach**\n\nI should think this through." },
+              },
+              {
+                block_type: "tool_use",
+                data: { name: "peers", args: {}, id: "call-peers" },
+              },
+            ],
+          },
+          text: "**Deciding on communication approach**\n\nI should think this through.",
+          result: "**Deciding on communication approach**\n\nI should think this through.",
+        },
+      },
+      {
+        id: "history-final",
+        event: "interaction_complete",
+        identity: "incident-worker-1",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "reasoning",
+                data: { text: "**Considering event response**\n\nI should not be rendered as an answer." },
+              },
+              {
+                block_type: "text",
+                data: {
+                  text: "Ready as the incident investigation worker and standing by for follow-up tasks.",
+                },
+              },
+            ],
+          },
+          text: "**Considering event response**\n\nI should not be rendered as an answer.Ready as the incident investigation worker and standing by for follow-up tasks.",
+          result: "**Considering event response**\n\nI should not be rendered as an answer.Ready as the incident investigation worker and standing by for follow-up tasks.",
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "incident-worker-1");
+  const toolBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(toolBlock?.type, "tool-call");
+  assert.equal(toolBlock?.name, "peers");
+  assert.equal(entries[1]?.identity.id, "incident-worker-1");
+  const renderedText = entries[1] && "text" in entries[1]
+    ? entries[1].text
+    : entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
+      ? entries[1].blocks.map((block) => block.type === "paragraph" ? block.text : "").join("")
+      : "";
+  assert.equal(
+    renderedText,
+    "Ready as the incident investigation worker and standing by for follow-up tasks.",
+  );
+});
+
+test("mapFramesToTimelineEntries renders session-history tool-use only assistant turns", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "nested-worker-coordinator",
+      member_id: "nested-worker-coordinator",
+      label: "nested-worker-coordinator",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "history-tool-use",
+        event: "interaction_complete",
+        identity: "nested-worker-coordinator",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "tool_use",
+                data: {
+                  id: "call-delegate",
+                  name: "delegate",
+                  args: {
+                    member_id: "nested-ack-worker",
+                    task: "acknowledge",
+                  },
+                },
+              },
+            ],
+            stop_reason: "tool_use",
+          },
+          text: "",
+          result: "",
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.variant, "rich");
+  const firstBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(firstBlock?.type, "tool-call");
+  assert.equal(firstBlock?.name, "delegate");
+  assert.match(firstBlock?.arguments || "", /nested-ack-worker/);
+});
+
+test("mapFramesToTimelineEntries drops session-history tool-use blocks already rendered live", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "browser-parent-worker",
+      member_id: "browser-parent-worker",
+      label: "browser-parent-worker",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "live-mob-list-requested",
+        event: "tool_call_requested",
+        identity: "browser-parent-worker",
+        interactionId: "turn-1",
+        data: { id: "call-live-mob-list", name: "mob_list", args: {} },
+      },
+      {
+        id: "live-mob-list-completed",
+        event: "tool_execution_completed",
+        identity: "browser-parent-worker",
+        interactionId: "turn-1",
+        data: { id: "call-live-mob-list", name: "mob_list", result: "{\"mobs\":[]}" },
+      },
+      {
+        id: "history-mob-list-tool-use",
+        event: "interaction_complete",
+        identity: "browser-parent-worker",
+        interactionId: "turn-1",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "tool_use",
+                data: {
+                  id: "call-live-mob-list",
+                  name: "mob_list",
+                  args: {},
+                },
+              },
+            ],
+            stop_reason: "tool_use",
+          },
+          text: "",
+          result: "",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const toolBlocks = entries.flatMap((entry) => entry && "blocks" in entry && Array.isArray(entry.blocks)
+    ? entry.blocks.filter((block) => block.type === "tool-call")
+    : []);
+  assert.equal(toolBlocks.length, 1);
+  assert.equal(toolBlocks[0]?.name, "mob_list");
+});
+
+test("mapFramesToTimelineEntries preserves extra history tool-use repeats beyond live count", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "browser-parent-worker",
+      member_id: "browser-parent-worker",
+      label: "browser-parent-worker",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "live-peer-requested",
+        event: "tool_call_requested",
+        identity: "browser-parent-worker",
+        data: { id: "call-live-peer", name: "peers", args: {} },
+      },
+      {
+        id: "history-peer-tool-use",
+        event: "interaction_complete",
+        identity: "browser-parent-worker",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              { block_type: "tool_use", data: { id: "call-history-peer-1", name: "peers", args: {} } },
+              { block_type: "tool_use", data: { id: "call-history-peer-2", name: "peers", args: {} } },
+            ],
+            stop_reason: "tool_use",
+          },
+          text: "",
+          result: "",
+        },
+      },
+    ],
+  );
+
+  const toolBlocks = entries.flatMap((entry) => entry && "blocks" in entry && Array.isArray(entry.blocks)
+    ? entry.blocks.filter((block) => block.type === "tool-call")
+    : []);
+  assert.equal(toolBlocks.length, 2);
+  assert.equal(toolBlocks.every((block) => block.name === "peers"), true);
+});
+
+test("mapFramesToTimelineEntries deduplicates paired user_input and interaction_started frames", () => {
+  const entries = mapFramesToTimelineEntries(
+    null,
+    [
+      {
+        id: "console-frame-1",
+        event: "user_input",
+        interactionId: "turn-1",
+        timestampMs: 10,
+        data: { content: "Retire rollback-risk-worker please" },
+      },
+      {
+        id: "evt-1",
+        event: "interaction_started",
+        interactionId: "turn-1",
+        timestampMs: 10,
+        data: { content: "Retire rollback-risk-worker please" },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(
+    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    "Retire rollback-risk-worker please",
+  );
+});
+
 test("mapFramesToTimelineEntries renders user image content blocks inline", () => {
   const entries = mapFramesToTimelineEntries(
     null,
@@ -932,6 +1354,46 @@ test("mapFramesToTimelineEntries renders user image content blocks inline", () =
     "http://127.0.0.1:7000/blobs/sha256%3Aabc%2Fdef",
   );
   assert.equal(blocks[1]?.type === "image" ? blocks[1].alt : "", "incident badge");
+});
+
+test("mapFramesToTimelineEntries renders user image_ref content blocks inline", () => {
+  const entries = mapFramesToTimelineEntries(
+    null,
+    [
+      {
+        id: "evt-1",
+        event: "interaction_started",
+        data: {
+          content: [
+            { type: "text", text: "Please inspect the forwarded image." },
+            {
+              type: "image_ref",
+              media_type: "image/png",
+              source: "blob",
+              blob_id: "sha256:forwarded/operator",
+            },
+          ],
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:7000",
+      renderInteractionStartsAsUser: true,
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(entries[0]?.variant, "rich");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks[0]?.type, "paragraph");
+  assert.equal(blocks[0]?.type === "paragraph" ? blocks[0].text : "", "Please inspect the forwarded image.");
+  assert.equal(blocks[1]?.type, "image");
+  assert.equal(
+    blocks[1]?.type === "image" ? blocks[1].src : "",
+    "http://127.0.0.1:7000/blobs/sha256%3Aforwarded%2Foperator",
+  );
+  assert.equal(blocks[1]?.type === "image" ? blocks[1].alt : "", "referenced image");
 });
 
 test("mapFramesToTimelineEntries renders assistant_image frames with API blob URLs", () => {
@@ -1046,7 +1508,7 @@ test("mapFramesToTimelineEntries deduplicates assistant image and appended image
   assert.equal(block?.src, "http://127.0.0.1:7000/blobs/sha256%3Agenerated");
 });
 
-test("mapFramesToTimelineEntries suppresses spawn scaffold interaction prompts", () => {
+test("mapFramesToTimelineEntries treats spawn-looking interaction prompts as user text", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "incident-commander",
@@ -1082,19 +1544,24 @@ test("mapFramesToTimelineEntries suppresses spawn scaffold interaction prompts",
     { renderInteractionStartsAsUser: true },
   );
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.role, "assistant");
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.role, "user");
   assert.equal(
-    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "paragraph"
-        ? entries[0].blocks[0].text
+    "text" in (entries[0] || {}) ? entries[0]?.text : "",
+    "You have been spawned as 'incident-commander' (role: commander) in mob 'incident-command-center'.",
+  );
+  assert.equal(entries[1]?.identity.role, "assistant");
+  assert.equal(
+    entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
+      ? entries[1].blocks[0]?.type === "paragraph"
+        ? entries[1].blocks[0].text
         : ""
       : "",
     "Acknowledged.",
   );
 });
 
-test("mapFramesToTimelineEntries surfaces inbound comms requests from run_started prompts", () => {
+test("mapFramesToTimelineEntries does not parse inbound comms requests from run_started prompts", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "scribe",
@@ -1120,21 +1587,11 @@ test("mapFramesToTimelineEntries surfaces inbound comms requests from run_starte
     ],
   );
 
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.kind, "message");
-  assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(
-    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "tool-call"
-        ? entries[0].blocks[0].peerIncoming
-        : false
-      : false,
-    true,
-  );
-  assert.equal(entries[1]?.identity.id, "scribe");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "scribe");
 });
 
-test("mapFramesToTimelineEntries surfaces inbound one-line peer messages while rendering chat history", () => {
+test("mapFramesToTimelineEntries does not parse inbound one-line peer messages from run_started prompts", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "scribe",
@@ -1161,20 +1618,326 @@ test("mapFramesToTimelineEntries surfaces inbound one-line peer messages while r
     { renderInteractionStartsAsUser: true },
   );
 
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(
-    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "tool-call"
-        ? entries[0].blocks[0].peerIntent
-        : ""
-      : "",
-    "Please describe what you see in the attached image.",
-  );
-  assert.equal(entries[1]?.identity.id, "scribe");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "scribe");
 });
 
-test("mapFramesToTimelineEntries surfaces inbound peer messages from content-block prompts", () => {
+test("mapFramesToTimelineEntries renders inbound comms-looking user-input frames as operator chat", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "tutti-profile-worker",
+      member_id: "tutti-profile-worker",
+      label: "tutti-profile-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-comms-user-input",
+        event: "user_input",
+        timestampMs: Date.parse("2026-05-11T15:48:20.000Z"),
+        data: {
+          content:
+            "[COMMS MESSAGE from incident-command-center/worker/tutti-profile-worker]\n"
+            + "Ping: please confirm you are still online and reachable for CardinalPay incident support.",
+        },
+      },
+      {
+        id: "evt-complete",
+        event: "interaction_complete",
+        timestampMs: Date.parse("2026-05-11T15:48:22.000Z"),
+        data: { result: "Confirmed online and reachable via comms." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(
+    "text" in (entries[0] || {}) ? entries[0]?.text : "",
+    "[COMMS MESSAGE from incident-command-center/worker/tutti-profile-worker]\nPing: please confirm you are still online and reachable for CardinalPay incident support.",
+  );
+  assert.equal(entries[1]?.identity.id, "tutti-profile-worker");
+});
+
+test("mapFramesToTimelineEntries renders session-history comms user-input frames as comms metadata", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "child-worker",
+      member_id: "child-worker",
+      label: "child-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "history-comms-user-input",
+        event: "user_input",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-11T20:45:57.000Z"),
+        data: {
+          content:
+            "[COMMS MESSAGE from implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker]\n"
+            + "grandchild-worker ping acknowledgement.",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerIncoming, true);
+  assert.equal(block?.peerTarget, "grandchild-worker");
+  assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
+});
+
+test("mapFramesToTimelineEntries renders session-history peer system notices as comms metadata", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "final-grandchild-worker",
+      member_id: "final-grandchild-worker",
+      label: "final-grandchild-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "history-peer-system-notice",
+        event: "user_input",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-11T21:10:23.000Z"),
+        data: {
+          content:
+            "[SYSTEM NOTICE][PEER_REQUEST] Correlated peer request from peer_id 22a56406-fbe9-599f-b8af-9f1b715fcdf3 "
+            + "(display_name: incident-command-center/commander/final-child-worker). Intent: checksum_token. "
+            + "Request ID: 8d04e806-3316-40c4-816f-345ded237fbc. Params: {\n"
+            + "  \"subject\": \"ping acknowledgement to final-child-worker\"\n"
+            + "}. This is not a normal user request and not a prompt for direct user-facing output.",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerIncoming, true);
+  assert.equal(block?.peerTarget, "final-child-worker");
+  assert.equal(block?.peerIntent, undefined);
+  assert.equal(block?.peerBody, "ping acknowledgement to final-child-worker");
+});
+
+test("mapFramesToTimelineEntries renders session-history peer image notices as comms plus image", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "history-peer-image",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-11T21:12:00.000Z"),
+        data: {
+          message: {
+            role: "system_notice",
+            blocks: [{
+              type: "comms",
+              kind: "message",
+              peer: { display_name: "incident-command-center/scribe/scribe" },
+              request_id: "peer-image-1",
+              content: [
+                { type: "text", text: "Generated incident badge forwarded." },
+                {
+                  type: "image_ref",
+                  source: "blob",
+                  blob_id: "sha256:badge/1",
+                  media_type: "image/png",
+                  alt: "incident badge",
+                },
+              ],
+            }],
+          },
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:7000",
+      renderInteractionStartsAsUser: true,
+    },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
+  assert.equal(blocks.length, 2);
+  assert.equal(blocks[0]?.type, "tool-call");
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerIncoming : false, true);
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerTarget : "", "incident-command-center/scribe/scribe");
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerBody : "", "Generated incident badge forwarded.");
+  assert.equal(blocks[1]?.type, "image");
+  assert.equal(
+    blocks[1]?.type === "image" ? blocks[1].src : "",
+    "http://127.0.0.1:7000/blobs/sha256%3Abadge%2F1",
+  );
+  assert.equal(blocks[1]?.type === "image" ? blocks[1].alt : "", "incident badge");
+});
+
+test("mapFramesToTimelineEntries resolves session-history peer tool targets from live peers results", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "peers-result",
+        event: "tool_execution_completed",
+        timestampMs: Date.parse("2026-05-11T21:29:47.000Z"),
+        data: {
+          id: "call-peers",
+          name: "peers",
+          result: JSON.stringify({
+            peers: [{
+              peer_id: "16e23049-513c-5ec1-94f6-892a5daf2f89",
+              name: "incident-command-center/scribe/scribe",
+            }],
+          }),
+        },
+      },
+      {
+        id: "history-send-message",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-11T21:29:50.000Z"),
+        data: {
+          message: {
+            role: "block_assistant",
+            stop_reason: "tool_use",
+            blocks: [{
+              block_type: "tool_use",
+              data: {
+                id: "call-send",
+                name: "send_message",
+                args: {
+                  peer_id: "16e23049-513c-5ec1-94f6-892a5daf2f89",
+                  body: "peer label check",
+                },
+              },
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const toolEntry = entries.find((entry) =>
+    entry.kind === "message"
+    && "blocks" in entry
+    && entry.blocks?.[0]?.type === "tool-call"
+  );
+  const block = toolEntry && "blocks" in toolEntry ? toolEntry.blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerTarget, "scribe");
+});
+
+test("mapFramesToTimelineEntries summarizes image refs in peer send_message tool bodies", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "image-worker",
+      member_id: "image-worker",
+      label: "image-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "history-send-image",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-11T21:13:00.000Z"),
+        data: {
+          message: {
+            role: "block_assistant",
+            stop_reason: "tool_use",
+            blocks: [{
+              block_type: "tool_use",
+              data: {
+                id: "call-send-image",
+                name: "send_message",
+                args: {
+                  peer_id: "peer-image-target",
+                  body: [
+                    { type: "text", text: "Forwarding generated result." },
+                    {
+                      type: "image_ref",
+                      source: "blob",
+                      blob_id: "sha256:generated/1",
+                      media_type: "image/png",
+                      alt: "generated incident badge",
+                    },
+                  ],
+                },
+              },
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Forwarding generated result. generated incident badge");
+});
+
+test("mapFramesToTimelineEntries deduplicates repeated session-history kickoff prompts", () => {
+  const prompt = "You are the child worker in a worker-chain test. Create a worker named grandchild-worker.";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "child-worker",
+      member_id: "child-worker",
+      label: "child-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "history-kickoff-1",
+        event: "user_input",
+        sourceKind: "session_history",
+        timestampMs: 1,
+        data: { content: prompt },
+      },
+      {
+        id: "history-kickoff-2",
+        event: "user_input",
+        sourceKind: "session_history",
+        timestampMs: 2,
+        data: { content: prompt },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", prompt);
+});
+
+test("mapFramesToTimelineEntries does not parse inbound peer messages from content-block run_started prompts", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "scribe",
@@ -1205,17 +1968,8 @@ test("mapFramesToTimelineEntries surfaces inbound peer messages from content-blo
     { renderInteractionStartsAsUser: true },
   );
 
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(
-    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
-      ? entries[0].blocks[0]?.type === "tool-call"
-        ? entries[0].blocks[0].peerIntent
-        : ""
-      : "",
-    "Please describe this generated self-portrait image.",
-  );
-  assert.equal(entries[1]?.identity.id, "scribe");
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "scribe");
 });
 
 test("mapFramesToTimelineEntries orders persisted interaction history by interaction semantics, not raw arrival order", () => {
@@ -1447,6 +2201,24 @@ test("buildActivityRailViewState hides text deltas and internal config churn", (
         event: "interaction_complete",
         identity: "incident-commander",
         data: { text: "done" },
+      },
+      {
+        id: "evt-6",
+        event: "interaction_complete",
+        identity: "incident-commander",
+        sourceKind: "session_history",
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "reasoning",
+                data: { text: "**Thinking**\n\nDo not show this in the rail." },
+              },
+            ],
+          },
+          text: "**Thinking**\n\nDo not show this in the rail.",
+        },
       },
     ],
   });

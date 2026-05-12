@@ -35,6 +35,47 @@ describe("ConversationMessageView", () => {
     });
   });
 
+  test("renders rich user blocks instead of an empty user bubble", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "user-image-1",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "user", label: "You", role: "user" },
+      blocks: [{
+        type: "image",
+        src: "data:image/png;base64,ZmFrZQ==",
+        mediaType: "image/png",
+        alt: "uploaded receipt",
+      }],
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByRole("img", { name: /uploaded receipt/i })).toBeInTheDocument();
+  });
+
+  test("labels single outgoing peer tools with the concrete tool name", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "peer-tool-1",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "agent", label: "Agent", role: "assistant" },
+      blocks: [{
+        type: "tool-call",
+        toolCallId: "call-1",
+        name: "send_message",
+        arguments: "{\"peer_id\":\"peer-1\",\"body\":\"hello\"}",
+        status: "success",
+        peerTarget: "worker-a",
+        peerBody: "hello",
+      }],
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByText("send_message → worker-a")).toBeInTheDocument();
+  });
+
   test("copies rich code blocks and flips the button into a copied state", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, {

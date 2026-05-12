@@ -2,6 +2,7 @@ import { Fragment } from "react";
 
 import {
   conversationRichBlockCopyText,
+  conversationRichBlocksToText,
   conversationIdentityPresentation,
   type ConversationTimelineEntry,
 } from "@console-core";
@@ -48,9 +49,12 @@ export function ConversationMessageView({
   }
 
   if (presentation === "user") {
-    const copyText = entry.copyText || entry.text || "";
+    const visibleRichBlocks = entry.variant === "rich" && entry.blocks?.length
+      ? entry.blocks.filter((block) => conversationRichBlockCopyText(block).trim().length > 0)
+      : [];
+    const copyText = entry.copyText || entry.text || conversationRichBlocksToText(visibleRichBlocks) || "";
     return (
-      <article className="cc-message cc-message--user">
+      <article className={`cc-message cc-message--user${visibleRichBlocks.length ? " cc-message--rich" : ""}`}>
         {!compact ? (
           <CopyButton
             className="cc-message__copy"
@@ -60,7 +64,11 @@ export function ConversationMessageView({
             text={copyText}
           />
         ) : null}
-        <p>{renderMultilineText(entry.text || "")}</p>
+        {visibleRichBlocks.length ? (
+          <ConversationRichContent blocks={visibleRichBlocks} Icon={Icon} richStyle={entry.richStyle} />
+        ) : (
+          <p>{renderMultilineText(entry.text || "")}</p>
+        )}
       </article>
     );
   }

@@ -6,7 +6,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::DateTime;
 use meerkat_core::ContentInput;
+use meerkat_mob::MobHandle;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
 use serde_json::{Value, json};
@@ -55,6 +57,14 @@ struct RuntimeEntry {
     runtime: MobRuntime,
     console_events: ConsoleEventStore,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+}
+
+#[derive(Clone)]
+struct ResolvedConsoleMember {
+    entry: RuntimeEntry,
+    handle: MobHandle,
+    member: MobMemberListEntry,
+    runtime_identity: String,
 }
 
 pub trait ConsoleVisibilityPolicy: Send + Sync {
@@ -217,13 +227,9 @@ impl MobKitConsoleAggregator {
             .clone();
         let mut identities = Vec::new();
         for entry in entries.values() {
-            let members = entry
-                .runtime
-                .handle()
-                .list_members_including_retiring()
-                .await;
-            for member in members {
-                if let Some(record) = identity_record_for_member(entry, &member).await
+            for resolved in member_sources_for_entry(entry).await {
+                if let Some(record) =
+                    identity_record_for_member(entry, &resolved.handle, &resolved.member).await
                     && entry.visibility_policy.identity_visible(&record)
                 {
                     identities.push(record);
@@ -238,16 +244,23 @@ impl MobKitConsoleAggregator {
         &self,
         identity: &str,
     ) -> ConsoleLogResult<Option<ConsoleIdentityInspection>> {
-        let Some((entry, member, _raw_identity)) = self.resolve_member(identity).await else {
+        let Some(resolved) = self.resolve_member(identity).await else {
             return Ok(None);
         };
-        let Some(record) = identity_record_for_member(&entry, &member).await else {
+        let Some(record) =
+            identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await
+        else {
             return Ok(None);
         };
-        if !entry.visibility_policy.identity_visible(&record) {
+        if !resolved.entry.visibility_policy.identity_visible(&record) {
             return Ok(None);
         }
-        let peers = member.wired_to.iter().map(ToString::to_string).collect();
+        let peers = resolved
+            .member
+            .wired_to
+            .iter()
+            .map(ToString::to_string)
+            .collect();
         Ok(Some(ConsoleIdentityInspection {
             identity: record,
             peers,
@@ -259,6 +272,7 @@ impl MobKitConsoleAggregator {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let explicit_identity = query.identity.clone();
+        self.refresh_session_history().await?;
         let mut page = self.inner.store.query_frames(query).await?;
         let mut visible_frames = Vec::with_capacity(page.frames.len());
         for frame in page.frames {
@@ -273,6 +287,21 @@ impl MobKitConsoleAggregator {
         }
         page.frames = visible_frames;
         Ok(page)
+    }
+
+    pub async fn refresh_session_history(&self) -> ConsoleLogResult<()> {
+        let runtime_keys = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for runtime_key in runtime_keys {
+            backfill_session_history(&self.inner, &runtime_key).await?;
+        }
+        Ok(())
     }
 
     pub async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
@@ -309,36 +338,37 @@ impl MobKitConsoleAggregator {
         request: ConsoleSendRequest,
     ) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
         validate_send_request(&request)?;
-        let Some((entry, member, runtime_identity)) = self.resolve_member(&request.identity).await
+        let Some(resolved) = self.resolve_member(&request.identity).await else {
+            return Err(ConsoleSendError::UnknownIdentity(request.identity));
+        };
+        let Some(record) =
+            identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await
         else {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         };
-        let Some(record) = identity_record_for_member(&entry, &member).await else {
-            return Err(ConsoleSendError::UnknownIdentity(request.identity));
-        };
-        if !entry.visibility_policy.identity_visible(&record) {
+        if !resolved.entry.visibility_policy.identity_visible(&record) {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         }
-        if !member_is_addressable(&member) {
+        if !member_is_addressable(&resolved.member) {
             return Err(ConsoleSendError::NotAddressable(request.identity));
         }
-        if member.state == meerkat_mob::MemberState::Retiring {
+        if resolved.member.state == meerkat_mob::MemberState::Retiring {
             return Err(ConsoleSendError::Retired(request.identity));
         }
 
         let content = content_input_from_value(&request.content)?;
         let handling_mode = parse_handling_mode(request.handling_mode.as_deref())?;
         assert_member_accepts_images(
-            &entry.runtime.handle(),
-            entry.runtime.session_service(),
-            &runtime_identity,
+            &resolved.handle,
+            resolved.entry.runtime.session_service(),
+            &resolved.runtime_identity,
             &content,
         )
         .await
         .map_err(|err| ConsoleSendError::InvalidContent(err.to_string()))?;
 
         let dedupe_key = send_dedupe_key(
-            &entry.runtime_key,
+            &resolved.entry.runtime_key,
             &request.identity,
             &request.origin,
             &request.idempotency_key,
@@ -377,28 +407,28 @@ impl MobKitConsoleAggregator {
         }
 
         let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
-        entry
+        resolved
+            .entry
             .console_events
             .reserve_interaction_value(
-                &runtime_identity,
-                Some(runtime_identity.as_str()),
+                &resolved.runtime_identity,
+                Some(resolved.runtime_identity.as_str()),
                 &interaction_id,
                 &request.origin,
                 request.content.clone(),
             )
             .await
             .map_err(ConsoleSendError::State)?;
-        let session_id = entry
-            .runtime
-            .handle()
-            .resolve_bridge_session_id(&MeerkatId::from(runtime_identity.as_str()))
+        let session_id = resolved
+            .handle
+            .resolve_bridge_session_id(&MeerkatId::from(resolved.runtime_identity.as_str()))
             .await
             .map(|sid| sid.to_string());
         let mut new_frame = NewConsoleFrame {
             id: None,
             dedupe_key,
             timestamp_ms: current_time_ms(),
-            runtime_key: entry.runtime_key.clone(),
+            runtime_key: resolved.entry.runtime_key.clone(),
             identity: request.identity.clone(),
             conversation_id: Some(request.identity.clone()),
             session_id: session_id.clone(),
@@ -421,7 +451,7 @@ impl MobKitConsoleAggregator {
             parent_frame_id: None,
             caused_by_frame_id: None,
         };
-        if let Some(redacted) = entry.visibility_policy.redact_payload(&new_frame) {
+        if let Some(redacted) = resolved.entry.visibility_policy.redact_payload(&new_frame) {
             new_frame.payload = redacted;
             new_frame.status = ConsoleFrameStatus::Redacted;
         }
@@ -457,14 +487,7 @@ impl MobKitConsoleAggregator {
         .await
         .map_err(ConsoleSendError::Log)?;
 
-        match send_message_on_mob_with_mode(
-            &entry.runtime.handle(),
-            &runtime_identity,
-            content,
-            handling_mode,
-        )
-        .await
-        {
+        match dispatch_message_to_resolved_member(&resolved, content, handling_mode).await {
             Ok(delivered_session_id) => {
                 let _ = dispatching
                     .apply(SendTransition::MarkDelivered)
@@ -499,13 +522,13 @@ impl MobKitConsoleAggregator {
                     id: None,
                     dedupe_key: format!("delivery-failed:{}", outcome.frame.id),
                     timestamp_ms: current_time_ms(),
-                    runtime_key: entry.runtime_key,
+                    runtime_key: resolved.entry.runtime_key,
                     identity: request.identity,
                     conversation_id: outcome.frame.conversation_id,
                     session_id: outcome.frame.session_id,
                     kind: "message_delivery_failed".to_string(),
                     status: ConsoleFrameStatus::DeliveryFailed,
-                    payload: json!({ "reason": err.to_string() }),
+                    payload: json!({ "reason": err.clone() }),
                     source: ConsoleFrameSource {
                         kind: ConsoleFrameSourceKind::Synthetic,
                         source_cursor: None,
@@ -532,22 +555,24 @@ impl MobKitConsoleAggregator {
                 "identity must be non-empty".to_string(),
             ));
         }
-        let Some((entry, member, _runtime_identity)) = self.resolve_member(identity).await else {
+        let Some(resolved) = self.resolve_member(identity).await else {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         };
-        let Some(record) = identity_record_for_member(&entry, &member).await else {
+        let Some(record) =
+            identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await
+        else {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         };
-        if !entry.visibility_policy.identity_visible(&record) {
+        if !resolved.entry.visibility_policy.identity_visible(&record) {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         }
-        if !member_is_addressable(&member) {
+        if !member_is_addressable(&resolved.member) {
             return Err(ConsoleSendError::NotAddressable(identity.to_string()));
         }
-        if member.state == meerkat_mob::MemberState::Retiring {
+        if resolved.member.state == meerkat_mob::MemberState::Retiring {
             return Err(ConsoleSendError::Retired(identity.to_string()));
         }
-        Ok(entry.runtime.binary_blob_store())
+        Ok(resolved.entry.runtime.binary_blob_store())
     }
 
     pub fn binary_blob_stores(&self) -> Vec<Arc<dyn BinaryBlobStore>> {
@@ -563,27 +588,92 @@ impl MobKitConsoleAggregator {
             .unwrap_or_default()
     }
 
-    async fn resolve_member(
-        &self,
-        identity: &str,
-    ) -> Option<(RuntimeEntry, MobMemberListEntry, String)> {
+    async fn resolve_member(&self, identity: &str) -> Option<ResolvedConsoleMember> {
         let entries = self.inner.runtimes.read().ok()?.clone();
         for entry in entries.values() {
             let raw_identity = strip_namespace(identity, &entry.identity_namespace)?;
             let mid = MeerkatId::from(raw_identity.as_str());
-            let members = entry
-                .runtime
-                .handle()
-                .list_members_including_retiring()
-                .await;
-            if let Some(member) = members
+            if let Some(mut resolved) = member_sources_for_entry(entry)
+                .await
                 .into_iter()
-                .find(|candidate| candidate.agent_identity == mid)
+                .find(|candidate| candidate.member.agent_identity == mid)
             {
-                return Some((entry.clone(), member, raw_identity));
+                resolved.runtime_identity = raw_identity;
+                return Some(resolved);
             }
         }
         None
+    }
+}
+
+async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMember> {
+    let mut resolved = Vec::new();
+    let primary_handle = entry.runtime.handle();
+    let primary_mob_id = primary_handle.mob_id().to_string();
+    for member in primary_handle.list_members_including_retiring().await {
+        resolved.push(ResolvedConsoleMember {
+            entry: entry.clone(),
+            handle: primary_handle.clone(),
+            runtime_identity: member.agent_identity.to_string(),
+            member,
+        });
+    }
+
+    let Some(state) = entry.runtime.agent_mob_mcp_state() else {
+        return resolved;
+    };
+    for (mob_id, _state) in state.mob_list().await {
+        if mob_id.as_str() == primary_mob_id {
+            continue;
+        }
+        let Ok(handle) = state.handle_for(&mob_id).await else {
+            continue;
+        };
+        for member in handle.list_members_including_retiring().await {
+            resolved.push(ResolvedConsoleMember {
+                entry: entry.clone(),
+                handle: handle.clone(),
+                runtime_identity: member.agent_identity.to_string(),
+                member,
+            });
+        }
+    }
+    resolved
+}
+
+async fn dispatch_message_to_resolved_member(
+    resolved: &ResolvedConsoleMember,
+    content: ContentInput,
+    handling_mode: meerkat_core::types::HandlingMode,
+) -> Result<String, String> {
+    let mid = MeerkatId::from(resolved.runtime_identity.as_str());
+    match send_message_on_mob_with_mode(
+        &resolved.handle,
+        &resolved.runtime_identity,
+        content.clone(),
+        handling_mode,
+    )
+    .await
+    {
+        Ok(session_id) => Ok(session_id),
+        Err(err) if err.to_string().contains("not externally addressable") => {
+            let member = resolved
+                .handle
+                .member(&mid)
+                .await
+                .map_err(|err| err.to_string())?;
+            let _receipt = member
+                .internal_turn(content)
+                .await
+                .map_err(|err| err.to_string())?;
+            resolved
+                .handle
+                .resolve_bridge_session_id(&mid)
+                .await
+                .map(|sid| sid.to_string())
+                .ok_or_else(|| "member has no bridge session after internal turn".to_string())
+        }
+        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -633,13 +723,11 @@ async fn backfill_session_history(
     else {
         return Ok(());
     };
-    let members = entry
-        .runtime
-        .handle()
-        .list_members_including_retiring()
-        .await;
-    for member in members {
-        let Some(record) = identity_record_for_member(&entry, &member).await else {
+    let members = member_sources_for_entry(&entry).await;
+    for resolved in members {
+        let member = resolved.member;
+        let Some(record) = identity_record_for_member(&entry, &resolved.handle, &member).await
+        else {
             continue;
         };
         if !entry.visibility_policy.identity_visible(&record) {
@@ -1012,15 +1100,19 @@ fn frame_from_session_history_message(
     let kind = if role.contains("user") {
         "user_input"
     } else if role.contains("assistant") {
-        "text_complete"
+        "interaction_complete"
     } else {
         return None;
     };
     let timestamp_ms = history_timestamp_ms(&message).unwrap_or_else(current_time_ms);
-    let payload = if kind == "text_complete" {
+    let payload = if kind == "interaction_complete" {
+        let text = extract_history_text(&message);
         json!({
-            "text": extract_history_text(&message),
+            "result": text,
+            "text": text,
             "message": message,
+            "source_event_type": "session_history",
+            "type": "session_history",
         })
     } else if kind == "user_input" {
         json!({
@@ -1055,10 +1147,18 @@ fn frame_from_session_history_message(
 }
 
 fn history_timestamp_ms(message: &Value) -> Option<u64> {
-    message
+    if let Some(ms) = message
         .get("timestamp_ms")
         .or_else(|| message.get("created_at_ms"))
         .and_then(Value::as_u64)
+    {
+        return Some(ms);
+    }
+    message
+        .get("created_at")
+        .and_then(Value::as_str)
+        .and_then(|created_at| DateTime::parse_from_rfc3339(created_at).ok())
+        .map(|created_at| created_at.timestamp_millis().max(0) as u64)
 }
 
 fn extract_history_content(message: &Value) -> Value {
@@ -1080,12 +1180,7 @@ fn extract_history_text(message: &Value) -> String {
         if let Some(blocks) = content.as_array() {
             return blocks
                 .iter()
-                .filter_map(|block| {
-                    block
-                        .get("text")
-                        .or_else(|| block.get("content"))
-                        .and_then(Value::as_str)
-                })
+                .filter_map(history_visible_block_text)
                 .collect::<Vec<_>>()
                 .join("");
         }
@@ -1093,16 +1188,38 @@ fn extract_history_text(message: &Value) -> String {
     if let Some(blocks) = message.get("blocks").and_then(Value::as_array) {
         return blocks
             .iter()
-            .filter_map(|block| {
-                block
-                    .get("text")
-                    .or_else(|| block.get("content"))
-                    .and_then(Value::as_str)
-            })
+            .filter_map(history_visible_block_text)
             .collect::<Vec<_>>()
             .join("");
     }
     String::new()
+}
+
+fn history_visible_block_text(block: &Value) -> Option<&str> {
+    let block_kind = block
+        .get("block_type")
+        .or_else(|| block.get("type"))
+        .and_then(Value::as_str);
+    if matches!(
+        block_kind,
+        Some(
+            "reasoning"
+                | "server_tool_content"
+                | "tool_use"
+                | "tool_call"
+                | "tool_result"
+                | "tool_results"
+        )
+    ) {
+        return None;
+    }
+
+    block
+        .get("text")
+        .or_else(|| block.get("content"))
+        .or_else(|| block.get("data").and_then(|data| data.get("text")))
+        .or_else(|| block.get("data").and_then(|data| data.get("content")))
+        .and_then(Value::as_str)
 }
 
 fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
@@ -1118,9 +1235,11 @@ async fn history_frame_has_existing_counterpart(
     frame: &NewConsoleFrame,
 ) -> ConsoleLogResult<bool> {
     let fingerprint = transcript_fingerprint(&frame.kind, &frame.payload);
-    if fingerprint.is_none() {
+    let Some(fingerprint) = fingerprint else {
         return Ok(false);
-    }
+    };
+    let assistant_terminal = assistant_terminal_fingerprint(&frame.kind, &frame.payload).is_some();
+    let mut delta_text_by_turn = BTreeMap::<String, String>::new();
     let mut after = None;
     loop {
         let page = inner
@@ -1132,15 +1251,33 @@ async fn history_frame_has_existing_counterpart(
                 limit: 1_000,
             })
             .await?;
-        if page.frames.iter().any(|existing| {
+        for existing in &page.frames {
             let same_session = existing.session_id == frame.session_id
                 || existing.session_id.is_none()
                 || frame.session_id.is_none();
-            existing.source.kind != ConsoleFrameSourceKind::SessionHistory
-                && same_session
-                && transcript_fingerprint(&existing.kind, &existing.payload) == fingerprint
-        }) {
-            return Ok(true);
+            if existing.source.kind == ConsoleFrameSourceKind::SessionHistory || !same_session {
+                continue;
+            }
+            if transcript_fingerprint(&existing.kind, &existing.payload).as_ref()
+                == Some(&fingerprint)
+            {
+                return Ok(true);
+            }
+            if assistant_terminal
+                && let Some(delta) = text_delta_payload_text(&existing.kind, &existing.payload)
+            {
+                let turn_key = existing
+                    .interaction_id
+                    .as_deref()
+                    .or(existing.turn_id.as_deref())
+                    .or(existing.run_id.as_deref())
+                    .unwrap_or("session");
+                let aggregated = delta_text_by_turn.entry(turn_key.to_string()).or_default();
+                aggregated.push_str(delta);
+                if normalize_transcript_fingerprint_text(aggregated) == fingerprint {
+                    return Ok(true);
+                }
+            }
         }
         if page.frames.is_empty() || page.next_cursor.is_none() {
             return Ok(false);
@@ -1159,6 +1296,18 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .get("content")
             .map(stable_value_fingerprint)
             .or_else(|| payload.get("message").map(stable_value_fingerprint)),
+        "text_delta" => {
+            text_delta_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
+        }
+        "text_complete" | "interaction_complete" | "run_completed" => {
+            assistant_terminal_fingerprint(kind, payload)
+        }
+        _ => None,
+    }
+}
+
+fn assistant_terminal_fingerprint(kind: &str, payload: &Value) -> Option<String> {
+    match kind {
         "text_complete" | "interaction_complete" | "run_completed" => payload
             .get("text")
             .or_else(|| payload.get("result"))
@@ -1166,6 +1315,18 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .map(stable_value_fingerprint),
         _ => None,
     }
+}
+
+fn text_delta_payload_text<'a>(kind: &str, payload: &'a Value) -> Option<&'a str> {
+    if kind != "text_delta" {
+        return None;
+    }
+    payload
+        .get("delta")
+        .or_else(|| payload.get("text"))
+        .or_else(|| payload.get("content"))
+        .and_then(Value::as_str)
+        .or_else(|| payload.as_str())
 }
 
 fn stable_value_fingerprint(value: &Value) -> String {
@@ -1206,18 +1367,16 @@ async fn frame_is_visible(
         let runtime_member_id = strip_namespace(&frame.identity, &entry.identity_namespace)
             .unwrap_or_else(|| frame.identity.clone());
         let runtime_member = MeerkatId::from(runtime_member_id.as_str());
-        let members = entry
-            .runtime
-            .handle()
-            .list_members_including_retiring()
-            .await;
-        let Some(member) = members
-            .iter()
-            .find(|member| member.agent_identity == runtime_member)
+        let Some(resolved) = member_sources_for_entry(&entry)
+            .await
+            .into_iter()
+            .find(|member| member.member.agent_identity == runtime_member)
         else {
             return Ok(allow_historical_identity && entry.visibility_policy.frame_visible(frame));
         };
-        let Some(record) = identity_record_for_member(&entry, member).await else {
+        let Some(record) =
+            identity_record_for_member(&entry, &resolved.handle, &resolved.member).await
+        else {
             return Ok(false);
         };
         if !entry.visibility_policy.identity_visible(&record) {
@@ -1229,6 +1388,7 @@ async fn frame_is_visible(
 
 async fn identity_record_for_member(
     entry: &RuntimeEntry,
+    handle: &MobHandle,
     member: &MobMemberListEntry,
 ) -> Option<ConsoleIdentityRecord> {
     let runtime_member_id = member.agent_identity.to_string();
@@ -1241,9 +1401,7 @@ async fn identity_record_for_member(
     } else {
         ConsoleVisibility::Hidden
     };
-    let session_id = entry
-        .runtime
-        .handle()
+    let session_id = handle
         .resolve_bridge_session_id(&member.agent_identity)
         .await
         .map(|sid| sid.to_string());
@@ -1659,6 +1817,68 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_streamed_text_delta_completion() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for (idx, delta) in ["Ready ", "and standing by."].iter().enumerate() {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("live-delta-{idx}"),
+                    timestamp_ms: 2_000 + idx as u64,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: Some("session-a".to_string()),
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": delta }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("live-delta-{idx}")),
+                    interaction_id: Some("turn-a".to_string()),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append live delta");
+        }
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-assistant-complete".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "interaction_complete".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({ "result": "Ready and standing by." }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:3".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
     #[test]
     fn session_history_watermark_key_is_session_scoped() {
         assert_ne!(
@@ -1697,7 +1917,7 @@ mod tests {
         assert_eq!(user.kind, "user_input");
         assert_eq!(user.source.kind, ConsoleFrameSourceKind::SessionHistory);
         assert_eq!(user.payload["content"], json!("hello"));
-        assert_eq!(assistant.kind, "text_complete");
+        assert_eq!(assistant.kind, "interaction_complete");
         assert_eq!(assistant.payload["text"], json!("hi there"));
         assert!(
             assistant
@@ -1737,5 +1957,105 @@ mod tests {
         )
         .expect("assistant block history frame");
         assert_eq!(frame.payload["text"], json!("hello there"));
+    }
+
+    #[test]
+    fn session_history_projection_extracts_nested_text_block_data() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    {
+                        "block_type": "text",
+                        "data": { "text": "Ready and standing by." }
+                    }
+                ],
+                "timestamp_ms": 10
+            }),
+        )
+        .expect("assistant block history frame");
+
+        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.payload["result"], json!("Ready and standing by."));
+    }
+
+    #[test]
+    fn session_history_projection_drops_reasoning_blocks_from_result_text() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "assistant",
+                "blocks": [
+                    {
+                        "block_type": "reasoning",
+                        "data": { "text": "**Planning**\nI should not be rendered." }
+                    },
+                    {
+                        "block_type": "text",
+                        "data": { "text": "Visible answer." }
+                    }
+                ],
+                "timestamp_ms": 10
+            }),
+        )
+        .expect("assistant block history frame");
+
+        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.payload["result"], json!("Visible answer."));
+        assert_eq!(frame.payload["text"], json!("Visible answer."));
+    }
+
+    #[test]
+    fn session_history_projection_leaves_reasoning_only_result_empty() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "assistant",
+                "blocks": [
+                    {
+                        "block_type": "reasoning",
+                        "data": { "text": "Private planning text." }
+                    },
+                    {
+                        "block_type": "tool_use",
+                        "data": { "name": "peers", "args": {} }
+                    }
+                ],
+                "timestamp_ms": 10
+            }),
+        )
+        .expect("assistant block history frame");
+
+        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.payload["result"], json!(""));
+        assert_eq!(frame.payload["text"], json!(""));
+    }
+
+    #[test]
+    fn session_history_projection_uses_rfc3339_created_at_timestamp() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "user",
+                "content": "hello",
+                "created_at": "2026-05-12T05:00:06.564227Z"
+            }),
+        )
+        .expect("user history frame");
+
+        assert_eq!(frame.timestamp_ms, 1_778_562_006_564);
     }
 }

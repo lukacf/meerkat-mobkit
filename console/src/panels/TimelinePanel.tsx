@@ -7,6 +7,13 @@ interface TimelinePanelProps {
 
 type TlType = "dispatch" | "gate" | "warn" | "topology" | "lifecycle" | "interaction";
 
+const INTERNAL_TIMELINE_EVENTS = new Set([
+  "keep-alive",
+  "snapshot_complete",
+  "snapshot_started",
+  "subscribed",
+]);
+
 interface TlEntry {
   time: string;
   type: TlType;
@@ -24,6 +31,17 @@ function classifyFrame(frame: ConsoleFrame): TlType {
   return "dispatch";
 }
 
+function formatType(type: TlType): string {
+  switch (type) {
+    case "gate": return "Gate";
+    case "warn": return "Warning";
+    case "topology": return "Topology";
+    case "lifecycle": return "Lifecycle";
+    case "interaction": return "Interaction";
+    default: return "Dispatch";
+  }
+}
+
 function formatTime(tsMs?: number): string {
   if (!tsMs) return "—";
   const d = new Date(tsMs);
@@ -35,10 +53,11 @@ function formatTime(tsMs?: number): string {
 function summarizeFrame(frame: ConsoleFrame): string {
   const ev = frame.event;
   const data = (frame.data || {}) as Record<string, unknown>;
+  const shortInteraction = String(frame.interactionId || "").slice(0, 8);
   switch (ev) {
-    case "interaction_complete":    return `Completed interaction ${String(frame.interactionId || "").slice(0, 8)}`;
+    case "interaction_complete":    return shortInteraction ? `Completed ${shortInteraction}` : "Completed";
     case "interaction_failed":      return `Failed: ${String(data.error || data.reason || "error")}`;
-    case "interaction_started":     return `Started interaction ${String(frame.interactionId || "").slice(0, 8)}`;
+    case "interaction_started":     return shortInteraction ? `Started ${shortInteraction}` : "Started";
     case "gating_decision":         return `Gate ${String(data.decision || "")}: ${String(data.action_id || data.pending_id || "")}`;
     case "member_ready":            return `Member ready`;
     case "member_retired":          return `Member retired`;
@@ -56,6 +75,7 @@ export function TimelinePanel({ frames }: TimelinePanelProps): React.JSX.Element
       return d.getTime();
     })();
     return frames
+      .filter((f) => !INTERNAL_TIMELINE_EVENTS.has(f.event))
       .filter((f) => (f.timestampMs || 0) >= todayMs)
       .slice(0, 80)
       .map((f) => ({
@@ -87,7 +107,7 @@ export function TimelinePanel({ frames }: TimelinePanelProps): React.JSX.Element
             <div className="tl__rail"><span className="tl__dot" /></div>
             <div className="tl__card">
               <div>
-                <span className="tl__type">{e.type}</span>
+                <span className="tl__type">{formatType(e.type)}</span>{" "}
                 <span>{e.text}</span>
               </div>
               <div className="tl__who">{e.who}</div>
