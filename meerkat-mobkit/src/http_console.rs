@@ -22,7 +22,7 @@ use crate::mob_handle_runtime::{
     send_message_on_mob_with_mode,
 };
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -180,6 +180,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
 pub fn console_frontend_router() -> Router {
     Router::new()
         .route("/", get(|| async { Redirect::temporary("/console") }))
+        .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .route("/console", get(console_frontend_index_handler))
         .route("/console/", get(console_frontend_index_handler))
         .route(
@@ -3899,9 +3900,10 @@ async fn build_live_snapshot(
         handle.status().await.ok(),
         Some(MobState::Creating | MobState::Running)
     );
-    let (mut members, session_owner_by_id) =
+    let (mut members, mut session_owner_by_id) =
         project_console_members_from_handle(&handle, runtime.session_service(), None, None).await;
-    append_bridge_session_delegate_members(runtime, &mut members, &session_owner_by_id).await;
+    append_bridge_session_delegate_members(runtime, &mut members, &mut session_owner_by_id).await;
+    dedupe_console_members_by_identity(&mut members);
 
     // Use configured module IDs when available because topology and health
     // surfaces describe loaded modules, not live mob members.
@@ -3980,6 +3982,11 @@ async fn build_live_snapshot(
     )
 }
 
+fn dedupe_console_members_by_identity(members: &mut Vec<ConsoleMember>) {
+    let mut seen_member_ids = BTreeSet::new();
+    members.retain(|member| seen_member_ids.insert(member.agent_identity.clone()));
+}
+
 async fn project_console_members_from_handle(
     handle: &MobHandle,
     session_service: Option<&Arc<dyn meerkat_mob::MobSessionService>>,
@@ -4039,34 +4046,47 @@ async fn project_console_members_from_handle(
 async fn append_bridge_session_delegate_members(
     runtime: &MobRuntime,
     members: &mut Vec<ConsoleMember>,
-    session_owner_by_id: &BTreeMap<String, String>,
+    session_owner_by_id: &mut BTreeMap<String, String>,
 ) {
     let Some(state) = runtime.agent_mob_mcp_state() else {
         return;
     };
     let primary_mob_id = runtime.handle().mob_id().to_string();
-    for (mob_id, _mob_state) in state.mob_list().await {
-        if mob_id.as_str() == primary_mob_id {
-            continue;
+    let mut processed = BTreeSet::from([primary_mob_id.clone()]);
+    let session_service = state.session_service();
+
+    loop {
+        let mut progressed = false;
+        for (mob_id, _mob_state) in state.mob_list().await {
+            if processed.contains(mob_id.as_str()) {
+                continue;
+            }
+            let Ok(handle) = state.handle_for(&mob_id).await else {
+                continue;
+            };
+            let Some(owner_session_id) = handle.definition().owner_bridge_session_index() else {
+                processed.insert(mob_id.to_string());
+                continue;
+            };
+            let Some(host_identity) = session_owner_by_id.get(owner_session_id).cloned() else {
+                continue;
+            };
+            let (delegate_members, delegate_session_owner_by_id) =
+                project_console_members_from_handle(
+                    &handle,
+                    Some(&session_service),
+                    Some(&host_identity),
+                    Some(mob_id.as_str()),
+                )
+                .await;
+            session_owner_by_id.extend(delegate_session_owner_by_id);
+            members.extend(delegate_members);
+            processed.insert(mob_id.to_string());
+            progressed = true;
         }
-        let Ok(handle) = state.handle_for(&mob_id).await else {
-            continue;
-        };
-        let Some(owner_session_id) = handle.definition().owner_bridge_session_index() else {
-            continue;
-        };
-        let Some(host_identity) = session_owner_by_id.get(owner_session_id) else {
-            continue;
-        };
-        let session_service = state.session_service();
-        let (delegate_members, _) = project_console_members_from_handle(
-            &handle,
-            Some(&session_service),
-            Some(host_identity),
-            Some(mob_id.as_str()),
-        )
-        .await;
-        members.extend(delegate_members);
+        if !progressed {
+            break;
+        }
     }
 }
 
@@ -4179,14 +4199,16 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 mod tests {
     use super::{
         MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, cursor_is_after,
-        externalize_image_upload_placeholders, externalize_single_image_upload,
-        mint_console_interaction_id, project_query_events_for_console, query_timeline_snapshot,
+        dedupe_console_members_by_identity, externalize_image_upload_placeholders,
+        externalize_single_image_upload, mint_console_interaction_id,
+        project_query_events_for_console, query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
         ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
+    use crate::runtime::ConsoleMember;
     use crate::types::UnifiedEvent;
     use crate::unified_runtime::{EventQuery, PersistedEvent};
     use bytes::Bytes;
@@ -4218,6 +4240,59 @@ mod tests {
             &ConsoleCursor::from("console:9"),
             &ConsoleCursor::from("console:10")
         ));
+    }
+
+    #[test]
+    fn console_live_snapshot_dedupes_repeated_delegate_identities() {
+        let mut members = vec![
+            ConsoleMember {
+                agent_identity: "incident-commander".to_string(),
+                role: "commander".to_string(),
+                state: "active".to_string(),
+                model_capabilities: Default::default(),
+                runtime_mode: None,
+                session_id: None,
+                wired_to: Vec::new(),
+                labels: BTreeMap::new(),
+            },
+            ConsoleMember {
+                agent_identity: "qa-child".to_string(),
+                role: "delegate".to_string(),
+                state: "active".to_string(),
+                model_capabilities: Default::default(),
+                runtime_mode: None,
+                session_id: Some("first".to_string()),
+                wired_to: vec!["qa-parent".to_string()],
+                labels: BTreeMap::from([(
+                    "delegate_host_identity".to_string(),
+                    "qa-parent".to_string(),
+                )]),
+            },
+            ConsoleMember {
+                agent_identity: "qa-child".to_string(),
+                role: "delegate".to_string(),
+                state: "active".to_string(),
+                model_capabilities: Default::default(),
+                runtime_mode: None,
+                session_id: Some("second".to_string()),
+                wired_to: vec!["qa-parent".to_string()],
+                labels: BTreeMap::from([(
+                    "delegate_host_identity".to_string(),
+                    "qa-parent".to_string(),
+                )]),
+            },
+        ];
+
+        dedupe_console_members_by_identity(&mut members);
+
+        assert_eq!(
+            members
+                .iter()
+                .map(|member| member.agent_identity.as_str())
+                .collect::<Vec<_>>(),
+            vec!["incident-commander", "qa-child"]
+        );
+        assert_eq!(members[1].session_id.as_deref(), Some("first"));
     }
 
     #[tokio::test]

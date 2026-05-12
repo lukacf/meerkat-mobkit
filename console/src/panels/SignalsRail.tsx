@@ -98,6 +98,96 @@ function lastSegment(value: string): string {
   return value.split("/").pop() || value;
 }
 
+function parseLegacyCommsSignal(value: string): { targets: string[]; detail: string } | null {
+  const trimmed = value.trim();
+  if (!/^\[COMMS\s+/i.test(trimmed)) return null;
+
+  const lines = trimmed.split("\n");
+  const targets: string[] = [];
+  const bodies: string[] = [];
+  let currentBody: string[] | null = null;
+
+  for (const line of lines) {
+    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
+    if (header) {
+      if (currentBody) {
+        const body = currentBody.join("\n").trim();
+        if (body) bodies.push(body);
+      }
+      targets.push(lastSegment(header[2].trim()));
+      currentBody = header[3].trim() ? [header[3].trim()] : [];
+      continue;
+    }
+    if (!currentBody) return null;
+    if (/^\[EVENT via /i.test(line.trim())) {
+      const body = currentBody.join("\n").trim();
+      if (body) bodies.push(body);
+      currentBody = null;
+      continue;
+    }
+    currentBody.push(line);
+  }
+
+  if (currentBody) {
+    const body = currentBody.join("\n").trim();
+    if (body) bodies.push(body);
+  }
+  if (targets.length === 0) return null;
+  return {
+    targets,
+    detail: bodies.join(" "),
+  };
+}
+
+function parseLegacyPeerNoticeSignal(value: string): { targets: string[]; detail: string } | null {
+  const notice = value.trim().match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
+  if (!notice) return null;
+  const body = notice[2] || "";
+  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
+  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
+  const target = displayNameMatch?.[1]?.trim()
+    ? lastSegment(displayNameMatch[1].trim())
+    : peerIdMatch?.[1]
+      ? peerIdMatch[1].slice(0, 8)
+      : "peer";
+  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
+  const detail = textFromValue(paramsMatch?.[1]) || textFromValue(body.match(/\bIntent:\s*([^.\n]+)[.\n]/i)?.[1]);
+  return {
+    targets: [target],
+    detail,
+  };
+}
+
+function sessionHistoryAssistantReply(frame: ConsoleFrame, data: Record<string, unknown>): string {
+  if (frame.sourceKind !== "session_history") {
+    return textFromValue(data.result ?? data.text ?? data.content);
+  }
+
+  const message = recordOf(data.message);
+  const role = typeof message.role === "string" ? message.role : "";
+  if (role !== "block_assistant") {
+    return textFromValue(data.result ?? data.text ?? data.content);
+  }
+
+  const blocks = Array.isArray(message.blocks) ? message.blocks : [];
+  const text = blocks
+    .map((block) => {
+      const record = recordOf(block);
+      const blockType = typeof record.block_type === "string"
+        ? record.block_type
+        : typeof record.type === "string"
+          ? record.type
+          : "";
+      if (blockType !== "text") return "";
+      const blockData = recordOf(record.data);
+      return textFromValue(blockData.text ?? record.text);
+    })
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  return text;
+}
+
 function agentFor(frame: ConsoleFrame): string {
   return frame.identity?.trim() || "_system";
 }
@@ -165,6 +255,18 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
       const request = textFromValue(data.content ?? data.text ?? data.prompt);
       if (!request) return null;
       if (isScaffoldRequest(request)) return null;
+      const comms = frame.sourceKind === "session_history"
+        ? parseLegacyCommsSignal(request) || parseLegacyPeerNoticeSignal(request)
+        : null;
+      if (comms) {
+        const from = comms.targets.map(displayName).join(", ");
+        return {
+          ...base,
+          id: `comms:${frame.id || frame.interactionId || frame.timestampMs || request}`,
+          label: `Received from ${from}`,
+          detail: truncate(comms.detail || "Peer comms"),
+        };
+      }
       return {
         ...base,
         id: `user:${frame.id || frame.interactionId || frame.timestampMs || request}`,
@@ -173,7 +275,7 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
       };
     }
     case "interaction_complete": {
-      const reply = textFromValue(data.result ?? data.text ?? data.content);
+      const reply = sessionHistoryAssistantReply(frame, data);
       if (!isMeaningfulReply(reply)) return null;
       return {
         ...base,
@@ -231,6 +333,22 @@ function groupKeyFor(signal: Signal): string {
   return `single:${signal.id}`;
 }
 
+function semanticSignalKey(signal: Signal): string {
+  const canonical = (value: string) => value
+    .replace(/\+\d+\s+-\d+\b/g, "")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, "\"")
+    .replace(/\s+/g, " ")
+    .replace(/[.!?\s]+$/g, "")
+    .trim()
+    .toLowerCase();
+  return [
+    canonical(signal.agent),
+    canonical(signal.label),
+    canonical(signal.detail),
+  ].join("\u0000");
+}
+
 function strongerSeverity(a: Severity, b: Severity): Severity {
   if (a === "critical" || b === "critical") return "critical";
   if (a === "warning" || b === "warning") return "warning";
@@ -239,19 +357,23 @@ function strongerSeverity(a: Severity, b: Severity): Severity {
 
 function groupSignals(signals: Signal[]): SignalGroup[] {
   const groups: SignalGroup[] = [];
+  const byId = new Map<string, SignalGroup>();
   for (const signal of signals) {
     const key = groupKeyFor(signal);
-    const current = groups[groups.length - 1];
-    if (current && current.id === key) {
-      current.items.push(signal);
-      current.severity = strongerSeverity(current.severity, signal.severity);
-      current.title = titleForGroup(current.items);
-      current.detail = detailForGroup(current.items);
-      current.agent = current.items[0]?.agent || signal.agent;
-      current.at = current.items[0]?.at || signal.at;
+    const existing = byId.get(key);
+    if (existing) {
+      const seenItemKeys = new Set(existing.items.map(semanticSignalKey));
+      if (!seenItemKeys.has(semanticSignalKey(signal))) {
+        existing.items.push(signal);
+      }
+      existing.severity = strongerSeverity(existing.severity, signal.severity);
+      existing.title = titleForGroup(existing.items);
+      existing.detail = detailForGroup(existing.items);
+      existing.agent = existing.items[0]?.agent || signal.agent;
+      existing.at = existing.items[0]?.at || signal.at;
       continue;
     }
-    groups.push({
+    const group = {
       id: key,
       severity: signal.severity,
       title: titleForGroup([signal]),
@@ -259,7 +381,9 @@ function groupSignals(signals: Signal[]): SignalGroup[] {
       agent: signal.agent,
       at: signal.at,
       items: [signal],
-    });
+    };
+    byId.set(key, group);
+    groups.push(group);
   }
   return groups;
 }
@@ -289,22 +413,30 @@ function timeFor(tsMs?: number): string {
   return `${Math.floor(diff / 3_600_000)}h`;
 }
 
+export function buildSignalGroupsForTest(frames: ConsoleFrame[]): SignalGroup[] {
+  const seen = new Set<string>();
+  const seenSemantic = new Set<string>();
+  const next: Signal[] = [];
+  for (const frame of frames.slice(0, 260)) {
+    const signal = signalFromFrame(frame);
+    if (!signal) continue;
+    if (seen.has(signal.id)) continue;
+    seen.add(signal.id);
+    const semanticKey = semanticSignalKey(signal);
+    if (seenSemantic.has(semanticKey)) continue;
+    seenSemantic.add(semanticKey);
+    next.push(signal);
+    if (next.length >= 80) break;
+  }
+  return groupSignals(next);
+}
+
 export function SignalsRail({ frames, collapsed, onSelect }: SignalsRailProps): React.JSX.Element {
   const [filter, setFilter] = React.useState<"all" | "warning" | "critical">("all");
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(() => new Set());
 
   const groups: SignalGroup[] = React.useMemo(() => {
-    const seen = new Set<string>();
-    const next: Signal[] = [];
-    for (const frame of frames.slice(0, 260)) {
-      const signal = signalFromFrame(frame);
-      if (!signal) continue;
-      if (seen.has(signal.id)) continue;
-      seen.add(signal.id);
-      next.push(signal);
-      if (next.length >= 80) break;
-    }
-    return groupSignals(next);
+    return buildSignalGroupsForTest(frames);
   }, [frames]);
 
   const counts = React.useMemo(() => ({

@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::DateTime;
 use meerkat_core::ContentInput;
 use meerkat_mob::MobHandle;
 use meerkat_mob::ids::MeerkatId;
@@ -1146,10 +1147,18 @@ fn frame_from_session_history_message(
 }
 
 fn history_timestamp_ms(message: &Value) -> Option<u64> {
-    message
+    if let Some(ms) = message
         .get("timestamp_ms")
         .or_else(|| message.get("created_at_ms"))
         .and_then(Value::as_u64)
+    {
+        return Some(ms);
+    }
+    message
+        .get("created_at")
+        .and_then(Value::as_str)
+        .and_then(|created_at| DateTime::parse_from_rfc3339(created_at).ok())
+        .map(|created_at| created_at.timestamp_millis().max(0) as u64)
 }
 
 fn extract_history_content(message: &Value) -> Value {
@@ -1171,12 +1180,7 @@ fn extract_history_text(message: &Value) -> String {
         if let Some(blocks) = content.as_array() {
             return blocks
                 .iter()
-                .filter_map(|block| {
-                    block
-                        .get("text")
-                        .or_else(|| block.get("content"))
-                        .and_then(Value::as_str)
-                })
+                .filter_map(history_visible_block_text)
                 .collect::<Vec<_>>()
                 .join("");
         }
@@ -1184,18 +1188,38 @@ fn extract_history_text(message: &Value) -> String {
     if let Some(blocks) = message.get("blocks").and_then(Value::as_array) {
         return blocks
             .iter()
-            .filter_map(|block| {
-                block
-                    .get("text")
-                    .or_else(|| block.get("content"))
-                    .or_else(|| block.get("data").and_then(|data| data.get("text")))
-                    .or_else(|| block.get("data").and_then(|data| data.get("content")))
-                    .and_then(Value::as_str)
-            })
+            .filter_map(history_visible_block_text)
             .collect::<Vec<_>>()
             .join("");
     }
     String::new()
+}
+
+fn history_visible_block_text(block: &Value) -> Option<&str> {
+    let block_kind = block
+        .get("block_type")
+        .or_else(|| block.get("type"))
+        .and_then(Value::as_str);
+    if matches!(
+        block_kind,
+        Some(
+            "reasoning"
+                | "server_tool_content"
+                | "tool_use"
+                | "tool_call"
+                | "tool_result"
+                | "tool_results"
+        )
+    ) {
+        return None;
+    }
+
+    block
+        .get("text")
+        .or_else(|| block.get("content"))
+        .or_else(|| block.get("data").and_then(|data| data.get("text")))
+        .or_else(|| block.get("data").and_then(|data| data.get("content")))
+        .and_then(Value::as_str)
 }
 
 fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
@@ -1211,9 +1235,11 @@ async fn history_frame_has_existing_counterpart(
     frame: &NewConsoleFrame,
 ) -> ConsoleLogResult<bool> {
     let fingerprint = transcript_fingerprint(&frame.kind, &frame.payload);
-    if fingerprint.is_none() {
+    let Some(fingerprint) = fingerprint else {
         return Ok(false);
-    }
+    };
+    let assistant_terminal = assistant_terminal_fingerprint(&frame.kind, &frame.payload).is_some();
+    let mut delta_text_by_turn = BTreeMap::<String, String>::new();
     let mut after = None;
     loop {
         let page = inner
@@ -1225,15 +1251,33 @@ async fn history_frame_has_existing_counterpart(
                 limit: 1_000,
             })
             .await?;
-        if page.frames.iter().any(|existing| {
+        for existing in &page.frames {
             let same_session = existing.session_id == frame.session_id
                 || existing.session_id.is_none()
                 || frame.session_id.is_none();
-            existing.source.kind != ConsoleFrameSourceKind::SessionHistory
-                && same_session
-                && transcript_fingerprint(&existing.kind, &existing.payload) == fingerprint
-        }) {
-            return Ok(true);
+            if existing.source.kind == ConsoleFrameSourceKind::SessionHistory || !same_session {
+                continue;
+            }
+            if transcript_fingerprint(&existing.kind, &existing.payload).as_ref()
+                == Some(&fingerprint)
+            {
+                return Ok(true);
+            }
+            if assistant_terminal
+                && let Some(delta) = text_delta_payload_text(&existing.kind, &existing.payload)
+            {
+                let turn_key = existing
+                    .interaction_id
+                    .as_deref()
+                    .or(existing.turn_id.as_deref())
+                    .or(existing.run_id.as_deref())
+                    .unwrap_or("session");
+                let aggregated = delta_text_by_turn.entry(turn_key.to_string()).or_default();
+                aggregated.push_str(delta);
+                if normalize_transcript_fingerprint_text(aggregated) == fingerprint {
+                    return Ok(true);
+                }
+            }
         }
         if page.frames.is_empty() || page.next_cursor.is_none() {
             return Ok(false);
@@ -1252,6 +1296,18 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .get("content")
             .map(stable_value_fingerprint)
             .or_else(|| payload.get("message").map(stable_value_fingerprint)),
+        "text_delta" => {
+            text_delta_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
+        }
+        "text_complete" | "interaction_complete" | "run_completed" => {
+            assistant_terminal_fingerprint(kind, payload)
+        }
+        _ => None,
+    }
+}
+
+fn assistant_terminal_fingerprint(kind: &str, payload: &Value) -> Option<String> {
+    match kind {
         "text_complete" | "interaction_complete" | "run_completed" => payload
             .get("text")
             .or_else(|| payload.get("result"))
@@ -1259,6 +1315,18 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .map(stable_value_fingerprint),
         _ => None,
     }
+}
+
+fn text_delta_payload_text<'a>(kind: &str, payload: &'a Value) -> Option<&'a str> {
+    if kind != "text_delta" {
+        return None;
+    }
+    payload
+        .get("delta")
+        .or_else(|| payload.get("text"))
+        .or_else(|| payload.get("content"))
+        .and_then(Value::as_str)
+        .or_else(|| payload.as_str())
 }
 
 fn stable_value_fingerprint(value: &Value) -> String {
@@ -1749,6 +1817,68 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_streamed_text_delta_completion() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for (idx, delta) in ["Ready ", "and standing by."].iter().enumerate() {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("live-delta-{idx}"),
+                    timestamp_ms: 2_000 + idx as u64,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: Some("session-a".to_string()),
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": delta }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("live-delta-{idx}")),
+                    interaction_id: Some("turn-a".to_string()),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append live delta");
+        }
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-assistant-complete".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "interaction_complete".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({ "result": "Ready and standing by." }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:3".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
     #[test]
     fn session_history_watermark_key_is_session_scoped() {
         assert_ne!(
@@ -1851,5 +1981,81 @@ mod tests {
 
         assert_eq!(frame.kind, "interaction_complete");
         assert_eq!(frame.payload["result"], json!("Ready and standing by."));
+    }
+
+    #[test]
+    fn session_history_projection_drops_reasoning_blocks_from_result_text() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "assistant",
+                "blocks": [
+                    {
+                        "block_type": "reasoning",
+                        "data": { "text": "**Planning**\nI should not be rendered." }
+                    },
+                    {
+                        "block_type": "text",
+                        "data": { "text": "Visible answer." }
+                    }
+                ],
+                "timestamp_ms": 10
+            }),
+        )
+        .expect("assistant block history frame");
+
+        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.payload["result"], json!("Visible answer."));
+        assert_eq!(frame.payload["text"], json!("Visible answer."));
+    }
+
+    #[test]
+    fn session_history_projection_leaves_reasoning_only_result_empty() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "assistant",
+                "blocks": [
+                    {
+                        "block_type": "reasoning",
+                        "data": { "text": "Private planning text." }
+                    },
+                    {
+                        "block_type": "tool_use",
+                        "data": { "name": "peers", "args": {} }
+                    }
+                ],
+                "timestamp_ms": 10
+            }),
+        )
+        .expect("assistant block history frame");
+
+        assert_eq!(frame.kind, "interaction_complete");
+        assert_eq!(frame.payload["result"], json!(""));
+        assert_eq!(frame.payload["text"], json!(""));
+    }
+
+    #[test]
+    fn session_history_projection_uses_rfc3339_created_at_timestamp() {
+        let frame = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "user",
+                "content": "hello",
+                "created_at": "2026-05-12T05:00:06.564227Z"
+            }),
+        )
+        .expect("user history frame");
+
+        assert_eq!(frame.timestamp_ms, 1_778_562_006_564);
     }
 }

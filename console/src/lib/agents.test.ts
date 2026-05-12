@@ -135,3 +135,50 @@ test("normalizeAgents enriches sidebar snapshot rows with identity_status when b
   assert.deepEqual(agent?.labels, { team: "finance" });
   assert.deepEqual(agent?.model_capabilities, { image_input: true });
 });
+
+test("normalizeAgents appends live identities missing from the sidebar snapshot", () => {
+  const agents = normalizeAgents(
+    {
+      agent_sidebar: {
+        live_snapshot: {
+          agents: [
+            {
+              identity: "full-tools-worker-1",
+              member_id: "full-tools-worker-1",
+              label: "full-tools-worker-1",
+              role: "full-tools-worker",
+              state: "active",
+              addressable: true,
+            },
+          ],
+        },
+      },
+      identity_status: {
+        schema_version: "1",
+        rows: [
+          {
+            identity: "full-tools-worker-1",
+            role: "full-tools-worker",
+            state: "active",
+            addressability: "addressable",
+            labels: {},
+          },
+          {
+            identity: "sub-worker-1",
+            role: "identity",
+            state: "active",
+            addressability: "addressable",
+            labels: {},
+          },
+        ],
+      },
+    },
+    [],
+  );
+
+  assert.equal(agents.length, 2);
+  const subWorker = agents.find((agent) => agent.identity === "sub-worker-1");
+  assert.equal(subWorker?.member_id, "sub-worker-1");
+  assert.equal(subWorker?.addressable, true);
+  assert.deepEqual(subWorker?.affordances, { can_send_message: true });
+});

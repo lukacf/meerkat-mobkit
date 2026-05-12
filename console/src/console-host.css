@@ -312,6 +312,40 @@ svg[data-svg="fit"],
 }
 .main > * { flex: 1; min-height: 0; }
 
+@media (max-width: 700px) {
+  .cc-theme-scope {
+    --cc-workbench-sidebar-width: min(220px, 42vw);
+    --cc-workbench-activity-width: 0px;
+  }
+
+  .shell,
+  .shell[data-sidebar-collapsed="true"],
+  .shell[data-rail-collapsed="true"],
+  .shell[data-sidebar-collapsed="true"][data-rail-collapsed="true"] {
+    grid-template-columns:
+      var(--cc-workbench-sidebar-width, 180px)
+      1px
+      minmax(0, 1fr)
+      0
+      0;
+  }
+
+  .shell[data-sidebar-collapsed="true"],
+  .shell[data-sidebar-collapsed="true"][data-rail-collapsed="true"] {
+    grid-template-columns:
+      var(--cc-workbench-collapsed-rail-width, 28px)
+      0
+      minmax(0, 1fr)
+      0
+      0;
+  }
+
+  .shell > .rail,
+  .shell > .pane-resizer--activity {
+    display: none;
+  }
+}
+
 /* Dock inside the new shell */
 .main .cc-dock-panel.is-solitary {
   background: var(--bg-elev-1);
@@ -1661,6 +1695,14 @@ svg[data-svg="fit"],
 .agent--child {
   grid-template-columns: 18px 7px 1fr auto;
   padding-left: 18px;
+}
+.agent--child[data-depth="2"] {
+  grid-template-columns: 28px 7px 1fr auto;
+  padding-left: 28px;
+}
+.agent--child[data-depth="3"] {
+  grid-template-columns: 38px 7px 1fr auto;
+  padding-left: 38px;
 }
 .agent--child::before {
   content: "";

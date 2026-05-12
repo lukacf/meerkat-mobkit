@@ -56,6 +56,7 @@ type Bucket = "Personal" | "Coordinators" | "Domains" | "Internal" | "Other";
 interface AgentRow {
   agent: ConsoleAgent;
   childOfHost: boolean;
+  depth: number;
 }
 
 function isWorkerish(a: ConsoleAgent): boolean {
@@ -73,13 +74,46 @@ function isCommanderLike(a: ConsoleAgent): boolean {
   return haystack.includes("commander") || haystack.includes("coordinator");
 }
 
-function isSpawnedDelegateLike(a: ConsoleAgent, host: ConsoleAgent | null): boolean {
-  if (!isWorkerish(a)) return false;
-  const wiredTo = new Set((a.wired_to || []).map((peer) => peer.toLowerCase()));
-  const hostKeys = [host?.identity, host?.member_id, host?.agent_id]
+function agentKeys(a: ConsoleAgent | null): string[] {
+  return [a?.identity, a?.member_id, a?.agent_id]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
-  if (hostKeys.some((key) => wiredTo.has(key))) return true;
+}
+
+function referenceMatchesAgentKey(reference: string, key: string): boolean {
+  const normalizedReference = reference.toLowerCase();
+  const normalizedKey = key.toLowerCase();
+  if (normalizedReference === normalizedKey) return true;
+  const compactReference = normalizedReference.replace(/[^a-z0-9]+/g, "");
+  const compactKey = normalizedKey.replace(/[^a-z0-9]+/g, "");
+  if (compactKey && compactReference === compactKey) return true;
+  const tokens = normalizedReference
+    .split(/[/:#\s]+/)
+    .filter(Boolean);
+  if (tokens.includes(normalizedKey)) return true;
+  if (!compactKey) return false;
+  for (let start = 0; start < tokens.length; start++) {
+    let compactSlice = "";
+    for (let end = start; end < tokens.length; end++) {
+      compactSlice += tokens[end].replace(/[^a-z0-9]+/g, "");
+      if (compactSlice === compactKey) return true;
+      if (compactSlice.length > compactKey.length) break;
+    }
+  }
+  return false;
+}
+
+function isWiredTo(a: ConsoleAgent, host: ConsoleAgent | null): boolean {
+  if (!host) return false;
+  const wiredTo = a.wired_to || [];
+  return agentKeys(host).some((key) =>
+    wiredTo.some((peer) => referenceMatchesAgentKey(peer, key)),
+  );
+}
+
+function isSpawnedDelegateLike(a: ConsoleAgent, host: ConsoleAgent | null): boolean {
+  if (!isWorkerish(a)) return false;
+  if (isWiredTo(a, host)) return true;
 
   const role = (a.role || "").toLowerCase();
   const group = (a.group || "").toLowerCase();
@@ -92,9 +126,43 @@ function isSpawnedDelegateLike(a: ConsoleAgent, host: ConsoleAgent | null): bool
   );
 }
 
+function explicitHostId(a: ConsoleAgent): string | null {
+  return a.labels?.delegate_host_identity
+    || a.labels?.host_identity
+    || a.labels?.parent_identity
+    || null;
+}
+
+function findSpawnHost(a: ConsoleAgent, agents: ConsoleAgent[], commander: ConsoleAgent | null): ConsoleAgent | null {
+  if (!isWorkerish(a)) return null;
+  const explicitHost = explicitHostId(a);
+  if (explicitHost) {
+    const match = agents.find((candidate) =>
+      candidate.member_id !== a.member_id
+        && agentKeys(candidate).some((key) => referenceMatchesAgentKey(explicitHost, key)),
+    );
+    if (match) return match;
+  }
+
+  const commanderHost = agents.find((candidate) =>
+    candidate.member_id !== a.member_id && isCommanderLike(candidate) && isWiredTo(a, candidate),
+  );
+  if (commanderHost) return commanderHost;
+
+  const workerHost = agents.find((candidate) =>
+    candidate.member_id !== a.member_id && isWorkerish(candidate) && isWiredTo(a, candidate),
+  );
+  if (workerHost) return workerHost;
+
+  if (commander && commander.member_id !== a.member_id && isSpawnedDelegateLike(a, commander)) return commander;
+  return null;
+}
+
 export const __sidebarTest = {
   isCommanderLike,
   isSpawnedDelegateLike,
+  findSpawnHost,
+  groupSidebarAgents,
 };
 
 function bucketOf(a: ConsoleAgent): Bucket {
@@ -108,6 +176,89 @@ function bucketOf(a: ConsoleAgent): Bucket {
 }
 
 const SECTION_ORDER: Bucket[] = ["Personal", "Coordinators", "Domains", "Internal", "Other"];
+
+function bucketForAgent(a: ConsoleAgent, parentById: Map<string, string>, byId: Map<string, ConsoleAgent>): Bucket {
+  const seen = new Set<string>();
+  let current: ConsoleAgent | undefined = a;
+  while (current) {
+    if (seen.has(current.member_id)) break;
+    seen.add(current.member_id);
+    const parentId = parentById.get(current.member_id);
+    if (!parentId) break;
+    current = byId.get(parentId);
+  }
+  return bucketOf(current || a);
+}
+
+function depthForAgent(a: ConsoleAgent, parentById: Map<string, string>): number {
+  const seen = new Set<string>();
+  let depth = 0;
+  let current = a.member_id;
+  while (parentById.has(current) && !seen.has(current)) {
+    seen.add(current);
+    depth += 1;
+    current = parentById.get(current)!;
+  }
+  return depth;
+}
+
+function compareRows(host: ConsoleAgent | null) {
+  return (a: AgentRow, b: AgentRow): number => {
+    if (host) {
+      if (a.agent.member_id === host.member_id) return -1;
+      if (b.agent.member_id === host.member_id) return 1;
+    }
+    if (a.childOfHost !== b.childOfHost) return a.childOfHost ? -1 : 1;
+    return a.agent.label.localeCompare(b.agent.label);
+  };
+}
+
+function orderRowsPreorder(rows: AgentRow[], parentById: Map<string, string>, host: ConsoleAgent | null): AgentRow[] {
+  const byParent = new Map<string, AgentRow[]>();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const roots: AgentRow[] = [];
+  for (const row of rows) {
+    const parentId = parentById.get(row.agent.member_id);
+    if (parentId && rowById.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId)!.push(row);
+    } else {
+      roots.push(row);
+    }
+  }
+  const sortRows = compareRows(host);
+  roots.sort(sortRows);
+  for (const children of byParent.values()) children.sort(sortRows);
+
+  const ordered: AgentRow[] = [];
+  const visit = (row: AgentRow): void => {
+    ordered.push(row);
+    for (const child of byParent.get(row.agent.member_id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return ordered;
+}
+
+function groupSidebarAgents(filtered: ConsoleAgent[]): Map<Bucket, AgentRow[]> {
+  const g = new Map<Bucket, AgentRow[]>();
+  const host = filtered.find(isCommanderLike);
+  const byId = new Map(filtered.map((a) => [a.member_id, a]));
+  const parentById = new Map<string, string>();
+  for (const a of filtered) {
+    const parent = findSpawnHost(a, filtered, host || null);
+    if (parent) parentById.set(a.member_id, parent.member_id);
+  }
+  for (const a of filtered) {
+    const childOfHost = parentById.has(a.member_id);
+    const key = bucketForAgent(a, parentById, byId);
+    if (!g.has(key)) g.set(key, []);
+    g.get(key)!.push({ agent: a, childOfHost, depth: depthForAgent(a, parentById) });
+  }
+  for (const [key, rows] of g.entries()) {
+    g.set(key, orderRowsPreorder(rows, parentById, host || null));
+  }
+  return g;
+}
 
 function deriveStateAttr(agent: ConsoleAgent): "active" | "degraded" | "retired" {
   const state = (agent.state || "").toLowerCase();
@@ -168,25 +319,7 @@ export function Sidebar({
   }, [agents, q]);
 
   const grouped = React.useMemo(() => {
-    const g = new Map<Bucket, AgentRow[]>();
-    const host = filtered.find(isCommanderLike);
-    for (const a of filtered) {
-      const childOfHost = Boolean(host && host.member_id !== a.member_id && isSpawnedDelegateLike(a, host));
-      const key = childOfHost && host ? bucketOf(host) : bucketOf(a);
-      if (!g.has(key)) g.set(key, []);
-      g.get(key)!.push({ agent: a, childOfHost });
-    }
-    if (host) {
-      for (const rows of g.values()) {
-        rows.sort((a, b) => {
-          if (a.agent.member_id === host.member_id) return -1;
-          if (b.agent.member_id === host.member_id) return 1;
-          if (a.childOfHost !== b.childOfHost) return a.childOfHost ? -1 : 1;
-          return a.agent.label.localeCompare(b.agent.label);
-        });
-      }
-    }
-    return g;
+    return groupSidebarAgents(filtered);
   }, [filtered]);
 
   if (collapsed) {
@@ -248,7 +381,7 @@ export function Sidebar({
               <span className="sidebar__sec-spacer" />
               <span className="sidebar__sec-count">{list.length}</span>
             </div>
-            {list.map(({ agent, childOfHost }) => {
+            {list.map(({ agent, childOfHost, depth }) => {
               const stateAttr = deriveStateAttr(agent);
               const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
               const inbox = inboxCount(agent);
@@ -258,6 +391,7 @@ export function Sidebar({
                   className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
                   data-state={stateAttr}
                   data-child-of-host={childOfHost ? "true" : undefined}
+                  data-depth={childOfHost ? String(Math.min(depth, 3)) : undefined}
                   data-testid={`sidebar-agent:${agent.member_id}`}
                   onClick={() => onSelect(agent)}
                   role="button"

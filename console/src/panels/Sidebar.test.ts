@@ -30,3 +30,124 @@ test("sidebar treats broad-profile worker wired to commander as a child, not the
   assert.equal(__sidebarTest.isCommanderLike(commander), true);
   assert.equal(__sidebarTest.isSpawnedDelegateLike(worker, commander), true);
 });
+
+test("sidebar resolves worker-spawned workers under their worker host", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "incident-commander",
+    member_id: "incident-commander",
+    identity: "incident-commander",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["tutti-profile-worker"],
+  };
+  const worker: ConsoleAgent = {
+    agent_id: "tutti-profile-worker",
+    member_id: "tutti-profile-worker",
+    identity: "tutti-profile-worker",
+    label: "tutti-profile-worker",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: ["incident-commander", "standby-worker"],
+  };
+  const subWorker: ConsoleAgent = {
+    agent_id: "standby-worker",
+    member_id: "standby-worker",
+    identity: "standby-worker",
+    label: "standby-worker",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: ["tutti-profile-worker"],
+  };
+  const agents = [commander, worker, subWorker];
+
+  assert.equal(__sidebarTest.findSpawnHost(worker, agents, commander)?.member_id, "incident-commander");
+  assert.equal(__sidebarTest.findSpawnHost(subWorker, agents, commander)?.member_id, "tutti-profile-worker");
+  assert.deepEqual(
+    __sidebarTest.groupSidebarAgents(agents).get("Coordinators")?.map((row) => [
+      row.agent.member_id,
+      row.depth,
+    ]),
+    [
+      ["incident-commander", 0],
+      ["tutti-profile-worker", 1],
+      ["standby-worker", 2],
+    ],
+  );
+});
+
+test("sidebar resolves worker-spawned workers from implicit delegate parent refs", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "incident-commander",
+    member_id: "incident-commander",
+    identity: "incident-commander",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["incident-worker-full-1"],
+  };
+  const worker: ConsoleAgent = {
+    agent_id: "incident-worker-full-1",
+    member_id: "incident-worker-full-1",
+    identity: "incident-worker-full-1",
+    label: "incident-worker-full-1",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: ["incident-commander", "implicit-019e186d-48e4-7da1-9559-4d17155ab30d/delegate/cardinalpay-support-worker-1"],
+  };
+  const subWorker: ConsoleAgent = {
+    agent_id: "cardinalpay-support-worker-1",
+    member_id: "cardinalpay-support-worker-1",
+    identity: "cardinalpay-support-worker-1",
+    label: "cardinalpay-support-worker-1",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: ["implicit-019e186d-48e4-7da1-9559-4d17155ab30d/delegate/incident-worker-full-1"],
+  };
+  const agents = [commander, subWorker, worker];
+
+  assert.equal(__sidebarTest.findSpawnHost(worker, agents, commander)?.member_id, "incident-commander");
+  assert.equal(__sidebarTest.findSpawnHost(subWorker, agents, commander)?.member_id, "incident-worker-full-1");
+  assert.deepEqual(
+    __sidebarTest.groupSidebarAgents(agents).get("Coordinators")?.map((row) => [
+      row.agent.member_id,
+      row.depth,
+    ]),
+    [
+      ["incident-commander", 0],
+      ["incident-worker-full-1", 1],
+      ["cardinalpay-support-worker-1", 2],
+    ],
+  );
+});
+
+test("sidebar resolves encoded identity references while nesting workers", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "identity:luka",
+    member_id: "identity:luka",
+    identity: "identity:luka",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["identity/worker"],
+  };
+  const worker: ConsoleAgent = {
+    agent_id: "identity:worker",
+    member_id: "identity:worker",
+    identity: "identity:worker",
+    label: "identity-worker",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: ["identity/luka"],
+  };
+
+  assert.equal(__sidebarTest.findSpawnHost(worker, [commander, worker], commander)?.member_id, "identity:luka");
+});

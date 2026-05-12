@@ -323,7 +323,7 @@ function ToolCallBlock({ block }: { block: ConversationRichToolCallBlock }) {
             </span>
           ) : (
             <>
-              <span className="cc-tool-call__name">{target}</span>
+              <span className="cc-tool-call__name">{block.name} → {target}</span>
               {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
               {content && <span className="cc-tool-call__preview">{content}</span>}
             </>
@@ -488,7 +488,9 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
   const arrow = isIncoming ? "↙" : "↗";
   const label = isIncoming
     ? `Received from ${targets.join(", ")}`
-    : `Sent to ${targets.join(", ")}`;
+    : blocks.length === 1
+      ? `${blocks[0]?.name || "peer"} → ${targets[0] || "peer"}`
+      : `Sent to ${targets.join(", ")}`;
 
   return (
     <section className={clsx("cc-tool-call cc-tool-call--peer-group", isIncoming && "cc-tool-call--incoming", statusClass)}>
@@ -508,6 +510,7 @@ function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
         <div className="cc-tool-call__body">
           {blocks.map((block, i) => (
             <div className="cc-tool-call__peer-row" key={block.toolCallId || i}>
+              <span className="cc-tool-call__peer-intent">{block.name}</span>
               <span className="cc-tool-call__peer-target">{isIncoming ? "←" : "→"} {block.peerTarget || "peer"}</span>
               {block.peerIntent && <span className="cc-tool-call__peer-intent">{block.peerIntent}</span>}
               {block.peerBody && <span className="cc-tool-call__peer-body">{block.peerBody}</span>}

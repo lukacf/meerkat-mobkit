@@ -618,6 +618,14 @@ function summarizePeerPayload(value: unknown): string | undefined {
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
+    const type = typeof record.type === "string" ? record.type : "";
+    if (type === "image" || type === "image_ref" || type === "image_upload") {
+      return typeof record.alt === "string" && record.alt.trim()
+        ? record.alt.trim()
+        : type === "image_ref"
+          ? "referenced image"
+          : "attached image";
+    }
     for (const key of PEER_PAYLOAD_TEXT_KEYS) {
       const summary = summarizePeerPayload(record[key]);
       if (summary) return summary;
@@ -661,6 +669,43 @@ function extractPeerBodyFromArgs(argsRecord: Record<string, unknown> | null): st
   const resultBody = summarizePeerPayload(argsRecord.result);
   if (resultBody) return resultBody;
   return undefined;
+}
+
+function capturePeersResult(peerRegistry: Map<string, string>, rawResult: unknown): void {
+  const resultText = typeof rawResult === "string"
+    ? rawResult
+    : rawResult && typeof rawResult === "object"
+      ? JSON.stringify(rawResult)
+      : "";
+  if (!resultText) return;
+  try {
+    const parsed = JSON.parse(resultText) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
+    if (!Array.isArray(parsed.peers)) return;
+    for (const peer of parsed.peers) {
+      if (typeof peer.peer_id === "string" && typeof peer.name === "string") {
+        peerRegistry.set(peer.peer_id, peer.name);
+      }
+    }
+  } catch {
+    // ignore non-JSON peers payloads
+  }
+}
+
+function peerTargetFromArgs(
+  argsRecord: Record<string, unknown> | null,
+  peerRegistry?: Map<string, string>,
+): string | undefined {
+  const peerId = typeof argsRecord?.peer_id === "string" ? argsRecord.peer_id.trim() : "";
+  const registryName = peerId ? peerRegistry?.get(peerId) : undefined;
+  return registryName
+    ? peerLastSegment(registryName)
+    : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim()
+      ? peerLastSegment(argsRecord.display_name.trim())
+      : typeof argsRecord?.to === "string" && argsRecord.to.trim()
+        ? peerLastSegment(argsRecord.to.trim())
+        : peerId
+          ? peerId.slice(0, 8)
+          : undefined;
 }
 
 function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pending" | "success" | "error" } {
@@ -713,8 +758,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   // listing whenever possible. The list is ordered, so by the time a
   // send_request appears the relevant peers result has already been
   // processed.
-  const peerRegistry = new Map<string, string>();
-  const lastSegment = (s: string): string => s.split("/").pop() || s;
+  const peerRegistry = buildPeerRegistry(frames);
 
   for (const frame of frames) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
@@ -722,21 +766,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       const data = frame.data as Record<string, unknown> | undefined;
       // Capture peer registry from the `peers` tool result.
       if (data && (data.name === "peers" || data.tool_name === "peers")) {
-        const rawResult = typeof data.result === "string" ? data.result : null;
-        if (rawResult) {
-          try {
-            const parsed = JSON.parse(rawResult) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
-            if (Array.isArray(parsed.peers)) {
-              for (const p of parsed.peers) {
-                if (typeof p.peer_id === "string" && typeof p.name === "string") {
-                  peerRegistry.set(p.peer_id, p.name);
-                }
-              }
-            }
-          } catch {
-            // ignore non-JSON peers payloads
-          }
-        }
+        capturePeersResult(peerRegistry, data.result);
       }
       if (!toolCallId) continue;
       const parsed = parseToolResult(frame);
@@ -769,20 +799,7 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
       // from the most recent `peers` tool result. Fall back order:
       // registry → display_name → short peer_id → legacy `to` field.
       const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
-      const registryName = isPeerTool && typeof argsRecord?.peer_id === "string"
-        ? peerRegistry.get(argsRecord.peer_id.trim())
-        : undefined;
-      const peerTarget = !isPeerTool
-        ? undefined
-        : registryName
-          ? lastSegment(registryName)
-          : typeof argsRecord?.display_name === "string" && argsRecord.display_name.trim()
-            ? lastSegment(argsRecord.display_name.trim())
-            : typeof argsRecord?.peer_id === "string" && argsRecord.peer_id.trim()
-              ? argsRecord.peer_id.trim().slice(0, 8)
-              : typeof argsRecord?.to === "string"
-                ? lastSegment(argsRecord.to)
-                : undefined;
+      const peerTarget = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : undefined;
       const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string"
         ? argsRecord.intent as string
         : undefined;
@@ -804,6 +821,17 @@ function buildToolBlocks(frames: ConsoleFrame[]): Map<string, ConversationRichTo
   }
 
   return toolCalls;
+}
+
+function buildPeerRegistry(frames: ConsoleFrame[]): Map<string, string> {
+  const peerRegistry = new Map<string, string>();
+  for (const frame of frames) {
+    if (frame.event !== "tool_result_received" && frame.event !== "tool_execution_completed") continue;
+    const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+    if (!data || (data.name !== "peers" && data.tool_name !== "peers")) continue;
+    capturePeersResult(peerRegistry, data.result);
+  }
+  return peerRegistry;
 }
 
 function parsePeerSummary(text: string): { verb: string; summary: string } | null {
@@ -902,6 +930,33 @@ function renderTerminalEntry(
   }
 
   return null;
+}
+
+function terminalFrameVisibleText(frame: ConsoleFrame): string {
+  if (frame.event === "text_complete") {
+    const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
+    if (typeof record?.content === "string") return record.content;
+    if (typeof record?.text === "string") return record.text;
+  }
+  if (
+    frame.event === "interaction_complete"
+    || frame.event === "run_completed"
+    || frame.event === "text_complete"
+  ) {
+    return summarizeFrameData(frame.data);
+  }
+  return "";
+}
+
+function liveAssistantTerminalTextSignatures(frames: ConsoleFrame[]): Set<string> {
+  const signatures = new Set<string>();
+  for (const frame of frames) {
+    if (frame.sourceKind === "session_history") continue;
+    const text = terminalFrameVisibleText(frame).trim();
+    if (!text) continue;
+    signatures.add(normalizeComparableText(text));
+  }
+  return signatures;
 }
 
 function buildBlobUrl(blobId: string, baseUrl?: string): string {
@@ -1028,6 +1083,22 @@ function renderHistoryUserEntry(
   }
   const text = extractTextFromContentBlocks(content).trim();
   if (!text) return null;
+  const commsBlocks = frame.sourceKind === "session_history"
+    ? [
+        ...parseLegacyCommsBlocks(text),
+        ...parseLegacySystemNoticeBlocks(text),
+      ]
+    : [];
+  if (commsBlocks.length > 0) {
+    return {
+      kind: "message",
+      id: entryId,
+      identity: COMMS_IDENTITY,
+      variant: "rich",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      blocks: commsBlocks,
+    };
+  }
   return {
     kind: "message",
     id: entryId,
@@ -1152,7 +1223,7 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
       blocks.push(...parseConversationRichBlocks(text));
       continue;
     }
-    if (type === "image") {
+    if (type === "image" || type === "image_ref") {
       const source = typeof record.source === "string" ? record.source : "";
       const blobId = typeof record.blob_id === "string"
         ? record.blob_id
@@ -1177,7 +1248,9 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
       if (!src) continue;
       const alt = typeof record.alt === "string" && record.alt.trim()
         ? record.alt.trim()
-        : "attached image";
+        : type === "image_ref"
+          ? "referenced image"
+          : "attached image";
       const width = typeof record.width === "number" ? record.width : undefined;
       const height = typeof record.height === "number" ? record.height : undefined;
       blocks.push({
@@ -1194,7 +1267,14 @@ function contentToUserBlocks(content: unknown, blobBaseUrl?: string): Conversati
   return blocks;
 }
 
-function blockAssistantToolBlocks(blocks: unknown[]): ConversationRichToolCallBlock[] {
+function peerLastSegment(value: string): string {
+  return value.split("/").pop() || value;
+}
+
+function blockAssistantToolBlocks(
+  blocks: unknown[],
+  peerRegistry?: Map<string, string>,
+): ConversationRichToolCallBlock[] {
   const toolBlocks: ConversationRichToolCallBlock[] = [];
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
@@ -1215,17 +1295,28 @@ function blockAssistantToolBlocks(blocks: unknown[]): ConversationRichToolCallBl
       ? data.id.trim()
       : `history-tool-${toolBlocks.length + 1}`;
     const args = data.args !== undefined ? data.args : data.arguments;
+    const argsRecord = args && typeof args === "object" ? args as Record<string, unknown> : null;
     const argumentsText = args === undefined
       ? ""
       : typeof args === "string"
         ? args
         : JSON.stringify(args);
+    const isPeerTool = name === "send_request" || name === "send_message" || name === "send_response";
+    const peerTarget = isPeerTool ? peerTargetFromArgs(argsRecord, peerRegistry) : undefined;
+    const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string"
+      ? argsRecord.intent
+      : undefined;
+    const peerIntent = displayPeerIntent(rawPeerIntent);
+    const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : undefined;
     toolBlocks.push({
       type: "tool-call",
       toolCallId: id,
       name,
       arguments: argumentsText,
       status: "success",
+      ...(peerTarget ? { peerTarget } : {}),
+      ...(peerIntent ? { peerIntent } : {}),
+      ...(peerBody ? { peerBody } : {}),
     });
   }
   return toolBlocks;
@@ -1235,8 +1326,8 @@ function textFromUnknown(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function typedNoticeContentBlocks(content: unknown): ConversationRichBlock[] {
-  return contentToUserBlocks(content, undefined);
+function typedNoticeContentBlocks(content: unknown, blobBaseUrl?: string): ConversationRichBlock[] {
+  return contentToUserBlocks(content, blobBaseUrl);
 }
 
 function typedNoticeBlockText(block: Record<string, unknown>): string {
@@ -1250,7 +1341,11 @@ function typedNoticeBlockText(block: Record<string, unknown>): string {
   return parts.join("\n");
 }
 
-function typedSystemNoticeBlocksToRich(blocks: unknown, body: unknown): ConversationRichBlock[] {
+function typedSystemNoticeBlocksToRich(
+  blocks: unknown,
+  body: unknown,
+  blobBaseUrl?: string,
+): ConversationRichBlock[] {
   const rich: ConversationRichBlock[] = [];
   const bodyText = textFromUnknown(body);
   if (!Array.isArray(blocks)) {
@@ -1270,7 +1365,7 @@ function typedSystemNoticeBlocksToRich(blocks: unknown, body: unknown): Conversa
       const kind = textFromUnknown(record.kind) || "message";
       const intent = textFromUnknown(record.intent);
       const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
-      const contentBlocks = typedNoticeContentBlocks(record.content);
+      const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
       const contentText = contentBlocks
         .map((item) => item.type === "paragraph" ? item.text : "")
         .filter(Boolean)
@@ -1295,7 +1390,7 @@ function typedSystemNoticeBlocksToRich(blocks: unknown, body: unknown): Conversa
       const eventType = textFromUnknown(record.event_type);
       const text = typedNoticeBlockText(record) || [source, eventType].filter(Boolean).join(": ");
       if (text) rich.push({ type: "paragraph", text });
-      rich.push(...typedNoticeContentBlocks(record.content));
+      rich.push(...typedNoticeContentBlocks(record.content, blobBaseUrl));
       continue;
     }
     if (type === "tool_config" || type === "mcp") {
@@ -1320,12 +1415,76 @@ function typedSystemNoticeBlocksToRich(blocks: unknown, body: unknown): Conversa
 
 function parseLegacyCommsBlocks(text: string): ConversationRichToolCallBlock[] {
   const trimmed = text.trim();
-  const match = trimmed.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*([\s\S]*)$/i);
-  if (!match) return [];
-  const kind = match[1].toLowerCase();
-  const source = match[2].trim();
-  const body = match[3].trim();
-  const peerTarget = source.split(/[/:]/).filter(Boolean).pop() || source;
+  if (!/^\[COMMS\s+/i.test(trimmed)) return [];
+  const lines = trimmed.split("\n");
+  const sections: Array<{ kind: string; source: string; body: string[] }> = [];
+  let current: { kind: string; source: string; body: string[] } | null = null;
+
+  for (const line of lines) {
+    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
+    if (header) {
+      if (current) sections.push(current);
+      current = {
+        kind: header[1].toLowerCase(),
+        source: header[2].trim(),
+        body: header[3].trim() ? [header[3].trim()] : [],
+      };
+      continue;
+    }
+    if (!current) return [];
+    if (/^\[EVENT via /i.test(line.trim())) {
+      sections.push(current);
+      current = null;
+      continue;
+    }
+    current.body.push(line);
+  }
+  if (current) sections.push(current);
+
+  return sections.map((section, index) => {
+    const body = section.body.join("\n").trim();
+    const peerTarget = section.source.split(/[/:]/).filter(Boolean).pop() || section.source;
+    const name = section.kind === "request"
+      ? "peer_request"
+      : section.kind === "response"
+        ? "peer_response"
+        : "peer_message";
+    return {
+      type: "tool-call" as const,
+      toolCallId: `legacy-comms:${section.kind}:${section.source}:${index}:${body}`.slice(0, 180),
+      name,
+      arguments: "",
+      status: "success" as const,
+      peerIncoming: true,
+      peerTarget,
+      ...(body ? { peerBody: body, peerIntent: body } : {}),
+    };
+  });
+}
+
+function parseLegacySystemNoticeBlocks(text: string): ConversationRichToolCallBlock[] {
+  const trimmed = text.trim();
+  const notice = trimmed.match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
+  if (!notice) return [];
+
+  const kind = notice[1].toLowerCase();
+  const body = notice[2] || "";
+  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
+  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
+  const peerLabel = displayNameMatch?.[1]?.trim()
+    ? peerLastSegment(displayNameMatch[1].trim())
+    : peerIdMatch?.[1]
+      ? peerIdMatch[1].slice(0, 8)
+      : "peer";
+  const intentMatch = body.match(/\bIntent:\s*([^.\n]+)[.\n]/i);
+  const intent = displayPeerIntent(intentMatch?.[1]);
+  const requestId = body.match(/\bRequest ID:\s*([0-9a-f-]{8,})/i)?.[1]
+    || `legacy-system-notice:${kind}:${peerLabel}:${trimmed.length}`;
+  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
+  const paramsBody = paramsMatch?.[1]?.trim() || "";
+  const peerBody = paramsBody
+    ? summarizePeerPayload(parseJsonPayload(paramsBody) ?? paramsBody)
+    : undefined;
   const name = kind === "request"
     ? "peer_request"
     : kind === "response"
@@ -1333,17 +1492,22 @@ function parseLegacyCommsBlocks(text: string): ConversationRichToolCallBlock[] {
       : "peer_message";
   return [{
     type: "tool-call",
-    toolCallId: `legacy-comms:${kind}:${source}:${body}`.slice(0, 180),
+    toolCallId: requestId,
     name,
-    arguments: "",
+    arguments: paramsBody,
     status: "success",
     peerIncoming: true,
-    peerTarget,
-    ...(body ? { peerBody: body, peerIntent: body } : {}),
+    peerTarget: peerLabel,
+    ...(intent ? { peerIntent: intent } : {}),
+    ...(peerBody ? { peerBody } : {}),
   }];
 }
 
-function historyMessageText(message: unknown): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichBlock[] } {
+function historyMessageText(
+  message: unknown,
+  peerRegistry?: Map<string, string>,
+  blobBaseUrl?: string,
+): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichBlock[] } {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
@@ -1352,14 +1516,17 @@ function historyMessageText(message: unknown): { role: "user" | "assistant" | "s
   switch (role) {
     case "user": {
       const text = extractTextFromContentBlocks(record.content);
-      const commsBlocks = parseLegacyCommsBlocks(text);
-      if (commsBlocks.length > 0) {
-        return { role: "meta", text, blocks: commsBlocks };
+      const blocks = [
+        ...parseLegacyCommsBlocks(text),
+        ...parseLegacySystemNoticeBlocks(text),
+      ];
+      if (blocks.length > 0) {
+        return { role: "meta", text, blocks };
       }
       return { role: "user", text };
     }
     case "system_notice": {
-      const blocks = typedSystemNoticeBlocksToRich(record.blocks, record.body);
+      const blocks = typedSystemNoticeBlocksToRich(record.blocks, record.body, blobBaseUrl);
       const text = typeof record.body === "string"
         ? record.body
         : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
@@ -1369,7 +1536,7 @@ function historyMessageText(message: unknown): { role: "user" | "assistant" | "s
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const toolBlocks = blockAssistantToolBlocks(blocks);
+      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -1405,15 +1572,38 @@ function renderSessionHistoryTextCompleteEntry(
   entryId: string,
   options: {
     consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
+    peerRegistry?: Map<string, string>;
+    blobBaseUrl?: string;
   } = {},
 ): ConversationTimelineEntry | null {
   if (frame.sourceKind !== "session_history") return null;
   const record = frame.data && typeof frame.data === "object"
     ? frame.data as Record<string, unknown>
     : {};
-  const parsed = historyMessageText(record.message);
+  const parsed = historyMessageText(record.message, options.peerRegistry, options.blobBaseUrl);
   const text = parsed.text.trim();
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  if (parsed.role === "meta") {
+    const filteredParsedBlocks = options.consumeDuplicateToolBlock
+      ? parsedBlocks.filter((block) => {
+          if (block.type !== "tool-call") return true;
+          return !options.consumeDuplicateToolBlock?.(block);
+        })
+      : parsedBlocks;
+    if (!text && filteredParsedBlocks.length === 0) return null;
+    const blocks = [
+      ...filteredParsedBlocks,
+      ...parseConversationRichBlocks(text),
+    ];
+    return {
+      kind: "message",
+      id: entryId,
+      identity: COMMS_IDENTITY,
+      variant: blocks.length > 0 ? "rich" : "meta",
+      createdAt: isoFromTimestampMs(frame.timestampMs),
+      ...(blocks.length > 0 ? { blocks } : { text }),
+    };
+  }
   if (parsed.role !== "assistant" || (!text && parsedBlocks.length === 0)) return null;
   if (/^I have acknowledged the addition of the following peers:/i.test(text)) {
     return null;
@@ -1473,7 +1663,7 @@ export function mapSessionHistoryToTimelineEntries(
         entries.push({
           kind: "message",
           id: `history:${index}`,
-          identity: { id: "comms", label: "", role: "system" as const, showLabel: false },
+          identity: COMMS_IDENTITY,
           variant: "rich",
           ...(createdAt ? { createdAt } : {}),
           blocks: parsedBlocks,
@@ -1547,11 +1737,9 @@ export function mapSessionHistoryToTimelineEntries(
       lastPeerActivityIndex = index;
     }
   }
-  if (lastOperatorPromptIndex >= 0) {
-    return entries.slice(lastOperatorPromptIndex);
-  }
-  if (lastPeerActivityIndex >= 0) {
-    return entries.slice(lastPeerActivityIndex);
+  const anchorIndex = Math.max(lastOperatorPromptIndex, lastPeerActivityIndex);
+  if (anchorIndex >= 0) {
+    return entries.slice(anchorIndex);
   }
   return entries.slice(-8);
 }
@@ -1574,11 +1762,13 @@ export function mapFramesToTimelineEntries(
     : frames;
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
+  const peerRegistry = buildPeerRegistry(orderedFrames);
   const emittedToolCalls = new Set<string>();
   const {
     liveToolCallIds,
     liveToolSignatureCounts,
   } = liveToolDedupeState(orderedFrames, toolBlocks);
+  const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
   const emittedImages = new Set<string>();
   const emittedUserInputs = new Set<string>();
 
@@ -1723,7 +1913,18 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "text_complete") {
+      const historyText = frame.sourceKind === "session_history"
+        ? terminalFrameVisibleText(frame).trim()
+        : "";
+      if (
+        historyText
+        && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
+      ) {
+        continue;
+      }
       const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+        peerRegistry,
+        blobBaseUrl: options.blobBaseUrl,
         consumeDuplicateToolBlock: (block) => (
           liveToolCallIds.has(block.toolCallId)
           || consumeToolSignatureCount(liveToolSignatureCounts, block)
@@ -1744,7 +1945,16 @@ export function mapFramesToTimelineEntries(
       const streamedText = pendingText;
       flushPendingText();
       if (frame.sourceKind === "session_history") {
+        const historyText = terminalFrameVisibleText(frame).trim();
+        if (
+          historyText
+          && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))
+        ) {
+          continue;
+        }
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+          peerRegistry,
+          blobBaseUrl: options.blobBaseUrl,
           consumeDuplicateToolBlock: (block) => (
             liveToolCallIds.has(block.toolCallId)
             || consumeToolSignatureCount(liveToolSignatureCounts, block)

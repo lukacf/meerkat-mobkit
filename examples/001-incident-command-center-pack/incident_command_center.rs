@@ -670,7 +670,14 @@ skills = ["comms_protocol", "worker_role"]
 peer_description = "Short-lived worker for delegated incident investigations"
 
 [profiles.worker.tools]
+builtins = true
+shell = true
 comms = true
+memory = true
+mob = true
+mob_tasks = true
+schedule = true
+image_generation = true
 "#,
     ))
     .map_err(|error| anyhow!("incident command center definition must parse: {error}"))

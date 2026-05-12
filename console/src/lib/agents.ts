@@ -29,7 +29,7 @@ export function normalizeAgents(
 
   const snapshotAgents = experience?.agent_sidebar?.live_snapshot?.agents;
   if (Array.isArray(snapshotAgents) && snapshotAgents.length > 0) {
-    return snapshotAgents.map((entry: ConsoleExperienceAgentSnapshotRow) => {
+    const agents = snapshotAgents.map((entry: ConsoleExperienceAgentSnapshotRow) => {
       const entryIdentity = typeof entry.identity === "string" ? entry.identity.trim() : "";
       const entryMemberId = typeof entry.member_id === "string" ? entry.member_id.trim() : "";
       const statusRow =
@@ -84,6 +84,35 @@ export function normalizeAgents(
         ...watchFields,
       };
     });
+    const seen = new Set(
+      agents.flatMap((agent) => [agent.identity, agent.member_id, agent.agent_id])
+        .filter((value): value is string => Boolean(value))
+        .map((value) => value.toLowerCase()),
+    );
+    for (const statusRow of normalizedIdentityStatusRows) {
+      if (seen.has(statusRow.identity.toLowerCase())) continue;
+      const addressable = statusRow.addressability === "addressable";
+      agents.push({
+        identity: statusRow.identity,
+        agent_id: statusRow.identity,
+        member_id: statusRow.identity,
+        label: String(statusRow.display_name || statusRow.identity),
+        kind: String(statusRow.role || "identity"),
+        ...(statusRow.role !== undefined ? { role: statusRow.role } : {}),
+        state: statusRow.state,
+        addressability: statusRow.addressability,
+        ...(statusRow.generation !== undefined ? { generation: statusRow.generation } : {}),
+        ...(statusRow.checkpoint_version !== undefined ? { checkpoint_version: statusRow.checkpoint_version } : {}),
+        ...(statusRow.lease_healthy !== undefined ? { lease_healthy: statusRow.lease_healthy } : {}),
+        ...(statusRow.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {}),
+        ...(statusRow.labels?.group ? { group: statusRow.labels.group } : {}),
+        addressable,
+        affordances: { can_send_message: addressable },
+        model_capabilities: { image_input: false },
+      });
+      seen.add(statusRow.identity.toLowerCase());
+    }
+    return agents;
   }
 
   if (Array.isArray(identityStatusRows) && identityStatusRows.length > 0) {

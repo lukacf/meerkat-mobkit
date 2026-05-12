@@ -29,6 +29,7 @@ function unwrapConsoleEnvelope(
   runtimeKey?: string;
   sessionId?: string;
   status?: string;
+  sourceKind?: string;
   frameVersion?: number;
   updatedAtMs?: number;
   turnId?: string;
@@ -68,6 +69,7 @@ function unwrapConsoleEnvelope(
       runtimeKey: frame.runtimeKey,
       sessionId: frame.sessionId,
       status: frame.status,
+      sourceKind: frame.sourceKind,
       frameVersion: frame.frameVersion,
       updatedAtMs: frame.updatedAtMs,
       turnId: frame.turnId,
@@ -191,6 +193,7 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
       runtimeKey: normalized.runtimeKey,
       sessionId: normalized.sessionId,
       status: normalized.status,
+      sourceKind: normalized.sourceKind,
       frameVersion: normalized.frameVersion,
       updatedAtMs: normalized.updatedAtMs,
       turnId: normalized.turnId,

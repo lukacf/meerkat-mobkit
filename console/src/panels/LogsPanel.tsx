@@ -7,6 +7,18 @@ interface LogsPanelProps {
 
 type Level = "info" | "warn" | "error";
 
+const INTERNAL_LOG_EVENTS = new Set([
+  "keep-alive",
+  "snapshot_complete",
+  "snapshot_started",
+  "subscribed",
+]);
+
+export function isLogFrameVisible(frame: ConsoleFrame): boolean {
+  if (INTERNAL_LOG_EVENTS.has(frame.event)) return false;
+  return true;
+}
+
 function levelFor(frame: ConsoleFrame): Level {
   const ev = frame.event;
   if (ev.includes("failed") || ev.includes("error") || ev.includes("crash")) return "error";
@@ -24,10 +36,54 @@ function formatTime(tsMs?: number): string {
   return `${hh}:${mm}:${ss}.${ms}`;
 }
 
-function summary(frame: ConsoleFrame): string {
-  const d = (frame.data || {}) as Record<string, unknown>;
+const HIDDEN_HISTORY_BLOCK_TYPES = new Set([
+  "reasoning",
+  "server_tool_content",
+  "tool_call",
+  "tool_result",
+  "tool_results",
+  "tool_use",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function historyBlockType(record: Record<string, unknown>): string | undefined {
+  const raw = record.block_type ?? record.type;
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function sanitizeLogValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value
+      .map(sanitizeLogValue)
+      .filter((item) => item !== undefined);
+  }
+  if (!isRecord(value)) return value;
+
+  const blockType = historyBlockType(value);
+  if (blockType && HIDDEN_HISTORY_BLOCK_TYPES.has(blockType)) {
+    return undefined;
+  }
+
+  const clean: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    const sanitized = sanitizeLogValue(child);
+    if (sanitized !== undefined) clean[key] = sanitized;
+  }
+  return clean;
+}
+
+export function sanitizeLogFrameData(data: unknown): unknown {
+  return sanitizeLogValue(data) ?? null;
+}
+
+export function summarizeLogFrame(frame: ConsoleFrame): string {
+  const sanitized = sanitizeLogFrameData(frame.data);
+  const d = isRecord(sanitized) ? sanitized : {};
   const bits: string[] = [];
-  for (const [k, v] of Object.entries(d).slice(0, 4)) {
+  for (const [k, v] of Object.entries(d).filter(([key]) => key !== "message").slice(0, 4)) {
     if (v === null || v === undefined) continue;
     let str: string;
     if (typeof v === "object") { try { str = JSON.stringify(v).slice(0, 40); } catch { str = "[obj]"; } }
@@ -41,7 +97,7 @@ function summary(frame: ConsoleFrame): string {
 /// stringify with 2-space indent, but cap at ~10 KB so a giant tool
 /// result doesn't blow up the panel.
 function formatFrameData(frame: ConsoleFrame): string {
-  const data = frame.data ?? null;
+  const data = sanitizeLogFrameData(frame.data ?? null);
   if (data === null || data === undefined) return "(no data)";
   try {
     const out = JSON.stringify(data, null, 2);
@@ -77,6 +133,7 @@ export function LogsPanel({ frames }: LogsPanelProps): React.JSX.Element {
 
   const rows = React.useMemo(() => {
     return frames
+      .filter(isLogFrameVisible)
       .map((f) => ({ f, level: levelFor(f) }))
       .filter(({ f, level }) => {
         if (lvl !== "all" && level !== lvl) return false;
@@ -91,15 +148,16 @@ export function LogsPanel({ frames }: LogsPanelProps): React.JSX.Element {
 
   const counts = React.useMemo(() => {
     const c = { info: 0, warn: 0, error: 0 };
-    frames.forEach((f) => { c[levelFor(f)]++; });
+    frames.filter(isLogFrameVisible).forEach((f) => { c[levelFor(f)]++; });
     return c;
   }, [frames]);
+  const visibleTotal = counts.info + counts.warn + counts.error;
 
   return (
     <div className="view logs" data-testid="logs-panel">
       <div className="view__head">
         <h2>Logs</h2>
-        <span className="view__sub">{rows.length} of {frames.length} events · live</span>
+        <span className="view__sub">{rows.length} of {visibleTotal} events · live</span>
         <span className="view__spacer" />
         <input
           className="view__search"
@@ -109,7 +167,7 @@ export function LogsPanel({ frames }: LogsPanelProps): React.JSX.Element {
         />
         <div className="view__segs">
           <button className={lvl === "all" ? "is-active" : ""} onClick={() => setLvl("all")}>
-            all <span className="n">{frames.length}</span>
+            all <span className="n">{visibleTotal}</span>
           </button>
           <button className={lvl === "info" ? "is-active" : ""} onClick={() => setLvl("info")}>
             info <span className="n">{counts.info}</span>
@@ -147,7 +205,7 @@ export function LogsPanel({ frames }: LogsPanelProps): React.JSX.Element {
                   <span className="logline__src">{f.identity || "_system"}</span>
                   <span className="logline__evt">{f.event}</span>
                   <span className="logline__ctx dim">{f.interactionId ? `int=${f.interactionId.slice(0, 8)}` : ""}</span>
-                  <span className="logline__msg">{summary(f)}</span>
+                  <span className="logline__msg">{summarizeLogFrame(f)}</span>
                   {hasStructured && (
                     <span className="logline__badge" title="Carries structured_output">↳ struct</span>
                   )}
