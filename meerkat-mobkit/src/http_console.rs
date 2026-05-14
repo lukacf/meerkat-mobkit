@@ -2260,11 +2260,11 @@ async fn handle_console_runtime_rpc(
             }
         }
         "mobkit/reset_all" => {
-            match reset_all_live_console_agents(
+            match Box::pin(reset_all_live_console_agents(
                 runtime,
                 console_events.as_ref(),
                 console_aggregator.as_ref(),
-            )
+            ))
             .await
             {
                 Ok(body) => response_value(response_id, Some(body), None),
