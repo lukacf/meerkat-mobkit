@@ -5,50 +5,7 @@ use serde_json::Value;
 
 pub const IDENTITY_STREAM_NAME: &str = "identity";
 pub const ALL_EVENTS_STREAM_NAME: &str = "all_events";
-pub const ALL_EVENTS_CONTROL_IDENTITY: &str = "console:all";
 pub const SYSTEM_EVENT_IDENTITY: &str = "_system";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConsoleInteractionRequest {
-    pub identity: String,
-    pub content: String,
-    pub origin: String,
-}
-
-impl ConsoleInteractionRequest {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.identity.trim().is_empty() {
-            return Err("identity must be non-empty");
-        }
-        if self.content.trim().is_empty() {
-            return Err("content must be non-empty");
-        }
-        if self.origin.trim().is_empty() {
-            return Err("origin must be non-empty");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConsoleInteractionAccepted {
-    pub interaction_id: String,
-    pub identity: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IdentityStreamRequest {
-    pub identity: String,
-}
-
-impl IdentityStreamRequest {
-    pub fn validate(&self) -> Result<(), &'static str> {
-        if self.identity.trim().is_empty() {
-            return Err("identity must be non-empty");
-        }
-        Ok(())
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsoleIdentityEventEnvelope {
@@ -79,82 +36,6 @@ pub struct ConsoleInteractionRejectedError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn console_interaction_request_roundtrips_through_json() {
-        let original = ConsoleInteractionRequest {
-            identity: "identity:luka".to_string(),
-            content: "hello".to_string(),
-            origin: "console:panel-3".to_string(),
-        };
-
-        let encoded = serde_json::to_value(&original).expect("request should serialize");
-        let decoded: ConsoleInteractionRequest =
-            serde_json::from_value(encoded).expect("request should deserialize");
-
-        assert_eq!(decoded, original);
-        assert_eq!(decoded.validate(), Ok(()));
-    }
-
-    #[test]
-    fn console_interaction_request_rejects_blank_fields() {
-        let blank_identity = ConsoleInteractionRequest {
-            identity: "   ".to_string(),
-            content: "hello".to_string(),
-            origin: "console".to_string(),
-        };
-        assert_eq!(blank_identity.validate(), Err("identity must be non-empty"));
-
-        let blank_content = ConsoleInteractionRequest {
-            identity: "identity:luka".to_string(),
-            content: "\n\t ".to_string(),
-            origin: "console".to_string(),
-        };
-        assert_eq!(blank_content.validate(), Err("content must be non-empty"));
-
-        let blank_origin = ConsoleInteractionRequest {
-            identity: "identity:luka".to_string(),
-            content: "hello".to_string(),
-            origin: " ".to_string(),
-        };
-        assert_eq!(blank_origin.validate(), Err("origin must be non-empty"));
-    }
-
-    #[test]
-    fn console_interaction_accepted_roundtrips_through_json() {
-        let original = ConsoleInteractionAccepted {
-            interaction_id: "turn-123".to_string(),
-            identity: "identity:luka".to_string(),
-        };
-
-        let encoded = serde_json::to_value(&original).expect("accepted response should serialize");
-        let decoded: ConsoleInteractionAccepted =
-            serde_json::from_value(encoded).expect("accepted response should deserialize");
-
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn identity_stream_request_roundtrips_and_validates() {
-        let original = IdentityStreamRequest {
-            identity: "family-group:main".to_string(),
-        };
-
-        let encoded = serde_json::to_value(&original).expect("stream request should serialize");
-        let decoded: IdentityStreamRequest =
-            serde_json::from_value(encoded).expect("stream request should deserialize");
-
-        assert_eq!(decoded, original);
-        assert_eq!(decoded.validate(), Ok(()));
-    }
-
-    #[test]
-    fn identity_stream_request_rejects_blank_identity() {
-        let request = IdentityStreamRequest {
-            identity: " ".to_string(),
-        };
-        assert_eq!(request.validate(), Err("identity must be non-empty"));
-    }
 
     #[test]
     fn console_identity_event_envelope_roundtrips_with_interaction_id() {

@@ -127,6 +127,68 @@ test("sidebar resolves worker-spawned workers from implicit delegate parent refs
   );
 });
 
+test("sidebar nests delegate-created workers even when runtime groups them as coordinators", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "incident-commander",
+    member_id: "incident-commander",
+    identity: "incident-commander",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["qa2-parent-worker"],
+  };
+  const parentWorker: ConsoleAgent = {
+    agent_id: "qa2-parent-worker",
+    member_id: "qa2-parent-worker",
+    identity: "qa2-parent-worker",
+    label: "qa2-parent-worker",
+    kind: "mob_agent",
+    role: "delegate",
+    group: "Coordinators",
+    labels: {
+      delegate_host_identity: "incident-commander",
+      source_mob_id: "implicit-019e22a9-4e67-7f62-a9e2-3d96c8d43439",
+    },
+    wired_to: [
+      "incident-command-center/commander/incident-commander",
+      "incident-commander",
+    ],
+  };
+  const childWorker: ConsoleAgent = {
+    agent_id: "qa2-child-worker",
+    member_id: "qa2-child-worker",
+    identity: "qa2-child-worker",
+    label: "qa2-child-worker",
+    kind: "mob_agent",
+    role: "delegate",
+    group: "Coordinators",
+    labels: {
+      delegate_host_identity: "qa2-parent-worker",
+      source_mob_id: "implicit-019e22ab-64c8-7d43-a19a-2e12cab16f0f",
+    },
+    wired_to: [
+      "implicit-019e22a9-4e67-7f62-a9e2-3d96c8d43439/delegate/qa2-parent-worker",
+      "qa2-parent-worker",
+    ],
+  };
+  const agents = [commander, childWorker, parentWorker];
+
+  assert.equal(__sidebarTest.findSpawnHost(parentWorker, agents, commander)?.member_id, "incident-commander");
+  assert.equal(__sidebarTest.findSpawnHost(childWorker, agents, commander)?.member_id, "qa2-parent-worker");
+  assert.deepEqual(
+    __sidebarTest.groupSidebarAgents(agents).get("Coordinators")?.map((row) => [
+      row.agent.member_id,
+      row.depth,
+    ]),
+    [
+      ["incident-commander", 0],
+      ["qa2-parent-worker", 1],
+      ["qa2-child-worker", 2],
+    ],
+  );
+});
+
 test("sidebar resolves encoded identity references while nesting workers", () => {
   const commander: ConsoleAgent = {
     agent_id: "identity:luka",

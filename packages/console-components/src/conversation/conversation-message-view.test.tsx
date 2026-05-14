@@ -76,6 +76,42 @@ describe("ConversationMessageView", () => {
     expect(screen.getByText("send_message → worker-a")).toBeInTheDocument();
   });
 
+  test("deduplicates repeated incoming peer targets in grouped peer tool labels", () => {
+    const entry: ConversationTimelineEntry = {
+      id: "peer-tool-2",
+      kind: "message",
+      variant: "rich",
+      identity: { id: "agent", label: "Agent", role: "assistant" },
+      blocks: [
+        {
+          type: "tool-call",
+          toolCallId: "call-1",
+          name: "peer_message",
+          arguments: "{}",
+          status: "success",
+          peerIncoming: true,
+          peerTarget: "worker-a",
+          peerBody: "first",
+        },
+        {
+          type: "tool-call",
+          toolCallId: "call-2",
+          name: "peer_message",
+          arguments: "{}",
+          status: "success",
+          peerIncoming: true,
+          peerTarget: "worker-a",
+          peerBody: "second",
+        },
+      ],
+    };
+
+    render(<ConversationMessageView entry={entry} Icon={Icon} />);
+
+    expect(screen.getByText("Received from worker-a")).toBeInTheDocument();
+    expect(screen.queryByText("Received from worker-a, worker-a")).not.toBeInTheDocument();
+  });
+
   test("copies rich code blocks and flips the button into a copied state", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, {

@@ -9,11 +9,10 @@
     "experience": "TYPE-005",
     "identity_status_row": "TYPE-006",
     "activity_filter_preset": "TYPE-012",
-    "identity_stream_request": "TYPE-003",
-    "console_identity_event_envelope": "TYPE-004",
-    "replay_unavailable_error": "TYPE-018",
-    "console_interaction_request": "TYPE-001",
-    "console_interaction_accepted": "TYPE-002",
+    "console_frame": "TYPE-020",
+    "console_timeline_query": "TYPE-021",
+    "console_send_request": "TYPE-022",
+    "console_timeline_accepted": "TYPE-023",
     "console_interaction_rejected_error": "TYPE-019"
   },
   "breaking_changes": [
@@ -71,17 +70,16 @@
         "protocol": "JSON-RPC 2.0"
       },
       "methods": {
-        "mobkit/interact": {
+        "mobkit/console/send": {
           "request": {
-            "type_ref": "TYPE-001",
+            "type_ref": "TYPE-022",
             "required_fields": [
               "identity",
-              "content",
-              "origin"
+              "content"
             ]
           },
           "success": {
-            "type_ref": "TYPE-002"
+            "type_ref": "TYPE-023"
           },
           "errors": [
             {
@@ -97,55 +95,39 @@
             }
           ]
         },
-        "mobkit/send_message": {
-          "status": "legacy_compatibility_path",
-          "note": "Still supported for member-addressed panels during migration."
+        "mobkit/console/query_timeline": {
+          "request": {
+            "type_ref": "TYPE-021"
+          },
+          "success": {
+            "required_fields": [
+              "frames"
+            ]
+          },
+          "errors": [
+            {
+              "type_ref": "TYPE-019",
+              "codes": [
+                -32001,
+                -32002,
+                -32003,
+                -32004,
+                -32602,
+                -32603
+              ]
+            }
+          ]
         }
       }
     },
     "sse": {
-      "agent_events": {
-        "method": "POST",
-        "path": "/console/identity/stream",
-        "status": "compatibility_alias_for_identity_events"
-      },
-      "identity_events": {
-        "method": "POST",
-        "path": "/console/identity/stream",
-        "request": {
-          "type_ref": "TYPE-003",
-          "required_fields": [
-            "identity"
-          ]
-        },
-        "events": {
-          "type_ref": "TYPE-004"
-        },
-        "errors": [
-          {
-            "status": 409,
-            "type_ref": "TYPE-018"
-          },
-          {
-            "status": 401,
-            "shape": {
-              "error": "unauthorized",
-              "reason": "console stream requires a valid auth token"
-            }
-          }
-        ]
-      },
-      "all_events": {
+      "timeline": {
         "method": "GET",
-        "path": "/console/events/stream",
+        "path": "/console/timeline/stream",
         "events": {
-          "type_ref": "TYPE-004"
+          "type_ref": "TYPE-020"
         },
         "errors": [
-          {
-            "status": 409,
-            "type_ref": "TYPE-018"
-          },
           {
             "status": 401,
             "shape": {
@@ -154,11 +136,6 @@
             }
           }
         ]
-      },
-      "legacy_member_stream": {
-        "method": "POST",
-        "path": "/interactions/stream",
-        "status": "legacy_compatibility_path"
       },
       "activity_feed_keep_alive_event": "keep-alive"
     }

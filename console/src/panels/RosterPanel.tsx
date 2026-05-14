@@ -146,7 +146,7 @@ export function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDeta
                 </dd>
               </dl>
               <div className="rd__actions">
-                <button onClick={() => onDetails(active)}>Show in roster</button>
+                <button onClick={() => onDetails(active)}>Details</button>
                 <button onClick={() => onChat(active)}>Open chat</button>
                 {active.affordances?.can_respawn ? (
                   <button onClick={() => onLifecycle(activeIdentity, "mobkit/respawn")}>Respawn</button>

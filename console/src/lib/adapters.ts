@@ -3,7 +3,6 @@ import type {
   ConsoleActivityPulseItem,
   ConsoleActivityRailViewState,
   ConsoleDockTarget,
-  ConsoleDockTargetAddressingMode,
   ConsoleSidebarMetaTone,
   ConsoleSidebarViewState,
   ConversationEmptySuggestion,
@@ -37,9 +36,9 @@ export type MobKitDockTarget =
 
 export interface AgentChatTarget extends ConsoleDockTarget {
   kind: "agent-chat";
-  addressingMode: ConsoleDockTargetAddressingMode;
+  addressingMode: "identity";
   memberId: string;
-  identity?: string;
+  identity: string;
 }
 
 export interface IdentityInspectTarget extends ConsoleDockTarget {
@@ -90,9 +89,7 @@ export function buildPanelConversationKey(
   if (target.kind !== "agent-chat") {
     return `panel:${panelId}:${target.kind}:${target.id}`;
   }
-  const targetKey = target.addressingMode === "identity"
-    ? target.identity || target.memberId || target.id
-    : target.memberId || target.id;
+  const targetKey = target.identity || target.memberId || target.id;
   return `panel:${panelId}:${target.kind}:${targetKey}`;
 }
 
@@ -100,14 +97,13 @@ export function buildDockTarget(agent: ConsoleAgent): AgentChatTarget {
   const subtitle = [agent.role, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
   const identity = typeof agent.identity === "string" && agent.identity.trim()
     ? agent.identity.trim()
-    : undefined;
-  const addressingMode: ConsoleDockTargetAddressingMode = identity ? "identity" : "member";
+    : agent.member_id;
   return {
     id: agent.member_id,
     kind: "agent-chat",
-    addressingMode,
+    addressingMode: "identity",
     memberId: agent.member_id,
-    ...(identity ? { identity } : {}),
+    identity,
     title: agent.label,
     subtitle,
     iconName: "i-team",
@@ -1036,6 +1032,53 @@ function normalizeComparableText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function conversationEntryVisibleText(entry: ConversationTimelineEntry): string {
+  if (entry.kind !== "message") return "";
+  if ("text" in entry && typeof entry.text === "string") return entry.text;
+  if (!("blocks" in entry) || !Array.isArray(entry.blocks)) return "";
+  return entry.blocks
+    .map((block) => {
+      if (!block || typeof block !== "object") return "";
+      const record = block as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.peerBody === "string") return record.peerBody;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function shouldSuppressRepeatedAssistantEntry(
+  entry: ConversationTimelineEntry,
+  priorEntries: ConversationTimelineEntry[],
+): boolean {
+  if (entry.kind !== "message") return false;
+  if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
+    return false;
+  }
+  const signature = normalizeComparableText(conversationEntryVisibleText(entry));
+  if (!signature) return false;
+  const entryTs = Date.parse(String(entry.createdAt || ""));
+  for (let index = priorEntries.length - 1; index >= 0; index--) {
+    const prior = priorEntries[index];
+    if (prior.kind !== "message") continue;
+    if (prior.identity.id === USER_IDENTITY.id) {
+      const userText = normalizeComparableText(conversationEntryVisibleText(prior));
+      if (userText) return false;
+      continue;
+    }
+    if (prior.identity.id !== entry.identity.id) continue;
+    const priorSignature = normalizeComparableText(conversationEntryVisibleText(prior));
+    if (priorSignature !== signature) continue;
+    const priorTs = Date.parse(String(prior.createdAt || ""));
+    if (Number.isFinite(entryTs) && Number.isFinite(priorTs) && Math.abs(entryTs - priorTs) > 15_000) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function buildQuickPromptSuggestions(agent: ConsoleAgent | null): ConversationEmptySuggestion[] {
   const labels = agent?.labels ?? {};
   const suggestions: ConversationEmptySuggestion[] = [];
@@ -1083,22 +1126,6 @@ function renderHistoryUserEntry(
   }
   const text = extractTextFromContentBlocks(content).trim();
   if (!text) return null;
-  const commsBlocks = frame.sourceKind === "session_history"
-    ? [
-        ...parseLegacyCommsBlocks(text),
-        ...parseLegacySystemNoticeBlocks(text),
-      ]
-    : [];
-  if (commsBlocks.length > 0) {
-    return {
-      kind: "message",
-      id: entryId,
-      identity: COMMS_IDENTITY,
-      variant: "rich",
-      createdAt: isoFromTimestampMs(frame.timestampMs),
-      blocks: commsBlocks,
-    };
-  }
   return {
     kind: "message",
     id: entryId,
@@ -1151,15 +1178,6 @@ function renderRunStartedPromptEntries(
   void createdAt;
 
   return entries;
-}
-
-function renderInteractionCommsEntry(
-  frame: ConsoleFrame,
-  entryId: string,
-): ConversationTimelineEntry | null {
-  void frame;
-  void entryId;
-  return null;
 }
 
 function extractTextFromContentBlocks(blocks: unknown): string {
@@ -1361,7 +1379,7 @@ function typedSystemNoticeBlocksToRich(
       const peer = record.peer && typeof record.peer === "object"
         ? record.peer as Record<string, unknown>
         : {};
-      const peerLabel = textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer";
+      const peerLabel = peerLastSegment(textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer");
       const kind = textFromUnknown(record.kind) || "message";
       const intent = textFromUnknown(record.intent);
       const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
@@ -1370,6 +1388,9 @@ function typedSystemNoticeBlocksToRich(
         .map((item) => item.type === "paragraph" ? item.text : "")
         .filter(Boolean)
         .join("\n")
+        .trim();
+      const displayBody = (contentText || typedNoticeBlockText(record))
+        .replace(/^Peer\s+(?:message|request|response)\s+from\s+[^\n:]+:\s*/i, "")
         .trim();
       rich.push({
         type: "tool-call",
@@ -1380,17 +1401,15 @@ function typedSystemNoticeBlocksToRich(
         peerIncoming: true,
         peerTarget: peerLabel,
         ...(intent ? { peerIntent: intent } : {}),
-        peerBody: contentText || typedNoticeBlockText(record) || undefined,
+        peerBody: displayBody || undefined,
       });
       rich.push(...contentBlocks.filter((item) => item.type !== "paragraph"));
       continue;
     }
     if (type === "external_event") {
-      const source = textFromUnknown(record.source);
-      const eventType = textFromUnknown(record.event_type);
-      const text = typedNoticeBlockText(record) || [source, eventType].filter(Boolean).join(": ");
-      if (text) rich.push({ type: "paragraph", text });
-      rich.push(...typedNoticeContentBlocks(record.content, blobBaseUrl));
+      // External events are model-facing delivery envelopes for operator
+      // sends. The canonical user-facing render is the user_input frame; if
+      // we render these notices too, rich/image sends appear duplicated.
       continue;
     }
     if (type === "tool_config" || type === "mcp") {
@@ -1413,96 +1432,6 @@ function typedSystemNoticeBlocksToRich(
   return rich;
 }
 
-function parseLegacyCommsBlocks(text: string): ConversationRichToolCallBlock[] {
-  const trimmed = text.trim();
-  if (!/^\[COMMS\s+/i.test(trimmed)) return [];
-  const lines = trimmed.split("\n");
-  const sections: Array<{ kind: string; source: string; body: string[] }> = [];
-  let current: { kind: string; source: string; body: string[] } | null = null;
-
-  for (const line of lines) {
-    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
-    if (header) {
-      if (current) sections.push(current);
-      current = {
-        kind: header[1].toLowerCase(),
-        source: header[2].trim(),
-        body: header[3].trim() ? [header[3].trim()] : [],
-      };
-      continue;
-    }
-    if (!current) return [];
-    if (/^\[EVENT via /i.test(line.trim())) {
-      sections.push(current);
-      current = null;
-      continue;
-    }
-    current.body.push(line);
-  }
-  if (current) sections.push(current);
-
-  return sections.map((section, index) => {
-    const body = section.body.join("\n").trim();
-    const peerTarget = section.source.split(/[/:]/).filter(Boolean).pop() || section.source;
-    const name = section.kind === "request"
-      ? "peer_request"
-      : section.kind === "response"
-        ? "peer_response"
-        : "peer_message";
-    return {
-      type: "tool-call" as const,
-      toolCallId: `legacy-comms:${section.kind}:${section.source}:${index}:${body}`.slice(0, 180),
-      name,
-      arguments: "",
-      status: "success" as const,
-      peerIncoming: true,
-      peerTarget,
-      ...(body ? { peerBody: body, peerIntent: body } : {}),
-    };
-  });
-}
-
-function parseLegacySystemNoticeBlocks(text: string): ConversationRichToolCallBlock[] {
-  const trimmed = text.trim();
-  const notice = trimmed.match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
-  if (!notice) return [];
-
-  const kind = notice[1].toLowerCase();
-  const body = notice[2] || "";
-  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
-  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
-  const peerLabel = displayNameMatch?.[1]?.trim()
-    ? peerLastSegment(displayNameMatch[1].trim())
-    : peerIdMatch?.[1]
-      ? peerIdMatch[1].slice(0, 8)
-      : "peer";
-  const intentMatch = body.match(/\bIntent:\s*([^.\n]+)[.\n]/i);
-  const intent = displayPeerIntent(intentMatch?.[1]);
-  const requestId = body.match(/\bRequest ID:\s*([0-9a-f-]{8,})/i)?.[1]
-    || `legacy-system-notice:${kind}:${peerLabel}:${trimmed.length}`;
-  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
-  const paramsBody = paramsMatch?.[1]?.trim() || "";
-  const peerBody = paramsBody
-    ? summarizePeerPayload(parseJsonPayload(paramsBody) ?? paramsBody)
-    : undefined;
-  const name = kind === "request"
-    ? "peer_request"
-    : kind === "response"
-      ? "peer_response"
-      : "peer_message";
-  return [{
-    type: "tool-call",
-    toolCallId: requestId,
-    name,
-    arguments: paramsBody,
-    status: "success",
-    peerIncoming: true,
-    peerTarget: peerLabel,
-    ...(intent ? { peerIntent: intent } : {}),
-    ...(peerBody ? { peerBody } : {}),
-  }];
-}
-
 function historyMessageText(
   message: unknown,
   peerRegistry?: Map<string, string>,
@@ -1516,13 +1445,6 @@ function historyMessageText(
   switch (role) {
     case "user": {
       const text = extractTextFromContentBlocks(record.content);
-      const blocks = [
-        ...parseLegacyCommsBlocks(text),
-        ...parseLegacySystemNoticeBlocks(text),
-      ];
-      if (blocks.length > 0) {
-        return { role: "meta", text, blocks };
-      }
       return { role: "user", text };
     }
     case "system_notice": {
@@ -1591,10 +1513,9 @@ function renderSessionHistoryTextCompleteEntry(
         })
       : parsedBlocks;
     if (!text && filteredParsedBlocks.length === 0) return null;
-    const blocks = [
-      ...filteredParsedBlocks,
-      ...parseConversationRichBlocks(text),
-    ];
+    const blocks = filteredParsedBlocks.length > 0
+      ? filteredParsedBlocks
+      : parseConversationRichBlocks(text);
     return {
       kind: "message",
       id: entryId,
@@ -1615,10 +1536,9 @@ function renderSessionHistoryTextCompleteEntry(
       })
     : parsedBlocks;
   if (!text && filteredParsedBlocks.length === 0) return null;
-  const blocks = [
-    ...filteredParsedBlocks,
-    ...parseConversationRichBlocks(text),
-  ];
+  const blocks = filteredParsedBlocks.length > 0
+    ? filteredParsedBlocks
+    : parseConversationRichBlocks(text);
   return {
     kind: "message",
     id: entryId,
@@ -1629,119 +1549,51 @@ function renderSessionHistoryTextCompleteEntry(
   };
 }
 
-export function mapSessionHistoryToTimelineEntries(
-  historyPage: unknown,
-  agent: ConsoleAgent | null,
-): ConversationTimelineEntry[] {
-  if (!historyPage || typeof historyPage !== "object") {
-    return [];
-  }
-  const record = historyPage as Record<string, unknown>;
-  const messages = Array.isArray(record.messages) ? record.messages : [];
-  const entries: ConversationTimelineEntry[] = [];
-  for (const [index, message] of messages.entries()) {
-    const parsed = historyMessageText(message);
-    const text = parsed.text.trim();
-    const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
-    const messageRecord = message && typeof message === "object"
-      ? message as Record<string, unknown>
-      : null;
-    const rawContent = typeof messageRecord?.content === "string" ? messageRecord.content : "";
-    const createdAt = typeof messageRecord?.created_at === "string"
-      ? messageRecord.created_at
-      : typeof messageRecord?.createdAt === "string"
-        ? messageRecord.createdAt
-        : undefined;
-    if (!text && parsedBlocks.length === 0) {
-      continue;
-    }
-    if (parsed.role === "system") {
-      continue;
-    }
-    if (parsed.role === "meta") {
-      if (parsedBlocks.length > 0) {
-        entries.push({
-          kind: "message",
-          id: `history:${index}`,
-          identity: COMMS_IDENTITY,
-          variant: "rich",
-          ...(createdAt ? { createdAt } : {}),
-          blocks: parsedBlocks,
-        });
-        continue;
-      }
-      if (!text) {
-        continue;
-      }
-      entries.push({
-        kind: "message",
-        id: `history:${index}`,
-        identity: SYSTEM_IDENTITY,
-        variant: "meta",
-        ...(createdAt ? { createdAt } : {}),
-        text,
-      });
-      continue;
-    }
-    if (parsed.role === "user") {
-      entries.push({
-        kind: "message",
-        id: `history:${index}`,
-        identity: USER_IDENTITY,
-        variant: "plain",
-        ...(createdAt ? { createdAt } : {}),
-        text,
-      });
-      continue;
-    }
-    if (
-      parsed.role === "assistant"
-      && /^I have acknowledged the addition of the following peers:/i.test(text)
-    ) {
-      continue;
-    }
-    const blocks = parseConversationRichBlocks(text);
-    entries.push({
-      kind: "message",
-      id: `history:${index}`,
-      identity: agentIdentity(agent),
-      variant: blocks.length > 0 ? "rich" : "plain",
-      ...(createdAt ? { createdAt } : {}),
-      ...(blocks.length > 0 ? { blocks } : { text }),
-    });
-  }
-  let lastOperatorPromptIndex = -1;
-  let lastPeerActivityIndex = -1;
-  for (let index = 0; index < entries.length; index++) {
-    const entry = entries[index];
-    if (entry?.kind === "message" && entry.identity.id === USER_IDENTITY.id) {
-      lastOperatorPromptIndex = index;
-    }
-    if (
-      entry?.kind === "message"
-      && entry.identity.id === SYSTEM_IDENTITY.id
-      && "text" in entry
-      && typeof entry.text === "string"
-      && /^(Peer request:|Peer response:|Peer message:)/.test(entry.text)
-    ) {
-      lastPeerActivityIndex = index;
-    }
-    if (
-      entry?.kind === "message"
-      && entry.identity.id === "comms"
-      && entry.variant === "rich"
-      && "blocks" in entry
-      && Array.isArray(entry.blocks)
-      && entry.blocks.some((block) => block.type === "tool-call" && block.peerIncoming === true)
-    ) {
-      lastPeerActivityIndex = index;
-    }
-  }
-  const anchorIndex = Math.max(lastOperatorPromptIndex, lastPeerActivityIndex);
-  if (anchorIndex >= 0) {
-    return entries.slice(anchorIndex);
-  }
-  return entries.slice(-8);
+function renderSystemNoticeEntry(
+  frame: ConsoleFrame,
+  entryId: string,
+  options: {
+    consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
+    blobBaseUrl?: string;
+  } = {},
+): ConversationTimelineEntry | null {
+  if (frame.event !== "system_notice") return null;
+  const record = frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : {};
+  const message = record.message && typeof record.message === "object"
+    ? record.message
+    : {
+        role: "system_notice",
+        body: record.body,
+        blocks: record.blocks,
+      };
+  const parsed = historyMessageText(message, undefined, options.blobBaseUrl);
+  if (parsed.role !== "meta") return null;
+  const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  const filteredParsedBlocks = options.consumeDuplicateToolBlock
+    ? parsedBlocks.filter((block) => {
+        if (block.type !== "tool-call") return true;
+        return !options.consumeDuplicateToolBlock?.(block);
+      })
+    : parsedBlocks;
+  const hasConversationNoticeBlock = filteredParsedBlocks.some(
+    (block) => block.type === "tool-call" || block.type === "image",
+  );
+  if (!hasConversationNoticeBlock) return null;
+  const text = parsed.text.trim();
+  if (!text && filteredParsedBlocks.length === 0) return null;
+  const blocks = filteredParsedBlocks.length > 0
+    ? filteredParsedBlocks
+    : parseConversationRichBlocks(text);
+  return {
+    kind: "message",
+    id: entryId,
+    identity: COMMS_IDENTITY,
+    variant: blocks.length > 0 ? "rich" : "meta",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...(blocks.length > 0 ? { blocks } : { text }),
+  };
 }
 
 export function mapFramesToTimelineEntries(
@@ -1878,13 +1730,6 @@ export function mapFramesToTimelineEntries(
       continue;
     }
 
-    const interactionCommsEntry = renderInteractionCommsEntry(frame, entryId);
-    if (interactionCommsEntry) {
-      flushPendingText();
-      entries.push(interactionCommsEntry);
-      continue;
-    }
-
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
@@ -1912,7 +1757,42 @@ export function mapFramesToTimelineEntries(
       }
     }
 
+    if (frame.event === "system_notice") {
+      flushPendingText();
+      const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
+        blobBaseUrl: options.blobBaseUrl,
+        consumeDuplicateToolBlock: (block) => (
+          liveToolCallIds.has(block.toolCallId)
+          || consumeToolSignatureCount(liveToolSignatureCounts, block)
+        ),
+      });
+      if (noticeEntry) {
+        entries.push(noticeEntry);
+      }
+      continue;
+    }
+
     if (frame.event === "text_complete") {
+      if (frame.sourceKind !== "session_history") {
+        const text = terminalFrameVisibleText(frame).trim();
+        const interactionId = frame.interactionId?.trim();
+        const duplicateTerminalFollows = text
+          && orderedFrames.slice(i + 1).some((later) => {
+            if (
+              later.event !== "interaction_complete"
+              && later.event !== "run_completed"
+            ) {
+              return false;
+            }
+            if (interactionId && later.interactionId?.trim() !== interactionId) {
+              return false;
+            }
+            return normalizeComparableText(terminalFrameVisibleText(later)) === normalizeComparableText(text);
+          });
+        if (duplicateTerminalFollows) {
+          continue;
+        }
+      }
       const historyText = frame.sourceKind === "session_history"
         ? terminalFrameVisibleText(frame).trim()
         : "";
@@ -1922,20 +1802,23 @@ export function mapFramesToTimelineEntries(
       ) {
         continue;
       }
-      const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
-        peerRegistry,
-        blobBaseUrl: options.blobBaseUrl,
-        consumeDuplicateToolBlock: (block) => (
-          liveToolCallIds.has(block.toolCallId)
-          || consumeToolSignatureCount(liveToolSignatureCounts, block)
-        ),
-      });
-      if (historyEntry) {
-        flushPendingText();
-        entries.push(historyEntry);
+        const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
+          peerRegistry,
+          blobBaseUrl: options.blobBaseUrl,
+          consumeDuplicateToolBlock: (block) => (
+            liveToolCallIds.has(block.toolCallId)
+            || consumeToolSignatureCount(liveToolSignatureCounts, block)
+          ),
+        });
+        if (historyEntry) {
+          flushPendingText();
+          if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+            continue;
+          }
+          entries.push(historyEntry);
+        }
+        continue;
       }
-      continue;
-    }
 
     if (
       frame.event === "interaction_complete"
@@ -1961,12 +1844,18 @@ export function mapFramesToTimelineEntries(
           ),
         });
         if (historyEntry) {
+          if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+            continue;
+          }
           entries.push(historyEntry);
         }
         continue;
       }
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
       if (terminalEntry) {
+        if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+          continue;
+        }
         entries.push(terminalEntry);
       }
       continue;

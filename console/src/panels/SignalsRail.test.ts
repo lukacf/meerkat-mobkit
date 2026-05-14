@@ -17,12 +17,23 @@ test("signals rail deduplicates live and history copies of the same visible repl
     },
     {
       id: "scribe-comms",
-      event: "user_input",
+      event: "system_notice",
       identity: "scribe",
       timestampMs: Date.now() - 1_000,
       sourceKind: "session_history",
       data: {
-        content: "[COMMS MESSAGE from incident-command-center/commander/incident-commander]\nQA smoke: generated a synthetic CardinalPay status badge image.",
+        kind: "comms",
+        blocks: [{
+          type: "comms",
+          kind: "message",
+          direction: "incoming",
+          peer: {
+            id: "incident-command-center/commander/incident-commander",
+            display_name: "incident-command-center/commander/incident-commander",
+          },
+          request_id: "comms-1",
+          content: [{ type: "text", text: "QA smoke: generated a synthetic CardinalPay status badge image." }],
+        }],
       },
     },
     {

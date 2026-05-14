@@ -159,7 +159,7 @@ fn e2e_reconcile_requires_string_array() {
 }
 
 // ---------------------------------------------------------------------------
-// Note: mobkit/send_message, mobkit/ensure_member, and mobkit/query_events
+// Note: mobkit/send_message and mobkit/ensure_member
 // are unified-runtime-only methods (not available via handle_mobkit_rpc_json).
 // They are tested in phase4 and the unified handler tests.
 // ---------------------------------------------------------------------------
@@ -192,8 +192,6 @@ fn e2e_spawn_member_validates_params() {
     );
     assert_eq!(resp["error"]["code"], -32602);
 }
-
-// Note: mobkit/query_events is unified-runtime-only (tested in mob_methods).
 
 // ---------------------------------------------------------------------------
 // JSON-RPC envelope — id correlation

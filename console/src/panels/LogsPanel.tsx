@@ -79,9 +79,58 @@ export function sanitizeLogFrameData(data: unknown): unknown {
   return sanitizeLogValue(data) ?? null;
 }
 
+function textFromContentBlock(value: unknown): string | null {
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text ? text : null;
+  }
+  if (!isRecord(value)) return null;
+  for (const key of ["text", "body", "content", "result", "summary"]) {
+    const child = value[key];
+    if (typeof child === "string" && child.trim()) {
+      return child.trim();
+    }
+  }
+  const data = value.data;
+  if (isRecord(data)) {
+    return textFromContentBlock(data);
+  }
+  return null;
+}
+
+function textFromContent(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    const text = value
+      .map(textFromContentBlock)
+      .filter((part): part is string => Boolean(part))
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return text ? text : null;
+  }
+  return textFromContentBlock(value);
+}
+
+function preferredLogSummary(frame: ConsoleFrame, data: Record<string, unknown>): string | null {
+  if (frame.event === "user_input") {
+    const text = textFromContent(data.content ?? data.input ?? data.prompt);
+    return text ? `input=${text.slice(0, 120)}` : null;
+  }
+  for (const key of ["result", "text", "summary", "body", "message_text"]) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) {
+      return `${key}=${value.trim().slice(0, 120)}`;
+    }
+  }
+  const contentText = textFromContent(data.content);
+  return contentText ? `content=${contentText.slice(0, 120)}` : null;
+}
+
 export function summarizeLogFrame(frame: ConsoleFrame): string {
   const sanitized = sanitizeLogFrameData(frame.data);
   const d = isRecord(sanitized) ? sanitized : {};
+  const preferred = preferredLogSummary(frame, d);
+  if (preferred) return preferred;
   const bits: string[] = [];
   for (const [k, v] of Object.entries(d).filter(([key]) => key !== "message").slice(0, 4)) {
     if (v === null || v === undefined) continue;

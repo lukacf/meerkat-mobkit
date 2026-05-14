@@ -2,16 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  normalizeConsoleIdentityEventEnvelope,
-  normalizeConsoleInteractionAccepted,
-  normalizeConsoleInteractionRequest,
-  normalizeConsoleDockTargetAddressingMode,
   normalizeConsoleInteractionRejectedError,
   normalizeActivityFilterPreset,
   normalizeExperienceSectionMeta,
   normalizeGatingActionRequest,
   normalizeGatingActionResult,
-  normalizeIdentityStreamRequest,
   normalizeIdentityInspectViewState,
   normalizeIdentityStatusRow,
   normalizeReplayUnavailableError,
@@ -144,10 +139,7 @@ test("sidebar normalization preserves warning tone and watch fields", () => {
   assert.equal(item?.meta?.[0]?.tone, "warning");
 });
 
-test("normalize inspect, dock addressing, and typed console errors", () => {
-  assert.equal(normalizeConsoleDockTargetAddressingMode("identity"), "identity");
-  assert.equal(normalizeConsoleDockTargetAddressingMode("anything-else"), "member");
-
+test("normalize inspect views and typed console errors", () => {
   assert.deepEqual(
     normalizeIdentityInspectViewState({
       identity: " identity:luka ",
@@ -309,56 +301,6 @@ test("normalize gating and routing payloads for the shared control-plane contrac
           ],
         },
       ],
-    },
-  );
-});
-
-test("normalize interaction request/acceptance, stream request, and event envelope", () => {
-  assert.deepEqual(
-    normalizeConsoleInteractionRequest({
-      identity: " identity:luka ",
-      content: " hello ",
-      origin: " console:panel-1 ",
-    }),
-    {
-      identity: "identity:luka",
-      content: "hello",
-      origin: "console:panel-1",
-    },
-  );
-
-  assert.deepEqual(
-    normalizeConsoleInteractionAccepted({
-      interaction_id: " turn-1 ",
-      identity: " identity:luka ",
-    }),
-    {
-      interaction_id: "turn-1",
-      identity: "identity:luka",
-    },
-  );
-
-  assert.deepEqual(
-    normalizeIdentityStreamRequest({ identity: " identity:luka " }),
-    { identity: "identity:luka" },
-  );
-
-  assert.deepEqual(
-    normalizeConsoleIdentityEventEnvelope({
-      event_id: " evt-1 ",
-      interaction_id: " turn-1 ",
-      identity: " identity:luka ",
-      event_type: " tool_call ",
-      timestamp_ms: 12,
-      data: { tool_call_id: "tool-1" },
-    }),
-    {
-      event_id: "evt-1",
-      interaction_id: "turn-1",
-      identity: "identity:luka",
-      event_type: "tool_call",
-      timestamp_ms: 12,
-      data: { tool_call_id: "tool-1" },
     },
   );
 });

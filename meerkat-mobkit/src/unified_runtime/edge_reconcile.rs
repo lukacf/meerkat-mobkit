@@ -25,6 +25,9 @@ impl UnifiedRuntime {
         &self,
         desired_specs: Vec<SpawnMemberSpec>,
     ) -> Result<UnifiedRuntimeReconcileReport, UnifiedRuntimeReconcileError> {
+        self.mob_runtime
+            .set_baseline_member_specs(desired_specs.clone())
+            .await;
         // 1. Member reconcile (meerkat 0.6 native path)
         let mob_id = self.mob_handle().mob_id().to_string();
         let meerkat_report = self

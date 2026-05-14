@@ -1,14 +1,11 @@
 //! JSON-RPC request handling for both module-only and unified runtime modes.
 
 use std::collections::BTreeMap;
-use std::panic::{AssertUnwindSafe, resume_unwind};
 use std::time::Duration;
 
-use futures::FutureExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::console_contracts::{ConsoleInteractionAccepted, ConsoleInteractionRequest};
 use crate::runtime::{
     BigQuerySessionStoreAdapter, BigQuerySessionStoreError, ConsoleRestJsonRequest,
     ConsoleRestJsonResponse, DeliveryHistoryRequest, DeliverySendError, DeliverySendRequest,
@@ -1059,7 +1056,6 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/respawn_member",
                 "mobkit/reconcile_edges",
                 "mobkit/rediscover",
-                "mobkit/query_events",
                 "mobkit/mob_events/query",
                 "mobkit/mob_events/subscribe",
                 // Always available: local-only member introspection
@@ -1078,7 +1074,6 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/list_runs",
                 "mobkit/run_flow",
                 "mobkit/collect_completed",
-                "mobkit/read_session_history",
                 "mobkit/wait_ready",
                 "mobkit/mob_labels/set",
                 "mobkit/mob_labels/get",
@@ -1089,7 +1084,6 @@ pub async fn handle_unified_rpc_json(
             ];
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
-                    "mobkit/interact",
                     "mobkit/send",
                     "mobkit/dispatch",
                     "mobkit/subscribe",
@@ -1829,9 +1823,6 @@ pub async fn handle_unified_rpc_json(
         }
         "mobkit/reconcile_edges" => mob_methods::handle_reconcile_edges(runtime, response_id).await,
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
-        "mobkit/query_events" => {
-            mob_methods::handle_query_events(runtime, response_id, request.params).await
-        }
         "mobkit/mob_events/query" => {
             mob_methods::handle_mob_events_query(runtime, response_id, request.params).await
         }
@@ -1894,9 +1885,6 @@ pub async fn handle_unified_rpc_json(
         "mobkit/wait_ready" => {
             mob_methods::handle_wait_ready(runtime, response_id, &request.params).await
         }
-        "mobkit/read_session_history" => {
-            mob_methods::handle_read_session_history(runtime, response_id, &request.params).await
-        }
         "mobkit/mob_labels/set" => {
             mob_methods::handle_mob_labels_set(runtime, response_id, &request.params).await
         }
@@ -1914,121 +1902,6 @@ pub async fn handle_unified_rpc_json(
             mob_methods::handle_run_labels_delete(runtime, response_id, &request.params).await
         }
         // ----- identity-first methods -----
-        "mobkit/interact" => {
-            let identity_rt = match identity_ctx {
-                Some(ctx) => &*ctx.runtime,
-                None => return identity_not_configured(response_id),
-            };
-            let request_params: ConsoleInteractionRequest =
-                match serde_json::from_value(request.params.clone()) {
-                    Ok(params) => params,
-                    Err(_) => {
-                        return error_response(
-                            response_id,
-                            -32602,
-                            "invalid params: expected { identity, content, origin }",
-                        );
-                    }
-                };
-            if let Err(message) = request_params.validate() {
-                return error_response(response_id, -32602, format!("invalid params: {message}"));
-            }
-            let identity =
-                match crate::identity_first::AgentIdentity::parse(&request_params.identity) {
-                    Ok(id) => id,
-                    Err(e) => {
-                        return error_response(
-                            response_id,
-                            -32602,
-                            format!("invalid identity: {e}"),
-                        );
-                    }
-                };
-            let content = request_params.content.clone();
-            let origin = request_params.origin.clone();
-            let interaction_id = mint_interaction_id();
-            if let Ok(status) = identity_rt.status(&identity).await
-                && matches!(
-                    status.addressability,
-                    crate::identity_first::AgentAddressability::InternalOnly
-                )
-            {
-                return error_response(
-                    response_id,
-                    -32002,
-                    format!("not addressable: {}", identity.as_str()),
-                );
-            }
-            let runtime_member_id = identity_rt
-                .runtime_id_for(&identity)
-                .await
-                .ok()
-                .map(|runtime_id| runtime_id.to_string());
-            let dispatch_input = crate::identity_first::DispatchInput::with_origin(
-                request_params.content,
-                map_dispatch_origin(&request_params.origin),
-            )
-            .with_correlation(interaction_id.clone());
-            if let Err(message) = runtime
-                .reserve_console_interaction(
-                    identity.as_str(),
-                    runtime_member_id.as_deref(),
-                    &interaction_id,
-                    &origin,
-                    &content,
-                )
-                .await
-            {
-                return error_response(response_id, -32003, message);
-            }
-            let dispatch_result =
-                AssertUnwindSafe(identity_rt.dispatch(&identity, &dispatch_input))
-                    .catch_unwind()
-                    .await;
-            match dispatch_result {
-                Err(panic_payload) => {
-                    runtime
-                        .discard_console_interaction(identity.as_str(), &interaction_id)
-                        .await;
-                    resume_unwind(panic_payload);
-                }
-                Ok(Ok((_token, _durable))) => {
-                    runtime
-                        .accept_console_interaction(identity.as_str(), &interaction_id)
-                        .await;
-                    if !identity_rt.has_session_bridge() {
-                        runtime
-                            .fail_console_interaction(
-                                identity.as_str(),
-                                &interaction_id,
-                                "execution_unavailable",
-                                serde_json::json!({
-                                    "reason": "no_session_bridge",
-                                }),
-                            )
-                            .await;
-                    }
-                    JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: response_id,
-                        result: Some(
-                            serde_json::to_value(ConsoleInteractionAccepted {
-                                interaction_id,
-                                identity: identity.as_str().to_string(),
-                            })
-                            .unwrap_or_else(|_| serde_json::json!({})),
-                        ),
-                        error: None,
-                    }
-                }
-                Ok(Err(e)) => {
-                    runtime
-                        .discard_console_interaction(identity.as_str(), &interaction_id)
-                        .await;
-                    identity_error_response(response_id, &e)
-                }
-            }
-        }
         "mobkit/send" => {
             let identity_rt = match identity_ctx {
                 Some(ctx) => &*ctx.runtime,
@@ -2589,24 +2462,6 @@ fn build_models_catalog_result() -> Value {
 
 fn identity_not_configured(response_id: Value) -> String {
     error_response(response_id, -32601, "identity-first runtime not configured")
-}
-
-fn map_dispatch_origin(origin: &str) -> crate::identity_first::DispatchOrigin {
-    match origin.split(':').next().unwrap_or("system") {
-        "connector" => crate::identity_first::DispatchOrigin::Connector,
-        "scheduler" => crate::identity_first::DispatchOrigin::Scheduler,
-        "policy" => crate::identity_first::DispatchOrigin::Policy,
-        "flow" => crate::identity_first::DispatchOrigin::Flow,
-        _ => crate::identity_first::DispatchOrigin::System,
-    }
-}
-
-fn mint_interaction_id() -> String {
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("turn-{now_ns}")
 }
 
 fn addressability_json(addressability: crate::identity_first::AgentAddressability) -> &'static str {

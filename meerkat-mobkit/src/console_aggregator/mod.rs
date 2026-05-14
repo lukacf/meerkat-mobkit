@@ -6,8 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::DateTime;
-use meerkat_core::ContentInput;
+use meerkat_core::{ContentInput, Message};
 use meerkat_mob::MobHandle;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
@@ -236,8 +235,7 @@ impl MobKitConsoleAggregator {
                 }
             }
         }
-        identities.sort_by(|left, right| left.identity.cmp(&right.identity));
-        Ok(identities)
+        Ok(dedupe_identity_records(identities))
     }
 
     pub async fn inspect_identity(
@@ -265,6 +263,35 @@ impl MobKitConsoleAggregator {
             identity: record,
             peers,
         }))
+    }
+
+    pub async fn retire_identity(&self, identity: &str) -> ConsoleLogResult<bool> {
+        let matches = self.resolve_members(identity).await;
+        let mut retired_any = false;
+        for resolved in matches {
+            let Some(record) =
+                identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member)
+                    .await
+            else {
+                continue;
+            };
+            if !resolved.entry.visibility_policy.identity_visible(&record) {
+                continue;
+            }
+            resolved
+                .handle
+                .retire(MeerkatId::from(resolved.runtime_identity.as_str()))
+                .await
+                .map_err(|err| -> ConsoleLogError {
+                    format!("retire failed for {identity}: {err}").into()
+                })?;
+            retired_any = true;
+        }
+        Ok(retired_any)
+    }
+
+    pub async fn clear_timeline_frames(&self) -> ConsoleLogResult<()> {
+        self.inner.store.clear_frames().await
     }
 
     pub async fn query_timeline(
@@ -589,21 +616,68 @@ impl MobKitConsoleAggregator {
     }
 
     async fn resolve_member(&self, identity: &str) -> Option<ResolvedConsoleMember> {
-        let entries = self.inner.runtimes.read().ok()?.clone();
+        self.resolve_members(identity).await.into_iter().next()
+    }
+
+    async fn resolve_members(&self, identity: &str) -> Vec<ResolvedConsoleMember> {
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .ok()
+            .map(|entries| entries.clone())
+            .unwrap_or_default();
+        let mut matches: Vec<(String, ResolvedConsoleMember)> = Vec::new();
         for entry in entries.values() {
-            let raw_identity = strip_namespace(identity, &entry.identity_namespace)?;
+            let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
+                continue;
+            };
             let mid = MeerkatId::from(raw_identity.as_str());
-            if let Some(mut resolved) = member_sources_for_entry(entry)
+            for mut resolved in member_sources_for_entry(entry)
                 .await
                 .into_iter()
-                .find(|candidate| candidate.member.agent_identity == mid)
+                .filter(|candidate| candidate.member.agent_identity == mid)
             {
-                resolved.runtime_identity = raw_identity;
-                return Some(resolved);
+                let session_id = resolved
+                    .handle
+                    .resolve_bridge_session_id(&resolved.member.agent_identity)
+                    .await
+                    .map(|sid| sid.to_string())
+                    .unwrap_or_default();
+                resolved.runtime_identity = raw_identity.clone();
+                matches.push((session_id, resolved));
             }
         }
-        None
+        matches.sort_by(|left, right| right.0.cmp(&left.0));
+        matches.into_iter().map(|(_, resolved)| resolved).collect()
     }
+}
+
+fn dedupe_identity_records(records: Vec<ConsoleIdentityRecord>) -> Vec<ConsoleIdentityRecord> {
+    let mut by_identity: BTreeMap<String, ConsoleIdentityRecord> = BTreeMap::new();
+    for record in records {
+        by_identity
+            .entry(record.identity.clone())
+            .and_modify(|current| {
+                if identity_record_prefer(&record, current) {
+                    *current = record.clone();
+                }
+            })
+            .or_insert(record);
+    }
+    by_identity.into_values().collect()
+}
+
+fn identity_record_prefer(
+    candidate: &ConsoleIdentityRecord,
+    current: &ConsoleIdentityRecord,
+) -> bool {
+    let candidate_live = candidate.addressable && candidate.health != "retired";
+    let current_live = current.addressable && current.health != "retired";
+    if candidate_live != current_live {
+        return candidate_live;
+    }
+    candidate.session_id.as_deref().unwrap_or("") > current.session_id.as_deref().unwrap_or("")
 }
 
 async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMember> {
@@ -1092,35 +1166,55 @@ fn frame_from_session_history_message(
     message: Value,
 ) -> Option<NewConsoleFrame> {
     let payload_hash = hash_short(&serde_json::to_string(&message).unwrap_or_default());
-    let role = message
-        .get("role")
-        .or_else(|| message.get("type"))
-        .and_then(Value::as_str)
-        .unwrap_or("message");
-    let kind = if role.contains("user") {
-        "user_input"
-    } else if role.contains("assistant") {
-        "interaction_complete"
-    } else {
-        return None;
-    };
-    let timestamp_ms = history_timestamp_ms(&message).unwrap_or_else(current_time_ms);
-    let payload = if kind == "interaction_complete" {
-        let text = extract_history_text(&message);
-        json!({
-            "result": text,
-            "text": text,
-            "message": message,
-            "source_event_type": "session_history",
-            "type": "session_history",
-        })
-    } else if kind == "user_input" {
-        json!({
-            "content": extract_history_content(&message),
-            "message": message,
-        })
-    } else {
-        json!({ "message": message })
+    let parsed = serde_json::from_value::<Message>(message.clone()).ok()?;
+    let (kind, timestamp_ms, payload) = match &parsed {
+        Message::User(user) => (
+            "user_input",
+            user.created_at.timestamp_millis().max(0) as u64,
+            json!({
+                "content": user.content,
+                "message": message,
+            }),
+        ),
+        Message::Assistant(assistant) => (
+            "interaction_complete",
+            assistant.created_at.timestamp_millis().max(0) as u64,
+            json!({
+                "result": assistant.content,
+                "text": assistant.content,
+                "message": message,
+                "source_event_type": "session_history",
+                "type": "session_history",
+            }),
+        ),
+        Message::BlockAssistant(assistant) => {
+            let text = assistant.text_blocks().collect::<Vec<_>>().join("");
+            (
+                "interaction_complete",
+                assistant.created_at.timestamp_millis().max(0) as u64,
+                json!({
+                    "result": text,
+                    "text": text,
+                    "message": message,
+                    "source_event_type": "session_history",
+                    "type": "session_history",
+                }),
+            )
+        }
+        Message::SystemNotice(notice) => (
+            "system_notice",
+            notice.created_at.timestamp_millis().max(0) as u64,
+            json!({
+                "message": message,
+                "kind": notice.kind,
+                "render_class": notice.kind.render_class(),
+                "body": notice.body,
+                "blocks": notice.blocks,
+                "source_event_type": "session_history",
+                "type": "session_history",
+            }),
+        ),
+        Message::System(_) | Message::ToolResults { .. } => return None,
     };
     Some(NewConsoleFrame {
         id: None,
@@ -1144,82 +1238,6 @@ fn frame_from_session_history_message(
         parent_frame_id: None,
         caused_by_frame_id: None,
     })
-}
-
-fn history_timestamp_ms(message: &Value) -> Option<u64> {
-    if let Some(ms) = message
-        .get("timestamp_ms")
-        .or_else(|| message.get("created_at_ms"))
-        .and_then(Value::as_u64)
-    {
-        return Some(ms);
-    }
-    message
-        .get("created_at")
-        .and_then(Value::as_str)
-        .and_then(|created_at| DateTime::parse_from_rfc3339(created_at).ok())
-        .map(|created_at| created_at.timestamp_millis().max(0) as u64)
-}
-
-fn extract_history_content(message: &Value) -> Value {
-    message
-        .get("content")
-        .or_else(|| message.get("blocks"))
-        .cloned()
-        .unwrap_or_else(|| Value::String(extract_history_text(message)))
-}
-
-fn extract_history_text(message: &Value) -> String {
-    if let Some(text) = message.get("text").and_then(Value::as_str) {
-        return text.to_string();
-    }
-    if let Some(content) = message.get("content") {
-        if let Some(text) = content.as_str() {
-            return text.to_string();
-        }
-        if let Some(blocks) = content.as_array() {
-            return blocks
-                .iter()
-                .filter_map(history_visible_block_text)
-                .collect::<Vec<_>>()
-                .join("");
-        }
-    }
-    if let Some(blocks) = message.get("blocks").and_then(Value::as_array) {
-        return blocks
-            .iter()
-            .filter_map(history_visible_block_text)
-            .collect::<Vec<_>>()
-            .join("");
-    }
-    String::new()
-}
-
-fn history_visible_block_text(block: &Value) -> Option<&str> {
-    let block_kind = block
-        .get("block_type")
-        .or_else(|| block.get("type"))
-        .and_then(Value::as_str);
-    if matches!(
-        block_kind,
-        Some(
-            "reasoning"
-                | "server_tool_content"
-                | "tool_use"
-                | "tool_call"
-                | "tool_result"
-                | "tool_results"
-        )
-    ) {
-        return None;
-    }
-
-    block
-        .get("text")
-        .or_else(|| block.get("content"))
-        .or_else(|| block.get("data").and_then(|data| data.get("text")))
-        .or_else(|| block.get("data").and_then(|data| data.get("content")))
-        .and_then(Value::as_str)
 }
 
 fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
@@ -1908,7 +1926,9 @@ mod tests {
             1,
             json!({
                 "role": "assistant",
-                "content": [{ "type": "text", "text": "hi there" }],
+                "content": "hi there",
+                "stop_reason": "end_turn",
+                "usage": { "input_tokens": 1, "output_tokens": 1, "total_tokens": 2 },
                 "timestamp_ms": 11
             }),
         )
@@ -1916,7 +1936,10 @@ mod tests {
 
         assert_eq!(user.kind, "user_input");
         assert_eq!(user.source.kind, ConsoleFrameSourceKind::SessionHistory);
-        assert_eq!(user.payload["content"], json!("hello"));
+        assert_eq!(
+            user.payload["content"],
+            json!([{ "type": "text", "text": "hello" }])
+        );
         assert_eq!(assistant.kind, "interaction_complete");
         assert_eq!(assistant.payload["text"], json!("hi there"));
         assert!(
@@ -1948,11 +1971,12 @@ mod tests {
             "session-a",
             0,
             json!({
-                "role": "assistant",
+                "role": "block_assistant",
                 "blocks": [
-                    { "type": "text", "text": "hello " },
-                    { "type": "text", "text": "there" }
-                ]
+                    { "block_type": "text", "data": { "text": "hello " } },
+                    { "block_type": "text", "data": { "text": "there" } }
+                ],
+                "stop_reason": "end_turn"
             }),
         )
         .expect("assistant block history frame");
@@ -1974,7 +1998,8 @@ mod tests {
                         "data": { "text": "Ready and standing by." }
                     }
                 ],
-                "timestamp_ms": 10
+                "stop_reason": "end_turn",
+                "created_at": "1970-01-01T00:00:00.010Z"
             }),
         )
         .expect("assistant block history frame");
@@ -1991,7 +2016,7 @@ mod tests {
             "session-a",
             0,
             json!({
-                "role": "assistant",
+                "role": "block_assistant",
                 "blocks": [
                     {
                         "block_type": "reasoning",
@@ -2002,7 +2027,8 @@ mod tests {
                         "data": { "text": "Visible answer." }
                     }
                 ],
-                "timestamp_ms": 10
+                "stop_reason": "end_turn",
+                "created_at": "1970-01-01T00:00:00.010Z"
             }),
         )
         .expect("assistant block history frame");
@@ -2020,7 +2046,7 @@ mod tests {
             "session-a",
             0,
             json!({
-                "role": "assistant",
+                "role": "block_assistant",
                 "blocks": [
                     {
                         "block_type": "reasoning",
@@ -2028,10 +2054,11 @@ mod tests {
                     },
                     {
                         "block_type": "tool_use",
-                        "data": { "name": "peers", "args": {} }
+                        "data": { "id": "toolu-1", "name": "peers", "args": {} }
                     }
                 ],
-                "timestamp_ms": 10
+                "stop_reason": "end_turn",
+                "created_at": "1970-01-01T00:00:00.010Z"
             }),
         )
         .expect("assistant block history frame");

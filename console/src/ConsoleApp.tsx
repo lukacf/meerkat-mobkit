@@ -10,7 +10,7 @@ import {
   ConsoleWorkbench,
   useConsoleDockController,
 } from "@console-components";
-import type { ConsoleComposerToolbarItem, ConversationTimelineEntry, IdentityInspectViewState, IdentityStatusRow } from "@console-core";
+import type { ConversationTimelineEntry, IdentityInspectViewState, IdentityStatusRow } from "@console-core";
 import { normalizeIdentityInspectViewState } from "@console-core";
 
 import { normalizeAgents } from "./lib/agents";
@@ -19,7 +19,7 @@ import {
   buildControlTarget,
   buildConversationViewState,
   buildDockTarget,
-  buildQuickPromptSuggestions,
+  buildInspectTarget,
   buildPanelConversationKey,
   buildRoutingSectionView,
   buildSidebarViewState,
@@ -35,8 +35,6 @@ import {
   queryTimeline,
   sendConsole,
   sendConsoleMultipart,
-  sendMessage,
-  sendMessageMultipart,
   subscribeTimelineEvents,
 } from "./lib/network";
 import { Icon, SpriteSheet } from "./icon";
@@ -182,6 +180,8 @@ function isEndTurnFrame(frame: ConsoleFrame): boolean {
 const REFRESH_TRIGGER_EVENTS = new Set([
   "interaction_complete", "interaction_failed", "state_changed",
   "member_ready", "member_retired", "topology_updated", "gating_decision", "route_changed",
+  "tool_call_requested", "tool_call", "tool_result_received",
+  "tool_execution_started", "tool_execution_completed",
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
   "user_input", "interaction_started", "interaction_complete", "interaction_failed",
@@ -204,160 +204,6 @@ const ACTIVITY_SKIP_EVENTS = new Set([
   "text_delta", "tool_call", "tool_execution_started",
   "tool_result_received", "tool_execution_completed",
 ]);
-
-function identityRowsFromLiveList(payload: unknown): IdentityStatusRow[] {
-  const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
-  const identities = Array.isArray(record.identities) ? record.identities : [];
-  const rows: IdentityStatusRow[] = [];
-  for (const entry of identities) {
-    if (!entry || typeof entry !== "object") continue;
-    const item = entry as Record<string, unknown>;
-    const identity = typeof item.identity === "string" ? item.identity.trim() : "";
-    if (!identity) continue;
-    const labels = item.labels && typeof item.labels === "object"
-      ? Object.fromEntries(
-          Object.entries(item.labels as Record<string, unknown>)
-            .filter(([, value]) => typeof value === "string")
-            .map(([key, value]) => [key, String(value).trim()]),
-        )
-      : {};
-    const displayName = typeof item.display_name === "string" && item.display_name.trim()
-      ? item.display_name.trim()
-      : typeof labels.display_name === "string" && labels.display_name.trim()
-        ? labels.display_name.trim()
-        : undefined;
-    const health = typeof item.health === "string" ? item.health.toLowerCase() : "";
-    const visibility = typeof item.visibility === "string" ? item.visibility.toLowerCase() : "";
-    const addressable = item.addressable === true || visibility === "addressable";
-    rows.push({
-      identity,
-      state: health === "hidden_by_policy" ? "active" : health || "active",
-      addressability: addressable ? "addressable" : "internal_only",
-      labels,
-      ...(displayName ? { display_name: displayName } : {}),
-      ...(typeof labels.role === "string" && labels.role.trim() ? { role: labels.role.trim() } : {}),
-    });
-  }
-  return rows;
-}
-
-function compactIdentityReference(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function referenceMatchesIdentity(reference: string, identity: string): boolean {
-  const normalizedReference = reference.trim().toLowerCase();
-  const normalizedIdentity = identity.trim().toLowerCase();
-  if (!normalizedReference || !normalizedIdentity) return false;
-  if (normalizedReference === normalizedIdentity) return true;
-  if (compactIdentityReference(normalizedReference) === compactIdentityReference(normalizedIdentity)) {
-    return true;
-  }
-  const tokens = normalizedReference.split(/[/:#\s]+/).filter(Boolean);
-  if (tokens.includes(normalizedIdentity)) return true;
-  const compactIdentity = compactIdentityReference(normalizedIdentity);
-  for (let start = 0; start < tokens.length; start++) {
-    let compactSlice = "";
-    for (let end = start; end < tokens.length; end++) {
-      compactSlice += compactIdentityReference(tokens[end]);
-      if (compactSlice === compactIdentity) return true;
-      if (compactSlice.length > compactIdentity.length) break;
-    }
-  }
-  return false;
-}
-
-function sidebarIdentityKeys(experience: ConsoleExperience): Set<string> {
-  const keys = new Set<string>();
-  const agents = Array.isArray(experience.agent_sidebar?.live_snapshot?.agents)
-    ? experience.agent_sidebar.live_snapshot.agents
-    : [];
-  for (const agent of agents) {
-    for (const value of [agent.identity, agent.member_id, agent.agent_id]) {
-      if (typeof value === "string" && value.trim()) keys.add(value.trim().toLowerCase());
-    }
-  }
-  return keys;
-}
-
-async function enrichIdentityRowsWithPeerHosts(
-  baseUrl: string,
-  experience: ConsoleExperience,
-  rows: IdentityStatusRow[],
-): Promise<IdentityStatusRow[]> {
-  const sidebarKeys = sidebarIdentityKeys(experience);
-  const candidateIdentities = new Set<string>([
-    ...rows.map((row) => row.identity),
-    ...(Array.isArray(experience.agent_sidebar?.live_snapshot?.agents)
-      ? experience.agent_sidebar.live_snapshot.agents.flatMap((agent) =>
-          [agent.identity, agent.member_id, agent.agent_id]
-            .filter((value): value is string => typeof value === "string" && value.trim().length > 0),
-        )
-      : []),
-  ]);
-
-  const enriched = await Promise.all(rows.map(async (row) => {
-    if (row.labels.delegate_host_identity || sidebarKeys.has(row.identity.toLowerCase())) {
-      return row;
-    }
-    try {
-      const inspected = await callConsoleRpc<unknown>(
-        baseUrl,
-        "mobkit/console/inspect_identity",
-        { identity: row.identity },
-      );
-      const record = inspected && typeof inspected === "object"
-        ? inspected as Record<string, unknown>
-        : {};
-      const peers = Array.isArray(record.peers) ? record.peers : [];
-      const host = [...candidateIdentities].find((candidate) =>
-        candidate !== row.identity
-          && peers.some((peer) => typeof peer === "string" && referenceMatchesIdentity(peer, candidate)),
-      );
-      if (!host) return row;
-      return {
-        ...row,
-        labels: {
-          ...row.labels,
-          delegate_host_identity: host,
-        },
-      };
-    } catch {
-      return row;
-    }
-  }));
-
-  return enriched;
-}
-
-function mergeExperienceIdentityRows(
-  experience: ConsoleExperience,
-  extraRows: IdentityStatusRow[],
-): ConsoleExperience {
-  if (extraRows.length === 0) return experience;
-  const existingRows = Array.isArray(experience.identity_status?.rows)
-    ? experience.identity_status.rows
-    : [];
-  const seen = new Set(
-    existingRows
-      .map((row) => row.identity?.trim().toLowerCase())
-      .filter((value): value is string => Boolean(value)),
-  );
-  const mergedRows = [...existingRows];
-  for (const row of extraRows) {
-    const key = row.identity.trim().toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    mergedRows.push(row);
-  }
-  return {
-    ...experience,
-    identity_status: {
-      ...(experience.identity_status || {}),
-      rows: mergedRows,
-    },
-  };
-}
 
 // ============================================================================
 // CONSOLE APP
@@ -570,6 +416,67 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return true;
   }
 
+  function busyTransitionForFrame(frame: ConsoleFrame): boolean | null {
+    if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
+      return true;
+    }
+    if (
+      frame.event === "interaction_complete"
+      || frame.event === "interaction_failed"
+      || frame.event === "run_completed"
+      || frame.event === "run_failed"
+      || frame.event === "message_delivery_failed"
+      || isEndTurnFrame(frame)
+    ) {
+      return false;
+    }
+    return null;
+  }
+
+  function busyTransitionSortRank(frame: ConsoleFrame): number {
+    const transition = busyTransitionForFrame(frame);
+    // When session-history projection gives lifecycle frames the same
+    // timestamp, a terminal event must win over its matching start/user
+    // frame. Otherwise backfilled history can leave an idle agent marked
+    // busy forever and trap future sends in the pending stack.
+    return transition === false ? 1 : 0;
+  }
+
+  function applyBusyState(identity: string, nextBusy: boolean): void {
+    const wasBusy = identityBusyRef.current[identity] === true;
+    identityBusyRef.current[identity] = nextBusy;
+    if (wasBusy && !nextBusy) {
+      clearSendingPanelsForIdentity(identity);
+      maybeDrainHead(identity);
+    }
+  }
+
+  function updateBusyStateForFrame(identity: string, frame: ConsoleFrame): void {
+    const transition = busyTransitionForFrame(frame);
+    if (transition !== null) {
+      applyBusyState(identity, transition);
+    }
+  }
+
+  function recomputeBusyStateFromLog(identity: string): void {
+    const log = getOrCreateLog(identity);
+    const lifecycleFrames = log.events
+      .filter((frame) => busyTransitionForFrame(frame) !== null)
+      .sort((a, b) => {
+        const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
+        if (timeDelta !== 0) return timeDelta;
+        const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
+        if (rankDelta !== 0) return rankDelta;
+        return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
+      });
+    let nextBusy = false;
+    for (const frame of lifecycleFrames) {
+      const transition = busyTransitionForFrame(frame);
+      if (transition !== null) nextBusy = transition;
+    }
+    applyBusyState(identity, nextBusy);
+  }
+
   /// Reconcile a server-history fetch into the identity log. Frames
   /// already present (by key) are skipped; new frames are appended.
   /// The live overlay is preserved — both sides feed the same log now.
@@ -587,7 +494,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   ): void {
     const log = getOrCreateLog(identity);
     log.hasServerLog = available;
-    for (const frame of frames) appendFrame(identity, frame);
+    for (const frame of frames) {
+      if (!appendFrame(identity, frame)) continue;
+      updatePhaseForIdentity(identity, frame);
+    }
+    recomputeBusyStateFromLog(identity);
   }
 
   async function queryIdentityTimeline(identity: string): Promise<{ frames: ConsoleFrame[]; available: boolean }> {
@@ -599,7 +510,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       available = page.available;
       frames.push(...page.frames);
       const next = page.nextCursor?.trim();
-      if (!next || next === after || page.frames.length === 0) break;
+      // A raw timeline page can contain only non-renderable frames
+      // (for example reasoning deltas). The server still returns the
+      // raw next cursor after visibility filtering, so keep paging until
+      // the cursor is exhausted; otherwise visible history can be stranded
+      // behind hidden noise and appear minutes late via live refresh.
+      if (!next || next === after) break;
       after = next;
     }
     return { frames, available };
@@ -882,24 +798,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // =========================================================================
 
   const loadExperience = React.useCallback(async () => {
-    const [experienceJson, modulesJson, identitiesJson] = await Promise.all([
+    const [experienceJson, modulesJson] = await Promise.all([
       fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
       fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
-      fetchJson<unknown>(baseUrl, "/console/identities").catch(() => null),
     ]);
     const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
-    const identityRows = await enrichIdentityRowsWithPeerHosts(
-      baseUrl,
-      experienceJson,
-      identityRowsFromLiveList(identitiesJson),
-    );
-    const mergedExperience = mergeExperienceIdentityRows(
-      experienceJson,
-      identityRows,
-    );
-    setExperience(mergedExperience);
-    setAgents(normalizeAgents(mergedExperience, loadedModules));
-    setActiveActivityPresetId((c) => c || mergedExperience.activity_feed?.active_preset_id || "all");
+    const nextAgents = normalizeAgents(experienceJson, loadedModules);
+    setExperience(experienceJson);
+    setAgents(nextAgents);
+    setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
+    return nextAgents;
   }, [baseUrl]);
 
   React.useEffect(() => {
@@ -914,7 +822,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   React.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {});
-    }, 2_000);
+    }, 1_000);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
 
@@ -930,6 +838,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     openAgentChat(first);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, dock]);
+
+  React.useEffect(() => {
+    const target = dock.focusedTarget;
+    if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
+    const identity = target.identity || target.memberId;
+    if (agents.some((agent) => agent.identity === identity || agent.member_id === identity)) return;
+    const fallback = agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
+    if (fallback) {
+      openAgentChat(fallback, "replace_focused");
+    } else {
+      dock.openTarget(buildControlTarget("roster"), "replace_focused");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agents, dock.focusedTarget]);
 
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const visibleControls = React.useMemo<NavKind[]>(
@@ -978,7 +900,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       experienceTimerRef.current = null;
       await loadExperience().catch(() => {});
       await refreshPanelData().catch(() => {});
-    }, 500);
+    }, 150);
   }, [loadExperience, refreshPanelData]);
 
   // =========================================================================
@@ -1104,26 +1026,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
 
-        // Per-identity busy tracking. Used by the pending-stack
-        // auto-drain hook + by the Send handler to decide whether
-        // to bypass the stack (idle + empty) or push to it.
-        const wasBusy = identityBusyRef.current[identity] === true;
-        if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
-          identityBusyRef.current[identity] = true;
-        } else if (
-          frame.event === "interaction_complete"
-          || frame.event === "interaction_failed"
-          || frame.event === "run_completed"
-          || frame.event === "run_failed"
-          || frame.event === "message_delivery_failed"
-          || isEndTurnFrame(frame)
-        ) {
-          identityBusyRef.current[identity] = false;
-          clearSendingPanelsForIdentity(identity);
-          // busy → idle transition: drain the head item if the
-          // user has stacked something while we were busy.
-          if (wasBusy) maybeDrainHead(identity);
-        }
+        updateBusyStateForFrame(identity, frame);
       }
 
       forceRender();
@@ -1134,7 +1037,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }
-      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
+      if (REFRESH_TRIGGER_EVENTS.has(frame.event) || frame.event !== "keep-alive") {
         scheduleExperienceRefreshRef.current();
       }
     });
@@ -1244,21 +1147,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
-      } else if (attachments.length > 0) {
-        const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id || "";
-          const matched = result.interaction_id
-            ? log.events.some(
-                (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id,
-              )
-            : false;
-          if (matched) {
-            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
       } else if (id) {
         const result = await sendConsole(
           baseUrl,
@@ -1282,7 +1170,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           }
         }
       } else {
-        await sendMessage(baseUrl, target.memberId, text, handlingMode);
+        throw new Error("console send requires an identity-addressed target");
       }
       return true;
     } catch (submitError) {
@@ -1463,7 +1351,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   async function onLifecycleAction(identity: string, method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset") {
     await callConsoleRpc(baseUrl, method, { identity });
-    await loadExperience();
+    const nextAgents = await loadExperience();
+    if (method !== "mobkit/retire") return;
+    if (nextAgents.some((agent) => agent.identity === identity || agent.member_id === identity)) return;
+    const fallback = nextAgents.find((agent) => agent.addressable || agent.affordances?.can_send_message)
+      || nextAgents[0];
+    if (fallback) {
+      openAgentChat(fallback, "replace_focused");
+    } else {
+      dock.openTarget(buildControlTarget("roster"), "replace_focused");
+    }
   }
 
   async function onGatingDecision(pendingId: string, decision: "approve" | "reject" | "escalate") {
@@ -1583,19 +1480,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const canRespawn = agent?.affordances?.can_respawn === true;
     const canRetire = agent?.affordances?.can_retire === true;
 
-    const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
-      id: s.id, kind: "pill" as const, label: s.label, iconName: s.iconName || "i-bolt",
-    }));
-    const footerLeftItems: ConsoleComposerToolbarItem[] = [
-      { id: "target", kind: "sub-pill", label: `To: ${target.title}`, iconName: "i-team" },
-      { id: "identity", kind: "sub-pill", label: target.identity || target.memberId, iconName: "i-terminal" },
-    ];
-    const footerRightItems: ConsoleComposerToolbarItem[] = [
-      ...(agent?.role ? [{ id: "role", kind: "sub-pill" as const, label: agent.role }] : []),
-      ...(phase ? [{ id: "phase", kind: "sub-pill" as const, label: phase, iconName: "i-bolt" }] : []),
-      { id: "state", kind: "sub-pill" as const, label: agent?.state || "unknown", iconName: "i-dot" },
-    ];
-
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = stackItems.length > 0 ? (
@@ -1687,9 +1571,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
   }
 
+  async function refreshInspectIdentity(identity: string): Promise<void> {
+    const r = await callConsoleRpc<unknown>(baseUrl, "mobkit/console/inspect_identity", { identity })
+      .catch(() => callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity }));
+    setInspectByIdentity((current) => ({
+      ...current,
+      [identity]: normalizeConsoleInspectResult(r),
+    }));
+  }
+
   function handleShowRosterDetails(agent: ConsoleAgent) {
     setSelectedRosterMemberId(agent.member_id);
-    dock.openTarget(buildControlTarget("roster"), "replace_focused");
+    const target = buildInspectTarget(agent);
+    dock.openTarget(target, "replace_focused");
+    void refreshInspectIdentity(target.identity).catch(() => {});
   }
 
   // =========================================================================
@@ -1710,18 +1605,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (!target) return <div className="console-panel">No panel target</div>;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
-      const agent = agents.find((candidate) => candidate.member_id === target.memberId || candidate.identity === target.identity);
-      return (
-        <RosterPanel
-          agents={agents}
-          selectedMemberId={agent?.member_id || selectedRosterMemberId}
-          onSelect={(a) => setSelectedRosterMemberId(a.member_id)}
-          onChat={(a) => openAgentChat(a)}
-          onDetails={(a) => setSelectedRosterMemberId(a.member_id)}
-          onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
-          canResetLifecycle={hasMobControlSurface}
-        />
-      );
+      return renderInspectPanel(target);
     }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
       return <div className="console-panel">This view requires a mob runtime control surface.</div>;
@@ -1749,7 +1633,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         selectedMemberId={selectedRosterMemberId}
         onSelect={(a) => setSelectedRosterMemberId(a.member_id)}
         onChat={(a) => openAgentChat(a)}
-        onDetails={(a) => setSelectedRosterMemberId(a.member_id)}
+        onDetails={(a) => handleShowRosterDetails(a)}
         onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
         canResetLifecycle={hasMobControlSurface}
       />

@@ -435,8 +435,6 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MembersUnwired { .. } => "members_unwired",
         MobEventKind::ExternalPeerWired { .. } => "external_peer_wired",
         MobEventKind::ExternalPeerUnwired { .. } => "external_peer_unwired",
-        MobEventKind::TaskCreated { .. } => "task_created",
-        MobEventKind::TaskUpdated { .. } => "task_updated",
         MobEventKind::FlowStarted { .. } => "flow_started",
         MobEventKind::FlowCompleted { .. } => "flow_completed",
         MobEventKind::FlowFailed { .. } => "flow_failed",
@@ -521,9 +519,6 @@ pub(crate) fn extract_structural_fields(
         | MobEventKind::ExternalPeerUnwired { local, .. } => {
             (None, None, Some(local.as_str().to_string()))
         }
-        MobEventKind::TaskUpdated { owner, .. } => {
-            (None, None, owner.as_ref().map(|v| v.as_str().to_string()))
-        }
         MobEventKind::MobCreated { .. }
         | MobEventKind::MobCompleted
         | MobEventKind::MobDestroying
@@ -531,7 +526,6 @@ pub(crate) fn extract_structural_fields(
         | MobEventKind::MobReset
         | MobEventKind::MembersWired { .. }
         | MobEventKind::MembersUnwired { .. }
-        | MobEventKind::TaskCreated { .. }
         | MobEventKind::TopologyViolation { .. }
         | MobEventKind::OperatorActionRecorded { .. } => (None, None, None),
     }

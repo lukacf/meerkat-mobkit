@@ -477,7 +477,7 @@ async function runReferenceBrowserProof() {
   }
 }
 
-async function runMixedMigrationBrowserProof() {
+async function runCanonicalSendBrowserProof() {
   const port = await reservePort();
   const server = await startMockConsoleServer(port);
   let browser;
@@ -513,11 +513,11 @@ async function runMixedMigrationBrowserProof() {
         request.body.includes('"method":"mobkit/console/send"') &&
         request.body.includes('"identity":"identity:luka"'),
     );
-    const sawLegacyLane = server.requests.some(
+    const sawMemberLane = server.requests.some(
       (request) =>
         request.url === "/console/rpc" &&
-        request.body.includes('"method":"mobkit/send_message"') &&
-        request.body.includes('"member_id":"legacy-router"'),
+        request.body.includes('"method":"mobkit/console/send"') &&
+        request.body.includes('"identity":"legacy-router"'),
     );
 
     assert(
@@ -525,11 +525,11 @@ async function runMixedMigrationBrowserProof() {
       `expected mixed migration proof to use identity-native lane for the identity target; saw ${JSON.stringify(server.requests, null, 2)}`,
     );
     assert(
-      sawLegacyLane,
-      `expected mixed migration proof to use legacy lane for the member target; saw ${JSON.stringify(server.requests, null, 2)}`,
+      sawMemberLane,
+      `expected browser proof to use canonical console send lane for the member target; saw ${JSON.stringify(server.requests, null, 2)}`,
     );
 
-    process.stdout.write("browser mixed migration ok\n");
+    process.stdout.write("browser canonical send ok\n");
   } finally {
     if (browser) {
       await browser.close();
@@ -640,7 +640,10 @@ async function runImageRenderingBrowserProof() {
     const bodyText = await page.locator("body").innerText();
     assert(bodyText.includes("Operator attached image:"), "missing user image prompt text");
     assert(bodyText.includes("Forwarded generated image."), "missing peer image comms text");
-    assert(bodyText.includes("Received from incident-command-center/scribe/scribe"), "missing peer comms row");
+    assert(
+      bodyText.includes("Received from scribe") || bodyText.includes("Received from incident-command-center/scribe/scribe"),
+      "missing peer comms row",
+    );
     assert(!bodyText.includes("image_ref"), "raw image_ref leaked into visible transcript");
     assert(!bodyText.includes("blob_id"), "raw blob_id leaked into visible transcript");
 
@@ -706,7 +709,7 @@ async function runComposerPasteAttachmentProof() {
 
 async function main() {
   await runReferenceBrowserProof();
-  await runMixedMigrationBrowserProof();
+  await runCanonicalSendBrowserProof();
   await runImageRenderingBrowserProof();
   await runComposerPasteAttachmentProof();
 }

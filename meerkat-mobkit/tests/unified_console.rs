@@ -199,11 +199,11 @@ async fn get_console_experience(app: &Router) -> Value {
     serde_json::from_slice(&body).expect("console json")
 }
 
-async fn query_console_events(app: &Router, identity: &str) -> Vec<Value> {
+async fn query_console_timeline_frames(app: &Router, identity: &str) -> Vec<Value> {
     let query_payload = json!({
         "jsonrpc": "2.0",
-        "id": "query-events",
-        "method": "mobkit/query_events",
+        "id": "query-timeline",
+        "method": "mobkit/console/query_timeline",
         "params": { "identity": identity }
     });
     let query_response = app
@@ -223,9 +223,9 @@ async fn query_console_events(app: &Router, identity: &str) -> Vec<Value> {
         .await
         .expect("query body");
     let query_json: Value = serde_json::from_slice(&query_body).expect("query json");
-    query_json["result"]["events"]
+    query_json["result"]["frames"]
         .as_array()
-        .expect("fallback console events")
+        .expect("console timeline frames")
         .clone()
 }
 
@@ -611,9 +611,11 @@ comms = true
     let payload = json!({
         "jsonrpc": "2.0",
         "id": "send-1",
-        "method": "mobkit/send_message",
+        "method": "mobkit/console/send",
         "params": {
-            "member_id": "analyst",
+            "identity": "analyst",
+            "origin": "test",
+            "idempotency_key": "multipart-send-image-1",
             "content": [
                 { "type": "text", "text": "Describe this inline image." },
                 {
@@ -663,26 +665,27 @@ comms = true
         send_json.get("error").is_none() || send_json["error"].is_null(),
         "send failed: {send_json}"
     );
-    assert_eq!(send_json["result"]["accepted"], json!(true));
+    assert_eq!(send_json["result"]["status"], json!("accepted"));
+    assert_eq!(send_json["result"]["identity"], json!("analyst"));
     assert!(send_json["result"]["interaction_id"].as_str().is_some());
 
-    let events = query_console_events(&app, "analyst").await;
-    let started = events
+    let frames = query_console_timeline_frames(&app, "analyst").await;
+    let started = frames
         .iter()
-        .find(|event| event["event_type"] == "interaction_started")
-        .expect("interaction_started event");
+        .find(|frame| frame["kind"] == "user_input" || frame["event"] == "interaction_started")
+        .expect("user input timeline frame");
     assert_eq!(
-        started["data"]["content"][0]["text"],
+        started["payload"]["content"][0]["text"],
         json!("Describe this inline image.")
     );
-    assert_eq!(started["data"]["content"][1]["type"], json!("image"));
-    assert_eq!(started["data"]["content"][1]["source"], json!("blob"));
+    assert_eq!(started["payload"]["content"][1]["type"], json!("image"));
+    assert_eq!(started["payload"]["content"][1]["source"], json!("blob"));
     assert_eq!(
-        started["data"]["content"][1]["media_type"],
+        started["payload"]["content"][1]["media_type"],
         json!("image/png")
     );
     assert!(
-        started["data"]["content"][1]["blob_id"]
+        started["payload"]["content"][1]["blob_id"]
             .as_str()
             .is_some_and(|value| value.starts_with("sha256:"))
     );

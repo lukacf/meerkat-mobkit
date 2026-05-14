@@ -1891,7 +1891,7 @@ function ToolCallGroup({ blocks }) {
 }
 function PeerToolGroup({ blocks }) {
   const [expanded, setExpanded] = (0, import_react2.useState)(false);
-  const targets = blocks.map((b) => b.peerTarget || "peer");
+  const targets = Array.from(new Set(blocks.map((b) => b.peerTarget || "peer")));
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "\u2717" : allSuccess ? "\u2713" : "\u22EF";
@@ -2188,22 +2188,32 @@ function buildPanelConversationKey(panelId, target) {
   if (target.kind !== "agent-chat") {
     return `panel:${panelId}:${target.kind}:${target.id}`;
   }
-  const targetKey = target.addressingMode === "identity" ? target.identity || target.memberId || target.id : target.memberId || target.id;
+  const targetKey = target.identity || target.memberId || target.id;
   return `panel:${panelId}:${target.kind}:${targetKey}`;
 }
 function buildDockTarget(agent) {
   const subtitle = [agent.role, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
-  const identity = typeof agent.identity === "string" && agent.identity.trim() ? agent.identity.trim() : void 0;
-  const addressingMode = identity ? "identity" : "member";
+  const identity = typeof agent.identity === "string" && agent.identity.trim() ? agent.identity.trim() : agent.member_id;
   return {
     id: agent.member_id,
     kind: "agent-chat",
-    addressingMode,
+    addressingMode: "identity",
     memberId: agent.member_id,
-    ...identity ? { identity } : {},
+    identity,
     title: agent.label,
     subtitle,
     iconName: "i-team"
+  };
+}
+function buildInspectTarget(agent) {
+  return {
+    id: `inspect:${agent.identity || agent.member_id}`,
+    kind: "identity-inspect",
+    identity: agent.identity || agent.member_id,
+    memberId: agent.member_id,
+    title: `${agent.label} Details`,
+    subtitle: agent.identity || agent.member_id,
+    iconName: "i-terminal"
   };
 }
 function buildControlTarget(kind) {
@@ -2882,6 +2892,45 @@ function imageEntryKey(entry) {
 function normalizeComparableText(value) {
   return value.replace(/\s+/g, " ").trim();
 }
+function conversationEntryVisibleText(entry) {
+  if (entry.kind !== "message") return "";
+  if ("text" in entry && typeof entry.text === "string") return entry.text;
+  if (!("blocks" in entry) || !Array.isArray(entry.blocks)) return "";
+  return entry.blocks.map((block) => {
+    if (!block || typeof block !== "object") return "";
+    const record = block;
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.peerBody === "string") return record.peerBody;
+    return "";
+  }).filter(Boolean).join("\n");
+}
+function shouldSuppressRepeatedAssistantEntry(entry, priorEntries) {
+  if (entry.kind !== "message") return false;
+  if (entry.identity.id === USER_IDENTITY.id || entry.identity.id === COMMS_IDENTITY.id || entry.identity.id === SYSTEM_IDENTITY.id) {
+    return false;
+  }
+  const signature = normalizeComparableText(conversationEntryVisibleText(entry));
+  if (!signature) return false;
+  const entryTs = Date.parse(String(entry.createdAt || ""));
+  for (let index = priorEntries.length - 1; index >= 0; index--) {
+    const prior = priorEntries[index];
+    if (prior.kind !== "message") continue;
+    if (prior.identity.id === USER_IDENTITY.id) {
+      const userText = normalizeComparableText(conversationEntryVisibleText(prior));
+      if (userText) return false;
+      continue;
+    }
+    if (prior.identity.id !== entry.identity.id) continue;
+    const priorSignature = normalizeComparableText(conversationEntryVisibleText(prior));
+    if (priorSignature !== signature) continue;
+    const priorTs = Date.parse(String(prior.createdAt || ""));
+    if (Number.isFinite(entryTs) && Number.isFinite(priorTs) && Math.abs(entryTs - priorTs) > 15e3) {
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
 function buildQuickPromptSuggestions(agent) {
   const labels = agent?.labels ?? {};
   const suggestions = [];
@@ -2921,20 +2970,6 @@ function renderHistoryUserEntry(frame, entryId, blobBaseUrl) {
   }
   const text = extractTextFromContentBlocks(content).trim();
   if (!text) return null;
-  const commsBlocks = frame.sourceKind === "session_history" ? [
-    ...parseLegacyCommsBlocks(text),
-    ...parseLegacySystemNoticeBlocks(text)
-  ] : [];
-  if (commsBlocks.length > 0) {
-    return {
-      kind: "message",
-      id: entryId,
-      identity: COMMS_IDENTITY,
-      variant: "rich",
-      createdAt: isoFromTimestampMs(frame.timestampMs),
-      blocks: commsBlocks
-    };
-  }
   return {
     kind: "message",
     id: entryId,
@@ -2978,11 +3013,6 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   void options;
   void createdAt;
   return entries;
-}
-function renderInteractionCommsEntry(frame, entryId) {
-  void frame;
-  void entryId;
-  return null;
 }
 function extractTextFromContentBlocks(blocks) {
   if (typeof blocks === "string") {
@@ -3119,12 +3149,13 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
     const type = textFromUnknown(record.type);
     if (type === "comms") {
       const peer = record.peer && typeof record.peer === "object" ? record.peer : {};
-      const peerLabel = textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer";
+      const peerLabel = peerLastSegment(textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer");
       const kind = textFromUnknown(record.kind) || "message";
       const intent = textFromUnknown(record.intent);
       const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
       const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
       const contentText = contentBlocks.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
+      const displayBody = (contentText || typedNoticeBlockText(record)).replace(/^Peer\s+(?:message|request|response)\s+from\s+[^\n:]+:\s*/i, "").trim();
       rich.push({
         type: "tool-call",
         toolCallId: requestId,
@@ -3134,17 +3165,12 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
         peerIncoming: true,
         peerTarget: peerLabel,
         ...intent ? { peerIntent: intent } : {},
-        peerBody: contentText || typedNoticeBlockText(record) || void 0
+        peerBody: displayBody || void 0
       });
       rich.push(...contentBlocks.filter((item) => item.type !== "paragraph"));
       continue;
     }
     if (type === "external_event") {
-      const source = textFromUnknown(record.source);
-      const eventType = textFromUnknown(record.event_type);
-      const text = typedNoticeBlockText(record) || [source, eventType].filter(Boolean).join(": ");
-      if (text) rich.push({ type: "paragraph", text });
-      rich.push(...typedNoticeContentBlocks(record.content, blobBaseUrl));
       continue;
     }
     if (type === "tool_config" || type === "mcp") {
@@ -3164,76 +3190,6 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
   if (rich.length === 0 && bodyText) rich.push({ type: "paragraph", text: bodyText });
   return rich;
 }
-function parseLegacyCommsBlocks(text) {
-  const trimmed = text.trim();
-  if (!/^\[COMMS\s+/i.test(trimmed)) return [];
-  const lines = trimmed.split("\n");
-  const sections = [];
-  let current = null;
-  for (const line of lines) {
-    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
-    if (header) {
-      if (current) sections.push(current);
-      current = {
-        kind: header[1].toLowerCase(),
-        source: header[2].trim(),
-        body: header[3].trim() ? [header[3].trim()] : []
-      };
-      continue;
-    }
-    if (!current) return [];
-    if (/^\[EVENT via /i.test(line.trim())) {
-      sections.push(current);
-      current = null;
-      continue;
-    }
-    current.body.push(line);
-  }
-  if (current) sections.push(current);
-  return sections.map((section, index) => {
-    const body = section.body.join("\n").trim();
-    const peerTarget2 = section.source.split(/[/:]/).filter(Boolean).pop() || section.source;
-    const name = section.kind === "request" ? "peer_request" : section.kind === "response" ? "peer_response" : "peer_message";
-    return {
-      type: "tool-call",
-      toolCallId: `legacy-comms:${section.kind}:${section.source}:${index}:${body}`.slice(0, 180),
-      name,
-      arguments: "",
-      status: "success",
-      peerIncoming: true,
-      peerTarget: peerTarget2,
-      ...body ? { peerBody: body, peerIntent: body } : {}
-    };
-  });
-}
-function parseLegacySystemNoticeBlocks(text) {
-  const trimmed = text.trim();
-  const notice = trimmed.match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
-  if (!notice) return [];
-  const kind = notice[1].toLowerCase();
-  const body = notice[2] || "";
-  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
-  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
-  const peerLabel = displayNameMatch?.[1]?.trim() ? peerLastSegment(displayNameMatch[1].trim()) : peerIdMatch?.[1] ? peerIdMatch[1].slice(0, 8) : "peer";
-  const intentMatch = body.match(/\bIntent:\s*([^.\n]+)[.\n]/i);
-  const intent = displayPeerIntent(intentMatch?.[1]);
-  const requestId = body.match(/\bRequest ID:\s*([0-9a-f-]{8,})/i)?.[1] || `legacy-system-notice:${kind}:${peerLabel}:${trimmed.length}`;
-  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
-  const paramsBody = paramsMatch?.[1]?.trim() || "";
-  const peerBody = paramsBody ? summarizePeerPayload(parseJsonPayload(paramsBody) ?? paramsBody) : void 0;
-  const name = kind === "request" ? "peer_request" : kind === "response" ? "peer_response" : "peer_message";
-  return [{
-    type: "tool-call",
-    toolCallId: requestId,
-    name,
-    arguments: paramsBody,
-    status: "success",
-    peerIncoming: true,
-    peerTarget: peerLabel,
-    ...intent ? { peerIntent: intent } : {},
-    ...peerBody ? { peerBody } : {}
-  }];
-}
 function historyMessageText(message, peerRegistry, blobBaseUrl) {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
@@ -3243,13 +3199,6 @@ function historyMessageText(message, peerRegistry, blobBaseUrl) {
   switch (role) {
     case "user": {
       const text = extractTextFromContentBlocks(record.content);
-      const blocks = [
-        ...parseLegacyCommsBlocks(text),
-        ...parseLegacySystemNoticeBlocks(text)
-      ];
-      if (blocks.length > 0) {
-        return { role: "meta", text, blocks };
-      }
       return { role: "user", text };
     }
     case "system_notice": {
@@ -3293,10 +3242,7 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
       return !options.consumeDuplicateToolBlock?.(block);
     }) : parsedBlocks;
     if (!text && filteredParsedBlocks2.length === 0) return null;
-    const blocks2 = [
-      ...filteredParsedBlocks2,
-      ...parseConversationRichBlocks(text)
-    ];
+    const blocks2 = filteredParsedBlocks2.length > 0 ? filteredParsedBlocks2 : parseConversationRichBlocks(text);
     return {
       kind: "message",
       id: entryId,
@@ -3315,15 +3261,43 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     return !options.consumeDuplicateToolBlock?.(block);
   }) : parsedBlocks;
   if (!text && filteredParsedBlocks.length === 0) return null;
-  const blocks = [
-    ...filteredParsedBlocks,
-    ...parseConversationRichBlocks(text)
-  ];
+  const blocks = filteredParsedBlocks.length > 0 ? filteredParsedBlocks : parseConversationRichBlocks(text);
   return {
     kind: "message",
     id: entryId,
     identity: agentIdentity(agent),
     variant: blocks.length > 0 ? "rich" : "plain",
+    createdAt: isoFromTimestampMs(frame.timestampMs),
+    ...blocks.length > 0 ? { blocks } : { text }
+  };
+}
+function renderSystemNoticeEntry(frame, entryId, options = {}) {
+  if (frame.event !== "system_notice") return null;
+  const record = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const message = record.message && typeof record.message === "object" ? record.message : {
+    role: "system_notice",
+    body: record.body,
+    blocks: record.blocks
+  };
+  const parsed = historyMessageText(message, void 0, options.blobBaseUrl);
+  if (parsed.role !== "meta") return null;
+  const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
+  const filteredParsedBlocks = options.consumeDuplicateToolBlock ? parsedBlocks.filter((block) => {
+    if (block.type !== "tool-call") return true;
+    return !options.consumeDuplicateToolBlock?.(block);
+  }) : parsedBlocks;
+  const hasConversationNoticeBlock = filteredParsedBlocks.some(
+    (block) => block.type === "tool-call" || block.type === "image"
+  );
+  if (!hasConversationNoticeBlock) return null;
+  const text = parsed.text.trim();
+  if (!text && filteredParsedBlocks.length === 0) return null;
+  const blocks = filteredParsedBlocks.length > 0 ? filteredParsedBlocks : parseConversationRichBlocks(text);
+  return {
+    kind: "message",
+    id: entryId,
+    identity: COMMS_IDENTITY,
+    variant: blocks.length > 0 ? "rich" : "meta",
     createdAt: isoFromTimestampMs(frame.timestampMs),
     ...blocks.length > 0 ? { blocks } : { text }
   };
@@ -3416,12 +3390,6 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       continue;
     }
-    const interactionCommsEntry = renderInteractionCommsEntry(frame, entryId);
-    if (interactionCommsEntry) {
-      flushPendingText();
-      entries.push(interactionCommsEntry);
-      continue;
-    }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
@@ -3445,7 +3413,34 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
         continue;
       }
     }
+    if (frame.event === "system_notice") {
+      flushPendingText();
+      const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
+        blobBaseUrl: options.blobBaseUrl,
+        consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
+      });
+      if (noticeEntry) {
+        entries.push(noticeEntry);
+      }
+      continue;
+    }
     if (frame.event === "text_complete") {
+      if (frame.sourceKind !== "session_history") {
+        const text2 = terminalFrameVisibleText(frame).trim();
+        const interactionId = frame.interactionId?.trim();
+        const duplicateTerminalFollows = text2 && orderedFrames.slice(i + 1).some((later) => {
+          if (later.event !== "interaction_complete" && later.event !== "run_completed") {
+            return false;
+          }
+          if (interactionId && later.interactionId?.trim() !== interactionId) {
+            return false;
+          }
+          return normalizeComparableText(terminalFrameVisibleText(later)) === normalizeComparableText(text2);
+        });
+        if (duplicateTerminalFollows) {
+          continue;
+        }
+      }
       const historyText = frame.sourceKind === "session_history" ? terminalFrameVisibleText(frame).trim() : "";
       if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
         continue;
@@ -3457,6 +3452,9 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       });
       if (historyEntry) {
         flushPendingText();
+        if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+          continue;
+        }
         entries.push(historyEntry);
       }
       continue;
@@ -3475,12 +3473,18 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
           consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
         });
         if (historyEntry) {
+          if (shouldSuppressRepeatedAssistantEntry(historyEntry, entries)) {
+            continue;
+          }
           entries.push(historyEntry);
         }
         continue;
       }
       const terminalEntry = renderTerminalEntry(agent, frame, entryId, streamedText);
       if (terminalEntry) {
+        if (shouldSuppressRepeatedAssistantEntry(terminalEntry, entries)) {
+          continue;
+        }
         entries.push(terminalEntry);
       }
       continue;
@@ -3656,17 +3660,6 @@ function unwrapConsoleEnvelope(eventName, data) {
     return { data };
   }
   const record = data;
-  if (typeof record.event_id === "string" && typeof record.event_type === "string" && typeof record.identity === "string" && "data" in record) {
-    const envelope = record;
-    return {
-      id: envelope.event_id,
-      event: envelope.event_type || eventName,
-      identity: envelope.identity,
-      interactionId: envelope.interaction_id,
-      timestampMs: envelope.timestamp_ms,
-      data: envelope.data
-    };
-  }
   if (typeof record.type === "string" && "frame" in record) {
     const frame = timelineFrameToConsoleFrame(record.frame);
     const isUpdateEnvelope = eventName === "frame_updated";
@@ -3822,53 +3815,6 @@ async function rpc(baseUrl, method, params) {
       throw error;
     }
     throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
-  }
-  return result.result;
-}
-async function sendMessage(baseUrl, memberId, message, handlingMode = "queue") {
-  return rpc(baseUrl, "mobkit/send_message", {
-    member_id: memberId,
-    message,
-    handling_mode: handlingMode
-  });
-}
-async function sendMessageMultipart(baseUrl, memberId, message, attachments, handlingMode = "queue") {
-  const content = [];
-  if (message.trim()) {
-    content.push({ type: "text", text: message });
-  }
-  const form = new FormData();
-  attachments.forEach((file, index) => {
-    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
-    content.push({
-      type: "image_upload",
-      upload_id: uploadId,
-      media_type: file.type || "application/octet-stream",
-      alt: file.name
-    });
-    form.append(`file:${uploadId}`, file, file.name);
-  });
-  form.append("payload", JSON.stringify({
-    jsonrpc: "2.0",
-    id: `mobkit/send_message:${Date.now()}`,
-    method: "mobkit/send_message",
-    params: {
-      member_id: memberId,
-      content,
-      handling_mode: handlingMode
-    }
-  }));
-  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
-    method: "POST",
-    body: form
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`mobkit/send_message multipart failed ${response.status}: ${text}`);
-  }
-  const result = await response.json();
-  if (result.error) {
-    throw new Error(`mobkit/send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return result.result;
 }
@@ -5966,7 +5912,7 @@ function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDetails, on
           /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: activePeers.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "rd__peers", children: activePeers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "chip", children: peer }, peer)) }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "mono dim", children: "none" }) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rd__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onDetails(active), children: "Show in roster" }),
+          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onDetails(active), children: "Details" }),
           /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onChat(active), children: "Open chat" }),
           active.affordances?.can_respawn ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"), children: "Respawn" }) : null,
           canResetLifecycle ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: "Reset" }) : null,
@@ -6166,9 +6112,50 @@ function sanitizeLogValue(value) {
 function sanitizeLogFrameData(data) {
   return sanitizeLogValue(data) ?? null;
 }
+function textFromContentBlock(value) {
+  if (typeof value === "string") {
+    const text = value.trim();
+    return text ? text : null;
+  }
+  if (!isRecord(value)) return null;
+  for (const key of ["text", "body", "content", "result", "summary"]) {
+    const child = value[key];
+    if (typeof child === "string" && child.trim()) {
+      return child.trim();
+    }
+  }
+  const data = value.data;
+  if (isRecord(data)) {
+    return textFromContentBlock(data);
+  }
+  return null;
+}
+function textFromContent(value) {
+  if (Array.isArray(value)) {
+    const text = value.map(textFromContentBlock).filter((part) => Boolean(part)).join(" ").replace(/\s+/g, " ").trim();
+    return text ? text : null;
+  }
+  return textFromContentBlock(value);
+}
+function preferredLogSummary(frame, data) {
+  if (frame.event === "user_input") {
+    const text = textFromContent(data.content ?? data.input ?? data.prompt);
+    return text ? `input=${text.slice(0, 120)}` : null;
+  }
+  for (const key of ["result", "text", "summary", "body", "message_text"]) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) {
+      return `${key}=${value.trim().slice(0, 120)}`;
+    }
+  }
+  const contentText = textFromContent(data.content);
+  return contentText ? `content=${contentText.slice(0, 120)}` : null;
+}
 function summarizeLogFrame(frame) {
   const sanitized = sanitizeLogFrameData(frame.data);
   const d = isRecord(sanitized) ? sanitized : {};
+  const preferred = preferredLogSummary(frame, d);
+  if (preferred) return preferred;
   const bits = [];
   for (const [k, v] of Object.entries(d).filter(([key]) => key !== "message").slice(0, 4)) {
     if (v === null || v === void 0) continue;
@@ -6794,57 +6781,6 @@ function isMeaningfulReply(value) {
 function lastSegment(value) {
   return value.split("/").pop() || value;
 }
-function parseLegacyCommsSignal(value) {
-  const trimmed = value.trim();
-  if (!/^\[COMMS\s+/i.test(trimmed)) return null;
-  const lines = trimmed.split("\n");
-  const targets = [];
-  const bodies = [];
-  let currentBody = null;
-  for (const line of lines) {
-    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
-    if (header) {
-      if (currentBody) {
-        const body = currentBody.join("\n").trim();
-        if (body) bodies.push(body);
-      }
-      targets.push(lastSegment(header[2].trim()));
-      currentBody = header[3].trim() ? [header[3].trim()] : [];
-      continue;
-    }
-    if (!currentBody) return null;
-    if (/^\[EVENT via /i.test(line.trim())) {
-      const body = currentBody.join("\n").trim();
-      if (body) bodies.push(body);
-      currentBody = null;
-      continue;
-    }
-    currentBody.push(line);
-  }
-  if (currentBody) {
-    const body = currentBody.join("\n").trim();
-    if (body) bodies.push(body);
-  }
-  if (targets.length === 0) return null;
-  return {
-    targets,
-    detail: bodies.join(" ")
-  };
-}
-function parseLegacyPeerNoticeSignal(value) {
-  const notice = value.trim().match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
-  if (!notice) return null;
-  const body = notice[2] || "";
-  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
-  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
-  const target = displayNameMatch?.[1]?.trim() ? lastSegment(displayNameMatch[1].trim()) : peerIdMatch?.[1] ? peerIdMatch[1].slice(0, 8) : "peer";
-  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
-  const detail = textFromValue(paramsMatch?.[1]) || textFromValue(body.match(/\bIntent:\s*([^.\n]+)[.\n]/i)?.[1]);
-  return {
-    targets: [target],
-    detail
-  };
-}
 function sessionHistoryAssistantReply(frame, data) {
   if (frame.sourceKind !== "session_history") {
     return textFromValue(data.result ?? data.text ?? data.content);
@@ -6878,6 +6814,28 @@ function peerTarget(args) {
 }
 function isScaffoldRequest(value) {
   return /^You have been spawned as\b/i.test(value.trim());
+}
+function typedSystemNoticeSignal(data) {
+  const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+  const comms = blocks.map(recordOf).filter((block) => block.type === "comms");
+  if (comms.length === 0) return null;
+  const targets = [];
+  const details = [];
+  let incoming = true;
+  for (const block of comms) {
+    const peer = recordOf(block.peer);
+    const peerLabel = textFromValue(peer.display_name) || textFromValue(peer.id) || "peer";
+    targets.push(lastSegment(peerLabel));
+    if (block.direction === "outgoing") incoming = false;
+    const content = textFromValue(block.content);
+    const detail = content || textFromValue(block.summary) || textFromValue(block.intent) || textFromValue(block.payload);
+    if (detail) details.push(detail);
+  }
+  return {
+    targets,
+    detail: details.join(" "),
+    incoming
+  };
 }
 function blobKey(frame) {
   const data = recordOf(frame.data);
@@ -6916,21 +6874,22 @@ function signalFromFrame(frame) {
       const request = textFromValue(data.content ?? data.text ?? data.prompt);
       if (!request) return null;
       if (isScaffoldRequest(request)) return null;
-      const comms = frame.sourceKind === "session_history" ? parseLegacyCommsSignal(request) || parseLegacyPeerNoticeSignal(request) : null;
-      if (comms) {
-        const from = comms.targets.map(displayName).join(", ");
-        return {
-          ...base,
-          id: `comms:${frame.id || frame.interactionId || frame.timestampMs || request}`,
-          label: `Received from ${from}`,
-          detail: truncate(comms.detail || "Peer comms")
-        };
-      }
       return {
         ...base,
         id: `user:${frame.id || frame.interactionId || frame.timestampMs || request}`,
         label: `You asked ${displayName(base.agent)}`,
         detail: truncate(request)
+      };
+    }
+    case "system_notice": {
+      const comms = typedSystemNoticeSignal(data);
+      if (!comms) return null;
+      const peer = comms.targets.map(displayName).join(", ");
+      return {
+        ...base,
+        id: `comms:${frame.id || frame.interactionId || frame.timestampMs || peer}`,
+        label: `${comms.incoming ? "Received from" : "Sent to"} ${peer}`,
+        detail: truncate(comms.detail || "Peer comms")
       };
     }
     case "interaction_complete": {
@@ -8674,7 +8633,12 @@ var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "member_retired",
   "topology_updated",
   "gating_decision",
-  "route_changed"
+  "route_changed",
+  "tool_call_requested",
+  "tool_call",
+  "tool_result_received",
+  "tool_execution_started",
+  "tool_execution_completed"
 ]);
 var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "user_input",
@@ -8723,125 +8687,6 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_result_received",
   "tool_execution_completed"
 ]);
-function identityRowsFromLiveList(payload) {
-  const record = payload && typeof payload === "object" ? payload : {};
-  const identities = Array.isArray(record.identities) ? record.identities : [];
-  const rows = [];
-  for (const entry of identities) {
-    if (!entry || typeof entry !== "object") continue;
-    const item = entry;
-    const identity = typeof item.identity === "string" ? item.identity.trim() : "";
-    if (!identity) continue;
-    const labels = item.labels && typeof item.labels === "object" ? Object.fromEntries(
-      Object.entries(item.labels).filter(([, value]) => typeof value === "string").map(([key, value]) => [key, String(value).trim()])
-    ) : {};
-    const displayName2 = typeof item.display_name === "string" && item.display_name.trim() ? item.display_name.trim() : typeof labels.display_name === "string" && labels.display_name.trim() ? labels.display_name.trim() : void 0;
-    const health = typeof item.health === "string" ? item.health.toLowerCase() : "";
-    const visibility = typeof item.visibility === "string" ? item.visibility.toLowerCase() : "";
-    const addressable = item.addressable === true || visibility === "addressable";
-    rows.push({
-      identity,
-      state: health === "hidden_by_policy" ? "active" : health || "active",
-      addressability: addressable ? "addressable" : "internal_only",
-      labels,
-      ...displayName2 ? { display_name: displayName2 } : {},
-      ...typeof labels.role === "string" && labels.role.trim() ? { role: labels.role.trim() } : {}
-    });
-  }
-  return rows;
-}
-function compactIdentityReference(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-function referenceMatchesIdentity(reference, identity) {
-  const normalizedReference = reference.trim().toLowerCase();
-  const normalizedIdentity = identity.trim().toLowerCase();
-  if (!normalizedReference || !normalizedIdentity) return false;
-  if (normalizedReference === normalizedIdentity) return true;
-  if (compactIdentityReference(normalizedReference) === compactIdentityReference(normalizedIdentity)) {
-    return true;
-  }
-  const tokens = normalizedReference.split(/[/:#\s]+/).filter(Boolean);
-  if (tokens.includes(normalizedIdentity)) return true;
-  const compactIdentity = compactIdentityReference(normalizedIdentity);
-  for (let start = 0; start < tokens.length; start++) {
-    let compactSlice = "";
-    for (let end = start; end < tokens.length; end++) {
-      compactSlice += compactIdentityReference(tokens[end]);
-      if (compactSlice === compactIdentity) return true;
-      if (compactSlice.length > compactIdentity.length) break;
-    }
-  }
-  return false;
-}
-function sidebarIdentityKeys(experience) {
-  const keys = /* @__PURE__ */ new Set();
-  const agents = Array.isArray(experience.agent_sidebar?.live_snapshot?.agents) ? experience.agent_sidebar.live_snapshot.agents : [];
-  for (const agent of agents) {
-    for (const value of [agent.identity, agent.member_id, agent.agent_id]) {
-      if (typeof value === "string" && value.trim()) keys.add(value.trim().toLowerCase());
-    }
-  }
-  return keys;
-}
-async function enrichIdentityRowsWithPeerHosts(baseUrl, experience, rows) {
-  const sidebarKeys = sidebarIdentityKeys(experience);
-  const candidateIdentities = /* @__PURE__ */ new Set([
-    ...rows.map((row) => row.identity),
-    ...Array.isArray(experience.agent_sidebar?.live_snapshot?.agents) ? experience.agent_sidebar.live_snapshot.agents.flatMap(
-      (agent) => [agent.identity, agent.member_id, agent.agent_id].filter((value) => typeof value === "string" && value.trim().length > 0)
-    ) : []
-  ]);
-  const enriched = await Promise.all(rows.map(async (row) => {
-    if (row.labels.delegate_host_identity || sidebarKeys.has(row.identity.toLowerCase())) {
-      return row;
-    }
-    try {
-      const inspected = await callConsoleRpc(
-        baseUrl,
-        "mobkit/console/inspect_identity",
-        { identity: row.identity }
-      );
-      const record = inspected && typeof inspected === "object" ? inspected : {};
-      const peers = Array.isArray(record.peers) ? record.peers : [];
-      const host = [...candidateIdentities].find(
-        (candidate) => candidate !== row.identity && peers.some((peer) => typeof peer === "string" && referenceMatchesIdentity(peer, candidate))
-      );
-      if (!host) return row;
-      return {
-        ...row,
-        labels: {
-          ...row.labels,
-          delegate_host_identity: host
-        }
-      };
-    } catch {
-      return row;
-    }
-  }));
-  return enriched;
-}
-function mergeExperienceIdentityRows(experience, extraRows) {
-  if (extraRows.length === 0) return experience;
-  const existingRows = Array.isArray(experience.identity_status?.rows) ? experience.identity_status.rows : [];
-  const seen = new Set(
-    existingRows.map((row) => row.identity?.trim().toLowerCase()).filter((value) => Boolean(value))
-  );
-  const mergedRows = [...existingRows];
-  for (const row of extraRows) {
-    const key = row.identity.trim().toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    mergedRows.push(row);
-  }
-  return {
-    ...experience,
-    identity_status: {
-      ...experience.identity_status || {},
-      rows: mergedRows
-    }
-  };
-}
 function ConsoleApp({ baseUrl }) {
   const [experience, setExperience] = import_react24.default.useState(null);
   const [agents, setAgents] = import_react24.default.useState([]);
@@ -9020,10 +8865,57 @@ function ConsoleApp({ baseUrl }) {
     }
     return true;
   }
+  function busyTransitionForFrame(frame) {
+    if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
+      return true;
+    }
+    if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed" || isEndTurnFrame(frame)) {
+      return false;
+    }
+    return null;
+  }
+  function busyTransitionSortRank(frame) {
+    const transition = busyTransitionForFrame(frame);
+    return transition === false ? 1 : 0;
+  }
+  function applyBusyState(identity, nextBusy) {
+    const wasBusy = identityBusyRef.current[identity] === true;
+    identityBusyRef.current[identity] = nextBusy;
+    if (wasBusy && !nextBusy) {
+      clearSendingPanelsForIdentity(identity);
+      maybeDrainHead(identity);
+    }
+  }
+  function updateBusyStateForFrame(identity, frame) {
+    const transition = busyTransitionForFrame(frame);
+    if (transition !== null) {
+      applyBusyState(identity, transition);
+    }
+  }
+  function recomputeBusyStateFromLog(identity) {
+    const log = getOrCreateLog(identity);
+    const lifecycleFrames = log.events.filter((frame) => busyTransitionForFrame(frame) !== null).sort((a, b) => {
+      const timeDelta = (a.timestampMs || 0) - (b.timestampMs || 0);
+      if (timeDelta !== 0) return timeDelta;
+      const rankDelta = busyTransitionSortRank(a) - busyTransitionSortRank(b);
+      if (rankDelta !== 0) return rankDelta;
+      return (a.cursor || a.id || "").localeCompare(b.cursor || b.id || "");
+    });
+    let nextBusy = false;
+    for (const frame of lifecycleFrames) {
+      const transition = busyTransitionForFrame(frame);
+      if (transition !== null) nextBusy = transition;
+    }
+    applyBusyState(identity, nextBusy);
+  }
   function reconcileServerLog(identity, frames, available) {
     const log = getOrCreateLog(identity);
     log.hasServerLog = available;
-    for (const frame of frames) appendFrame(identity, frame);
+    for (const frame of frames) {
+      if (!appendFrame(identity, frame)) continue;
+      updatePhaseForIdentity(identity, frame);
+    }
+    recomputeBusyStateFromLog(identity);
   }
   async function queryIdentityTimeline(identity) {
     const frames = [];
@@ -9034,7 +8926,7 @@ function ConsoleApp({ baseUrl }) {
       available = page.available;
       frames.push(...page.frames);
       const next = page.nextCursor?.trim();
-      if (!next || next === after || page.frames.length === 0) break;
+      if (!next || next === after) break;
       after = next;
     }
     return { frames, available };
@@ -9245,24 +9137,16 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   const loadExperience = import_react24.default.useCallback(async () => {
-    const [experienceJson, modulesJson, identitiesJson] = await Promise.all([
+    const [experienceJson, modulesJson] = await Promise.all([
       fetchJson(baseUrl, "/console/experience"),
-      fetchJson(baseUrl, "/console/modules"),
-      fetchJson(baseUrl, "/console/identities").catch(() => null)
+      fetchJson(baseUrl, "/console/modules")
     ]);
     const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
-    const identityRows = await enrichIdentityRowsWithPeerHosts(
-      baseUrl,
-      experienceJson,
-      identityRowsFromLiveList(identitiesJson)
-    );
-    const mergedExperience = mergeExperienceIdentityRows(
-      experienceJson,
-      identityRows
-    );
-    setExperience(mergedExperience);
-    setAgents(normalizeAgents(mergedExperience, loadedModules));
-    setActiveActivityPresetId((c) => c || mergedExperience.activity_feed?.active_preset_id || "all");
+    const nextAgents = normalizeAgents(experienceJson, loadedModules);
+    setExperience(experienceJson);
+    setAgents(nextAgents);
+    setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
+    return nextAgents;
   }, [baseUrl]);
   import_react24.default.useEffect(() => {
     let mounted = true;
@@ -9281,7 +9165,7 @@ function ConsoleApp({ baseUrl }) {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
-    }, 2e3);
+    }, 1e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
   import_react24.default.useEffect(() => {
@@ -9291,6 +9175,18 @@ function ConsoleApp({ baseUrl }) {
     initialTargetOpened.current = true;
     openAgentChat(first);
   }, [agents, dock]);
+  import_react24.default.useEffect(() => {
+    const target = dock.focusedTarget;
+    if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
+    const identity = target.identity || target.memberId;
+    if (agents.some((agent) => agent.identity === identity || agent.member_id === identity)) return;
+    const fallback = agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
+    if (fallback) {
+      openAgentChat(fallback, "replace_focused");
+    } else {
+      dock.openTarget(buildControlTarget("roster"), "replace_focused");
+    }
+  }, [agents, dock.focusedTarget]);
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
   const visibleControls = import_react24.default.useMemo(
     () => hasMobControlSurface ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"] : ["topology", "timeline", "roster", "logs", "health"],
@@ -9333,7 +9229,7 @@ function ConsoleApp({ baseUrl }) {
       });
       await refreshPanelData().catch(() => {
       });
-    }, 500);
+    }, 150);
   }, [loadExperience, refreshPanelData]);
   const scheduleHistoryRefresh = import_react24.default.useCallback((identity) => {
     clearTimeout(refreshTimersRef.current[identity]);
@@ -9420,20 +9316,13 @@ function ConsoleApp({ baseUrl }) {
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
         appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
-        const wasBusy = identityBusyRef.current[identity] === true;
-        if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
-          identityBusyRef.current[identity] = true;
-        } else if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed" || isEndTurnFrame(frame)) {
-          identityBusyRef.current[identity] = false;
-          clearSendingPanelsForIdentity(identity);
-          if (wasBusy) maybeDrainHead(identity);
-        }
+        updateBusyStateForFrame(identity, frame);
       }
       forceRender();
       if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }
-      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
+      if (REFRESH_TRIGGER_EVENTS.has(frame.event) || frame.event !== "keep-alive") {
         scheduleExperienceRefreshRef.current();
       }
     });
@@ -9512,19 +9401,6 @@ function ConsoleApp({ baseUrl }) {
             delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
-      } else if (attachments.length > 0) {
-        const result = await sendMessageMultipart(baseUrl, target.memberId, text, attachments, handlingMode);
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id || "";
-          const matched = result.interaction_id ? log.events.some(
-            (f) => f.event === "interaction_started" && f.interactionId === result.interaction_id
-          ) : false;
-          if (matched) {
-            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
       } else if (id) {
         const result = await sendConsole(
           baseUrl,
@@ -9546,7 +9422,7 @@ function ConsoleApp({ baseUrl }) {
           }
         }
       } else {
-        await sendMessage(baseUrl, target.memberId, text, handlingMode);
+        throw new Error("console send requires an identity-addressed target");
       }
       return true;
     } catch (submitError) {
@@ -9697,7 +9573,15 @@ function ConsoleApp({ baseUrl }) {
   }
   async function onLifecycleAction(identity, method) {
     await callConsoleRpc(baseUrl, method, { identity });
-    await loadExperience();
+    const nextAgents = await loadExperience();
+    if (method !== "mobkit/retire") return;
+    if (nextAgents.some((agent) => agent.identity === identity || agent.member_id === identity)) return;
+    const fallback = nextAgents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || nextAgents[0];
+    if (fallback) {
+      openAgentChat(fallback, "replace_focused");
+    } else {
+      dock.openTarget(buildControlTarget("roster"), "replace_focused");
+    }
   }
   async function onGatingDecision(pendingId, decision) {
     await callConsoleRpc(baseUrl, "mobkit/gating/decide", {
@@ -9800,21 +9684,6 @@ function ConsoleApp({ baseUrl }) {
     const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey) ? phaseRef.current[panelKey] : agent?.response_phase ?? null;
     const canRespawn = agent?.affordances?.can_respawn === true;
     const canRetire = agent?.affordances?.can_retire === true;
-    const quickPrompts = buildQuickPromptSuggestions(agent).map((s) => ({
-      id: s.id,
-      kind: "pill",
-      label: s.label,
-      iconName: s.iconName || "i-bolt"
-    }));
-    const footerLeftItems = [
-      { id: "target", kind: "sub-pill", label: `To: ${target.title}`, iconName: "i-team" },
-      { id: "identity", kind: "sub-pill", label: target.identity || target.memberId, iconName: "i-terminal" }
-    ];
-    const footerRightItems = [
-      ...agent?.role ? [{ id: "role", kind: "sub-pill", label: agent.role }] : [],
-      ...phase ? [{ id: "phase", kind: "sub-pill", label: phase, iconName: "i-bolt" }] : [],
-      { id: "state", kind: "sub-pill", label: agent?.state || "unknown", iconName: "i-dot" }
-    ];
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
@@ -9904,9 +9773,19 @@ function ConsoleApp({ baseUrl }) {
       r2.addressability
     ] }, r2.identity)) }) });
   }
+  async function refreshInspectIdentity(identity) {
+    const r2 = await callConsoleRpc(baseUrl, "mobkit/console/inspect_identity", { identity }).catch(() => callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity }));
+    setInspectByIdentity((current) => ({
+      ...current,
+      [identity]: normalizeConsoleInspectResult(r2)
+    }));
+  }
   function handleShowRosterDetails(agent) {
     setSelectedRosterMemberId(agent.member_id);
-    dock.openTarget(buildControlTarget("roster"), "replace_focused");
+    const target = buildInspectTarget(agent);
+    dock.openTarget(target, "replace_focused");
+    void refreshInspectIdentity(target.identity).catch(() => {
+    });
   }
   const mobName = experience?.agent_sidebar?.title || "mob";
   const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
@@ -9923,19 +9802,7 @@ function ConsoleApp({ baseUrl }) {
     if (!target) return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "console-panel", children: "No panel target" });
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
-      const agent = agents.find((candidate) => candidate.member_id === target.memberId || candidate.identity === target.identity);
-      return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
-        RosterPanel,
-        {
-          agents,
-          selectedMemberId: agent?.member_id || selectedRosterMemberId,
-          onSelect: (a) => setSelectedRosterMemberId(a.member_id),
-          onChat: (a) => openAgentChat(a),
-          onDetails: (a) => setSelectedRosterMemberId(a.member_id),
-          onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
-          canResetLifecycle: hasMobControlSurface
-        }
-      );
+      return renderInspectPanel(target);
     }
     if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
       return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "console-panel", children: "This view requires a mob runtime control surface." });
@@ -9966,7 +9833,7 @@ function ConsoleApp({ baseUrl }) {
         selectedMemberId: selectedRosterMemberId,
         onSelect: (a) => setSelectedRosterMemberId(a.member_id),
         onChat: (a) => openAgentChat(a),
-        onDetails: (a) => setSelectedRosterMemberId(a.member_id),
+        onDetails: (a) => handleShowRosterDetails(a),
         onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
         canResetLifecycle: hasMobControlSurface
       }

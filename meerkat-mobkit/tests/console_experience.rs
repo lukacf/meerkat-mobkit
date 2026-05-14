@@ -211,11 +211,11 @@ fn phase8_console_001_capability_driven_rendering_contract() {
     assert_eq!(allowed.body["chat_inspector"]["schema_version"], json!("1"));
     assert_eq!(
         allowed.body["chat_inspector"]["send_method"],
-        json!("mobkit/interact")
+        json!("mobkit/console/send")
     );
     assert_eq!(
         allowed.body["chat_inspector"]["observe_route"],
-        json!("/console/identity/stream")
+        json!("/console/timeline/stream")
     );
     assert_eq!(
         allowed.body["topology"]["panel_id"],
@@ -392,7 +392,7 @@ fn phase8_req_003_choke_104_unified_activity_feed_contract_over_events() {
 
     assert_eq!(
         experience.body["activity_feed"]["source_route"],
-        json!("/console/events/stream")
+        json!("/console/timeline/stream")
     );
     assert_eq!(
         experience.body["activity_feed"]["request_contract"]["last_event_id_header"],

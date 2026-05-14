@@ -6,8 +6,8 @@
 )]
 //! Regression: every SSE route must honor `RuntimeDecisionState`'s
 //! `require_app_auth` flag. Pre-fix, only `/mobkit/mob_events/stream`
-//! gated; tier-2 (`/agents/{id}/events`), tier-3 (`/mob/events`), and
-//! `/interactions/stream` shipped unauthenticated.
+//! gated; tier-2 (`/agents/{id}/events`) and tier-3 (`/mob/events`)
+//! shipped unauthenticated.
 
 use std::pin::Pin;
 use std::sync::Arc;

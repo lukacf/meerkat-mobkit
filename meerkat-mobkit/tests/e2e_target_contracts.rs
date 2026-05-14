@@ -1689,11 +1689,11 @@ fn e2e_801_console_experience_target_defined_red() {
                     "capabilities":{"can_render":true,"can_subscribe_activity":true}
                 }
             ]),
-            json!("/console/events/stream"),
+            json!("/console/timeline/stream"),
             json!("optional Last-Event-ID checkpoint from prior event_id"),
             json!("keep-alive")
         ),
-        "E2E-801: console route emits concrete capability-driven base/module panel schema and the unified all-events feed contract"
+        "E2E-801: console route emits concrete capability-driven base/module panel schema and the unified timeline feed contract"
     );
 }
 

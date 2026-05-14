@@ -411,27 +411,6 @@ impl UnifiedRuntime {
         self.console_log_store.clone()
     }
 
-    /// Query persisted operational events from the event log store.
-    ///
-    /// Returns `None` if no event log is configured.
-    pub async fn query_events(
-        &self,
-        query: EventQuery,
-    ) -> Option<Result<Vec<PersistedEvent>, EventLogError>> {
-        if let Some(ref log) = self.event_log {
-            Some(log.query(query).await)
-        } else {
-            None
-        }
-    }
-
-    pub async fn query_console_events(
-        &self,
-        query: &EventQuery,
-    ) -> Vec<crate::console_contracts::ConsoleIdentityEventEnvelope> {
-        self.console_events.query(query).await
-    }
-
     /// Query structural mob events from the meerkat ledger.
     ///
     /// Returns events filtered by [`EventQuery`] in cursor-ascending
@@ -469,31 +448,6 @@ impl UnifiedRuntime {
         }
     }
 
-    pub(crate) async fn reserve_console_interaction(
-        &self,
-        identity: &str,
-        runtime_member_id: Option<&str>,
-        interaction_id: &str,
-        origin: &str,
-        content: &str,
-    ) -> Result<(), &'static str> {
-        self.console_events
-            .reserve_interaction(identity, runtime_member_id, interaction_id, origin, content)
-            .await
-    }
-
-    pub(crate) async fn accept_console_interaction(&self, identity: &str, interaction_id: &str) {
-        self.console_events
-            .accept_interaction(identity, interaction_id)
-            .await;
-    }
-
-    pub(crate) async fn discard_console_interaction(&self, identity: &str, interaction_id: &str) {
-        self.console_events
-            .discard_interaction(identity, interaction_id)
-            .await;
-    }
-
     pub(crate) async fn record_console_lifecycle(
         &self,
         identity: &str,
@@ -502,18 +456,6 @@ impl UnifiedRuntime {
     ) {
         self.console_events
             .record_lifecycle(identity, event_type, data)
-            .await;
-    }
-
-    pub(crate) async fn fail_console_interaction(
-        &self,
-        identity: &str,
-        interaction_id: &str,
-        reason: &str,
-        data: serde_json::Value,
-    ) {
-        self.console_events
-            .fail_interaction(identity, interaction_id, reason, data)
             .await;
     }
 

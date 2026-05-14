@@ -35,6 +35,8 @@ pub trait ConsoleLogStore: Send + Sync {
 
     async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>>;
 
+    async fn clear_frames(&self) -> ConsoleLogResult<()>;
+
     async fn record_source_watermark(
         &self,
         runtime_key: &str,
@@ -212,6 +214,18 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             .next_back()
             .copied()
             .map(ConsoleCursor::from_seq))
+    }
+
+    async fn clear_frames(&self) -> ConsoleLogResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| boxed_error("console log lock poisoned"))?;
+        state.frames.clear();
+        state.dedupe_to_seq.clear();
+        state.id_to_seq.clear();
+        state.next_seq = 1;
+        Ok(())
     }
 
     async fn record_source_watermark(
@@ -423,6 +437,21 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             .optional()
             .map_err(into_boxed)?;
         Ok(seq.map(|value| ConsoleCursor::from_seq(value as u64)))
+    }
+
+    async fn clear_frames(&self) -> ConsoleLogResult<()> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| boxed_error("console log lock poisoned"))?;
+        conn.execute("DELETE FROM console_frames", [])
+            .map_err(into_boxed)?;
+        conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name = 'console_frames'",
+            [],
+        )
+        .ok();
+        Ok(())
     }
 
     async fn record_source_watermark(

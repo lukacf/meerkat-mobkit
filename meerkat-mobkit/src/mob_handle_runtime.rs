@@ -16,7 +16,7 @@ use meerkat_core::service::{
 use meerkat_core::{AgentSessionStore, AssistantBlock, Message, Provider};
 use meerkat_mob::{
     MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage, Profile,
-    ProfileName,
+    ProfileName, SpawnMemberSpec,
 };
 use meerkat_store::StoreAdapter;
 use serde_json::Value;
@@ -1785,6 +1785,7 @@ pub struct MobRuntime {
     session_service: Option<Arc<dyn MobSessionService>>,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
+    baseline_member_specs: Arc<tokio::sync::RwLock<Vec<SpawnMemberSpec>>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
     /// Dropped when the runtime is dropped, cleaning up the temp dir.
     _ephemeral_dir: Option<Arc<tempfile::TempDir>>,
@@ -1832,6 +1833,7 @@ impl MobRuntime {
             session_service: Some(session_service),
             agent_mob_mcp_state,
             binary_blob_store,
+            baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             _ephemeral_dir: ephemeral_dir,
         })
     }
@@ -1842,6 +1844,7 @@ impl MobRuntime {
             session_service: None,
             agent_mob_mcp_state: None,
             binary_blob_store: None,
+            baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             _ephemeral_dir: None,
         }
     }
@@ -1852,6 +1855,14 @@ impl MobRuntime {
 
     pub fn agent_mob_mcp_state(&self) -> Option<Arc<meerkat_mob_mcp::MobMcpState>> {
         self.agent_mob_mcp_state.clone()
+    }
+
+    pub async fn set_baseline_member_specs(&self, specs: Vec<SpawnMemberSpec>) {
+        *self.baseline_member_specs.write().await = specs;
+    }
+
+    pub async fn baseline_member_specs(&self) -> Vec<SpawnMemberSpec> {
+        self.baseline_member_specs.read().await.clone()
     }
 
     pub async fn read_session_history(
@@ -3111,6 +3122,7 @@ image_generation = true
                 skill_references: None,
                 flow_tool_overlay: None,
                 pre_turn_context_appends: Vec::new(),
+                typed_turn_appends: Vec::new(),
                 turn_metadata: None,
             },
         };

@@ -54,8 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("GET  /console");
     println!("GET  /console/experience");
     println!("POST /console/rpc");
-    println!("POST /console/identity/stream");
-    println!("GET  /console/events/stream");
+    println!("GET  /console/timeline/stream");
     bundle.runtime.serve(listener, bundle.decisions).await?;
     Ok(())
 }

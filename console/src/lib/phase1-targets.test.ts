@@ -15,11 +15,11 @@ import {
 import { normalizeAgents } from "./agents";
 import type { ConsoleAgent, ConsoleExperience } from "../types";
 
-test("CHOKE-002 target: one identity stream fan-outs to multiple panel consumers without divergent frame identity", () => {
+test("CHOKE-002 target: one timeline stream fans out to multiple panel consumers without divergent frame identity", () => {
   const rawSse = [
     "id: evt-1",
-    "event: message",
-    'data: {"event_id":"evt-1","identity":"identity:luka","event_type":"interaction_started","timestamp_ms":1,"data":{}}',
+    "event: console_frame",
+    'data: {"type":"console_frame","frame":{"id":"evt-1","cursor":"console:1","dedupe_key":"evt-1","runtime_key":"default","identity":"identity:luka","kind":"user_input","status":"accepted","timestamp_ms":1,"payload":{}}}',
     "",
   ].join("\n");
 
@@ -169,7 +169,7 @@ test("CHOKE-011 / E2E-011 target: watch and degraded state converge into one sha
   assert.equal(item?.degradedReason, "lease_expired");
 });
 
-test("CHOKE-016 target: refreshed experience reconciles dock targets instead of keeping stale member-only addressing", () => {
+test("CHOKE-016 target: dock targets always resolve to identity addressing", () => {
   const beforeRefresh = buildDockTarget({
     member_id: "member-luka",
     agent_id: "member-luka",
@@ -184,8 +184,10 @@ test("CHOKE-016 target: refreshed experience reconciles dock targets instead of 
     kind: "identity",
   });
 
-  assert.equal(beforeRefresh.addressingMode, "member");
+  assert.equal(beforeRefresh.addressingMode, "identity");
+  assert.equal(beforeRefresh.identity, "member-luka");
   assert.equal(afterRefresh.addressingMode, "identity");
+  assert.equal(afterRefresh.identity, "identity:luka");
 });
 
 test("E2E-001 target: legacy fallback still yields a usable sidebar", () => {
@@ -250,7 +252,7 @@ test("E2E-016 target: overflow recovery keeps the host on replay-based recovery 
   assert.equal(frames.blocks[1]?.kind, "list");
 });
 
-test("E2E-017 target: mixed migration sessions reconcile identity and member addressing per target", () => {
+test("E2E-017 target: mixed migration sessions still produce identity-addressed targets", () => {
   const identityTarget = buildDockTarget({
     identity: "identity:luka",
     member_id: "member-luka",
@@ -266,7 +268,8 @@ test("E2E-017 target: mixed migration sessions reconcile identity and member add
   });
 
   assert.equal(identityTarget.addressingMode, "identity");
-  assert.equal(legacyTarget.addressingMode, "member");
+  assert.equal(legacyTarget.addressingMode, "identity");
+  assert.equal(legacyTarget.identity, "legacy-router");
 });
 
 test("terminal identity events surface transcript payloads instead of disappearing", () => {
@@ -302,8 +305,9 @@ test("Panel-state target: same-target split panels and retargeted panels keep di
   const legacyTarget = {
     id: "legacy-router",
     kind: "agent-chat" as const,
-    addressingMode: "member" as const,
+    addressingMode: "identity" as const,
     memberId: "legacy-router",
+    identity: "legacy-router",
     title: "Legacy Router",
   };
 

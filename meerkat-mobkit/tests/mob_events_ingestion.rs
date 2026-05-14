@@ -18,9 +18,8 @@ use meerkat_mob::MobDefinition;
 use meerkat_mob::event::{MemberSpawnedEvent, MobEvent, MobEventKind};
 use meerkat_mob::ids::{
     AgentIdentity, AgentRuntimeId, FenceToken, FlowId, Generation, MobId, ProfileName, RunId,
-    StepId, TaskId,
+    StepId,
 };
-use meerkat_mob::tasks::TaskStatus;
 use meerkat_mobkit::unified_runtime::mob_events::MobEventsStore;
 
 fn project(kind: MobEventKind) -> meerkat_mobkit::MobStructuralEventEnvelope {
@@ -59,7 +58,6 @@ fn all_mob_event_kinds_project_with_kind_label() {
     let run_id = run();
     let step_id = StepId::from("step-a");
     let flow_id = FlowId::from("flow-a");
-    let task_id = TaskId::from("task-1");
     let peer_descriptor = TrustedPeerDescriptor::test_only_unsigned_typed(
         "remote/worker/agent-x",
         PeerId::new(),
@@ -67,7 +65,7 @@ fn all_mob_event_kinds_project_with_kind_label() {
     )
     .expect("descriptor");
 
-    // 25 cases: assert each projects with the expected snake_case kind
+    // Assert each public mob event kind projects with the expected snake_case kind
     // label and that structural fields survive when present.
 
     let m = project(MobEventKind::MobCreated {
@@ -148,22 +146,6 @@ fn all_mob_event_kinds_project_with_kind_label() {
         peer_name: PeerName::new("remote/worker/agent-x").unwrap(),
     });
     assert_eq!(m.kind, "external_peer_unwired");
-
-    let m = project(MobEventKind::TaskCreated {
-        task_id: task_id.clone(),
-        subject: "subject".to_string(),
-        description: "desc".to_string(),
-        blocked_by: vec![],
-    });
-    assert_eq!(m.kind, "task_created");
-
-    let m = project(MobEventKind::TaskUpdated {
-        task_id: task_id.clone(),
-        status: TaskStatus::InProgress,
-        owner: Some(identity.clone()),
-    });
-    assert_eq!(m.kind, "task_updated");
-    assert_eq!(m.agent_identity.as_deref(), Some("worker-1"));
 
     let m = project(MobEventKind::FlowStarted {
         run_id: run_id.clone(),

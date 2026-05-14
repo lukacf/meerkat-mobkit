@@ -13,7 +13,6 @@ pub mod decisions;
 pub mod governance;
 pub mod http_auth;
 pub mod http_console;
-pub mod http_interactions;
 pub mod http_sse;
 pub mod mob_handle_runtime;
 pub mod mocks;
@@ -51,8 +50,7 @@ pub use console_aggregator::{
     SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
 };
 pub use console_contracts::{
-    ConsoleIdentityEventEnvelope, ConsoleInteractionAccepted, ConsoleInteractionRejectedError,
-    ConsoleInteractionRequest, IdentityStreamRequest, ReplayUnavailableError,
+    ConsoleIdentityEventEnvelope, ConsoleInteractionRejectedError, ReplayUnavailableError,
 };
 pub use decisions::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsolePolicy,
@@ -73,7 +71,6 @@ pub use http_console::{
     console_frontend_router, console_json_handler, console_json_router,
     console_json_router_with_aggregator, console_json_router_with_runtime,
 };
-pub use http_interactions::interaction_stream_router;
 pub use http_sse::{
     AgentEventSubscribeFn, MobEventSubscribeFn, agent_event_sse, agent_events_sse_router,
     mob_events_sse_router, mob_structural_events_sse_router,

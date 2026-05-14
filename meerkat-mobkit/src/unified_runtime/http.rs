@@ -7,7 +7,6 @@ use axum::routing::get;
 use meerkat_mob::ids::MeerkatId;
 
 use crate::http_console::{console_frontend_router, console_json_router_with_runtime_and_events};
-use crate::http_interactions::interaction_stream_router;
 use crate::http_sse::{
     agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
 };
@@ -27,7 +26,6 @@ impl UnifiedRuntime {
             Some(self.console_events()),
             Some(self.console_log_store()),
             Some(self.mob_events_store()),
-            true,
             Some(Arc::clone(self.metadata_table())),
         )
     }
@@ -42,13 +40,11 @@ impl UnifiedRuntime {
         // Every SSE route shares the same `RuntimeDecisionState` the
         // console RPC route uses: when `require_app_auth` is on, requests
         // must carry a valid bearer / auth_token. Pre-fix, only the
-        // structural-events route gated; tier-2 (`/agents/{id}/events`),
-        // tier-3 (`/mob/events`), and `/interactions/stream` shipped
-        // unauthenticated.
+        // structural-events route gated; tier-2 (`/agents/{id}/events`)
+        // and tier-3 (`/mob/events`) shipped unauthenticated.
         let sse_decisions_a = decisions.clone();
         let sse_decisions_b = decisions.clone();
         let sse_decisions_c = decisions.clone();
-        let sse_decisions_d = decisions.clone();
         Router::new()
             .route("/healthz", get(|| async { "ok" }))
             .merge(self.build_console_frontend_router())
@@ -77,10 +73,6 @@ impl UnifiedRuntime {
                 self.mob_runtime.handle(),
                 self.mob_events_store(),
                 Some(sse_decisions_c),
-            ))
-            .merge(interaction_stream_router(
-                self.mob_runtime.clone(),
-                Some(sse_decisions_d),
             ))
     }
 }

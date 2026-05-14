@@ -479,7 +479,7 @@ function ToolCallGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) 
 
 function PeerToolGroup({ blocks }: { blocks: ConversationRichToolCallBlock[] }) {
   const [expanded, setExpanded] = useState(false);
-  const targets = blocks.map((b) => b.peerTarget || "peer");
+  const targets = Array.from(new Set(blocks.map((b) => b.peerTarget || "peer")));
   const allSuccess = blocks.every((b) => b.status === "success");
   const anyError = blocks.some((b) => b.status === "error");
   const statusIcon = anyError ? "✗" : allSuccess ? "✓" : "⋯";

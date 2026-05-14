@@ -74,3 +74,21 @@ test("logs hide internal timeline stream snapshot handshakes", () => {
   assert.equal(isLogFrameVisible(snapshotComplete), false);
   assert.equal(isLogFrameVisible(snapshotStarted), false);
 });
+
+test("user input log summaries render prompt text instead of raw content JSON", () => {
+  const frame: ConsoleFrame = {
+    id: "frame-user-input",
+    event: "user_input",
+    identity: "incident-commander",
+    data: {
+      content: [
+        { text: "You have been spawned as incident-commander." },
+      ],
+      source_event_type: "session_history",
+    },
+  };
+
+  const summary = summarizeLogFrame(frame);
+  assert.equal(summary, "input=You have been spawned as incident-commander.");
+  assert.equal(summary.includes("[{\"text\""), false);
+});

@@ -98,66 +98,6 @@ function lastSegment(value: string): string {
   return value.split("/").pop() || value;
 }
 
-function parseLegacyCommsSignal(value: string): { targets: string[]; detail: string } | null {
-  const trimmed = value.trim();
-  if (!/^\[COMMS\s+/i.test(trimmed)) return null;
-
-  const lines = trimmed.split("\n");
-  const targets: string[] = [];
-  const bodies: string[] = [];
-  let currentBody: string[] | null = null;
-
-  for (const line of lines) {
-    const header = line.match(/^\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]\s*(.*)$/i);
-    if (header) {
-      if (currentBody) {
-        const body = currentBody.join("\n").trim();
-        if (body) bodies.push(body);
-      }
-      targets.push(lastSegment(header[2].trim()));
-      currentBody = header[3].trim() ? [header[3].trim()] : [];
-      continue;
-    }
-    if (!currentBody) return null;
-    if (/^\[EVENT via /i.test(line.trim())) {
-      const body = currentBody.join("\n").trim();
-      if (body) bodies.push(body);
-      currentBody = null;
-      continue;
-    }
-    currentBody.push(line);
-  }
-
-  if (currentBody) {
-    const body = currentBody.join("\n").trim();
-    if (body) bodies.push(body);
-  }
-  if (targets.length === 0) return null;
-  return {
-    targets,
-    detail: bodies.join(" "),
-  };
-}
-
-function parseLegacyPeerNoticeSignal(value: string): { targets: string[]; detail: string } | null {
-  const notice = value.trim().match(/^\[SYSTEM NOTICE\]\[PEER_(MESSAGE|REQUEST|RESPONSE)\]\s*([\s\S]*)$/i);
-  if (!notice) return null;
-  const body = notice[2] || "";
-  const displayNameMatch = body.match(/display_name:\s*([^)]+)\)/i);
-  const peerIdMatch = body.match(/\bpeer_id\s+([0-9a-f-]{8,})\b/i);
-  const target = displayNameMatch?.[1]?.trim()
-    ? lastSegment(displayNameMatch[1].trim())
-    : peerIdMatch?.[1]
-      ? peerIdMatch[1].slice(0, 8)
-      : "peer";
-  const paramsMatch = body.match(/\bParams:\s*([\s\S]*?)(?:\.\s+This is not\b|$)/i);
-  const detail = textFromValue(paramsMatch?.[1]) || textFromValue(body.match(/\bIntent:\s*([^.\n]+)[.\n]/i)?.[1]);
-  return {
-    targets: [target],
-    detail,
-  };
-}
-
 function sessionHistoryAssistantReply(frame: ConsoleFrame, data: Record<string, unknown>): string {
   if (frame.sourceKind !== "session_history") {
     return textFromValue(data.result ?? data.text ?? data.content);
@@ -204,6 +144,33 @@ function peerTarget(args: Record<string, unknown>): string {
 
 function isScaffoldRequest(value: string): boolean {
   return /^You have been spawned as\b/i.test(value.trim());
+}
+
+function typedSystemNoticeSignal(data: Record<string, unknown>): { targets: string[]; detail: string; incoming: boolean } | null {
+  const blocks = Array.isArray(data.blocks) ? data.blocks : [];
+  const comms = blocks
+    .map(recordOf)
+    .filter((block) => block.type === "comms");
+  if (comms.length === 0) return null;
+
+  const targets: string[] = [];
+  const details: string[] = [];
+  let incoming = true;
+  for (const block of comms) {
+    const peer = recordOf(block.peer);
+    const peerLabel = textFromValue(peer.display_name) || textFromValue(peer.id) || "peer";
+    targets.push(lastSegment(peerLabel));
+    if (block.direction === "outgoing") incoming = false;
+    const content = textFromValue(block.content);
+    const detail = content || textFromValue(block.summary) || textFromValue(block.intent) || textFromValue(block.payload);
+    if (detail) details.push(detail);
+  }
+
+  return {
+    targets,
+    detail: details.join(" "),
+    incoming,
+  };
 }
 
 function blobKey(frame: ConsoleFrame): string {
@@ -255,23 +222,22 @@ function signalFromFrame(frame: ConsoleFrame): Signal | null {
       const request = textFromValue(data.content ?? data.text ?? data.prompt);
       if (!request) return null;
       if (isScaffoldRequest(request)) return null;
-      const comms = frame.sourceKind === "session_history"
-        ? parseLegacyCommsSignal(request) || parseLegacyPeerNoticeSignal(request)
-        : null;
-      if (comms) {
-        const from = comms.targets.map(displayName).join(", ");
-        return {
-          ...base,
-          id: `comms:${frame.id || frame.interactionId || frame.timestampMs || request}`,
-          label: `Received from ${from}`,
-          detail: truncate(comms.detail || "Peer comms"),
-        };
-      }
       return {
         ...base,
         id: `user:${frame.id || frame.interactionId || frame.timestampMs || request}`,
         label: `You asked ${displayName(base.agent)}`,
         detail: truncate(request),
+      };
+    }
+    case "system_notice": {
+      const comms = typedSystemNoticeSignal(data);
+      if (!comms) return null;
+      const peer = comms.targets.map(displayName).join(", ");
+      return {
+        ...base,
+        id: `comms:${frame.id || frame.interactionId || frame.timestampMs || peer}`,
+        label: `${comms.incoming ? "Received from" : "Sent to"} ${peer}`,
+        detail: truncate(comms.detail || "Peer comms"),
       };
     }
     case "interaction_complete": {

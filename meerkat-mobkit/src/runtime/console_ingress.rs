@@ -564,7 +564,7 @@ fn build_console_experience_contract(
                 "update_semantics": "append",
             },
             "transport": "sse",
-            "source_route": if is_aggregate_console { "/console/timeline/stream" } else { "/console/events/stream" },
+            "source_route": "/console/timeline/stream",
             "request_contract": {
                 "last_event_id_header": "optional Last-Event-ID checkpoint from prior event_id",
             },
@@ -594,8 +594,8 @@ fn build_console_experience_contract(
                 "topic": "selected_identity",
                 "update_semantics": "append",
             },
-            "send_method": if is_aggregate_console { "mobkit/console/send" } else { "mobkit/interact" },
-            "observe_route": if is_aggregate_console { "/console/timeline/stream" } else { "/console/identity/stream" },
+            "send_method": "mobkit/console/send",
+            "observe_route": "/console/timeline/stream",
             "transport": "rpc+sse",
             "request_contract": {
                 "identity": "required target identity",
@@ -733,7 +733,7 @@ fn build_console_experience_contract(
                     "mode": "poll",
                     "interval_ms": 5000,
                 },
-                "source_method": "mobkit/read_session_history",
+                "source_method": "mobkit/console/query_timeline",
                 "transport": "rpc",
                 "available": true,
                 "request_contract": {
@@ -755,7 +755,7 @@ fn build_console_experience_contract(
                     "interval_ms": 5000,
                 },
                 "available": false,
-                "reason": "session history requires a mob runtime with mobkit/query_events support",
+                "reason": "session history is projected through the console timeline",
             })
         }
     })

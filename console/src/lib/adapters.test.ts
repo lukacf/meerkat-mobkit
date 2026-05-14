@@ -7,11 +7,37 @@ import {
   buildRoutingSectionView,
   buildSidebarViewState,
   inferResponsePhaseFromFrames,
-  mapSessionHistoryToTimelineEntries,
   mapFramesToTimelineEntries,
   mergeConversationFrames,
   sortConversationTimelineEntries,
 } from "./adapters";
+
+function typedCommsNotice(args: {
+  peer: string;
+  body: string;
+  kind?: string;
+  direction?: "incoming" | "outgoing";
+  intent?: string;
+  requestId?: string;
+  payload?: unknown;
+}) {
+  const kind = args.kind || "message";
+  return {
+    role: "system_notice",
+    kind: "comms",
+    body: args.body,
+    blocks: [{
+      type: "comms",
+      kind,
+      direction: args.direction || "incoming",
+      peer: { id: args.peer, display_name: args.peer },
+      request_id: args.requestId || `req-${args.peer}-${kind}`,
+      ...(args.intent ? { intent: args.intent } : {}),
+      ...(args.payload !== undefined ? { payload: args.payload } : {}),
+      content: [{ type: "text", text: args.body }],
+    }],
+  };
+}
 
 test("buildSidebarViewState preserves host-derived watch and degraded fields", () => {
   const viewState = buildSidebarViewState({
@@ -276,6 +302,43 @@ test("mapFramesToTimelineEntries ignores text_complete so the terminal event doe
   );
 });
 
+test("mapFramesToTimelineEntries ignores live text_complete before matching interaction completion", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-text-complete",
+        event: "text_complete",
+        interactionId: "turn-1",
+        data: { content: "I’m online as incident-commander." },
+      },
+      {
+        id: "evt-run-complete",
+        event: "interaction_complete",
+        interactionId: "turn-1",
+        data: { result: "I’m online as incident-commander." },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(
+    entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+      ? entries[0].blocks[0]?.type === "paragraph"
+        ? entries[0].blocks[0].text
+        : ""
+      : entries[0] && "text" in entries[0]
+        ? entries[0].text
+        : "",
+    "I’m online as incident-commander.",
+  );
+});
+
 test("mapFramesToTimelineEntries ignores hidden turn markers before terminal completion", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -504,272 +567,6 @@ test("mapFramesToTimelineEntries renders image-tool turns without duplicating fi
 
   assert.equal(finalTextEntries.length, 1);
   assert.equal(imageEntries.length, 1);
-});
-
-test("mapSessionHistoryToTimelineEntries renders old comms transport text as comms metadata", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 7,
-      offset: 0,
-      has_more: false,
-      messages: [
-        {
-          role: "system",
-          content: "## Incident Comms Protocol\nIgnore lifecycle chatter.",
-        },
-        {
-          role: "user",
-          content: "You have been spawned as 'scribe' (role: scribe) in mob 'incident-command-center'.",
-        },
-        {
-          role: "user",
-          content: "Talk to scribe.",
-        },
-        {
-          role: "user",
-          content: "[SYSTEM NOTICE][TOOL_SCOPE] Tool configuration changed at turn boundary",
-        },
-        {
-          role: "user",
-          content: "[COMMS MESSAGE from incident-command-center/incident_commander/incident-commander] Please summarize the timeline.",
-        },
-        {
-          role: "block_assistant",
-          blocks: [
-            { block_type: "text", data: { text: "Scribe is preparing a summary." } },
-          ],
-          stop_reason: "end_turn",
-        },
-      ],
-    },
-    {
-      agent_id: "scribe",
-      member_id: "scribe",
-      label: "Scribe",
-      kind: "identity",
-    },
-  );
-
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(entries[0]?.variant, "rich");
-  const commsBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
-  assert.equal(commsBlock?.type, "tool-call");
-  assert.equal(commsBlock?.peerIncoming, true);
-  assert.equal(commsBlock?.peerTarget, "incident-commander");
-  assert.equal(commsBlock?.peerBody, "Please summarize the timeline.");
-  assert.equal(entries[1]?.identity.label, "Scribe");
-  assert.equal(
-    entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
-      ? entries[1].blocks[0]?.type === "paragraph"
-        ? entries[1].blocks[0].text
-        : ""
-      : "",
-    "Scribe is preparing a summary.",
-  );
-});
-
-test("mapSessionHistoryToTimelineEntries renders typed system-notice peer requests as comms metadata", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 1,
-      offset: 0,
-      has_more: false,
-      messages: [
-        {
-          role: "system_notice",
-          kind: "comms",
-          body: "Peer request: ping",
-          blocks: [{
-            type: "comms",
-            kind: "request",
-            direction: "incoming",
-            peer: { id: "11111111-2222-3333-4444-555555555555", display_name: "incident-worker-full-1" },
-            intent: "ping",
-            request_id: "req-1",
-            payload: { body: "check readiness" },
-            content: [{ type: "text", text: "check readiness" }],
-          }],
-        },
-      ],
-    },
-    {
-      agent_id: "incident-commander",
-      member_id: "incident-commander",
-      label: "Incident Commander",
-      kind: "identity",
-    },
-  );
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.id, "comms");
-  assert.equal(entries[0]?.variant, "rich");
-  const firstBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
-  assert.equal(firstBlock?.type, "tool-call");
-  assert.equal(firstBlock?.peerTarget, "incident-worker-full-1");
-  assert.equal(firstBlock?.peerIncoming, true);
-});
-
-test("mapSessionHistoryToTimelineEntries treats old bootstrap-looking user text as user-authored", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 5,
-      offset: 0,
-      has_more: false,
-      messages: [
-        { role: "system", content: "## Incident Comms Protocol\nIgnore lifecycle chatter." },
-        { role: "user", content: "You have been spawned as 'incident-commander' (role: commander) in mob 'incident-command-center'." },
-        { role: "system", content: "[SYSTEM NOTICE][TOOL_SCOPE] Tool configuration changed at turn boundary" },
-        { role: "tool_results", results: [{ content: "{\"status\":\"sent\"}" }] },
-        {
-          role: "block_assistant",
-          blocks: [{ block_type: "text", data: { text: "Real assistant reply." } }],
-          stop_reason: "end_turn",
-        },
-      ],
-    },
-    {
-      agent_id: "incident-commander",
-      member_id: "incident-commander",
-      label: "Incident Commander",
-      kind: "identity",
-    },
-  );
-
-  assert.deepEqual(entries.map((entry) => entry.identity.label), ["You", "Incident Commander"]);
-  assert.equal(
-    "text" in (entries[0] || {}) ? entries[0]?.text : "",
-    "You have been spawned as 'incident-commander' (role: commander) in mob 'incident-command-center'.",
-  );
-});
-
-test("mapSessionHistoryToTimelineEntries renders old peer request prefixes as comms metadata", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 5,
-      offset: 0,
-      has_more: false,
-      messages: [
-        { role: "assistant", content: "Current established facts: Payments API is degraded." },
-        { role: "assistant", content: "I have acknowledged the addition of the following peers: api-investigator, incident-commander." },
-        { role: "user", content: "[COMMS REQUEST from incident-command-center/incident_commander/incident-commander]\nIntent: request_summary\nBody: Summarize the incident timeline." },
-        {
-          role: "block_assistant",
-          blocks: [{ block_type: "text", data: { text: "Summary prepared and sent back to commander." } }],
-          stop_reason: "end_turn",
-        },
-      ],
-    },
-    {
-      agent_id: "scribe",
-      member_id: "scribe",
-      label: "Scribe",
-      kind: "identity",
-    },
-  );
-
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]?.identity.id, "comms");
-  const requestBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
-  assert.equal(requestBlock?.type, "tool-call");
-  assert.equal(requestBlock?.peerIncoming, true);
-  assert.equal(requestBlock?.peerTarget, "incident-commander");
-  assert.equal(entries[1]?.identity.label, "Scribe");
-});
-
-test("mapSessionHistoryToTimelineEntries renders checksum_token old prefixes as comms metadata", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 2,
-      offset: 0,
-      has_more: false,
-      messages: [
-        {
-          role: "user",
-          content: "[COMMS REQUEST from incident-command-center/incident_commander/incident-commander]\nIntent: checksum_token\nParams: {\n  \"subject\": \"Reply exactly: peer smoke ok\"\n}",
-        },
-        {
-          role: "block_assistant",
-          blocks: [{ block_type: "text", data: { text: "Sent the exact reply back." } }],
-          stop_reason: "end_turn",
-        },
-      ],
-    },
-    {
-      agent_id: "scribe",
-      member_id: "scribe",
-      label: "Scribe",
-      kind: "identity",
-    },
-  );
-
-  assert.equal(entries[0]?.identity.id, "comms");
-  const checksumBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
-  assert.equal(checksumBlock?.type, "tool-call");
-  assert.equal(checksumBlock?.peerIncoming, true);
-  assert.equal(checksumBlock?.peerTarget, "incident-commander");
-});
-
-test("mapSessionHistoryToTimelineEntries keeps old rpc transport prefix as user text", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 1,
-      offset: 0,
-      has_more: false,
-      messages: [
-        { role: "user", content: "[EVENT via rpc] Ask scribe for a concise update and tell me the answer." },
-      ],
-    },
-    {
-      agent_id: "incident-commander",
-      member_id: "incident-commander",
-      label: "Incident Commander",
-      kind: "identity",
-    },
-  );
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.label, "You");
-  assert.equal(entries[0]?.variant, "plain");
-  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "[EVENT via rpc] Ask scribe for a concise update and tell me the answer.");
-});
-
-test("mapSessionHistoryToTimelineEntries splits mixed old comms blobs into comms metadata", () => {
-  const entries = mapSessionHistoryToTimelineEntries(
-    {
-      session_id: "session-1",
-      message_count: 1,
-      offset: 0,
-      has_more: false,
-      messages: [
-        {
-          role: "user",
-          content: "[COMMS RESPONSE from incident-command-center/scribe/scribe]\nStatus: completed\n[EVENT via rpc] Ask scribe for a concise update and tell me the answer.\n[COMMS RESPONSE from incident-command-center/merchant_comms/merchant-comms]\nStatus: completed",
-        },
-      ],
-    },
-    {
-      agent_id: "incident-commander",
-      member_id: "incident-commander",
-      label: "Incident Commander",
-      kind: "identity",
-    },
-  );
-
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.id, "comms");
-  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks || [] : [];
-  assert.equal(blocks.length, 2);
-  assert.equal(blocks[0]?.type, "tool-call");
-  assert.equal(blocks[0]?.peerTarget, "scribe");
-  assert.equal(blocks[1]?.type, "tool-call");
-  assert.equal(blocks[1]?.peerTarget, "merchant-comms");
 });
 
 test("sortConversationTimelineEntries keeps optimistic user messages after older assistant replies", () => {
@@ -1661,7 +1458,7 @@ test("mapFramesToTimelineEntries renders inbound comms-looking user-input frames
   assert.equal(entries[1]?.identity.id, "tutti-profile-worker");
 });
 
-test("mapFramesToTimelineEntries renders session-history comms user-input frames as comms metadata", () => {
+test("mapFramesToTimelineEntries renders session-history typed comms frames as comms metadata", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "child-worker",
@@ -1672,13 +1469,14 @@ test("mapFramesToTimelineEntries renders session-history comms user-input frames
     [
       {
         id: "history-comms-user-input",
-        event: "user_input",
+        event: "system_notice",
         sourceKind: "session_history",
         timestampMs: Date.parse("2026-05-11T20:45:57.000Z"),
         data: {
-          content:
-            "[COMMS MESSAGE from implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker]\n"
-            + "grandchild-worker ping acknowledgement.",
+          message: typedCommsNotice({
+            peer: "implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker",
+            body: "Peer message from implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker:\ngrandchild-worker ping acknowledgement.",
+          }),
         },
       },
     ],
@@ -1695,7 +1493,228 @@ test("mapFramesToTimelineEntries renders session-history comms user-input frames
   assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
 });
 
-test("mapFramesToTimelineEntries renders session-history peer system notices as comms metadata", () => {
+test("mapFramesToTimelineEntries suppresses repeated assistant history after an inbound comms notice", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "qa-parent-worker",
+      member_id: "qa-parent-worker",
+      label: "qa-parent-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "history-final-1",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-13T18:57:45.401Z"),
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [{
+              block_type: "text",
+              data: { text: "qa-child-worker said: “Ping acknowledged.”" },
+            }],
+          },
+          result: "qa-child-worker said: “Ping acknowledged.”",
+          source_event_type: "session_history",
+          type: "session_history",
+        },
+      },
+      {
+        id: "history-comms",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-13T18:57:45.406Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "implicit/delegate/qa-child-worker",
+            body: "Ping acknowledged.",
+          }),
+        },
+      },
+      {
+        id: "history-final-2",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-13T18:57:47.816Z"),
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [{
+              block_type: "text",
+              data: { text: "qa-child-worker said: “Ping acknowledged.”" },
+            }],
+          },
+          result: "qa-child-worker said: “Ping acknowledged.”",
+          source_event_type: "session_history",
+          type: "session_history",
+        },
+      },
+    ],
+  );
+
+  const assistantMessages = entries.filter(
+    (entry) => entry.kind === "message" && entry.identity.id === "qa-parent-worker",
+  );
+  assert.equal(assistantMessages.length, 1);
+  const assistantText = "text" in assistantMessages[0]
+    ? assistantMessages[0].text
+    : "blocks" in assistantMessages[0] && assistantMessages[0].blocks?.[0]?.type === "paragraph"
+      ? assistantMessages[0].blocks[0].text
+      : "";
+  assert.equal(assistantText, "qa-child-worker said: “Ping acknowledged.”");
+  const commsMessages = entries.filter(
+    (entry) => entry.kind === "message" && entry.identity.id === "comms",
+  );
+  assert.equal(commsMessages.length, 1);
+});
+
+test("mapFramesToTimelineEntries renders live typed comms system notices as comms metadata", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "child-worker",
+      member_id: "child-worker",
+      label: "child-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-comms-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-11T20:45:57.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "implicit-019e18c9-cd01-7ad0-8a78-ce86f780706b/delegate/grandchild-worker",
+            body: "grandchild-worker ping acknowledgement.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerIncoming, true);
+  assert.equal(block?.peerTarget, "grandchild-worker");
+  assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
+});
+
+test("mapFramesToTimelineEntries hides external-event system notices that duplicate user input", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "user-input",
+        event: "user_input",
+        timestampMs: 1,
+        data: { content: "Create a worker" },
+      },
+      {
+        id: "external-event-history",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: 2,
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "external_event",
+            body: "Create a worker",
+            blocks: [{
+              type: "external_event",
+              source: "rpc",
+              event_type: "rpc",
+              summary: "Create a worker",
+              body: "Create a worker",
+              payload: { body: "Create a worker" },
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal("text" in (entries[0] || {}) ? entries[0]?.text : "", "Create a worker");
+});
+
+test("mapFramesToTimelineEntries hides image external-event notices after rich user input", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "api-investigator",
+      member_id: "api-investigator",
+      label: "API Investigator",
+      kind: "identity",
+    },
+    [
+      {
+        id: "user-input",
+        event: "user_input",
+        timestampMs: 1,
+        data: {
+          content: [
+            { type: "text", text: "Describe the attached image." },
+            {
+              type: "image",
+              source: "blob",
+              blob_id: "sha256:badge",
+              media_type: "image/png",
+            },
+          ],
+        },
+      },
+      {
+        id: "external-event-history",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: 2,
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "external_event",
+            body: "Describe the attached image.\n[image: image/png]",
+            blocks: [{
+              type: "external_event",
+              source: "rpc",
+              event_type: "rpc",
+              summary: "Describe the attached image.\n[image: image/png]",
+              body: "Describe the attached image.\n[image: image/png]",
+              content: [
+                { type: "text", text: "Describe the attached image." },
+                {
+                  type: "image",
+                  source: "blob",
+                  blob_id: "sha256:badge",
+                  media_type: "image/png",
+                },
+              ],
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true, blobBaseUrl: "http://localhost:63212" },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[0]?.variant, "rich");
+  const blocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks : [];
+  assert.equal(blocks?.filter((block) => block.type === "paragraph").length, 1);
+  assert.equal(blocks?.filter((block) => block.type === "image").length, 1);
+});
+
+test("mapFramesToTimelineEntries renders session-history typed peer system notices as comms metadata", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "final-grandchild-worker",
@@ -1706,16 +1725,18 @@ test("mapFramesToTimelineEntries renders session-history peer system notices as 
     [
       {
         id: "history-peer-system-notice",
-        event: "user_input",
+        event: "system_notice",
         sourceKind: "session_history",
         timestampMs: Date.parse("2026-05-11T21:10:23.000Z"),
         data: {
-          content:
-            "[SYSTEM NOTICE][PEER_REQUEST] Correlated peer request from peer_id 22a56406-fbe9-599f-b8af-9f1b715fcdf3 "
-            + "(display_name: incident-command-center/commander/final-child-worker). Intent: checksum_token. "
-            + "Request ID: 8d04e806-3316-40c4-816f-345ded237fbc. Params: {\n"
-            + "  \"subject\": \"ping acknowledgement to final-child-worker\"\n"
-            + "}. This is not a normal user request and not a prompt for direct user-facing output.",
+          message: typedCommsNotice({
+            peer: "incident-command-center/commander/final-child-worker",
+            body: "ping acknowledgement to final-child-worker",
+            kind: "request",
+            intent: "checksum_token",
+            requestId: "8d04e806-3316-40c4-816f-345ded237fbc",
+            payload: { subject: "ping acknowledgement to final-child-worker" },
+          }),
         },
       },
     ],
@@ -1729,7 +1750,7 @@ test("mapFramesToTimelineEntries renders session-history peer system notices as 
   assert.equal(block?.type, "tool-call");
   assert.equal(block?.peerIncoming, true);
   assert.equal(block?.peerTarget, "final-child-worker");
-  assert.equal(block?.peerIntent, undefined);
+  assert.equal(block?.peerIntent, "checksum_token");
   assert.equal(block?.peerBody, "ping acknowledgement to final-child-worker");
 });
 
@@ -1744,7 +1765,7 @@ test("mapFramesToTimelineEntries renders session-history peer image notices as c
     [
       {
         id: "history-peer-image",
-        event: "interaction_complete",
+        event: "system_notice",
         sourceKind: "session_history",
         timestampMs: Date.parse("2026-05-11T21:12:00.000Z"),
         data: {
@@ -1783,7 +1804,7 @@ test("mapFramesToTimelineEntries renders session-history peer image notices as c
   assert.equal(blocks.length, 2);
   assert.equal(blocks[0]?.type, "tool-call");
   assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerIncoming : false, true);
-  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerTarget : "", "incident-command-center/scribe/scribe");
+  assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerTarget : "", "scribe");
   assert.equal(blocks[0]?.type === "tool-call" ? blocks[0].peerBody : "", "Generated incident badge forwarded.");
   assert.equal(blocks[1]?.type, "image");
   assert.equal(

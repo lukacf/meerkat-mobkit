@@ -176,11 +176,6 @@ impl EventLogHandle {
         self.store.clone()
     }
 
-    /// Query the underlying store.
-    pub async fn query(&self, query: EventQuery) -> Result<Vec<PersistedEvent>, EventLogError> {
-        self.store.query(query).await
-    }
-
     /// Ingest an event into the log (non-blocking, buffered).
     pub fn ingest(&self, event: EventEnvelope<UnifiedEvent>) {
         // Non-blocking: drop if the buffer is full (backpressure protection)

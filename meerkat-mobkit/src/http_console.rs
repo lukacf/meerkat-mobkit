@@ -9,34 +9,25 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use futures::future::join_all;
-use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_mob::MobState;
-use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::ids::{MeerkatId, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
-use crate::mob_handle_runtime::{
-    assert_member_accepts_images, member_entry_to_json, model_capabilities_for_member,
-    send_message_on_mob_with_mode,
-};
+use crate::mob_handle_runtime::{member_entry_to_json, model_capabilities_for_member};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tracing::warn;
+use std::time::{Duration, Instant};
 
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
     ConsoleCursor, ConsoleFrame, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
     ConsoleSendError, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineQuery,
     MobKitConsoleAggregator,
-};
-use crate::console_contracts::{
-    ALL_EVENTS_CONTROL_IDENTITY, ALL_EVENTS_STREAM_NAME, ConsoleIdentityEventEnvelope,
-    IDENTITY_STREAM_NAME, IdentityStreamRequest, ReplayUnavailableError,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -50,11 +41,9 @@ use crate::runtime::{
     handle_console_rest_json_route_with_snapshot, validate_console_token,
 };
 use crate::runtime::{MetadataScope, RuntimeMetadataTable, labels_to_json_value};
-use crate::unified_runtime::console_events::{
-    ConsoleEventStore, is_empty_web_search_annotations_event,
-};
+use crate::unified_runtime::console_events::ConsoleEventStore;
 use crate::unified_runtime::mob_events::MobEventsStore;
-use crate::unified_runtime::{EventLogStore, EventQuery, PersistedEvent};
+use crate::unified_runtime::{EventLogStore, EventQuery};
 
 #[derive(Clone)]
 pub struct ConsoleJsonState {
@@ -70,14 +59,12 @@ pub struct ConsoleJsonState {
     pub(crate) console_events: Option<ConsoleEventStore>,
     pub(crate) console_aggregator: Option<MobKitConsoleAggregator>,
     pub(crate) mob_events: Option<MobEventsStore>,
-    pub(crate) stream_routes_enabled: bool,
     pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
 }
 
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
 const CONSOLE_FRONTEND_APP_JS: &str = include_str!("../console-dist/console-app.js");
 const CONSOLE_FRONTEND_APP_CSS: &str = include_str!("../console-dist/console-app.css");
-static CONSOLE_INTERACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 const MAX_MULTIPART_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_MULTIPART_IMAGES: usize = 4;
 const MAX_MULTIPART_BODY_BYTES: usize =
@@ -94,7 +81,6 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         console_events: None,
         console_aggregator: None,
         mob_events: None,
-        stream_routes_enabled: true,
         metadata_table: None,
     })
 }
@@ -113,7 +99,6 @@ pub fn console_json_router_with_aggregator(
         console_events: None,
         console_aggregator: Some(console_aggregator),
         mob_events: None,
-        stream_routes_enabled: true,
         metadata_table: None,
     })
 }
@@ -134,7 +119,6 @@ pub fn console_json_router_with_runtime(
         None,
         None,
         None,
-        false,
         None,
     )
 }
@@ -150,7 +134,6 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     console_events: Option<ConsoleEventStore>,
     console_log_store: Option<std::sync::Arc<dyn ConsoleLogStore>>,
     mob_events: Option<MobEventsStore>,
-    stream_routes_enabled: bool,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
@@ -172,7 +155,6 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         console_events,
         console_aggregator,
         mob_events,
-        stream_routes_enabled,
         metadata_table,
     })
 }
@@ -211,16 +193,6 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
                 .layer(DefaultBodyLimit::max(MAX_MULTIPART_BODY_BYTES)),
         )
         .route("/blobs/{blob_id}", get(blob_get_handler));
-    let router = if state.stream_routes_enabled {
-        router
-            .route(
-                "/console/identity/stream",
-                post(console_identity_stream_handler),
-            )
-            .route("/console/events/stream", get(console_events_stream_handler))
-    } else {
-        router
-    };
     router.with_state(state)
 }
 
@@ -352,7 +324,6 @@ pub async fn console_rpc_handler(
         runtime,
         state.module_runtime.clone(),
         state.contact_directory.as_ref(),
-        state.event_log.clone(),
         state.gateway_peer_keys.as_ref(),
         state.console_events.clone(),
         state.console_aggregator.clone(),
@@ -1000,40 +971,6 @@ pub async fn console_rpc_multipart_handler(
     };
     let response_id = parsed_request.id.clone().unwrap_or(Value::Null);
     match parsed_request.method.as_str() {
-        "mobkit/send_message" => {
-            let Some(runtime) = &state.runtime else {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json::<Value>(json_rpc_error_value(
-                        response_id,
-                        -32600,
-                        "mobkit/send_message multipart requires a unified runtime",
-                    )),
-                );
-            };
-            let Some(binary_blob_store) = runtime.binary_blob_store() else {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json::<Value>(json_rpc_error_value(
-                        response_id,
-                        -32000,
-                        "binary blob store unavailable",
-                    )),
-                );
-            };
-            if let Err(message) = externalize_image_upload_placeholders(
-                &mut parsed_request.params,
-                files,
-                binary_blob_store,
-            )
-            .await
-            {
-                return (
-                    StatusCode::OK,
-                    Json::<Value>(invalid_params(response_id, message)),
-                );
-            }
-        }
         "mobkit/console/send" => {
             let Some(aggregator) = &state.console_aggregator else {
                 return (
@@ -1132,7 +1069,7 @@ pub async fn console_rpc_multipart_handler(
                 StatusCode::OK,
                 Json::<Value>(invalid_params(
                     response_id,
-                    "multipart RPC supports mobkit/send_message, mobkit/console/send, and mobkit/blob/upload only",
+                    "multipart RPC supports mobkit/console/send and mobkit/blob/upload only",
                 )),
             );
         }
@@ -1156,7 +1093,6 @@ pub async fn console_rpc_multipart_handler(
             runtime,
             state.module_runtime.clone(),
             state.contact_directory.as_ref(),
-            state.event_log.clone(),
             state.gateway_peer_keys.as_ref(),
             state.console_events.clone(),
             state.console_aggregator.clone(),
@@ -1242,211 +1178,6 @@ fn blob_payload_response(payload: BinaryBlobPayload) -> axum::response::Response
     (StatusCode::OK, response_headers, payload.data).into_response()
 }
 
-async fn console_identity_stream_handler(
-    State(state): State<ConsoleJsonState>,
-    headers: HeaderMap,
-    uri: Uri,
-    Json(request): Json<IdentityStreamRequest>,
-) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json::<Value>(serde_json::json!({
-                "error": "unauthorized",
-                "reason": "console stream requires a valid auth token",
-            })),
-        )
-            .into_response();
-    }
-    if let Err(message) = request.validate() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json::<Value>(serde_json::json!({ "error": message })),
-        )
-            .into_response();
-    }
-    let identity = request.identity;
-    let last_event_id = headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    let replayed = match &state.console_events {
-        Some(store) => match store
-            .replay_identity(&identity, last_event_id.as_deref())
-            .await
-        {
-            Ok(events) => events,
-            Err(err) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json::<Value>(serde_json::to_value(err).unwrap_or_else(|_| {
-                        json!({
-                            "error": "replay_unavailable"
-                        })
-                    })),
-                )
-                    .into_response();
-            }
-        },
-        None => {
-            if let Some(response) = replay_unavailable_response(&headers, IDENTITY_STREAM_NAME) {
-                return response.into_response();
-            }
-            Vec::new()
-        }
-    };
-    let subscribed = console_stream_control_envelope(IDENTITY_STREAM_NAME, Some(identity.clone()));
-    if let Some(store) = &state.console_events {
-        store
-            .note_identity_stream_checkpoint(&identity, subscribed.event_id.clone())
-            .await;
-    }
-    let mut rx = state
-        .console_events
-        .as_ref()
-        .map(ConsoleEventStore::subscribe);
-    let stream = stream! {
-        if let Some(event) = sse_event_from_envelope(&subscribed) {
-            yield Ok::<Event, Infallible>(event);
-        }
-        for envelope in replayed {
-            if let Some(event) = sse_event_from_envelope(&envelope) {
-                yield Ok::<Event, Infallible>(event);
-            }
-        }
-        if let Some(ref mut rx) = rx {
-            loop {
-                match rx.recv().await {
-                    Ok(envelope) if envelope.identity == identity => {
-                        if let Some(event) = sse_event_from_envelope(&envelope) {
-                            yield Ok::<Event, Infallible>(event);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        // Emit a synthetic `stream_lagged` frame so the
-                        // client knows it missed events; pre-fix we
-                        // silently `break`-ed and the connection stayed
-                        // open via keep-alive forever.
-                        let lagged = console_stream_lagged_envelope(
-                            IDENTITY_STREAM_NAME,
-                            skipped,
-                        );
-                        if let Some(event) = sse_event_from_envelope(&lagged) {
-                            yield Ok::<Event, Infallible>(event);
-                        }
-                        // Keep the connection live; the receiver has
-                        // re-anchored to the broadcast tail.
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        }
-    };
-    Sse::new(stream)
-        .keep_alive(
-            KeepAlive::new()
-                .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
-                .text(KEEP_ALIVE_TEXT),
-        )
-        .into_response()
-}
-
-async fn console_events_stream_handler(
-    State(state): State<ConsoleJsonState>,
-    headers: HeaderMap,
-    uri: Uri,
-) -> impl IntoResponse {
-    if !console_request_authorized(&state, &headers, &uri) {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json::<Value>(serde_json::json!({
-                "error": "unauthorized",
-                "reason": "console stream requires a valid auth token",
-            })),
-        )
-            .into_response();
-    }
-    let last_event_id = headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string);
-    let replayed = match &state.console_events {
-        Some(store) => match store.replay_all(last_event_id.as_deref()).await {
-            Ok(events) => events,
-            Err(err) => {
-                return (
-                    StatusCode::CONFLICT,
-                    Json::<Value>(serde_json::to_value(err).unwrap_or_else(|_| {
-                        json!({
-                            "error": "replay_unavailable"
-                        })
-                    })),
-                )
-                    .into_response();
-            }
-        },
-        None => {
-            if let Some(response) = replay_unavailable_response(&headers, ALL_EVENTS_STREAM_NAME) {
-                return response.into_response();
-            }
-            Vec::new()
-        }
-    };
-    let subscribed = console_stream_control_envelope(ALL_EVENTS_STREAM_NAME, None);
-    if let Some(store) = &state.console_events {
-        store
-            .note_all_stream_checkpoint(subscribed.event_id.clone())
-            .await;
-    }
-    let mut rx = state
-        .console_events
-        .as_ref()
-        .map(ConsoleEventStore::subscribe);
-    let stream = stream! {
-        if let Some(event) = sse_event_from_envelope(&subscribed) {
-            yield Ok::<Event, Infallible>(event);
-        }
-        for envelope in replayed {
-            if let Some(event) = sse_event_from_envelope(&envelope) {
-                yield Ok::<Event, Infallible>(event);
-            }
-        }
-        if let Some(ref mut rx) = rx {
-            loop {
-                match rx.recv().await {
-                    Ok(envelope) => {
-                        if let Some(event) = sse_event_from_envelope(&envelope) {
-                            yield Ok::<Event, Infallible>(event);
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                        let lagged = console_stream_lagged_envelope(
-                            ALL_EVENTS_STREAM_NAME,
-                            skipped,
-                        );
-                        if let Some(event) = sse_event_from_envelope(&lagged) {
-                            yield Ok::<Event, Infallible>(event);
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        }
-    };
-    Sse::new(stream)
-        .keep_alive(
-            KeepAlive::new()
-                .interval(DEFAULT_KEEP_ALIVE_INTERVAL)
-                .text(KEEP_ALIVE_TEXT),
-        )
-        .into_response()
-}
-
 fn console_request_authorized(state: &ConsoleJsonState, headers: &HeaderMap, uri: &Uri) -> bool {
     if !state.decisions.console.require_app_auth {
         return true;
@@ -1471,112 +1202,6 @@ fn console_request_token(headers: &HeaderMap, uri: &Uri) -> Option<String> {
     bearer_token.or(query_token)
 }
 
-/// Validate that `last_event_id` matches the format the server actually
-/// mints (`console-stream-{stream}-{millis}` per
-/// [`stream_head_event_id`]). Rejects any client value containing
-/// characters outside `[A-Za-z0-9_\-]`. Pre-fix the unvalidated header
-/// was reflected verbatim into the error JSON; an operator console
-/// rendering it without escaping was exposed to log-injection /
-/// display-side XSS via headers like `<script>alert(1)</script>`.
-fn is_valid_last_event_id(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= 256
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
-
-fn replay_unavailable_response(
-    headers: &HeaderMap,
-    stream_name: &str,
-) -> Option<(StatusCode, Json<Value>)> {
-    let requested_last_event_id = headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())?;
-    if !is_valid_last_event_id(requested_last_event_id) {
-        return Some((
-            StatusCode::BAD_REQUEST,
-            Json::<Value>(serde_json::json!({
-                "error": "invalid_last_event_id",
-                "stream": stream_name,
-            })),
-        ));
-    }
-    Some((
-        StatusCode::CONFLICT,
-        Json::<Value>(
-            serde_json::to_value(ReplayUnavailableError {
-                error: "replay_unavailable".to_string(),
-                stream: stream_name.to_string(),
-                requested_last_event_id: requested_last_event_id.to_string(),
-                latest_event_id: stream_head_event_id(stream_name),
-            })
-            .unwrap_or_else(|_| serde_json::json!({ "error": "replay_unavailable" })),
-        ),
-    ))
-}
-
-fn stream_head_event_id(stream_name: &str) -> String {
-    format!("console-stream-{stream_name}-{}", current_time_ms())
-}
-
-fn console_stream_control_envelope(
-    stream_name: &str,
-    identity: Option<String>,
-) -> ConsoleIdentityEventEnvelope {
-    ConsoleIdentityEventEnvelope {
-        event_id: stream_head_event_id(stream_name),
-        interaction_id: None,
-        identity: identity.unwrap_or_else(|| ALL_EVENTS_CONTROL_IDENTITY.to_string()),
-        event_type: "subscribed".to_string(),
-        timestamp_ms: current_time_ms(),
-        data: serde_json::json!({
-            "stream": stream_name,
-        }),
-    }
-}
-
-/// Synthetic envelope emitted when the broadcast receiver lags. Pre-fix
-/// the handler `break`-ed on `Lagged`, leaving the SSE connection open
-/// under keep-alive but silent forever. Clients now see this frame and
-/// know to refetch via the catch-up endpoint or accept missed events.
-fn console_stream_lagged_envelope(stream_name: &str, skipped: u64) -> ConsoleIdentityEventEnvelope {
-    ConsoleIdentityEventEnvelope {
-        event_id: format!("console-stream-{stream_name}-lagged-{}", current_time_ms()),
-        interaction_id: None,
-        identity: ALL_EVENTS_CONTROL_IDENTITY.to_string(),
-        event_type: "stream_lagged".to_string(),
-        timestamp_ms: current_time_ms(),
-        data: serde_json::json!({
-            "stream": stream_name,
-            "skipped": skipped,
-            "advice": "client should refetch state via catch-up endpoint or accept the gap",
-        }),
-    }
-}
-
-fn sse_event_from_envelope(envelope: &ConsoleIdentityEventEnvelope) -> Option<Event> {
-    match serde_json::to_string(envelope) {
-        Ok(data) => Some(
-            Event::default()
-                .id(envelope.event_id.clone())
-                .event(&envelope.event_type)
-                .data(data),
-        ),
-        Err(err) => {
-            warn!(
-                event_id = %envelope.event_id,
-                event_type = %envelope.event_type,
-                identity = %envelope.identity,
-                "skipping unserializable console SSE envelope: {err}"
-            );
-            None
-        }
-    }
-}
-
 #[derive(Debug)]
 struct MultipartImageUpload {
     media_type: String,
@@ -1592,111 +1217,6 @@ fn json_rpc_error_value(id: Value, code: i64, message: impl Into<String>) -> Val
             "message": message.into(),
         }
     })
-}
-
-fn project_query_events_for_console(events: Vec<PersistedEvent>, query: &EventQuery) -> Value {
-    let mut projected = Vec::new();
-    for event in events {
-        if persisted_event_is_empty_web_search_annotations(&event) {
-            continue;
-        }
-        let assistant_images = assistant_image_events_from_persisted(&event, query);
-        projected.push(serde_json::to_value(&event).unwrap_or(Value::Null));
-        projected.extend(assistant_images);
-    }
-    Value::Array(projected)
-}
-
-fn persisted_event_is_empty_web_search_annotations(event: &PersistedEvent) -> bool {
-    let crate::types::UnifiedEvent::Agent {
-        event_type,
-        payload,
-        ..
-    } = &event.event
-    else {
-        return false;
-    };
-    is_empty_web_search_annotations_event(event_type, payload.as_ref())
-}
-
-fn assistant_image_events_from_persisted(event: &PersistedEvent, query: &EventQuery) -> Vec<Value> {
-    let crate::types::UnifiedEvent::Agent {
-        agent_id,
-        event_type,
-        payload,
-    } = &event.event
-    else {
-        return Vec::new();
-    };
-    let identity = derive_console_identity_from_runtime_id(agent_id)
-        .unwrap_or_else(|| event.member_id.clone().unwrap_or_else(|| agent_id.clone()));
-    if let Some(query_identity) = query.identity.as_deref()
-        && query_identity != identity
-        && query_identity != agent_id
-        && event.member_id.as_deref() != Some(query_identity)
-    {
-        return Vec::new();
-    }
-    let Some(payload) = payload else {
-        return Vec::new();
-    };
-    let Some(image_result) = parse_generate_image_tool_result_value(payload) else {
-        return Vec::new();
-    };
-    image_result
-        .images
-        .iter()
-        .enumerate()
-        .map(|(idx, image)| {
-            serde_json::to_value(ConsoleIdentityEventEnvelope {
-                event_id: format!("{}#assistant_image:{idx}", event.id),
-                interaction_id: None,
-                identity: identity.clone(),
-                event_type: "assistant_image".to_string(),
-                timestamp_ms: event.timestamp_ms,
-                data: json!({
-                    "source_event_type": event_type,
-                    "tool_call_id": payload.get("id").cloned().unwrap_or(Value::Null),
-                    "image_id": image.image_id.0.to_string(),
-                    "blob_id": image.blob_ref.blob_id.to_string(),
-                    "media_type": image.media_type.as_str(),
-                    "width": image.width,
-                    "height": image.height,
-                    "revised_prompt": image_result.revised_prompt.clone(),
-                }),
-            })
-            .unwrap_or(Value::Null)
-        })
-        .collect()
-}
-
-fn parse_generate_image_tool_result_value(
-    payload: &Value,
-) -> Option<meerkat_core::image_generation::ImageGenerationToolResult> {
-    if payload.get("name").and_then(Value::as_str) != Some("generate_image") {
-        return None;
-    }
-    let result_value = payload.get("result")?;
-    if let Some(result_text) = result_value.as_str() {
-        serde_json::from_str(result_text).ok()
-    } else {
-        serde_json::from_value(result_value.clone()).ok()
-    }
-}
-
-fn derive_console_identity_from_runtime_id(runtime_id: &str) -> Option<String> {
-    let (identity, suffix) = runtime_id.rsplit_once(':')?;
-    if identity.is_empty() || suffix.is_empty() {
-        return None;
-    }
-    if !suffix.chars().all(|ch| ch.is_ascii_digit()) {
-        return None;
-    }
-    let identity = identity.strip_prefix("rt:").unwrap_or(identity);
-    if identity.is_empty() {
-        return None;
-    }
-    Some(identity.to_string())
 }
 
 fn is_allowed_image_media_type(media_type: &str) -> bool {
@@ -1908,19 +1428,6 @@ fn replace_image_upload_placeholders(
     Ok(())
 }
 
-fn current_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-fn mint_console_interaction_id() -> String {
-    let now = current_time_ms();
-    let seq = CONSOLE_INTERACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("turn-{now}-{seq}")
-}
-
 fn response_value(id: Value, result: Option<Value>, error: Option<JsonRpcError>) -> Value {
     serde_json::to_value(JsonRpcResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -2006,24 +1513,6 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
             })),
         }),
     )
-}
-
-/// Optional JSON-RPC param `handling_mode: "queue" | "steer"`.
-/// Missing/null defaults to `Queue`; unknown strings remain invalid params.
-/// The direct MobKit send path normalizes `Steer` to `Queue` until a
-/// runtime-backed steering surface is available.
-fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
-    let Some(raw) = params.get("handling_mode") else {
-        return Ok(meerkat_core::types::HandlingMode::Queue);
-    };
-    if raw.is_null() {
-        return Ok(meerkat_core::types::HandlingMode::Queue);
-    }
-    match raw.as_str() {
-        Some("queue") => Ok(meerkat_core::types::HandlingMode::Queue),
-        Some("steer") => Ok(meerkat_core::types::HandlingMode::Steer),
-        _ => Err("handling_mode must be \"queue\" or \"steer\""),
-    }
 }
 
 fn parse_console_helper_options(
@@ -2131,6 +1620,8 @@ async fn handle_console_aggregator_rpc(
                     "mobkit/console/list_identities",
                     "mobkit/console/inspect_identity",
                     "mobkit/console/query_timeline",
+                    "mobkit/retire",
+                    "mobkit/reset_all",
                     "mobkit/console/send",
                 ],
                 "authenticated": is_authenticated,
@@ -2232,6 +1723,68 @@ async fn handle_console_aggregator_rpc(
                 ),
             }
         }
+        "mobkit/retire" => {
+            let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
+                return invalid_params(response_id, "identity required");
+            };
+            let Some(aggregator) = &console_aggregator else {
+                return console_aggregator_unavailable(response_id);
+            };
+            match aggregator.retire_identity(identity).await {
+                Ok(true) => {
+                    response_value(response_id, Some(json!({ "identity": identity })), None)
+                }
+                Ok(false) => response_value(
+                    response_id,
+                    None,
+                    Some(JsonRpcError {
+                        code: -32001,
+                        message: format!("unknown identity: {identity}"),
+                        data: None,
+                    }),
+                ),
+                Err(err) => internal_error(response_id, format!("retire failed: {err}")),
+            }
+        }
+        "mobkit/reset_all" => {
+            let Some(aggregator) = &console_aggregator else {
+                return console_aggregator_unavailable(response_id);
+            };
+            match aggregator.list_identities().await {
+                Ok(identities) => {
+                    let mut retired = Vec::new();
+                    let mut failed = Vec::new();
+                    for identity in identities {
+                        match aggregator.retire_identity(&identity.identity).await {
+                            Ok(true) => retired.push(identity.identity),
+                            Ok(false) => failed.push(json!({
+                                "identity": identity.identity,
+                                "error": "unknown identity",
+                            })),
+                            Err(err) => failed.push(json!({
+                                "identity": identity.identity,
+                                "error": err.to_string(),
+                            })),
+                        }
+                    }
+                    if let Err(err) = aggregator.clear_timeline_frames().await {
+                        failed.push(json!({
+                            "identity": "_console_timeline",
+                            "error": err.to_string(),
+                        }));
+                    }
+                    response_value(
+                        response_id,
+                        Some(json!({
+                            "retired": retired,
+                            "failed": failed,
+                        })),
+                        None,
+                    )
+                }
+                Err(err) => internal_error(response_id, format!("reset_all failed: {err}")),
+            }
+        }
         _ => response_value(
             response_id,
             None,
@@ -2261,7 +1814,6 @@ async fn handle_console_runtime_rpc(
     runtime: &MobRuntime,
     module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
     contact_directory: Option<&ContactDirectory>,
-    event_log: Option<std::sync::Arc<dyn EventLogStore>>,
     gateway_peer_keys: Option<&crate::auth::peer_keys::GatewayPeerKeys>,
     console_events: Option<ConsoleEventStore>,
     console_aggregator: Option<MobKitConsoleAggregator>,
@@ -2281,14 +1833,12 @@ async fn handle_console_runtime_rpc(
                 "mobkit/get_member",
                 "mobkit/find_members",
                 "mobkit/member_status",
-                "mobkit/read_session_history",
                 "mobkit/collect_completed",
                 "mobkit/blob/get",
                 "mobkit/wait_ready",
                 "mobkit/flow_status",
                 "mobkit/list_flows",
                 "mobkit/list_runs",
-                "mobkit/query_events",
                 "mobkit/console/list_identities",
                 "mobkit/console/inspect_identity",
                 "mobkit/console/query_timeline",
@@ -2300,10 +1850,8 @@ async fn handle_console_runtime_rpc(
             ];
             if module_runtime.is_some() {
                 methods.extend_from_slice(&[
-                    "mobkit/interact",
                     "mobkit/status_identity",
                     "mobkit/inspect_identity",
-                    "mobkit/retire",
                     "mobkit/respawn",
                     "mobkit/reset",
                     "mobkit/routing/routes/list",
@@ -2315,7 +1863,8 @@ async fn handle_console_runtime_rpc(
             }
             if is_authenticated {
                 methods.extend_from_slice(&[
-                    "mobkit/send_message",
+                    "mobkit/retire",
+                    "mobkit/reset_all",
                     "mobkit/console/send",
                     "mobkit/blob/upload",
                     "mobkit/ensure_member",
@@ -2584,220 +2133,6 @@ async fn handle_console_runtime_rpc(
             }
             response_value(response_id, Some(Value::Array(matches)), None)
         }
-        "mobkit/send_message" => {
-            let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "member_id required");
-            };
-            let raw_content = if let Some(content) = request.params.get("content") {
-                content.clone()
-            } else if let Some(message) = request.params.get("message").and_then(Value::as_str) {
-                Value::String(message.to_string())
-            } else {
-                return invalid_params(response_id, "message or content required");
-            };
-            let content = if request.params.get("content").is_some() {
-                match serde_json::from_value::<ContentInput>(raw_content.clone()) {
-                    Ok(content) => content,
-                    Err(err) => {
-                        return invalid_params(response_id, format!("invalid content: {err}"));
-                    }
-                }
-            } else if let Some(message) = raw_content.as_str() {
-                ContentInput::Text(message.to_string())
-            } else {
-                return invalid_params(response_id, "message or content required");
-            };
-            let handling_mode = match parse_handling_mode(&request.params) {
-                Ok(mode) => mode,
-                Err(message) => return invalid_params(response_id, message),
-            };
-            if let Err(err) = assert_member_accepts_images(
-                &runtime.handle(),
-                runtime.session_service(),
-                member_id,
-                &content,
-            )
-            .await
-            {
-                return invalid_params(response_id, err.to_string());
-            }
-            let interaction_id = mint_console_interaction_id();
-            if let Some(store) = &console_events {
-                if let Err(message) = store
-                    .reserve_interaction_value(
-                        member_id,
-                        Some(member_id),
-                        &interaction_id,
-                        "console:send_message",
-                        raw_content,
-                    )
-                    .await
-                {
-                    return response_value(
-                        response_id,
-                        None,
-                        Some(JsonRpcError {
-                            code: -32003,
-                            message: message.to_string(),
-                            data: None,
-                        }),
-                    );
-                }
-                store.accept_interaction(member_id, &interaction_id).await;
-            }
-            match send_message_on_mob_with_mode(
-                &runtime.handle(),
-                member_id,
-                content,
-                handling_mode,
-            )
-            .await
-            {
-                Ok(session_id) => response_value(
-                    response_id,
-                    Some(serde_json::json!({
-                        "accepted": true,
-                        "member_id": member_id,
-                        "session_id": session_id,
-                        "interaction_id": interaction_id,
-                    })),
-                    None,
-                ),
-                Err(err) => {
-                    if let Some(store) = &console_events {
-                        store
-                            .fail_interaction(
-                                member_id,
-                                &interaction_id,
-                                "send_message_failed",
-                                json!(err.to_string()),
-                            )
-                            .await;
-                    }
-                    internal_error(response_id, format!("send_message failed: {err}"))
-                }
-            }
-        }
-        "mobkit/interact" => {
-            let request_params: crate::console_contracts::ConsoleInteractionRequest =
-                match serde_json::from_value(request.params.clone()) {
-                    Ok(params) => params,
-                    Err(_) => {
-                        return invalid_params(
-                            response_id,
-                            "invalid params: expected { identity, content, origin }",
-                        );
-                    }
-                };
-            if let Err(message) = request_params.validate() {
-                return invalid_params(response_id, format!("invalid params: {message}"));
-            }
-            let identity = request_params.identity.trim();
-            let handle = runtime.handle();
-            let mid = MeerkatId::from(identity);
-            let Some((member, _session_id)) = lookup_member_with_session(&handle, &mid).await
-            else {
-                return response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: -32001,
-                        message: format!("unknown identity: {identity}"),
-                        data: None,
-                    }),
-                );
-            };
-            if !member_is_addressable(&member) {
-                return response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: -32002,
-                        message: format!("not addressable: {identity}"),
-                        data: None,
-                    }),
-                );
-            }
-            if member.state == meerkat_mob::MemberState::Retiring {
-                return response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: -32004,
-                        message: format!("identity retiring: {identity}"),
-                        data: None,
-                    }),
-                );
-            }
-
-            // `handling_mode` is read off the raw params rather than added
-            // to `ConsoleInteractionRequest` so the contract struct stays
-            // stable for callers that don't care which mode they sent in.
-            let handling_mode = match parse_handling_mode(&request.params) {
-                Ok(mode) => mode,
-                Err(message) => return invalid_params(response_id, message),
-            };
-
-            let interaction_id = mint_console_interaction_id();
-            if let Some(store) = &console_events
-                && let Err(message) = store
-                    .reserve_interaction(
-                        identity,
-                        Some(member.agent_identity.as_str()),
-                        &interaction_id,
-                        &request_params.origin,
-                        &request_params.content,
-                    )
-                    .await
-            {
-                return response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: -32003,
-                        message: message.to_string(),
-                        data: None,
-                    }),
-                );
-            }
-
-            // Emit interaction_started BEFORE dispatching so the event has
-            // a lower sequence number than any agent response events it triggers.
-            if let Some(store) = &console_events {
-                store.accept_interaction(identity, &interaction_id).await;
-            }
-
-            match send_message_on_mob_with_mode(
-                &handle,
-                identity,
-                ContentInput::Text(request_params.content.clone()),
-                handling_mode,
-            )
-            .await
-            {
-                Ok(_session_id) => response_value(
-                    response_id,
-                    Some(json!({
-                        "interaction_id": interaction_id,
-                        "identity": identity,
-                    })),
-                    None,
-                ),
-                Err(err) => {
-                    if let Some(store) = &console_events {
-                        store
-                            .fail_interaction(
-                                identity,
-                                &interaction_id,
-                                "dispatch_failed",
-                                json!({ "reason": err.to_string() }),
-                            )
-                            .await;
-                    }
-                    internal_error(response_id, format!("interact failed: {err}"))
-                }
-            }
-        }
         "mobkit/status_identity" => {
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
@@ -2842,6 +2177,28 @@ async fn handle_console_runtime_rpc(
             let Some(identity) = request.params.get("identity").and_then(Value::as_str) else {
                 return invalid_params(response_id, "identity required");
             };
+            if let Some(aggregator) = &console_aggregator {
+                return match aggregator.retire_identity(identity).await {
+                    Ok(true) => {
+                        if let Some(store) = &console_events {
+                            store
+                                .record_lifecycle(identity, "identity_retired", json!({}))
+                                .await;
+                        }
+                        response_value(response_id, Some(json!({ "identity": identity })), None)
+                    }
+                    Ok(false) => response_value(
+                        response_id,
+                        None,
+                        Some(JsonRpcError {
+                            code: -32001,
+                            message: format!("unknown identity: {identity}"),
+                            data: None,
+                        }),
+                    ),
+                    Err(err) => internal_error(response_id, format!("retire failed: {err}")),
+                };
+            }
             match runtime.handle().retire(MeerkatId::from(identity)).await {
                 Ok(()) => {
                     if let Some(store) = &console_events {
@@ -2900,6 +2257,18 @@ async fn handle_console_runtime_rpc(
                     response_value(response_id, Some(body), None)
                 }
                 Err(err) => internal_error(response_id, format!("reset failed: {err}")),
+            }
+        }
+        "mobkit/reset_all" => {
+            match reset_all_live_console_agents(
+                runtime,
+                console_events.as_ref(),
+                console_aggregator.as_ref(),
+            )
+            .await
+            {
+                Ok(body) => response_value(response_id, Some(body), None),
+                Err(err) => internal_error(response_id, format!("reset_all failed: {err}")),
             }
         }
         "mobkit/routing/routes/list" => {
@@ -3132,6 +2501,25 @@ async fn handle_console_runtime_rpc(
             let Some(member_id) = request.params.get("member_id").and_then(Value::as_str) else {
                 return invalid_params(response_id, "member_id required");
             };
+            if let Some(aggregator) = &console_aggregator {
+                return match aggregator.retire_identity(member_id).await {
+                    Ok(true) => response_value(
+                        response_id,
+                        Some(serde_json::json!({ "accepted": true })),
+                        None,
+                    ),
+                    Ok(false) => response_value(
+                        response_id,
+                        None,
+                        Some(JsonRpcError {
+                            code: -32001,
+                            message: format!("unknown identity: {member_id}"),
+                            data: None,
+                        }),
+                    ),
+                    Err(err) => internal_error(response_id, format!("retire_member failed: {err}")),
+                };
+            }
             match runtime.handle().retire(MeerkatId::from(member_id)).await {
                 Ok(()) => response_value(
                     response_id,
@@ -3166,40 +2554,6 @@ async fn handle_console_runtime_rpc(
             })),
             None,
         ),
-        "mobkit/query_events" => {
-            let query: EventQuery = match serde_json::from_value(request.params.clone()) {
-                Ok(q) => q,
-                Err(err) => {
-                    return invalid_params(response_id, format!("invalid query params: {err}"));
-                }
-            };
-            match event_log {
-                Some(store) => match store.query(query.clone()).await {
-                    Ok(events) => response_value(
-                        response_id,
-                        Some(project_query_events_for_console(events, &query)),
-                        None,
-                    ),
-                    Err(err) => {
-                        internal_error(response_id, format!("event log query failed: {err}"))
-                    }
-                },
-                None => {
-                    let fallback_events = match console_events {
-                        Some(store) => store.query(&query).await,
-                        None => Vec::new(),
-                    };
-                    response_value(
-                        response_id,
-                        Some(serde_json::json!({
-                            "status": "no_event_log_configured",
-                            "events": fallback_events,
-                        })),
-                        None,
-                    )
-                }
-            }
-        }
         "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
             let query: EventQuery = if request.params.is_null() {
                 EventQuery::default()
@@ -3300,35 +2654,6 @@ async fn handle_console_runtime_rpc(
                 ),
                 Err(err) => {
                     internal_error(response_id, format!("force_cancel_member failed: {err}"))
-                }
-            }
-        }
-        "mobkit/read_session_history" => {
-            let Some(session_id) = request.params.get("session_id").and_then(Value::as_str) else {
-                return invalid_params(response_id, "session_id required");
-            };
-            let offset = request
-                .params
-                .get("offset")
-                .and_then(Value::as_u64)
-                .map(|value| value as usize)
-                .unwrap_or(0);
-            let limit = match request.params.get("limit") {
-                Some(Value::Number(number)) => number.as_u64().map(|value| value as usize),
-                Some(Value::Null) | None => None,
-                Some(_) => return invalid_params(response_id, "limit must be a positive integer"),
-            };
-            match runtime
-                .read_session_history(session_id, offset, limit)
-                .await
-            {
-                Ok(page) => response_value(
-                    response_id,
-                    Some(serde_json::to_value(page).unwrap_or(Value::Null)),
-                    None,
-                ),
-                Err(err) => {
-                    internal_error(response_id, format!("read_session_history failed: {err}"))
                 }
             }
         }
@@ -3982,6 +3307,229 @@ async fn build_live_snapshot(
     )
 }
 
+async fn reset_all_live_console_agents(
+    runtime: &MobRuntime,
+    console_events: Option<&ConsoleEventStore>,
+    console_aggregator: Option<&MobKitConsoleAggregator>,
+) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let snapshot = build_live_snapshot(runtime, &[], console_events).await;
+    let mut main_identities = BTreeSet::new();
+    let mut delegate_members = BTreeSet::new();
+    for member in snapshot.members {
+        if member.state == MEMBER_STATE_RETIRING {
+            continue;
+        }
+        if let Some(source_mob_id) = member.labels.get("source_mob_id").cloned() {
+            delegate_members.insert((source_mob_id, member.agent_identity));
+        } else {
+            main_identities.insert(member.agent_identity);
+        }
+    }
+    let current_main_identities = main_identities.clone();
+    let baseline_specs = runtime.baseline_member_specs().await;
+    let baseline_identities = baseline_specs
+        .iter()
+        .map(|spec| spec.identity.to_string())
+        .collect::<BTreeSet<_>>();
+    main_identities.extend(baseline_identities.iter().cloned());
+
+    let mut retired_delegates = Vec::new();
+    let mut reset_main = Vec::new();
+    let mut failures = Vec::new();
+
+    if let Some(state) = runtime.agent_mob_mcp_state() {
+        for (mob_id, identity) in delegate_members {
+            match state.handle_for(&MobId::from(mob_id.as_str())).await {
+                Ok(handle) => match handle.retire(MeerkatId::from(identity.as_str())).await {
+                    Ok(()) => retired_delegates.push(json!({
+                        "identity": identity,
+                        "mob_id": mob_id,
+                    })),
+                    Err(err) => failures.push(json!({
+                        "identity": identity,
+                        "mob_id": mob_id,
+                        "error": err.to_string(),
+                    })),
+                },
+                Err(err) => failures.push(json!({
+                    "identity": identity,
+                    "mob_id": mob_id,
+                    "error": err.to_string(),
+                })),
+            }
+        }
+    } else if let Some(aggregator) = console_aggregator {
+        let identities = delegate_members
+            .into_iter()
+            .map(|(_, identity)| identity)
+            .collect::<BTreeSet<_>>();
+        for identity in identities {
+            match aggregator.retire_identity(&identity).await {
+                Ok(true) => retired_delegates.push(json!({ "identity": identity })),
+                Ok(false) => failures.push(json!({
+                    "identity": identity,
+                    "error": "unknown identity",
+                })),
+                Err(err) => failures.push(json!({
+                    "identity": identity,
+                    "error": err.to_string(),
+                })),
+            }
+        }
+    }
+
+    let handle = runtime.handle();
+    for spec in baseline_specs {
+        let identity = spec.identity.to_string();
+        if current_main_identities.contains(&identity) {
+            continue;
+        }
+        match handle.ensure_member(spec).await {
+            Ok(_outcome) => {
+                if let Some(store) = console_events {
+                    store
+                        .record_lifecycle(
+                            &identity,
+                            "identity_reset",
+                            json!({ "scope": "reset_all", "restored": true }),
+                        )
+                        .await;
+                }
+                reset_main.push(identity);
+            }
+            Err(err) => failures.push(json!({
+                "identity": identity,
+                "error": err.to_string(),
+            })),
+        }
+    }
+    for identity in main_identities {
+        if baseline_identities.contains(&identity) && !current_main_identities.contains(&identity) {
+            continue;
+        }
+        if baseline_identities.contains(&identity) {
+            match handle
+                .respawn(MeerkatId::from(identity.as_str()), None)
+                .await
+            {
+                Ok(_receipt) => {
+                    if let Some(store) = console_events {
+                        store
+                            .record_lifecycle(
+                                &identity,
+                                "identity_reset",
+                                json!({ "scope": "reset_all" }),
+                            )
+                            .await;
+                    }
+                    reset_main.push(identity);
+                }
+                Err(err) => failures.push(json!({
+                    "identity": identity,
+                    "error": err.to_string(),
+                })),
+            }
+        } else {
+            match handle.retire(MeerkatId::from(identity.as_str())).await {
+                Ok(()) => {
+                    if let Some(store) = console_events {
+                        store
+                            .record_lifecycle(
+                                &identity,
+                                "identity_retired",
+                                json!({ "scope": "reset_all", "dynamic": true }),
+                            )
+                            .await;
+                    }
+                    retired_delegates.push(json!({ "identity": identity }));
+                }
+                Err(err) => failures.push(json!({
+                    "identity": identity,
+                    "error": err.to_string(),
+                })),
+            }
+        }
+    }
+
+    let startup_history = if let Some(aggregator) = console_aggregator {
+        aggregator.clear_timeline_frames().await?;
+        Some(
+            wait_for_reset_startup_history(
+                aggregator,
+                baseline_identities.iter().cloned().collect(),
+                Duration::from_secs(60),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    Ok(json!({
+        "reset": reset_main,
+        "retired_delegates": retired_delegates,
+        "failed": failures,
+        "startup_history": startup_history,
+    }))
+}
+
+async fn wait_for_reset_startup_history(
+    aggregator: &MobKitConsoleAggregator,
+    identities: BTreeSet<String>,
+    timeout: Duration,
+) -> ConsoleLogResult<Value> {
+    if identities.is_empty() {
+        return Ok(json!({
+            "timeout": false,
+            "ready": Vec::<String>::new(),
+            "pending": Vec::<String>::new(),
+        }));
+    }
+
+    let deadline = Instant::now() + timeout;
+    let mut pending = identities;
+    let mut ready = BTreeSet::new();
+    while !pending.is_empty() {
+        for identity in pending.clone() {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some(identity.clone()),
+                    limit: 1000,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await?;
+            let startup_completed = page.frames.iter().any(|frame| {
+                matches!(
+                    frame.kind.as_str(),
+                    "interaction_complete" | "turn_completed"
+                )
+            });
+            if startup_completed {
+                pending.remove(&identity);
+                ready.insert(identity);
+            }
+        }
+
+        if pending.is_empty() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Ok(json!({
+                "timeout": true,
+                "ready": ready.into_iter().collect::<Vec<_>>(),
+                "pending": pending.into_iter().collect::<Vec<_>>(),
+            }));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    Ok(json!({
+        "timeout": false,
+        "ready": ready.into_iter().collect::<Vec<_>>(),
+        "pending": Vec::<String>::new(),
+    }))
+}
+
 fn dedupe_console_members_by_identity(members: &mut Vec<ConsoleMember>) {
     let mut seen_member_ids = BTreeSet::new();
     members.retain(|member| seen_member_ids.insert(member.agent_identity.clone()));
@@ -4200,8 +3748,7 @@ mod tests {
     use super::{
         MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, cursor_is_after,
         dedupe_console_members_by_identity, externalize_image_upload_placeholders,
-        externalize_single_image_upload, mint_console_interaction_id,
-        project_query_events_for_console, query_timeline_snapshot,
+        externalize_single_image_upload, query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -4209,20 +3756,10 @@ mod tests {
         ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
     use crate::runtime::ConsoleMember;
-    use crate::types::UnifiedEvent;
-    use crate::unified_runtime::{EventQuery, PersistedEvent};
     use bytes::Bytes;
     use serde_json::json;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
-
-    #[test]
-    fn mint_console_interaction_id_is_unique_across_same_tick_calls() {
-        let ids = (0..32)
-            .map(|_| mint_console_interaction_id())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(ids.len(), 32);
-    }
 
     #[test]
     fn multipart_body_limit_covers_configured_image_limit() {
@@ -4713,90 +4250,6 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.contains("missing file part"), "unexpected error: {err}");
-        Ok(())
-    }
-
-    #[test]
-    fn query_events_projects_assistant_images_for_console_history()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let events = vec![PersistedEvent {
-            id: "evt-image-tool".to_string(),
-            seq: 7,
-            timestamp_ms: 42,
-            member_id: Some("rt:identity:luka:0".to_string()),
-            event: UnifiedEvent::Agent {
-                agent_id: "rt:identity:luka:0".to_string(),
-                event_type: "tool_execution_completed".to_string(),
-                payload: Some(serde_json::json!({
-                    "id": "tool-call-1",
-                    "name": "generate_image",
-                    "result": {
-                        "operation_id": "00000000-0000-0000-0000-000000000001",
-                        "terminal": { "terminal": "generated" },
-                        "images": [{
-                            "image_id": "00000000-0000-0000-0000-000000000002",
-                            "blob_ref": {
-                                "blob_id": "generated-blob-1",
-                                "media_type": "image/png"
-                            },
-                            "media_type": "image/png",
-                            "width": 640,
-                            "height": 480
-                        }],
-                        "provider_text": { "disposition": "not_emitted" },
-                        "revised_prompt": { "disposition": "unchanged" },
-                        "native_metadata": { "provider": "not_emitted" }
-                    }
-                })),
-            },
-        }];
-
-        let projected = project_query_events_for_console(
-            events,
-            &EventQuery {
-                identity: Some("identity:luka".to_string()),
-                ..EventQuery::default()
-            },
-        );
-        let serde_json::Value::Array(items) = projected else {
-            return Err(std::io::Error::other("array projection").into());
-        };
-
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[1]["event_type"], "assistant_image");
-        assert_eq!(items[1]["identity"], "identity:luka");
-        assert_eq!(items[1]["data"]["blob_id"], "generated-blob-1");
-        Ok(())
-    }
-
-    #[test]
-    fn query_events_hides_empty_web_search_annotation_history()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let events = vec![PersistedEvent {
-            id: "evt-annotation".to_string(),
-            seq: 8,
-            timestamp_ms: 42,
-            member_id: Some("rt:identity:luka:0".to_string()),
-            event: UnifiedEvent::Agent {
-                agent_id: "rt:identity:luka:0".to_string(),
-                event_type: "server_tool_content".to_string(),
-                payload: Some(serde_json::json!({
-                    "id": "msg-1",
-                    "name": "web_search_annotations",
-                    "content": {
-                        "type": "message_annotations",
-                        "annotations": []
-                    }
-                })),
-            },
-        }];
-
-        let projected = project_query_events_for_console(events, &EventQuery::default());
-        let serde_json::Value::Array(items) = projected else {
-            return Err(std::io::Error::other("array projection").into());
-        };
-
-        assert!(items.is_empty());
         Ok(())
     }
 }

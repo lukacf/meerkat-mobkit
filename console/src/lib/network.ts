@@ -1,18 +1,12 @@
 import {
   normalizeConsoleInteractionRejectedError,
-  normalizeConsoleInteractionAccepted,
   normalizeReplayUnavailableError,
 } from "@console-core";
 import type {
-  ConsoleDockAddressedTarget,
   ConsoleFrame,
-  ConsoleIdentityStreamEvent,
-  ConsoleInteractAccepted,
   ConsoleTimelineAccepted,
   ConsoleTimelinePage,
   ConsoleReplayUnavailablePayload,
-  ConsoleSessionHistoryPage,
-  ConsoleSendMessageResult,
   ConsoleGatewayInteractionRejectedError,
 } from "../types";
 
@@ -40,22 +34,6 @@ function unwrapConsoleEnvelope(
     return { data };
   }
   const record = data as Record<string, unknown>;
-  if (
-    typeof record.event_id === "string" &&
-    typeof record.event_type === "string" &&
-    typeof record.identity === "string" &&
-    "data" in record
-  ) {
-    const envelope = record as ConsoleIdentityStreamEvent;
-    return {
-      id: envelope.event_id,
-      event: envelope.event_type || eventName,
-      identity: envelope.identity,
-      interactionId: envelope.interaction_id,
-      timestampMs: envelope.timestamp_ms,
-      data: envelope.data,
-    };
-  }
   if (typeof record.type === "string" && "frame" in record) {
     const frame = timelineFrameToConsoleFrame(record.frame);
     const isUpdateEnvelope = eventName === "frame_updated";
@@ -247,67 +225,6 @@ async function rpc<T>(
   }
 
   return result.result as T;
-}
-
-export async function sendMessage(
-  baseUrl: string,
-  memberId: string,
-  message: string,
-  handlingMode: "queue" | "steer" = "queue",
-): Promise<ConsoleSendMessageResult> {
-  return rpc<ConsoleSendMessageResult>(baseUrl, "mobkit/send_message", {
-    member_id: memberId,
-    message,
-    handling_mode: handlingMode,
-  });
-}
-
-export async function sendMessageMultipart(
-  baseUrl: string,
-  memberId: string,
-  message: string,
-  attachments: File[],
-  handlingMode: "queue" | "steer" = "queue",
-): Promise<ConsoleSendMessageResult> {
-  const content: Array<Record<string, unknown>> = [];
-  if (message.trim()) {
-    content.push({ type: "text", text: message });
-  }
-  const form = new FormData();
-  attachments.forEach((file, index) => {
-    const uploadId = `upload-${Date.now().toString(36)}-${index}`;
-    content.push({
-      type: "image_upload",
-      upload_id: uploadId,
-      media_type: file.type || "application/octet-stream",
-      alt: file.name,
-    });
-    form.append(`file:${uploadId}`, file, file.name);
-  });
-  form.append("payload", JSON.stringify({
-    jsonrpc: "2.0",
-    id: `mobkit/send_message:${Date.now()}`,
-    method: "mobkit/send_message",
-    params: {
-      member_id: memberId,
-      content,
-      handling_mode: handlingMode,
-    },
-  }));
-
-  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
-    method: "POST",
-    body: form,
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`mobkit/send_message multipart failed ${response.status}: ${text}`);
-  }
-  const result = await response.json();
-  if (result.error) {
-    throw new Error(`mobkit/send_message RPC error: ${result.error.message || JSON.stringify(result.error)}`);
-  }
-  return result.result as ConsoleSendMessageResult;
 }
 
 export async function sendConsoleMultipart(
@@ -559,142 +476,6 @@ function flushTrailingSseBlock(buffer: string, onFrame: (frame: ConsoleFrame) =>
   }
 }
 
-export async function observeInteraction(
-  baseUrl: string,
-  memberId: string
-): Promise<ConsoleFrame[]> {
-  const response = await fetch(`${baseUrl}/interactions/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ member_id: memberId }),
-  });
-  return drainInteractionResponse(response);
-}
-
-export async function observeIdentityInteraction(
-  baseUrl: string,
-  identity: string,
-): Promise<ConsoleFrame[]> {
-  const response = await fetch(`${baseUrl}/console/identity/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ identity }),
-  });
-  return drainInteractionResponse(response);
-}
-
-function persistedEventToFrame(raw: unknown, index: number): ConsoleFrame {
-  const record = typeof raw === "object" && raw !== null
-    ? raw as Record<string, unknown>
-    : {};
-  if (
-    typeof record.event_id === "string"
-    && typeof record.event_type === "string"
-    && typeof record.identity === "string"
-    && "data" in record
-  ) {
-    return {
-      id: String(record.event_id),
-      event: String(record.event_type),
-      identity: String(record.identity),
-      ...(typeof record.interaction_id === "string" ? { interactionId: String(record.interaction_id) } : {}),
-      ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
-      data: record.data,
-    };
-  }
-  const event = typeof record.event === "object" && record.event !== null
-    ? record.event as Record<string, unknown>
-    : {};
-
-  // UnifiedEvent is serde(tag = "kind", rename_all = "snake_case"), so the
-  // wire format is {"kind": "agent", ...} / {"kind": "module", ...}.
-  if (event.kind === "agent") {
-    const payload =
-      typeof event.payload === "object" && event.payload !== null
-        ? event.payload
-        : null;
-    return {
-      id: String(record.id ?? `event:${index}`),
-      event: String(event.event_type ?? "agent_event"),
-      ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
-      data: payload ?? event,
-    };
-  }
-
-  if (event.kind === "module") {
-    return {
-      id: String(record.id ?? `event:${index}`),
-      event: String(event.event_type ?? "module_event"),
-      ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
-      data: (event.payload as unknown) ?? event,
-    };
-  }
-
-  return {
-    id: String(record.id ?? `event:${index}`),
-    event: String(record.type ?? "event"),
-    ...(typeof record.timestamp_ms === "number" ? { timestampMs: record.timestamp_ms } : {}),
-    data: raw,
-  };
-}
-
-/**
- * Result of a `mobkit/query_events` call.
- *
- * `available: false` means the runtime has no `EventLogStore`
- * configured — the server has nothing to replay. Callers MUST NOT
- * use this as a signal to clear local live-overlay state, because
- * the overlay is the only source of truth in that case. Pre-fix the
- * caller wiped the overlay on every terminal event and the rich
- * transcript flickered into a near-empty replay.
- */
-export interface QueryEventsResult {
-  readonly frames: ConsoleFrame[];
-  readonly available: boolean;
-}
-
-export async function queryEvents(
-  baseUrl: string,
-  target: { memberId?: string; identity?: string },
-  limit = 40
-): Promise<QueryEventsResult> {
-  const identity = target.identity?.trim();
-  const memberId = target.memberId?.trim();
-  const result = await rpc<unknown>(baseUrl, "mobkit/query_events", {
-    limit,
-    ...(identity ? { identity } : {}),
-    ...(identity ? {} : memberId ? { member_id: memberId } : {}),
-  });
-
-  let events = result;
-  let available = true;
-  if (typeof result === "object" && result !== null) {
-    const record = result as Record<string, unknown>;
-    if (record.status === "no_event_log_configured") {
-      events = Array.isArray(record.events) ? record.events : [];
-      available = false;
-    } else if (Array.isArray(record.events)) {
-      events = record.events;
-    }
-  }
-
-  if (!Array.isArray(events)) {
-    return { frames: [], available };
-  }
-
-  const frames = events
-    .filter((raw) => {
-      if (typeof raw !== "object" || raw === null) return true;
-      const ev = (raw as Record<string, unknown>).event;
-      if (typeof ev !== "object" || ev === null) return true;
-      const eventRecord = ev as Record<string, unknown>;
-      if (eventRecord.kind !== "agent") return true;
-      return typeof eventRecord.payload === "object" && eventRecord.payload !== null;
-    })
-    .map((event, index) => persistedEventToFrame(event, index));
-  return { frames, available };
-}
-
 export async function queryTimeline(
   baseUrl: string,
   target: { identity?: string; conversationId?: string; after?: string },
@@ -716,91 +497,6 @@ export async function queryTimeline(
     nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : undefined,
     available: true,
   };
-}
-
-export async function readSessionHistory(
-  baseUrl: string,
-  sessionId: string,
-  limit = 200,
-): Promise<ConsoleSessionHistoryPage | null> {
-  const trimmed = sessionId.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const result = await rpc<unknown>(baseUrl, "mobkit/read_session_history", {
-    session_id: trimmed,
-    offset: 0,
-    limit,
-  });
-  if (!result || typeof result !== "object") {
-    return null;
-  }
-  return result as ConsoleSessionHistoryPage;
-}
-
-export async function sendInteraction(
-  baseUrl: string,
-  memberId: string,
-  message: string
-): Promise<{ sendResult: ConsoleSendMessageResult; frames: ConsoleFrame[] }> {
-  // Open the SSE stream BEFORE sending. For fast members (cached/turn-driven)
-  // the run_completed/interaction_complete events can fire before a
-  // post-send subscription opens, causing the reply to be silently lost.
-  const streamAbort = new AbortController();
-  const streamResponsePromise = fetch(`${baseUrl}/interactions/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ member_id: memberId }),
-    signal: streamAbort.signal,
-  });
-
-  // Suppress the AbortError rejection that fires when we cancel the stream
-  // on a failed send — it is always intentional and has no caller to handle it.
-  void streamResponsePromise.catch(() => {});
-
-  let sendResult: ConsoleSendMessageResult;
-  try {
-    sendResult = await sendMessage(baseUrl, memberId, message);
-  } catch (err) {
-    streamAbort.abort();
-    throw err;
-  }
-
-  // The send succeeded — the turn was delivered. If the stream setup or read
-  // fails, return empty frames rather than throwing. The caller must NOT roll
-  // back the user message on a stream-only failure because the backend already
-  // accepted the turn and retrying would create a duplicate.
-  let frames: ConsoleFrame[];
-  try {
-    frames = await drainInteractionResponse(
-      await streamResponsePromise,
-      { sessionId: sendResult.session_id },
-    );
-  } catch {
-    frames = [];
-  }
-
-  return { sendResult, frames };
-}
-
-export async function sendInteract(
-  baseUrl: string,
-  identity: string,
-  content: string,
-  origin: string,
-  handlingMode: "queue" | "steer" = "queue",
-): Promise<ConsoleInteractAccepted> {
-  const accepted = await rpc<unknown>(baseUrl, "mobkit/interact", {
-    identity,
-    content,
-    origin,
-    handling_mode: handlingMode,
-  });
-  const normalized = normalizeConsoleInteractionAccepted(accepted);
-  if (!normalized) {
-    throw new Error("mobkit/interact returned an invalid acceptance payload");
-  }
-  return normalized;
 }
 
 export async function sendConsole(
@@ -841,160 +537,12 @@ function normalizeConsoleTimelineAccepted(
   };
 }
 
-export async function sendAddressedInteraction(
-  baseUrl: string,
-  target: ConsoleDockAddressedTarget,
-  message: string,
-  origin = "console",
-): Promise<{ sendResult: ConsoleSendMessageResult | ConsoleInteractAccepted; frames: ConsoleFrame[] }> {
-  if (target.addressingMode === "identity") {
-    const identity = target.identity?.trim();
-    if (!identity) {
-      throw new Error("identity-addressed send requires target.identity");
-    }
-
-    const streamAbort = new AbortController();
-    const streamResponsePromise = fetch(`${baseUrl}/console/identity/stream`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ identity }),
-      signal: streamAbort.signal,
-    });
-    void streamResponsePromise.catch(() => {});
-
-    let sendResult: ConsoleInteractAccepted;
-    try {
-      sendResult = await sendInteract(baseUrl, identity, message, origin);
-    } catch (err) {
-      streamAbort.abort();
-      throw err;
-    }
-
-    let frames: ConsoleFrame[];
-    try {
-      frames = await drainInteractionResponse(
-        await streamResponsePromise,
-        { interactionId: sendResult.interaction_id },
-      );
-    } catch {
-      frames = [];
-    }
-
-    return { sendResult, frames };
-  }
-
-  const memberId = target.memberId?.trim();
-  if (!memberId) {
-    throw new Error("member-addressed send requires target.memberId");
-  }
-  return sendInteraction(baseUrl, memberId, message);
-}
-
-export async function sendAddressedInteractionStreaming(
-  baseUrl: string,
-  target: ConsoleDockAddressedTarget,
-  message: string,
-  origin = "console",
-  onFrame?: (frame: ConsoleFrame) => void,
-): Promise<{ sendResult: ConsoleSendMessageResult | ConsoleInteractAccepted; frames: ConsoleFrame[] }> {
-  if (target.addressingMode === "identity") {
-    const identity = target.identity?.trim();
-    if (!identity) {
-      throw new Error("identity-addressed send requires target.identity");
-    }
-
-    const streamAbort = new AbortController();
-    const streamResponsePromise = fetch(`${baseUrl}/console/identity/stream`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ identity }),
-      signal: streamAbort.signal,
-    });
-    void streamResponsePromise.catch(() => {});
-
-    let sendResult: ConsoleInteractAccepted;
-    try {
-      sendResult = await sendInteract(baseUrl, identity, message, origin);
-    } catch (error) {
-      streamAbort.abort();
-      throw error;
-    }
-
-    let frames: ConsoleFrame[];
-    try {
-      frames = await streamFramesFromResponse(await streamResponsePromise, {
-        correlation: { interactionId: sendResult.interaction_id },
-        onFrame,
-      });
-    } catch {
-      frames = [];
-    }
-    return { sendResult, frames };
-  }
-
-  const memberId = target.memberId?.trim();
-  if (!memberId) {
-    throw new Error("member-addressed send requires target.memberId");
-  }
-
-  const streamAbort = new AbortController();
-  const streamResponsePromise = fetch(`${baseUrl}/interactions/stream`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ member_id: memberId }),
-    signal: streamAbort.signal,
-  });
-  void streamResponsePromise.catch(() => {});
-
-  let sendResult: ConsoleSendMessageResult;
-  try {
-    sendResult = await sendMessage(baseUrl, memberId, message);
-  } catch (error) {
-    streamAbort.abort();
-    throw error;
-  }
-
-  let frames: ConsoleFrame[];
-  try {
-    frames = await streamFramesFromResponse(await streamResponsePromise, {
-      correlation: { sessionId: sendResult.session_id },
-      onFrame,
-    });
-  } catch {
-    frames = [];
-  }
-  return { sendResult, frames };
-}
-
 export async function callConsoleRpc<T>(
   baseUrl: string,
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<T> {
   return rpc<T>(baseUrl, method, params);
-}
-
-export function subscribeConsoleEvents(
-  baseUrl: string,
-  path: string,
-  onFrame: (frame: ConsoleFrame) => void,
-  options?: { method?: "GET" | "POST"; body?: Record<string, unknown> },
-): () => void {
-  const controller = new AbortController();
-  void (async () => {
-    const response = await fetch(`${baseUrl}${path}`, {
-      method: options?.method || "GET",
-      headers: { "content-type": "application/json" },
-      ...(options?.body ? { body: JSON.stringify(options.body) } : {}),
-      signal: controller.signal,
-    });
-    await streamFramesFromResponse(response, { onFrame, stopOnTerminal: false });
-  })().catch(() => {
-    // The host polls /console/experience separately and can tolerate
-    // best-effort stream failures during local development/example use.
-  });
-
-  return () => controller.abort();
 }
 
 function timelineStreamPath(target: { identity?: string; conversationId?: string; after?: string }): string {
@@ -1079,15 +627,4 @@ export function subscribeTimelineEvents(
     stopped = true;
     controller?.abort();
   };
-}
-
-export function subscribeIdentityEvents(
-  baseUrl: string,
-  identity: string,
-  onFrame: (frame: ConsoleFrame) => void,
-): () => void {
-  return subscribeConsoleEvents(baseUrl, "/console/identity/stream", onFrame, {
-    method: "POST",
-    body: { identity },
-  });
 }

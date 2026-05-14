@@ -10,30 +10,6 @@ export interface ExperienceSectionMeta {
   capabilities?: string[];
 }
 
-export interface ConsoleInteractionRequest {
-  identity: string;
-  content: string;
-  origin: string;
-}
-
-export interface ConsoleInteractionAccepted {
-  interaction_id: string;
-  identity: string;
-}
-
-export interface IdentityStreamRequest {
-  identity: string;
-}
-
-export interface ConsoleIdentityEventEnvelope {
-  event_id: string;
-  interaction_id?: string;
-  identity: string;
-  event_type: string;
-  timestamp_ms: number;
-  data: unknown;
-}
-
 export interface IdentityStatusRow {
   identity: string;
   display_name?: string;
@@ -45,8 +21,6 @@ export interface IdentityStatusRow {
   checkpoint_version?: number;
   lease_healthy?: boolean;
 }
-
-export type ConsoleDockTargetAddressingMode = "identity" | "member";
 
 export interface IdentityInspectViewState extends IdentityStatusRow {
   continuity: {
@@ -249,68 +223,6 @@ export function normalizeActivityFilterPreset(value: unknown): ActivityFilterPre
     ...(typeof record.watchedOnly === "boolean" ? { watchedOnly: record.watchedOnly } : {}),
     ...(alertLevels?.length ? { alertLevels } : {}),
     ...(eventTypeFilter?.length ? { eventTypeFilter } : {}),
-  };
-}
-
-export function normalizeConsoleDockTargetAddressingMode(value: unknown): ConsoleDockTargetAddressingMode {
-  return value === "identity" ? "identity" : "member";
-}
-
-export function normalizeConsoleInteractionRequest(value: unknown): ConsoleInteractionRequest | null {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record) {
-    return null;
-  }
-  const identity = trimString(record.identity);
-  const content = trimString(record.content);
-  const origin = trimString(record.origin);
-  if (!identity || !content || !origin) {
-    return null;
-  }
-  return { identity, content, origin };
-}
-
-export function normalizeConsoleInteractionAccepted(value: unknown): ConsoleInteractionAccepted | null {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record) {
-    return null;
-  }
-  const interactionId = trimString(record.interaction_id);
-  const identity = trimString(record.identity);
-  if (!interactionId || !identity) {
-    return null;
-  }
-  return { interaction_id: interactionId, identity };
-}
-
-export function normalizeIdentityStreamRequest(value: unknown): IdentityStreamRequest | null {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record) {
-    return null;
-  }
-  const identity = trimString(record.identity);
-  return identity ? { identity } : null;
-}
-
-export function normalizeConsoleIdentityEventEnvelope(value: unknown): ConsoleIdentityEventEnvelope | null {
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record) {
-    return null;
-  }
-  const eventId = trimString(record.event_id);
-  const identity = trimString(record.identity);
-  const eventType = trimString(record.event_type);
-  const timestamp = normalizeFiniteNumber(record.timestamp_ms);
-  if (!eventId || !identity || !eventType || timestamp === undefined) {
-    return null;
-  }
-  return {
-    event_id: eventId,
-    identity,
-    event_type: eventType,
-    timestamp_ms: timestamp,
-    data: "data" in record ? record.data : null,
-    ...(trimString(record.interaction_id) ? { interaction_id: trimString(record.interaction_id) } : {}),
   };
 }
 

@@ -1,14 +1,9 @@
 import type {
   ActivityFilterPreset,
-  ConsoleDockTargetAddressingMode,
-  ConsoleIdentityEventEnvelope,
-  ConsoleInteractionAccepted,
   ConsoleInteractionRejectedError,
-  ConsoleInteractionRequest,
   ExperienceSectionMeta,
   GatingActionRequest,
   GatingActionResult,
-  IdentityStreamRequest,
   IdentityStatusRow,
   IdentityInspectViewState,
   ReplayUnavailableError,
@@ -36,10 +31,9 @@ export interface ConsoleFrame {
   data: unknown;
 }
 
-export type ConsoleInteractRequest = ConsoleInteractionRequest;
-export type ConsoleInteractAccepted = ConsoleInteractionAccepted;
-
-export interface ConsoleTimelineAccepted extends ConsoleInteractionAccepted {
+export interface ConsoleTimelineAccepted {
+  interaction_id: string;
+  identity: string;
   conversation_id?: string;
   session_id?: string;
   input_frame_id?: string;
@@ -51,15 +45,6 @@ export interface ConsoleTimelinePage {
   frames: ConsoleFrame[];
   nextCursor?: string;
   available: boolean;
-}
-export type ConsoleIdentityStreamSubscription = IdentityStreamRequest;
-export type ConsoleIdentityStreamEvent = ConsoleIdentityEventEnvelope;
-
-export interface ConsoleSendMessageResult {
-  accepted?: boolean;
-  member_id?: string;
-  session_id?: string;
-  interaction_id?: string;
 }
 
 export type ConsoleGatewayInteractionRejectedError = ConsoleInteractionRejectedError;
@@ -213,20 +198,5 @@ export interface ConsoleGatingActionPayload extends GatingActionRequest {}
 export interface ConsoleGatingActionResponse extends GatingActionResult {}
 
 export interface ConsoleReplayUnavailablePayload extends ReplayUnavailableError {}
-
-export interface ConsoleSessionHistoryPage {
-  session_id?: string;
-  message_count?: number;
-  offset?: number;
-  limit?: number | null;
-  has_more?: boolean;
-  messages?: unknown[];
-}
-
-export interface ConsoleDockAddressedTarget {
-  addressingMode: ConsoleDockTargetAddressingMode;
-  identity?: string;
-  memberId?: string;
-}
 
 export interface ConsoleToolAccumulatorSnapshot extends ToolCallAccumulatorState {}
