@@ -236,6 +236,21 @@ export class MobKitRuntime {
       if (this._config.errorCallback !== null) {
         this._dispatcher.registerErrorCallback(this._config.errorCallback);
       }
+      if (this._config.continuityStore !== null) {
+        this._dispatcher.registerContinuityStore(this._config.continuityStore);
+      }
+      if (this._config.leaseProvider !== null) {
+        this._dispatcher.registerLeaseProvider(this._config.leaseProvider);
+      }
+      if (this._config.rosterProvider !== null) {
+        this._dispatcher.registerRosterProvider(this._config.rosterProvider);
+      }
+      if (this._config.topologyProvider !== null) {
+        this._dispatcher.registerTopologyProvider(this._config.topologyProvider);
+      }
+      if (this._config.agentCustomizer !== null) {
+        this._dispatcher.registerAgentCustomizer(this._config.agentCustomizer);
+      }
       this._transport.setCallbackHandler(
         this._dispatcher.handleCallback.bind(this._dispatcher),
       );
@@ -320,6 +335,15 @@ export class MobKitRuntime {
     params.runtime_options = runtimeOptions;
     if (this._config.persistentState) {
       params.persistent_state = this._config.persistentState;
+    }
+    if (this._config.rosterProvider !== null) {
+      params.has_roster_provider = true;
+    }
+    if (this._config.topologyProvider !== null) {
+      params.has_topology_provider = true;
+    }
+    if (this._config.agentCustomizer !== null) {
+      params.has_agent_customizer = true;
     }
     return params;
   }

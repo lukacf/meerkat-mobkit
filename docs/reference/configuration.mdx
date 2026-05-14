@@ -88,6 +88,21 @@ PreSpawnData {
 
 ---
 
+## SDK/Gateway runtime options
+
+The stock SDK gateway consumes the `runtime_options` object sent by Python and TypeScript builders during `mobkit/init`.
+
+| Field | Type | Gateway behavior |
+|-------|------|------------------|
+| `memory_config` | Object | Supports `{ "backend": "elephant", "endpoint": "..." }` and derives `state_path` as `<persistent_state>/elephant-memory-state.json`. |
+| `routing_config_path` | String | Loads JSON or TOML route config (`routes = [...]` / `[[routes]]`) and installs the routes into the unified runtime before serving RPCs. |
+| `scheduling_files` | String array | Loads JSON or TOML schedule definitions and uses them as the default schedules for `mobkit/scheduling/evaluate` and `mobkit/scheduling/dispatch` when the RPC request omits `schedules`. |
+| `gating_config_path` | String | Loads JSON or TOML action policies from an `actions` object and supplies a configured `risk_tier` for `mobkit/gating/evaluate` requests that omit `risk_tier`. |
+| `auth_config` | Object | Supports JWT shared-secret auth (`provider = "jwt"` / `shared_secret`) and wires the reference HTTP console/SSE routes to the configured trusted issuer, audience, and email allowlist. |
+| `event_log` | Object | Supports the built-in memory event log with `storage = "memory"`, `batch_size`, and `flush_interval_ms`; `mobkit/query_events` returns the configured store instead of `no_event_log_configured`. |
+
+Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
+
 ## AuthPolicy
 
 ```rust
@@ -162,7 +177,9 @@ ElephantMemoryBackendConfig {
 | Field | Type | Description |
 |-------|------|-------------|
 | `endpoint` | `String` | Elephant HTTP API base URL (e.g. `"http://localhost:3000"`) |
-| `state_path` | `String` | Local directory for memory state files |
+| `state_path` | `String` | Local JSON state file used by the Elephant-backed adapter |
+
+For SDK builds that boot through `rpc_gateway`, `state_path` is derived from `.persistent_state(path)` as `<path>/elephant-memory-state.json`; callers provide only `backend: "elephant"` and `endpoint`.
 
 ---
 
