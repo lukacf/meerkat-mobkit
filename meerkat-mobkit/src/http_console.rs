@@ -3643,31 +3643,36 @@ async fn build_aggregator_live_snapshot(
     config_module_ids: &[String],
 ) -> Result<ConsoleLiveSnapshot, Box<dyn std::error::Error + Send + Sync>> {
     let identities = aggregator.list_identities().await?;
-    let mut members = identities
-        .iter()
-        .map(|identity| {
-            let mut labels = identity.labels.clone();
-            labels
-                .entry("display_name".to_string())
-                .or_insert_with(|| identity.display_name.clone());
-            labels
-                .entry("addressable".to_string())
-                .or_insert_with(|| identity.addressable.to_string());
-            ConsoleMember {
-                agent_identity: identity.identity.clone(),
-                role: labels
-                    .get("role")
-                    .cloned()
-                    .unwrap_or_else(|| "identity".to_string()),
-                state: identity.health.clone(),
-                model_capabilities: ConsoleModelCapabilities::default(),
-                runtime_mode: Some("console_aggregator".to_string()),
-                session_id: identity.session_id.clone(),
-                wired_to: Vec::new(),
-                labels,
-            }
-        })
-        .collect::<Vec<_>>();
+    let mut members = Vec::with_capacity(identities.len());
+    for identity in &identities {
+        let mut labels = identity.labels.clone();
+        labels
+            .entry("display_name".to_string())
+            .or_insert_with(|| identity.display_name.clone());
+        labels
+            .entry("addressable".to_string())
+            .or_insert_with(|| identity.addressable.to_string());
+        let wired_to = aggregator
+            .inspect_identity(&identity.identity)
+            .await
+            .ok()
+            .flatten()
+            .map(|inspection| inspection.peers)
+            .unwrap_or_default();
+        members.push(ConsoleMember {
+            agent_identity: identity.identity.clone(),
+            role: labels
+                .get("role")
+                .cloned()
+                .unwrap_or_else(|| "identity".to_string()),
+            state: identity.health.clone(),
+            model_capabilities: ConsoleModelCapabilities::default(),
+            runtime_mode: Some("console_aggregator".to_string()),
+            session_id: identity.session_id.clone(),
+            wired_to,
+            labels,
+        });
+    }
     members.sort_by(|left, right| left.agent_identity.cmp(&right.agent_identity));
     let agents = members
         .iter()

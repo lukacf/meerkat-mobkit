@@ -569,6 +569,69 @@ test("mapFramesToTimelineEntries renders image-tool turns without duplicating fi
   assert.equal(imageEntries.length, 1);
 });
 
+test("mapFramesToTimelineEntries renders generate_image result images immediately", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "incident-commander",
+      member_id: "incident-commander",
+      label: "Incident Commander",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-tool-call",
+        event: "tool_call_requested",
+        interactionId: "turn-1",
+        timestampMs: 20,
+        data: { id: "tool-1", name: "generate_image", args: { prompt: "ALL CLEAR" } },
+      },
+      {
+        id: "evt-tool-done",
+        event: "tool_execution_completed",
+        interactionId: "turn-1",
+        timestampMs: 30,
+        data: {
+          id: "tool-1",
+          name: "generate_image",
+          result: JSON.stringify({
+            images: [
+              {
+                blob_ref: { blob_id: "sha256:badge", media_type: "image/png" },
+                height: 1024,
+                image_id: "image-1",
+                media_type: "image/png",
+                width: 1024,
+              },
+            ],
+          }),
+        },
+      },
+    ],
+    {
+      blobBaseUrl: "http://127.0.0.1:49551",
+    },
+  );
+
+  const imageEntries = entries.filter(
+    (entry) => entry.kind === "message"
+      && "blocks" in entry
+      && Array.isArray(entry.blocks)
+      && entry.blocks.some((block) => block.type === "image"),
+  );
+
+  assert.equal(imageEntries.length, 1);
+  const imageBlock = imageEntries[0]?.kind === "message"
+    && "blocks" in imageEntries[0]
+    && Array.isArray(imageEntries[0].blocks)
+    ? imageEntries[0].blocks.find((block) => block.type === "image")
+    : null;
+  assert.equal(imageBlock?.type, "image");
+  assert.equal(
+    imageBlock?.type === "image" ? imageBlock.src : "",
+    "http://127.0.0.1:49551/blobs/sha256%3Abadge",
+  );
+});
+
 test("sortConversationTimelineEntries keeps optimistic user messages after older assistant replies", () => {
   const entries = sortConversationTimelineEntries([
     {

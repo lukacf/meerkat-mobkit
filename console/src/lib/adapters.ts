@@ -1010,6 +1010,50 @@ function renderAssistantImageEntry(
   };
 }
 
+function renderGeneratedImageToolResultEntries(
+  agent: ConsoleAgent,
+  frame: ConsoleFrame,
+  entryId: string,
+  blobBaseUrl?: string,
+): ConversationTimelineEntry[] {
+  const data = frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : {};
+  const name = typeof data.name === "string"
+    ? data.name
+    : typeof data.tool_name === "string"
+      ? data.tool_name
+      : "";
+  if (name !== "generate_image") return [];
+
+  let result = data.result;
+  if (typeof result === "string") {
+    try {
+      result = JSON.parse(result);
+    } catch {
+      return [];
+    }
+  }
+  if (!result || typeof result !== "object") return [];
+  const images = (result as Record<string, unknown>).images;
+  if (!Array.isArray(images)) return [];
+
+  return images.flatMap((image, index) => {
+    if (!image || typeof image !== "object") return [];
+    const imageFrame: ConsoleFrame = {
+      ...frame,
+      data: { image },
+    };
+    const imageEntry = renderAssistantImageEntry(
+      agent,
+      imageFrame,
+      `${entryId}:generated-image:${index}`,
+      blobBaseUrl,
+    );
+    return imageEntry ? [imageEntry] : [];
+  });
+}
+
 function imageEntryKey(entry: ConversationTimelineEntry): string | null {
   if (entry.kind !== "message" || entry.variant !== "rich" || !("blocks" in entry)) {
     return null;
@@ -1727,6 +1771,18 @@ export function mapFramesToTimelineEntries(
     }
 
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      const imageEntries = renderGeneratedImageToolResultEntries(
+        agent,
+        frame,
+        entryId,
+        options.blobBaseUrl,
+      );
+      for (const imageEntry of imageEntries) {
+        const key = imageEntryKey(imageEntry);
+        if (key && emittedImages.has(key)) continue;
+        if (key) emittedImages.add(key);
+        entries.push(imageEntry);
+      }
       continue;
     }
 

@@ -524,18 +524,6 @@ fn normalize_runtime_turn_request(
     req
 }
 
-fn normalize_direct_member_delivery_mode(
-    handling_mode: meerkat_core::types::HandlingMode,
-) -> meerkat_core::types::HandlingMode {
-    match handling_mode {
-        // Direct member delivery goes through the queue-only session-service
-        // path. Runtime-backed callers may request Steer, but forwarding it
-        // here causes Meerkat to reject the replay as an invalid surface.
-        meerkat_core::types::HandlingMode::Steer => meerkat_core::types::HandlingMode::Queue,
-        other => other,
-    }
-}
-
 /// Implement all `MobSessionService` super-traits by delegating to `self.inner`,
 /// overriding only `create_session` to apply the pre-build hook.
 macro_rules! delegate_mob_session_service {
@@ -2138,10 +2126,7 @@ pub async fn send_message_on_mob(
 }
 
 /// Variant that accepts the console's `Queue`/`Steer` wire contract while
-/// delivering through MobKit's direct member-send path. Direct member delivery
-/// is queue-only in Meerkat 0.6, so `Steer` is normalized before reaching the
-/// session service; callers that need a true interrupt boundary must use a
-/// runtime-backed steering surface.
+/// delivering through MobKit's direct member-send path.
 pub async fn send_message_on_mob_with_mode(
     handle: &MobHandle,
     member_id: &str,
@@ -2160,7 +2145,6 @@ pub async fn send_message_on_mob_with_mode(
         return Err(MobRuntimeError::InvalidInput("content must not be empty"));
     }
     let mid = meerkat_mob::ids::MeerkatId::from(member_id);
-    let handling_mode = normalize_direct_member_delivery_mode(handling_mode);
     let _receipt = handle
         .member(&mid)
         .await?
@@ -3143,20 +3127,6 @@ image_generation = true
         );
         assert_eq!(normalized.prompt, expected_prompt);
         assert_eq!(normalized.system_prompt, expected_system_prompt);
-    }
-
-    /// Direct member delivery must not forward runtime-only steering semantics.
-    #[test]
-    fn normalize_direct_member_delivery_mode_downgrades_steer() {
-        assert_eq!(
-            normalize_direct_member_delivery_mode(meerkat_core::types::HandlingMode::Queue),
-            meerkat_core::types::HandlingMode::Queue
-        );
-        assert_eq!(
-            normalize_direct_member_delivery_mode(meerkat_core::types::HandlingMode::Steer),
-            meerkat_core::types::HandlingMode::Queue,
-            "the direct member-send path is queue-only until a runtime-backed steering surface is wired"
-        );
     }
 
     /// SessionCreatedContext must carry model, labels, and optional system_prompt.

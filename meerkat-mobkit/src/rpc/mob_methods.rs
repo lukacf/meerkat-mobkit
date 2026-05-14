@@ -68,8 +68,6 @@ fn extract_content(params: &Value) -> Result<Option<ContentInput>, String> {
 
 /// Optional `handling_mode: "queue" | "steer"` JSON-RPC parameter.
 /// Defaults to `Queue` when missing or null; unknown strings remain invalid.
-/// The direct MobKit send path normalizes `Steer` to `Queue` until a
-/// runtime-backed steering surface is available.
 fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
     let Some(raw) = params.get("handling_mode") else {
         return Ok(meerkat_core::types::HandlingMode::Queue);
