@@ -20,9 +20,11 @@ ElephantMemoryBackendConfig {
 | Field | Type | Description |
 |-------|------|-------------|
 | `endpoint` | `String` | Elephant HTTP API base URL |
-| `state_path` | `String` | Local directory for memory state files |
+| `state_path` | `String` | Local JSON state file used by the Elephant-backed adapter |
 
 The `ElephantMemoryStoreAdapter` handles connection health checks, request serialization, and error mapping.
+
+When using the Python or TypeScript SDK through the stock `rpc_gateway`, configure Elephant with `memory.elephant(endpoint)` and enable `.persistent_state(path)`. The gateway derives the adapter state file as `<persistent_state>/elephant-memory-state.json`. Gateway `memory_config` currently supports only `backend: "elephant"` and `endpoint`; fields such as `stores`, `space_id`, and `collection` are rejected at init so unsupported configuration does not become a silent no-op.
 
 ## Indexing
 

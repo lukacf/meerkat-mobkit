@@ -37,6 +37,13 @@ function createMockRuntime(): {
     authConfig: null,
     gatewayBin: null,
     modules: [],
+    persistentState: null,
+    continuityStore: null,
+    leaseProvider: null,
+    scratchDir: null,
+    rosterProvider: null,
+    agentCustomizer: null,
+    topologyProvider: null,
   };
 
   const rt = new MobKitRuntime(config);

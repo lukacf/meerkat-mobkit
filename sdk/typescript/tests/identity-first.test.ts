@@ -517,6 +517,12 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
       gatewayBin: null,
       modules: [],
       persistentState: null,
+      continuityStore: null,
+      leaseProvider: null,
+      scratchDir: null,
+      rosterProvider: null,
+      agentCustomizer: null,
+      topologyProvider: null,
     });
     // Stub _rpc to capture calls and return plausible results
     (rt as unknown as Record<string, unknown>)._rpc = async (
@@ -830,6 +836,42 @@ describe("Builder identity-first extensions (REQ-50)", () => {
     assert.equal(builder._config.leaseProvider, lease);
     assert.equal(builder._config.scratchDir, "/tmp/scratch");
   });
+
+  it("runtime init params advertise identity-first provider callbacks", async () => {
+    const { MobKitRuntime } = await import("../src/runtime.js");
+    const rosterProvider = { async roster() { return []; } };
+    const topologyProvider = { async computeEdges() { return []; } };
+    const agentCustomizer = { async customizeBuild() {} };
+    const rt = new MobKitRuntime({
+      mobConfigPath: null,
+      sessionBuilder: null,
+      sessionStore: null,
+      discoveryCallback: null,
+      preSpawnCallback: null,
+      errorCallback: null,
+      eventLog: null,
+      gatingConfigPath: null,
+      routingConfigPath: null,
+      schedulingFiles: [],
+      memoryConfig: null,
+      authConfig: null,
+      gatewayBin: "/bin/rpc_gateway",
+      modules: [],
+      persistentState: "/tmp/state",
+      continuityStore: null,
+      leaseProvider: null,
+      scratchDir: null,
+      rosterProvider,
+      agentCustomizer,
+      topologyProvider,
+    });
+
+    const params = (rt as unknown as { _buildInitParams(): Record<string, unknown> })
+      ._buildInitParams();
+    assert.equal(params.has_roster_provider, true);
+    assert.equal(params.has_topology_provider, true);
+    assert.equal(params.has_agent_customizer, true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -837,7 +879,7 @@ describe("Builder identity-first extensions (REQ-50)", () => {
 // ---------------------------------------------------------------------------
 
 describe("CallbackDispatcher provider routing (REQ-51)", () => {
-  it("routes callback/continuity/resolve_many to ContinuityStore", async () => {
+  it("routes callback/continuity_store/resolve_many to ContinuityStore", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
     const resolveCalls: string[][] = [];
@@ -856,7 +898,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async upsertContinuityRecord() {},
     });
 
-    const result = await dispatcher.handleCallback("callback/continuity/resolve_many", {
+    const result = await dispatcher.handleCallback("callback/continuity_store/resolve_many", {
       identities: ["lead:main", "worker:1"],
     });
     assert.equal(resolveCalls.length, 1);
@@ -864,7 +906,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.ok(result !== null);
   });
 
-  it("routes callback/continuity/load_session_snapshot", async () => {
+  it("routes callback/continuity_store/load_session_snapshot", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
     let loadedSessionId: string | null = null;
@@ -879,14 +921,14 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async upsertContinuityRecord() {},
     });
 
-    const result = await dispatcher.handleCallback("callback/continuity/load_session_snapshot", {
+    const result = await dispatcher.handleCallback("callback/continuity_store/load_session_snapshot", {
       session_id: "sess-1",
     });
     assert.equal(loadedSessionId, "sess-1");
     assert.ok(result !== null);
   });
 
-  it("routes callback/continuity/save_session_snapshot", async () => {
+  it("routes callback/continuity_store/save_session_snapshot", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
     let savedArgs: Record<string, unknown> | null = null;
@@ -900,7 +942,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async upsertContinuityRecord() {},
     });
 
-    await dispatcher.handleCallback("callback/continuity/save_session_snapshot", {
+    await dispatcher.handleCallback("callback/continuity_store/save_session_snapshot", {
       identity: "lead:main",
       session_id: "sess-1",
       generation: 0,
@@ -914,7 +956,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.equal(savedArgs!.hasData, true);
   });
 
-  it("routes callback/continuity/upsert_continuity_record", async () => {
+  it("routes callback/continuity_store/upsert_continuity_record", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
     let upsertedRecord: Record<string, unknown> | null = null;
@@ -928,7 +970,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       },
     });
 
-    await dispatcher.handleCallback("callback/continuity/upsert_continuity_record", {
+    await dispatcher.handleCallback("callback/continuity_store/upsert_continuity_record", {
       record: {
         identity: "lead:main",
         agent_runtime_id: "rt-1",
@@ -943,7 +985,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.equal(upsertedRecord!.fencingToken, 42);
   });
 
-  it("routes callback/lease/acquire_leases to LeaseProvider", async () => {
+  it("routes callback/lease_provider/acquire_leases to LeaseProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
 
@@ -959,14 +1001,14 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async releaseLeases() {},
     });
 
-    const result = await dispatcher.handleCallback("callback/lease/acquire_leases", {
+    const result = await dispatcher.handleCallback("callback/lease_provider/acquire_leases", {
       identities: ["x:1"],
       runtime_instance: "rt-1",
     });
     assert.ok(result !== null);
   });
 
-  it("routes callback/lease/renew_leases to LeaseProvider", async () => {
+  it("routes callback/lease_provider/renew_leases to LeaseProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
 
@@ -982,13 +1024,13 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async releaseLeases() {},
     });
 
-    const result = await dispatcher.handleCallback("callback/lease/renew_leases", {
+    const result = await dispatcher.handleCallback("callback/lease_provider/renew_leases", {
       grants: [{ identity: "x:1", fencing_token: 1, ttl_ms: 30000 }],
     });
     assert.ok(result !== null);
   });
 
-  it("routes callback/lease/release_leases to LeaseProvider", async () => {
+  it("routes callback/lease_provider/release_leases to LeaseProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
     let releasedCount = 0;
@@ -999,13 +1041,13 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async releaseLeases(grants) { releasedCount = grants.length; },
     });
 
-    await dispatcher.handleCallback("callback/lease/release_leases", {
+    await dispatcher.handleCallback("callback/lease_provider/release_leases", {
       grants: [{ identity: "x:1", fencing_token: 1, ttl_ms: 30000 }],
     });
     assert.equal(releasedCount, 1);
   });
 
-  it("routes callback/roster to RosterProvider", async () => {
+  it("routes callback/roster_provider/roster to RosterProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
 
@@ -1025,7 +1067,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       },
     });
 
-    const result = await dispatcher.handleCallback("callback/roster", {
+    const result = await dispatcher.handleCallback("callback/roster_provider/roster", {
       context: {},
     });
     const specs = result as Array<Record<string, unknown>>;
@@ -1033,7 +1075,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.equal(specs[0].identity, "triage:main");
   });
 
-  it("routes callback/topology/compute_edges to TopologyProvider", async () => {
+  it("routes callback/topology_provider/compute_edges to TopologyProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
 
@@ -1043,7 +1085,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       },
     });
 
-    const result = await dispatcher.handleCallback("callback/topology/compute_edges", {
+    const result = await dispatcher.handleCallback("callback/topology_provider/compute_edges", {
       target_identities: ["lead:main", "worker:1"],
       context: {},
     });
@@ -1052,7 +1094,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.equal(edges[0].a, "lead:main");
   });
 
-  it("routes callback/customizer/customize_build to AgentCustomizer", async () => {
+  it("routes callback/agent_customizer/customize_build to AgentCustomizer", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
 
@@ -1067,7 +1109,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       },
     });
 
-    const result = await dispatcher.handleCallback("callback/customizer/customize_build", {
+    const result = await dispatcher.handleCallback("callback/agent_customizer/customize_build", {
       context: { identity: "x:1", active_peers: [], managed_edges: [] },
       spec: { identity: "x:1", profile: "worker", addressability: "addressable" },
       draft: { model: null, system_prompt: null, additional_instructions: [], labels: {}, app_context: null, external_tools: [] },
@@ -1078,7 +1120,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.equal(tools[0].name, "search");
   });
 
-  it("routes callback/customizer/after_create to AgentCustomizer", async () => {
+  it("routes callback/agent_customizer/after_create to AgentCustomizer", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();
     let afterCreateCalled = false;
@@ -1090,7 +1132,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       },
     });
 
-    await dispatcher.handleCallback("callback/customizer/after_create", {
+    await dispatcher.handleCallback("callback/agent_customizer/after_create", {
       identity: "x:1",
       agent_runtime_id: "rt-1",
       session_id: "sess-1",

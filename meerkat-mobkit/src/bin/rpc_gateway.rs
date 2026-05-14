@@ -19,16 +19,21 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::Engine;
+use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
-    AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
-    DiscoverySpec, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig,
-    ModuleConfig, ObjectStoreBlobStore, ReleaseMetadata, RestartPolicy, RuntimeDecisionState,
-    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, mob_handle_runtime::mob_definition_may_use_image_generation,
-    start_mobkit_runtime,
+    AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
+    ConsolePolicy, DiscoverySpec, ElephantMemoryBackendConfig, EventLogConfig, EventLogStore,
+    EventQuery, InMemoryMetadataStore, MOBKIT_CONTRACT_VERSION, MemoryBackendConfig,
+    MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ObjectStoreBlobStore,
+    PersistedEvent, PersistentMetadataStore, ReleaseMetadata, RestartPolicy, RuntimeDecisionState,
+    RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition, SqliteMetadataStore,
+    TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json,
+    mob_handle_runtime::mob_definition_may_use_image_generation, start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
 
@@ -45,6 +50,81 @@ use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
 use meerkat_mob::{MobDefinition, MobStorage};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+#[derive(Clone, Default)]
+struct GatewayGatingConfig {
+    action_risk_tiers: HashMap<String, String>,
+}
+
+#[derive(Default)]
+struct GatewayRuntimeOptions {
+    runtime_options: RuntimeOptions,
+    routing_routes: Vec<RuntimeRoute>,
+    schedules: Vec<ScheduleDefinition>,
+    gating: GatewayGatingConfig,
+    event_log: Option<EventLogConfig>,
+    decisions: Option<RuntimeDecisionState>,
+}
+
+#[derive(Default)]
+struct InMemoryEventLogStore {
+    events: std::sync::Mutex<Vec<PersistedEvent>>,
+}
+
+impl EventLogStore for InMemoryEventLogStore {
+    fn append_batch(
+        &self,
+        events: Vec<PersistedEvent>,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), EventLogError>> + Send + '_>> {
+        Box::pin(async move {
+            self.events.lock().unwrap().extend(events);
+            Ok(())
+        })
+    }
+
+    fn query(
+        &self,
+        query: EventQuery,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<PersistedEvent>, EventLogError>>
+                + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let mut events = self.events.lock().unwrap().clone();
+            events.retain(|event| {
+                query
+                    .since_ms
+                    .is_none_or(|since| event.timestamp_ms >= since)
+                    && query
+                        .until_ms
+                        .is_none_or(|until| event.timestamp_ms < until)
+                    && query
+                        .after_seq
+                        .is_none_or(|after_seq| event.seq > after_seq)
+                    && query
+                        .member_id
+                        .as_ref()
+                        .is_none_or(|member_id| event.member_id.as_ref() == Some(member_id))
+                    && (query.event_types.is_empty()
+                        || query.event_types.iter().any(|event_type| {
+                            matches!(
+                                &event.event,
+                                meerkat_mobkit::UnifiedEvent::Module(module)
+                                    if &module.event_type == event_type
+                            )
+                        }))
+            });
+            events.sort_by_key(|event| event.seq);
+            if let Some(limit) = query.limit {
+                events.truncate(limit);
+            }
+            Ok(events)
+        })
+    }
+}
 
 fn minimal_decision_state() -> RuntimeDecisionState {
     RuntimeDecisionState {
@@ -80,6 +160,351 @@ fn shell_module(id: &str, script: &str) -> ModuleConfig {
         args: vec!["-c".to_string(), script.to_string()],
         restart_policy: RestartPolicy::Never,
     }
+}
+
+fn parse_gateway_runtime_options(
+    params: &Value,
+    persistent_state: Option<&std::path::Path>,
+) -> Result<GatewayRuntimeOptions, String> {
+    let Some(runtime_options) = params.get("runtime_options") else {
+        return Ok(GatewayRuntimeOptions::default());
+    };
+    let runtime_options = runtime_options
+        .as_object()
+        .ok_or_else(|| "runtime_options must be a JSON object".to_string())?;
+    let supported = [
+        "memory_config",
+        "routing_config_path",
+        "scheduling_files",
+        "gating_config_path",
+        "auth_config",
+        "event_log",
+    ];
+    let unsupported = runtime_options
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+
+    let mut parsed = GatewayRuntimeOptions::default();
+    if let Some(memory_config) = runtime_options.get("memory_config") {
+        parsed.runtime_options.memory_backend = Some(parse_gateway_memory_config(
+            memory_config,
+            persistent_state,
+        )?);
+    }
+    if let Some(path) = runtime_options
+        .get("routing_config_path")
+        .and_then(Value::as_str)
+    {
+        parsed.routing_routes = parse_gateway_routing_config_path(path)?;
+    }
+    if let Some(files) = runtime_options.get("scheduling_files") {
+        parsed.schedules = parse_gateway_scheduling_files(files)?;
+    }
+    if let Some(path) = runtime_options
+        .get("gating_config_path")
+        .and_then(Value::as_str)
+    {
+        parsed.gating = parse_gateway_gating_config_path(path)?;
+    }
+    if let Some(auth_config) = runtime_options.get("auth_config") {
+        parsed.decisions = Some(parse_gateway_auth_config(auth_config)?);
+    }
+    if let Some(event_log) = runtime_options.get("event_log") {
+        parsed.event_log = Some(parse_gateway_event_log_config(event_log)?);
+    }
+    Ok(parsed)
+}
+
+fn read_gateway_config_file(path: &str, option_name: &str) -> Result<Value, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("failed to read runtime_options.{option_name} '{path}': {err}"))?;
+    if path.ends_with(".json") {
+        return serde_json::from_str(&text)
+            .map_err(|err| format!("invalid JSON in runtime_options.{option_name}: {err}"));
+    }
+    let toml_value: toml::Value = toml::from_str(&text)
+        .map_err(|err| format!("invalid TOML in runtime_options.{option_name}: {err}"))?;
+    serde_json::to_value(toml_value)
+        .map_err(|err| format!("failed to normalize runtime_options.{option_name}: {err}"))
+}
+
+fn parse_gateway_routing_config_path(path: &str) -> Result<Vec<RuntimeRoute>, String> {
+    let value = read_gateway_config_file(path, "routing_config_path")?;
+    let routes_value = value
+        .get("routes")
+        .cloned()
+        .unwrap_or_else(|| value.clone());
+    serde_json::from_value(routes_value)
+        .map_err(|err| format!("runtime_options.routing_config_path routes are invalid: {err}"))
+}
+
+fn parse_gateway_scheduling_files(files: &Value) -> Result<Vec<ScheduleDefinition>, String> {
+    let files = files
+        .as_array()
+        .ok_or_else(|| "runtime_options.scheduling_files must be an array".to_string())?;
+    let mut schedules = Vec::new();
+    for file in files {
+        let path = file.as_str().ok_or_else(|| {
+            "runtime_options.scheduling_files entries must be strings".to_string()
+        })?;
+        let value = read_gateway_config_file(path, "scheduling_files")?;
+        let schedules_value = value
+            .get("schedules")
+            .cloned()
+            .unwrap_or_else(|| value.clone());
+        let mut parsed: Vec<ScheduleDefinition> =
+            serde_json::from_value(schedules_value).map_err(|err| {
+                format!("runtime_options.scheduling_files schedule definitions are invalid: {err}")
+            })?;
+        schedules.append(&mut parsed);
+    }
+    meerkat_mobkit::evaluate_schedules_at_tick(&schedules, 0)
+        .map_err(|err| format!("runtime_options.scheduling_files are invalid: {err:?}"))?;
+    Ok(schedules)
+}
+
+fn parse_gateway_gating_config_path(path: &str) -> Result<GatewayGatingConfig, String> {
+    let value = read_gateway_config_file(path, "gating_config_path")?;
+    let actions = value
+        .get("actions")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            "runtime_options.gating_config_path must define an actions object".to_string()
+        })?;
+    let mut action_risk_tiers = HashMap::new();
+    for (action, config) in actions {
+        let risk_tier = config.as_str().or_else(|| {
+            config
+                .as_object()
+                .and_then(|object| object.get("risk_tier"))
+                .and_then(Value::as_str)
+        });
+        let risk_tier = risk_tier.ok_or_else(|| {
+            format!("runtime_options.gating_config_path action '{action}' must define risk_tier")
+        })?;
+        let normalized = risk_tier.trim().to_ascii_lowercase();
+        if !matches!(normalized.as_str(), "r0" | "r1" | "r2" | "r3") {
+            return Err(format!(
+                "runtime_options.gating_config_path action '{action}' has unsupported risk_tier '{risk_tier}'"
+            ));
+        }
+        action_risk_tiers.insert(action.trim().to_string(), normalized);
+    }
+    Ok(GatewayGatingConfig { action_risk_tiers })
+}
+
+fn parse_gateway_event_log_config(value: &Value) -> Result<EventLogConfig, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.event_log must be a JSON object".to_string())?;
+    let storage = object
+        .get("storage")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "runtime_options.event_log.storage must be 'memory'".to_string())?;
+    if !matches!(storage, "memory" | "in_memory") {
+        return Err(format!(
+            "unsupported runtime_options.event_log.storage '{storage}'"
+        ));
+    }
+    let batch_size = object
+        .get("batch_size")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(64);
+    let flush_interval_ms = object
+        .get("flush_interval_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(1_000);
+    Ok(EventLogConfig {
+        store: Box::new(InMemoryEventLogStore::default()),
+        filter: None,
+        batch_size,
+        flush_interval: Duration::from_millis(flush_interval_ms),
+    })
+}
+
+fn parse_gateway_auth_config(value: &Value) -> Result<RuntimeDecisionState, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.auth_config must be a JSON object".to_string())?;
+    let provider = object
+        .get("provider")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            if object.contains_key("sharedSecret") || object.contains_key("shared_secret") {
+                Some("jwt")
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "runtime_options.auth_config.provider is required".to_string())?;
+    if provider != "jwt" {
+        return Err(format!(
+            "unsupported runtime_options.auth_config.provider '{provider}'"
+        ));
+    }
+    let shared_secret = object
+        .get("shared_secret")
+        .or_else(|| object.get("sharedSecret"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "runtime_options.auth_config.shared_secret must be a non-empty string".to_string()
+        })?;
+    let issuer = object
+        .get("issuer")
+        .and_then(Value::as_str)
+        .unwrap_or("http://127.0.0.1/mobkit-gateway");
+    let audience = object
+        .get("audience")
+        .and_then(Value::as_str)
+        .unwrap_or("persistent-gateway");
+    let email_allowlist = object
+        .get("email_allowlist")
+        .or_else(|| object.get("emailAllowlist"))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(shared_secret.as_bytes());
+    let discovery_json = serde_json::to_string(&json!({
+        "issuer": issuer,
+        "jwks_uri": "http://127.0.0.1/mobkit-gateway/jwks.json"
+    }))
+    .map_err(|err| format!("failed to build trusted OIDC discovery: {err}"))?;
+    let jwks_json = serde_json::to_string(&json!({
+        "keys": [{
+            "kty": "oct",
+            "alg": "HS256",
+            "k": key
+        }]
+    }))
+    .map_err(|err| format!("failed to build trusted JWKS: {err}"))?;
+    Ok(RuntimeDecisionState {
+        bigquery: BigQueryNaming {
+            dataset: "default_dataset".to_string(),
+            table: "default_table".to_string(),
+        },
+        modules: vec![],
+        auth: AuthPolicy {
+            default_provider: AuthProvider::GenericOidc,
+            email_allowlist,
+        },
+        trusted_oidc: TrustedOidcRuntimeConfig {
+            discovery_json,
+            jwks_json,
+            audience: audience.to_string(),
+        },
+        console: ConsolePolicy {
+            require_app_auth: true,
+        },
+        ops: RuntimeOpsPolicy::default(),
+        release_metadata: ReleaseMetadata {
+            targets: vec![
+                "crates.io".to_string(),
+                "npm".to_string(),
+                "pypi".to_string(),
+                "github-releases".to_string(),
+            ],
+            support_matrix: "lts".to_string(),
+        },
+    })
+}
+
+fn apply_gateway_runtime_config_to_request(
+    request_line: &str,
+    schedules: &[ScheduleDefinition],
+    gating: &GatewayGatingConfig,
+) -> String {
+    let Ok(mut request) = serde_json::from_str::<Value>(request_line) else {
+        return request_line.to_string();
+    };
+    let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+    match method {
+        "mobkit/scheduling/evaluate" | "mobkit/scheduling/dispatch" if !schedules.is_empty() => {
+            let params = request.get_mut("params").and_then(Value::as_object_mut);
+            if let Some(params) = params
+                && !params.contains_key("schedules")
+            {
+                params.insert(
+                    "schedules".to_string(),
+                    serde_json::to_value(schedules).unwrap_or(Value::Null),
+                );
+            }
+        }
+        "mobkit/gating/evaluate" => {
+            let params = request.get_mut("params").and_then(Value::as_object_mut);
+            if let Some(params) = params
+                && !params.contains_key("risk_tier")
+                && let Some(action) = params.get("action").and_then(Value::as_str)
+                && let Some(risk_tier) = gating.action_risk_tiers.get(action.trim())
+            {
+                params.insert("risk_tier".to_string(), Value::String(risk_tier.clone()));
+            }
+        }
+        _ => {}
+    }
+    serde_json::to_string(&request).unwrap_or_else(|_| request_line.to_string())
+}
+
+fn parse_gateway_memory_config(
+    memory_config: &Value,
+    persistent_state: Option<&std::path::Path>,
+) -> Result<MemoryBackendConfig, String> {
+    let object = memory_config
+        .as_object()
+        .ok_or_else(|| "runtime_options.memory_config must be a JSON object".to_string())?;
+    let backend = object
+        .get("backend")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "runtime_options.memory_config.backend must be 'elephant'".to_string())?;
+    if backend != "elephant" {
+        return Err(format!(
+            "unsupported runtime_options.memory_config.backend '{backend}'"
+        ));
+    }
+    let endpoint = object
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "runtime_options.memory_config.endpoint must be a non-empty string".to_string()
+        })?;
+    let unsupported = object
+        .keys()
+        .filter(|key| key.as_str() != "backend" && key.as_str() != "endpoint")
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.memory_config fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    let state_path = persistent_state
+        .ok_or_else(|| {
+            "runtime_options.memory_config requires persistent_state so Elephant memory state has a stable path"
+                .to_string()
+        })?
+        .join("elephant-memory-state.json");
+    Ok(MemoryBackendConfig::Elephant(ElephantMemoryBackendConfig {
+        endpoint: endpoint.to_string(),
+        state_path: state_path.to_string_lossy().to_string(),
+    }))
 }
 
 /// Original single-shot mode: reads request from env, runs once, prints response.
@@ -670,23 +1095,6 @@ external_addressable = true
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    // Warn about SDK-forwarded runtime_options that the gateway does not yet
-    // consume.  This surfaces "accepted but ignored" config as visible noise
-    // so integrators notice early rather than debugging silent no-ops.
-    if let Some(runtime_options) = params.get("runtime_options").and_then(|v| v.as_object()) {
-        let unrecognized: Vec<&String> = runtime_options.keys().collect();
-        if !unrecognized.is_empty() {
-            eprintln!(
-                "[mobkit-gateway] warning: runtime_options keys [{}] were sent by the SDK but are not consumed by the gateway — this config has no effect",
-                unrecognized
-                    .iter()
-                    .map(|k| k.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-    }
-
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
     let stdout_writer = tokio::spawn(async move {
@@ -758,6 +1166,11 @@ external_addressable = true
         let _ = stdout.flush();
         std::process::exit(1);
     }
+
+    let mut gateway_options = parse_gateway_runtime_options(&params, persistent_state.as_deref())
+        .unwrap_or_else(|e| {
+            fail_init(&request_id, -32602, e);
+        });
 
     // 5. Build session service with callback bridge.
     let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
@@ -923,24 +1336,60 @@ external_addressable = true
     };
 
     let timeout = Duration::from_secs(30);
-    let mut runtime = UnifiedRuntime::bootstrap(mob_spec, module_config, timeout)
-        .await
-        .unwrap_or_else(|e| {
-            let error_response = json!({
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": { "code": -32603, "message": format!("Runtime bootstrap failed: {e}") }
-            });
-            let mut stdout = std::io::stdout().lock();
-            let _ = writeln!(
-                stdout,
-                "{}",
-                serde_json::to_string(&error_response)
-                    .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
-            );
-            let _ = stdout.flush();
-            std::process::exit(1);
+    let persistent_metadata: Arc<dyn PersistentMetadataStore> =
+        if let Some(state_path) = persistent_state.as_ref() {
+            let metadata_path = state_path.join("mobkit_metadata.sqlite");
+            Arc::new(
+                SqliteMetadataStore::open(&metadata_path).unwrap_or_else(|e| {
+                    fail_init(
+                        &request_id,
+                        -32603,
+                        format!("failed to open mobkit_metadata.sqlite: {e}"),
+                    );
+                }),
+            )
+        } else {
+            Arc::new(InMemoryMetadataStore::new())
+        };
+    let mut runtime = UnifiedRuntime::bootstrap_with_options(
+        mob_spec,
+        module_config,
+        Vec::new(),
+        timeout,
+        gateway_options.runtime_options.clone(),
+        persistent_metadata,
+    )
+    .await
+    .unwrap_or_else(|e| {
+        let error_response = json!({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": { "code": -32603, "message": format!("Runtime bootstrap failed: {e}") }
         });
+        let mut stdout = std::io::stdout().lock();
+        let _ = writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string(&error_response)
+                .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
+        );
+        let _ = stdout.flush();
+        std::process::exit(1);
+    });
+
+    for route in gateway_options.routing_routes.iter().cloned() {
+        if let Err(err) = runtime.add_runtime_route(route).await {
+            fail_init(
+                &request_id,
+                -32602,
+                format!("runtime_options.routing_config_path route failed validation: {err}"),
+            );
+        }
+    }
+
+    if let Some(event_log_config) = gateway_options.event_log.take() {
+        runtime.start_event_log(event_log_config);
+    }
 
     // 5b. Wire error hook — forwards ErrorEvents to Python as JSON-RPC notifications
     {
@@ -1088,7 +1537,11 @@ external_addressable = true
 
     // 7. Start HTTP with graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let app = runtime.build_reference_app_router(minimal_decision_state());
+    let decision_state = gateway_options
+        .decisions
+        .clone()
+        .unwrap_or_else(minimal_decision_state);
+    let app = runtime.build_reference_app_router(decision_state);
     let serve_task = tokio::spawn({
         let mut shutdown_rx = shutdown_rx.clone();
         async move {
@@ -1145,6 +1598,11 @@ external_addressable = true
                 },
                 _ = tokio::signal::ctrl_c() => break,
             };
+            let request_line = apply_gateway_runtime_config_to_request(
+                &request_line,
+                &gateway_options.schedules,
+                &gateway_options.gating,
+            );
             let response = handle_unified_rpc_json(
                 &runtime,
                 &request_line,

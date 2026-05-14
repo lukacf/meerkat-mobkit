@@ -17,7 +17,7 @@ use crate::runtime::{
     SessionPersistenceRow, SubscribeError, SubscribeRequest, SubscribeScope,
     handle_console_rest_json_route, route_module_call, validate_schedules,
 };
-use crate::unified_runtime::UnifiedRuntime;
+use crate::unified_runtime::{EventQuery, UnifiedRuntime};
 
 mod console_ingress;
 mod gating_methods;
@@ -1036,6 +1036,7 @@ pub async fn handle_unified_rpc_json(
                 "mobkit/delivery/send",
                 "mobkit/delivery/history",
                 "mobkit/events/subscribe",
+                "mobkit/query_events",
                 "mobkit/memory/stores",
                 "mobkit/memory/index",
                 "mobkit/memory/query",
@@ -1508,6 +1509,57 @@ pub async fn handle_unified_rpc_json(
                 }),
             },
         },
+        "mobkit/query_events" => {
+            let query: EventQuery = if request.params.is_null() {
+                EventQuery::default()
+            } else {
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(query) => query,
+                    Err(err) => {
+                        return serde_json::to_string(&JsonRpcResponse {
+                            jsonrpc: JSONRPC_VERSION.to_string(),
+                            id: response_id,
+                            result: None,
+                            error: Some(JsonRpcError {
+                                code: -32602,
+                                message: format!("Invalid params: invalid query params: {err}"),
+                                data: None,
+                            }),
+                        })
+                        .unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string());
+                    }
+                }
+            };
+            match runtime.event_log_store() {
+                Some(store) => match store.query(query).await {
+                    Ok(events) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::to_value(events).unwrap_or(Value::Null)),
+                        error: None,
+                    },
+                    Err(err) => JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32603,
+                            message: format!("query_events failed: {err}"),
+                            data: None,
+                        }),
+                    },
+                },
+                None => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "status": "no_event_log_configured",
+                        "events": [],
+                    })),
+                    error: None,
+                },
+            }
+        }
         "mobkit/memory/stores" => match parse_memory_stores_params(&request.params) {
             Ok(()) => {
                 let stores = runtime.memory_stores().await;

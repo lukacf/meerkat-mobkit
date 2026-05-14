@@ -225,7 +225,7 @@ export class CallbackDispatcher {
 
     // -- Continuity callbacks -----------------------------------------------
 
-    if (method === "callback/continuity/resolve_many") {
+    if (method === "callback/continuity_store/resolve_many") {
       if (this._continuityStore === null) {
         throw new Error("no ContinuityStore registered");
       }
@@ -235,7 +235,7 @@ export class CallbackDispatcher {
       return this._continuityStore.resolveMany(identities);
     }
 
-    if (method === "callback/continuity/load_session_snapshot") {
+    if (method === "callback/continuity_store/load_session_snapshot") {
       if (this._continuityStore === null) {
         throw new Error("no ContinuityStore registered");
       }
@@ -245,23 +245,25 @@ export class CallbackDispatcher {
       return sessionSnapshotToDict(snap);
     }
 
-    if (method === "callback/continuity/save_session_snapshot") {
+    if (method === "callback/continuity_store/save_session_snapshot") {
       if (this._continuityStore === null) {
         throw new Error("no ContinuityStore registered");
       }
       const identity = String(params.identity ?? "");
       const sessionId = String(params.session_id ?? "");
       const generation = Number(params.generation ?? 0);
-      const version = Number(params.checkpoint_version ?? 0);
+      const version = Number(params.version ?? params.checkpoint_version ?? 0);
       const fencingToken = Number(params.fencing_token ?? 0);
-      const snapshot = parseSessionSnapshot({ data: params.snapshot ?? "" });
+      const snapshot = typeof params.snapshot === "string"
+        ? parseSessionSnapshot({ data: params.snapshot })
+        : parseSessionSnapshot(params.snapshot);
       await this._continuityStore.saveSessionSnapshot(
         identity, sessionId, generation, version, fencingToken, snapshot,
       );
       return null;
     }
 
-    if (method === "callback/continuity/upsert_continuity_record") {
+    if (method === "callback/continuity_store/upsert_continuity_record") {
       if (this._continuityStore === null) {
         throw new Error("no ContinuityStore registered");
       }
@@ -273,7 +275,7 @@ export class CallbackDispatcher {
 
     // -- Lease callbacks ----------------------------------------------------
 
-    if (method === "callback/lease/acquire_leases") {
+    if (method === "callback/lease_provider/acquire_leases") {
       if (this._leaseProvider === null) {
         throw new Error("no LeaseProvider registered");
       }
@@ -284,7 +286,7 @@ export class CallbackDispatcher {
       return this._leaseProvider.acquireLeases(identities, runtimeInstance);
     }
 
-    if (method === "callback/lease/renew_leases") {
+    if (method === "callback/lease_provider/renew_leases") {
       if (this._leaseProvider === null) {
         throw new Error("no LeaseProvider registered");
       }
@@ -293,7 +295,7 @@ export class CallbackDispatcher {
       return this._leaseProvider.renewLeases(grants);
     }
 
-    if (method === "callback/lease/release_leases") {
+    if (method === "callback/lease_provider/release_leases") {
       if (this._leaseProvider === null) {
         throw new Error("no LeaseProvider registered");
       }
@@ -305,7 +307,7 @@ export class CallbackDispatcher {
 
     // -- Roster callback ----------------------------------------------------
 
-    if (method === "callback/roster") {
+    if (method === "callback/roster_provider/roster") {
       if (this._rosterProvider === null) {
         throw new Error("no RosterProvider registered");
       }
@@ -316,7 +318,7 @@ export class CallbackDispatcher {
 
     // -- Topology callback --------------------------------------------------
 
-    if (method === "callback/topology/compute_edges") {
+    if (method === "callback/topology_provider/compute_edges") {
       if (this._topologyProvider === null) {
         throw new Error("no TopologyProvider registered");
       }
@@ -333,7 +335,7 @@ export class CallbackDispatcher {
 
     // -- Customizer callbacks -----------------------------------------------
 
-    if (method === "callback/customizer/customize_build") {
+    if (method === "callback/agent_customizer/customize_build") {
       if (this._agentCustomizer === null) {
         throw new Error("no AgentCustomizer registered");
       }
@@ -344,7 +346,7 @@ export class CallbackDispatcher {
       return agentBuildDraftToDict(draft);
     }
 
-    if (method === "callback/customizer/after_create") {
+    if (method === "callback/agent_customizer/after_create") {
       if (
         this._agentCustomizer !== null &&
         typeof this._agentCustomizer.afterCreate === "function"

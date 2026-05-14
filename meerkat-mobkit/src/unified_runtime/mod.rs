@@ -300,7 +300,7 @@ impl UnifiedRuntime {
     /// Start the event log ingestion engine. Must be called after
     /// construction (the builder calls this automatically when event_log
     /// config is provided).
-    pub(crate) fn start_event_log(&mut self, config: EventLogConfig) {
+    pub fn start_event_log(&mut self, config: EventLogConfig) {
         let handle = event_log::start_event_log(config, self.error_hook.clone());
         self.event_log = Some(handle);
     }
