@@ -3457,7 +3457,7 @@ async fn reset_all_live_console_agents(
             wait_for_reset_startup_history(
                 aggregator,
                 baseline_identities.iter().cloned().collect(),
-                Duration::from_secs(60),
+                Duration::from_mins(1),
             )
             .await?,
         )

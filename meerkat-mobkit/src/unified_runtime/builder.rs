@@ -49,6 +49,7 @@ pub struct UnifiedRuntimeBuilder {
     session_hook: Option<Arc<dyn SessionHook>>,
     custom_session_store: Option<Arc<dyn meerkat::SessionStore>>,
     default_llm_client: Option<Arc<dyn LlmClient>>,
+    max_sessions: Option<usize>,
     capability_flags: CapabilityFlags,
 
     // --- Identity-first external path ---
@@ -129,6 +130,16 @@ impl UnifiedRuntimeBuilder {
     /// Set the default LLM client (used for test stubs).
     pub fn default_llm_client(mut self, client: Arc<dyn LlmClient>) -> Self {
         self.default_llm_client = Some(client);
+        self
+    }
+
+    /// Set the maximum number of active sessions for builder-created session
+    /// services.
+    ///
+    /// This only applies to the definition-based path. A legacy `.mob_spec()`
+    /// supplies its own already-built session service and capacity.
+    pub fn max_sessions(mut self, max_sessions: usize) -> Self {
+        self.max_sessions = Some(max_sessions);
         self
     }
 
@@ -537,6 +548,12 @@ impl UnifiedRuntimeBuilder {
         };
         caps.image_generation |=
             crate::mob_handle_runtime::mob_definition_may_use_image_generation(&definition);
+        let max_sessions = self.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS);
+        if max_sessions == 0 {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "max_sessions() must be greater than 0".to_string(),
+            ));
+        }
 
         let hook = self
             .session_hook
@@ -598,7 +615,7 @@ impl UnifiedRuntimeBuilder {
                 definition,
                 mob_storage,
                 state_path.clone(),
-                DEFAULT_MAX_SESSIONS,
+                max_sessions,
                 session_store,
                 hook,
                 caps,
@@ -615,7 +632,7 @@ impl UnifiedRuntimeBuilder {
                 definition,
                 MobStorage::in_memory(),
                 store_path,
-                DEFAULT_MAX_SESSIONS,
+                max_sessions,
                 hook,
                 caps,
                 after_hook,
@@ -638,6 +655,32 @@ impl UnifiedRuntimeBuilder {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+    use meerkat_core::service::{
+        CreateSessionRequest, DeferredPromptPolicy, InitialTurnPolicy, SessionService,
+    };
+
+    fn deferred_capacity_request(prompt: impl Into<String>) -> CreateSessionRequest {
+        let build = meerkat_core::service::SessionBuildOptions {
+            llm_client_override: Some(meerkat::encode_llm_client_override_for_service(Arc::new(
+                meerkat_client::TestClient::default(),
+            ))),
+            ..Default::default()
+        };
+
+        CreateSessionRequest {
+            model: "gpt-5.5".to_string(),
+            prompt: meerkat_core::ContentInput::Text(prompt.into()),
+            render_metadata: None,
+            system_prompt: None,
+            max_tokens: None,
+            event_tx: None,
+            skill_references: None,
+            initial_turn: InitialTurnPolicy::Defer,
+            deferred_prompt_policy: DeferredPromptPolicy::Discard,
+            build: Some(build),
+            labels: None,
+        }
+    }
 
     #[tokio::test]
     async fn definition_based_ephemeral_spec_provides_runtime_adapter() {
@@ -661,6 +704,116 @@ comms = true
         assert!(
             spec.runtime_adapter.is_some(),
             "definition-based ephemeral specs should expose runtime authority",
+        );
+    }
+
+    #[tokio::test]
+    async fn definition_based_ephemeral_spec_uses_configured_max_sessions() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-max-sessions"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+"#,
+        )
+        .expect("definition parses");
+
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .max_sessions(65);
+        let spec = builder.resolve_mob_spec().await.expect("spec resolves");
+
+        for index in 0..65 {
+            SessionService::create_session(
+                spec.session_service.as_ref(),
+                deferred_capacity_request(format!("session {index}")),
+            )
+            .await
+            .expect("configured capacity should admit session");
+        }
+
+        let blocked = SessionService::create_session(
+            spec.session_service.as_ref(),
+            deferred_capacity_request("one too many"),
+        )
+        .await
+        .expect_err("configured capacity should block the next session");
+        assert!(
+            blocked.to_string().contains("Max sessions reached (65/65)"),
+            "unexpected capacity error: {blocked}",
+        );
+    }
+
+    #[tokio::test]
+    async fn definition_based_persistent_spec_uses_configured_max_sessions() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-persistent-max-sessions"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+"#,
+        )
+        .expect("definition parses");
+        let tmp = tempfile::tempdir().expect("temp dir");
+
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .persistent_state(tmp.path().join("state"))
+            .mob_storage_in_memory()
+            .max_sessions(2);
+        let spec = builder.resolve_mob_spec().await.expect("spec resolves");
+
+        for index in 0..2 {
+            SessionService::create_session(
+                spec.session_service.as_ref(),
+                deferred_capacity_request(format!("persistent session {index}")),
+            )
+            .await
+            .expect("configured persistent capacity should admit session");
+        }
+
+        let blocked = SessionService::create_session(
+            spec.session_service.as_ref(),
+            deferred_capacity_request("persistent one too many"),
+        )
+        .await
+        .expect_err("configured persistent capacity should block the next session");
+        assert!(
+            blocked.to_string().contains("Max sessions reached (2/2)"),
+            "unexpected capacity error: {blocked}",
+        );
+    }
+
+    #[tokio::test]
+    async fn definition_based_spec_rejects_zero_max_sessions() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-zero-max-sessions"
+
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition parses");
+
+        let result = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .max_sessions(0)
+            .resolve_mob_spec()
+            .await;
+        assert!(result.is_err(), "zero max sessions should be rejected");
+        let err = result.err().expect("zero max sessions error");
+
+        assert!(
+            err.to_string().contains("max_sessions"),
+            "unexpected error: {err}",
         );
     }
 }
