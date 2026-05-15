@@ -8,12 +8,15 @@
 // -- Types ----------------------------------------------------------------
 
 export type RestartPolicy = "never" | "always" | "on_failure";
+export type ModuleBoundary = "mcp";
 
 export interface ModuleSpec {
   readonly id: string;
   readonly command: string;
   readonly args: readonly string[];
   readonly restart_policy: RestartPolicy;
+  readonly boundary?: ModuleBoundary;
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 export type ModuleSpecDecorator = (spec: ModuleSpec) => ModuleSpec;
@@ -56,12 +59,20 @@ export function defineModuleSpec(input: {
   command: string;
   args?: string[];
   restartPolicy?: RestartPolicy;
+  boundary?: ModuleBoundary;
+  env?: Readonly<Record<string, string>>;
 }): ModuleSpec {
+  const env =
+    input.env && Object.keys(input.env).length > 0
+      ? { env: { ...input.env } }
+      : {};
   return {
     id: input.id,
     command: input.command,
     args: input.args ?? [],
     restart_policy: input.restartPolicy ?? "never",
+    ...(input.boundary ? { boundary: input.boundary } : {}),
+    ...env,
   };
 }
 
@@ -69,7 +80,11 @@ export function decorateModuleSpec(
   spec: ModuleSpec,
   ...decorators: ModuleSpecDecorator[]
 ): ModuleSpec {
-  const base: ModuleSpec = { ...spec, args: [...spec.args] };
+  const base: ModuleSpec = {
+    ...spec,
+    args: [...spec.args],
+    ...(spec.env ? { env: { ...spec.env } } : {}),
+  };
   return decorators.reduce((current, decorate) => decorate(current), base);
 }
 
@@ -103,7 +118,11 @@ export function defineModule(input: {
   tools?: ModuleToolDefinition[];
 }): ModuleDefinition {
   return {
-    spec: { ...input.spec, args: [...input.spec.args] },
+    spec: {
+      ...input.spec,
+      args: [...input.spec.args],
+      ...(input.spec.env ? { env: { ...input.spec.env } } : {}),
+    },
     description: input.description,
     tools: [...(input.tools ?? [])],
   };

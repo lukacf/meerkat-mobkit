@@ -17,7 +17,7 @@
 )]
 //! Phase 0b binary — JSON-RPC gateway bridging SDK clients to the unified runtime.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -30,10 +30,11 @@ use meerkat_mobkit::{
     ConsolePolicy, DiscoverySpec, ElephantMemoryBackendConfig, EventLogConfig, EventLogStore,
     EventQuery, InMemoryMetadataStore, MOBKIT_CONTRACT_VERSION, MemoryBackendConfig,
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ObjectStoreBlobStore,
-    PersistedEvent, PersistentMetadataStore, ReleaseMetadata, RestartPolicy, RuntimeDecisionState,
-    RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition, SqliteMetadataStore,
-    TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json, handle_unified_rpc_json,
-    mob_handle_runtime::mob_definition_may_use_image_generation, start_mobkit_runtime,
+    PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata, RestartPolicy,
+    RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition,
+    SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json,
+    handle_unified_rpc_json, mob_handle_runtime::mob_definition_may_use_image_generation,
+    start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
 
@@ -48,6 +49,7 @@ use meerkat_core::error::{AgentError, ToolError};
 use meerkat_core::ops::ToolDispatchOutcome;
 use meerkat_core::types::{ToolCallView, ToolDef, ToolResult};
 use meerkat_mob::{MobDefinition, MobStorage};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -159,6 +161,145 @@ fn shell_module(id: &str, script: &str) -> ModuleConfig {
         command: "sh".to_string(),
         args: vec!["-c".to_string(), script.to_string()],
         restart_policy: RestartPolicy::Never,
+    }
+}
+
+const MODULE_BOUNDARY_ENV_KEY: &str = "MOBKIT_MODULE_BOUNDARY";
+const MODULE_BOUNDARY_MCP: &str = "mcp";
+
+#[derive(Debug, Deserialize)]
+struct GatewayModuleConfig {
+    id: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default = "gateway_restart_policy_never")]
+    restart_policy: RestartPolicy,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    #[serde(default)]
+    boundary: Option<String>,
+}
+
+fn gateway_restart_policy_never() -> RestartPolicy {
+    RestartPolicy::Never
+}
+
+impl GatewayModuleConfig {
+    fn into_module_and_pre_spawn(self) -> (ModuleConfig, Option<PreSpawnData>) {
+        let GatewayModuleConfig {
+            id,
+            command,
+            args,
+            restart_policy,
+            mut env,
+            boundary,
+        } = self;
+        if boundary
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case(MODULE_BOUNDARY_MCP))
+        {
+            env.insert(
+                MODULE_BOUNDARY_ENV_KEY.to_string(),
+                MODULE_BOUNDARY_MCP.to_string(),
+            );
+        }
+        let pre_spawn = if env.is_empty() {
+            None
+        } else {
+            Some(PreSpawnData {
+                module_id: id.clone(),
+                env: env.into_iter().collect(),
+            })
+        };
+        (
+            ModuleConfig {
+                id,
+                command,
+                args,
+                restart_policy,
+            },
+            pre_spawn,
+        )
+    }
+}
+
+fn parse_gateway_modules(params: &Value) -> (Vec<ModuleConfig>, Vec<PreSpawnData>) {
+    let gateway_modules: Vec<GatewayModuleConfig> = params
+        .get("modules")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+
+    let mut modules = Vec::with_capacity(gateway_modules.len());
+    let mut pre_spawn = Vec::new();
+    for gateway_module in gateway_modules {
+        let (module, maybe_pre_spawn) = gateway_module.into_module_and_pre_spawn();
+        modules.push(module);
+        if let Some(pre_spawn_data) = maybe_pre_spawn {
+            pre_spawn.push(pre_spawn_data);
+        }
+    }
+    (modules, pre_spawn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gateway_module_boundary_becomes_pre_spawn_data() {
+        let params = json!({
+            "modules": [{
+                "id": "router",
+                "command": "python3",
+                "args": ["router.py"],
+                "restart_policy": "on_failure",
+                "boundary": "mcp",
+                "env": {
+                    "ROUTER_FIXTURE": "homecore"
+                }
+            }]
+        });
+
+        let (modules, pre_spawn) = parse_gateway_modules(&params);
+
+        assert_eq!(
+            modules,
+            vec![ModuleConfig {
+                id: "router".to_string(),
+                command: "python3".to_string(),
+                args: vec!["router.py".to_string()],
+                restart_policy: RestartPolicy::OnFailure,
+            }]
+        );
+        assert_eq!(
+            pre_spawn,
+            vec![PreSpawnData {
+                module_id: "router".to_string(),
+                env: vec![
+                    ("MOBKIT_MODULE_BOUNDARY".to_string(), "mcp".to_string()),
+                    ("ROUTER_FIXTURE".to_string(), "homecore".to_string()),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn gateway_module_without_env_does_not_create_pre_spawn_data() {
+        let params = json!({
+            "modules": [{
+                "id": "delivery",
+                "command": "python3"
+            }]
+        });
+
+        let (modules, pre_spawn) = parse_gateway_modules(&params);
+
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].id, "delivery");
+        assert_eq!(modules[0].args, Vec::<String>::new());
+        assert_eq!(modules[0].restart_policy, RestartPolicy::Never);
+        assert!(pre_spawn.is_empty());
     }
 }
 
@@ -1055,10 +1196,7 @@ external_addressable = true
         }
     }
 
-    let modules: Vec<ModuleConfig> = params
-        .get("modules")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
+    let (modules, pre_spawn) = parse_gateway_modules(&params);
 
     let discovery_modules: Vec<String> = modules.iter().map(|m| m.id.clone()).collect();
     let module_config = MobKitConfig {
@@ -1067,7 +1205,7 @@ external_addressable = true
             namespace: "persistent-gateway".to_string(),
             modules: discovery_modules,
         },
-        pre_spawn: vec![],
+        pre_spawn,
     };
 
     let has_session_builder = params

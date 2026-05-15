@@ -260,6 +260,7 @@ export {
 
 export type {
   RestartPolicy,
+  ModuleBoundary,
   ModuleSpec,
   ModuleSpecDecorator,
   ModuleToolContext,

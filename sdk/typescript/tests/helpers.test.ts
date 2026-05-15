@@ -51,6 +51,16 @@ describe("defineModuleSpec()", () => {
     });
     assert.equal(spec.restart_policy, "on_failure");
   });
+
+  it("preserves module boundary for gateway init payloads", () => {
+    const spec = defineModuleSpec({
+      id: "router",
+      command: "python3",
+      boundary: "mcp",
+    });
+
+    assert.equal(spec.boundary, "mcp");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -76,6 +86,20 @@ describe("decorateModuleSpec()", () => {
     // result should be a copy (different reference for args)
     assert.notEqual(result.args, base.args);
     assert.deepEqual(result.args, base.args);
+  });
+
+  it("copies boundary and env when decorating", () => {
+    const base = defineModuleSpec({
+      id: "mod",
+      command: "cmd",
+      boundary: "mcp",
+      env: { ROUTER_FIXTURE: "homecore" },
+    });
+    const result = decorateModuleSpec(base);
+
+    assert.equal(result.boundary, "mcp");
+    assert.notEqual(result.env, base.env);
+    assert.deepEqual(result.env, base.env);
   });
 
   it("works with no decorators", () => {
@@ -199,7 +223,13 @@ describe("defineModule()", () => {
   });
 
   it("creates copies of spec and tools arrays", () => {
-    const spec = defineModuleSpec({ id: "mod", command: "cmd", args: ["a"] });
+    const spec = defineModuleSpec({
+      id: "mod",
+      command: "cmd",
+      args: ["a"],
+      boundary: "mcp",
+      env: { ROUTER_FIXTURE: "homecore" },
+    });
     const tools = [defineModuleTool({ name: "t", handler: async () => {} })];
 
     const mod = defineModule({ spec, tools });
@@ -207,6 +237,9 @@ describe("defineModule()", () => {
     // Spec args should be a different array reference
     assert.notEqual(mod.spec.args, spec.args);
     assert.deepEqual(mod.spec.args, spec.args);
+    assert.equal(mod.spec.boundary, "mcp");
+    assert.notEqual(mod.spec.env, spec.env);
+    assert.deepEqual(mod.spec.env, spec.env);
 
     // Tools should be a different array reference
     assert.notEqual(mod.tools, tools);

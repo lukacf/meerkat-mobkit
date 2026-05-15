@@ -92,6 +92,7 @@ check("module-authoring helper normalizes schema", () => {
     command: "node",
     args: ["router.js"],
     restartPolicy: "on_failure",
+    boundary: "mcp",
   });
 
   assertDeepEqual(moduleSpec, {
@@ -99,6 +100,7 @@ check("module-authoring helper normalizes schema", () => {
     command: "node",
     args: ["router.js"],
     restart_policy: "on_failure",
+    boundary: "mcp",
   }, "unexpected module spec");
 });
 

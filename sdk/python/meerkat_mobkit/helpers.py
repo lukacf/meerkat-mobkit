@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Literal, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Literal, Mapping, Sequence
 from urllib.parse import quote
 
 RestartPolicy = Literal["never", "always", "on_failure"]
+ModuleBoundary = Literal["mcp"]
 
 
 def build_console_route(
@@ -38,14 +39,21 @@ class ModuleSpec:
     command: str
     args: tuple[str, ...]
     restart_policy: RestartPolicy = "never"
+    boundary: ModuleBoundary | None = None
+    env: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "id": self.id,
             "command": self.command,
             "args": list(self.args),
             "restart_policy": self.restart_policy,
         }
+        if self.boundary is not None:
+            payload["boundary"] = self.boundary
+        if self.env:
+            payload["env"] = dict(self.env)
+        return payload
 
 
 ModuleSpecDecorator = Callable[[ModuleSpec], ModuleSpec]
@@ -73,12 +81,16 @@ def build_module_spec(
     command: str,
     args: Sequence[str] | None = None,
     restart_policy: RestartPolicy = "never",
+    boundary: ModuleBoundary | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> ModuleSpec:
     return ModuleSpec(
         id=module_id,
         command=command,
         args=tuple(args or ()),
         restart_policy=restart_policy,
+        boundary=boundary,
+        env=dict(env or {}),
     )
 
 
@@ -88,12 +100,16 @@ def define_module_spec(
     command: str,
     args: list[str] | None = None,
     restart_policy: RestartPolicy = "never",
+    boundary: ModuleBoundary | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     return build_module_spec(
         module_id=module_id,
         command=command,
         args=args,
         restart_policy=restart_policy,
+        boundary=boundary,
+        env=env,
     ).to_dict()
 
 
@@ -103,6 +119,8 @@ def decorate_module_spec(spec: ModuleSpec, *decorators: ModuleSpecDecorator) -> 
         command=spec.command,
         args=tuple(spec.args),
         restart_policy=spec.restart_policy,
+        boundary=spec.boundary,
+        env=dict(spec.env),
     )
     for decorate in decorators:
         current = decorate(current)
@@ -141,6 +159,8 @@ def define_module(
             command=spec.command,
             args=tuple(spec.args),
             restart_policy=spec.restart_policy,
+            boundary=spec.boundary,
+            env=dict(spec.env),
         ),
         tools=tuple(tools or ()),
         description=description,
