@@ -37,6 +37,7 @@ import {
   sendConsoleMultipart,
   subscribeTimelineEvents,
 } from "./lib/network";
+import { findPaneResizeRoot } from "./lib/pane-resize";
 import { Icon, SpriteSheet } from "./icon";
 import type {
   ConsoleAgent,
@@ -1382,7 +1383,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   function handleSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
-    const root = event.currentTarget.closest("[data-console-workbench]") as HTMLElement | null;
+    const root = findPaneResizeRoot(event.currentTarget);
     if (!root) return;
     const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-sidebar-width") || "260", 10) || 260;
     const handle = event.currentTarget;
@@ -1397,7 +1398,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   function handleActivityResize(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
-    const root = event.currentTarget.closest("[data-console-workbench]") as HTMLElement | null;
+    const root = findPaneResizeRoot(event.currentTarget);
     if (!root) return;
     const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-activity-width") || "280", 10) || 280;
     const handle = event.currentTarget;
@@ -1669,6 +1670,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       />
       <div
         className="shell"
+        data-console-workbench="root"
         data-sidebar-collapsed={sidebarCollapsed ? "true" : "false"}
         data-rail-collapsed={railCollapsed ? "true" : "false"}
       >

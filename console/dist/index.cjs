@@ -4169,6 +4169,14 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
   };
 }
 
+// src/lib/pane-resize.ts
+function findPaneResizeRoot(handle) {
+  const workbenchRoot = handle.closest("[data-console-workbench]");
+  if (workbenchRoot instanceof HTMLElement) return workbenchRoot;
+  const shellRoot = handle.closest(".shell");
+  return shellRoot instanceof HTMLElement ? shellRoot : null;
+}
+
 // src/icon.tsx
 var import_jsx_runtime16 = require("react/jsx-runtime");
 function SpriteSheet() {
@@ -9657,7 +9665,7 @@ function ConsoleApp({ baseUrl }) {
   function handleSidebarResize(event) {
     event.preventDefault();
     const startX = event.clientX;
-    const root = event.currentTarget.closest("[data-console-workbench]");
+    const root = findPaneResizeRoot(event.currentTarget);
     if (!root) return;
     const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-sidebar-width") || "260", 10) || 260;
     const handle = event.currentTarget;
@@ -9681,7 +9689,7 @@ function ConsoleApp({ baseUrl }) {
   function handleActivityResize(event) {
     event.preventDefault();
     const startX = event.clientX;
-    const root = event.currentTarget.closest("[data-console-workbench]");
+    const root = findPaneResizeRoot(event.currentTarget);
     if (!root) return;
     const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-activity-width") || "280", 10) || 280;
     const handle = event.currentTarget;
@@ -9932,6 +9940,7 @@ function ConsoleApp({ baseUrl }) {
           "div",
           {
             className: "shell",
+            "data-console-workbench": "root",
             "data-sidebar-collapsed": sidebarCollapsed ? "true" : "false",
             "data-rail-collapsed": railCollapsed ? "true" : "false",
             children: [
