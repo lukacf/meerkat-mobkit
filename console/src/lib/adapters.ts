@@ -1403,6 +1403,23 @@ function typedNoticeBlockText(block: Record<string, unknown>): string {
   return parts.join("\n");
 }
 
+function isExternalEventOnlySystemNotice(message: unknown): boolean {
+  if (!message || typeof message !== "object") return false;
+  const record = message as Record<string, unknown>;
+  if (textFromUnknown(record.kind) === "external_event") return true;
+  const blocks = record.blocks;
+  if (!Array.isArray(blocks)) return false;
+  let sawExternalEventBlock = false;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const type = textFromUnknown((block as Record<string, unknown>).type);
+    if (!type) continue;
+    if (type !== "external_event") return false;
+    sawExternalEventBlock = true;
+  }
+  return sawExternalEventBlock;
+}
+
 function typedSystemNoticeBlocksToRich(
   blocks: unknown,
   body: unknown,
@@ -1461,7 +1478,7 @@ function typedSystemNoticeBlocksToRich(
         ? record.payload as Record<string, unknown>
         : record;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text = typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
+      const text = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
       rich.push({ type: "divider", text });
       continue;
     }
@@ -1609,9 +1626,12 @@ function renderSystemNoticeEntry(
     ? record.message
     : {
         role: "system_notice",
+        kind: record.kind,
+        render_class: record.render_class,
         body: record.body,
         blocks: record.blocks,
       };
+  if (isExternalEventOnlySystemNotice(message)) return null;
   const parsed = historyMessageText(message, undefined, options.blobBaseUrl);
   if (parsed.role !== "meta") return null;
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
@@ -1621,10 +1641,6 @@ function renderSystemNoticeEntry(
         return !options.consumeDuplicateToolBlock?.(block);
       })
     : parsedBlocks;
-  const hasConversationNoticeBlock = filteredParsedBlocks.some(
-    (block) => block.type === "tool-call" || block.type === "image",
-  );
-  if (!hasConversationNoticeBlock) return null;
   const text = parsed.text.trim();
   if (!text && filteredParsedBlocks.length === 0) return null;
   const blocks = filteredParsedBlocks.length > 0
