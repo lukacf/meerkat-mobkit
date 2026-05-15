@@ -332,6 +332,16 @@ export class MobKitRuntime {
     if (this._config.eventLog) {
       runtimeOptions.event_log = serializeConfig(this._config.eventLog);
     }
+    if (this._config.consoleConfigPath) {
+      runtimeOptions.console_config_path = this._config.consoleConfigPath;
+    }
+    if (this._config.consoleRequireAppAuth !== null) {
+      runtimeOptions.console_require_app_auth =
+        this._config.consoleRequireAppAuth;
+    }
+    if (this._config.demoLlm) {
+      runtimeOptions.demo_llm = true;
+    }
     if (this._config.implicitDelegateIdleRetireSecs !== undefined) {
       runtimeOptions.implicit_delegate_idle_retire_secs =
         this._config.implicitDelegateIdleRetireSecs;

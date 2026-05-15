@@ -1478,6 +1478,26 @@ impl MobBootstrapSpec {
         self
     }
 
+    /// Expose a runtime adapter through the session-service facade.
+    ///
+    /// Custom embedders that construct their own `MobSessionService` still need
+    /// MobKit's session-service surface to report the same runtime authority
+    /// that `MobBuilder::with_runtime_adapter(...)` receives. This keeps
+    /// autonomous-host comms, runtime inspection, and control paths pointed at
+    /// one machine without forcing embedders through the stock factory helpers.
+    pub fn with_session_runtime_adapter(
+        mut self,
+        adapter: Arc<meerkat_runtime::MeerkatMachine>,
+    ) -> Self {
+        self.session_service = Arc::new(PreBuildMobSessionService {
+            inner: self.session_service,
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: Some(adapter),
+        });
+        self
+    }
+
     /// Wrap the session service with an after-create hook that fires after
     /// each successful `create_session`. The hook is best-effort: errors are
     /// not propagated. Uses `AfterCreateMobSessionService` which wraps the

@@ -40,6 +40,7 @@ import {
 import { findPaneResizeRoot } from "./lib/pane-resize";
 import { Icon, SpriteSheet } from "./icon";
 import type {
+  ConsoleActionsUiConfig,
   ConsoleAgent,
   ConsoleExperience,
   ConsoleFrame,
@@ -56,7 +57,7 @@ import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
 import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
-import { Sidebar as DesignSidebar, type NavKind } from "./panels/Sidebar";
+import { Sidebar as DesignSidebar, normalizeNavKind, type NavKind } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
@@ -68,6 +69,7 @@ interface ConsoleAppProps {
 
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
 type GatingPanelData = { pending: unknown[]; audit: unknown[] };
+type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
 
 interface OptimisticUserMessage {
   interactionId: string;
@@ -83,6 +85,27 @@ interface IdentityLog {
   /// runtime has an EventLogStore (we'll fetch backfill); `false`
   /// once we've observed `available: false` (SSE is the only source).
   hasServerLog: boolean | null;
+}
+
+function normalizeConsoleTheme(value: unknown): ConsoleTheme | null {
+  return value === "dark" || value === "light" ? value : null;
+}
+
+function normalizeConsoleVariant(value: unknown): "rams" | "terminal" | "graphite" | null {
+  return value === "rams" || value === "terminal" || value === "graphite" ? value : null;
+}
+
+function normalizeDockPreset(value: unknown): DockPresetId | null {
+  return value === "single" || value === "two_columns" || value === "two_rows" || value === "grid" ? value : null;
+}
+
+function actionLabel(actions: ConsoleActionsUiConfig | undefined, key: keyof ConsoleActionsUiConfig, fallback: string): string {
+  const value = actions?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function actionVisible(actions: ConsoleActionsUiConfig | undefined, key: keyof ConsoleActionsUiConfig): boolean {
+  return actions?.[key] !== false;
 }
 
 // --- Visibility helpers (unchanged) ---
@@ -221,7 +244,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const [inspectByIdentity, setInspectByIdentity] = React.useState<Record<string, IdentityInspectViewState | null>>({});
   const [routingData, setRoutingData] = React.useState<RoutingPanelData>({ routes: [], deliveries: [] });
   const [gatingData, setGatingData] = React.useState<GatingPanelData>({ pending: [], audit: [] });
-  const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("all");
+  const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] = React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
@@ -807,7 +830,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const nextAgents = normalizeAgents(experienceJson, loadedModules);
     setExperience(experienceJson);
     setAgents(nextAgents);
-    setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
+    setActiveActivityPresetId((c) =>
+      c || experienceJson.console_config?.rail?.active_preset_id || experienceJson.activity_feed?.active_preset_id || "all",
+    );
     return nextAgents;
   }, [baseUrl]);
 
@@ -827,18 +852,102 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return () => window.clearInterval(timer);
   }, [loadExperience]);
 
+  React.useEffect(() => {
+    const appearance = experience?.console_config?.appearance;
+    if (!appearance) return;
+    const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
+    if (configuredTheme) {
+      try {
+        if (!localStorage.getItem("mobkit-console-theme")) setTheme(configuredTheme);
+      } catch {
+        setTheme(configuredTheme);
+      }
+    }
+    const configuredVariant = normalizeConsoleVariant(appearance.default_variant);
+    if (configuredVariant) {
+      try {
+        if (!localStorage.getItem("mobkit-console-variant")) setVariant(configuredVariant);
+      } catch {
+        setVariant(configuredVariant);
+      }
+    }
+  }, [experience?.console_config?.appearance, setVariant]);
+
+  React.useEffect(() => {
+    const configured = experience?.console_config?.layout?.sidebar_collapsed;
+    if (typeof configured !== "boolean") return;
+    try {
+      if (localStorage.getItem("mobkit-console-sidebar-collapsed") !== null) return;
+    } catch { /* ignore */ }
+    setSidebarCollapsed(configured);
+  }, [experience?.console_config?.layout?.sidebar_collapsed]);
+
+  React.useEffect(() => {
+    const configured = experience?.console_config?.rail?.collapsed;
+    if (typeof configured !== "boolean") return;
+    try {
+      if (localStorage.getItem("mobkit-console-rail-collapsed") !== null) return;
+    } catch { /* ignore */ }
+    setRailCollapsed(configured);
+  }, [experience?.console_config?.rail?.collapsed]);
+
+  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const visibleControls = React.useMemo<NavKind[]>(
+    () => {
+      const runtimeControls: NavKind[] = hasMobControlSurface
+        ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"]
+        : ["topology", "timeline", "roster", "logs", "health"];
+      const sidebarConfig = experience?.console_config?.sidebar;
+      const allowedByRuntime = new Set(runtimeControls);
+      const configuredVisible = (sidebarConfig?.visible_controls || [])
+        .map(normalizeNavKind)
+        .filter((kind): kind is NavKind => Boolean(kind) && allowedByRuntime.has(kind));
+      if (configuredVisible.length > 0) return configuredVisible;
+      const hidden = new Set(
+        (sidebarConfig?.hidden_controls || [])
+          .map(normalizeNavKind)
+          .filter((kind): kind is NavKind => Boolean(kind)),
+      );
+      return runtimeControls.filter((kind) => !hidden.has(kind));
+    },
+    [experience?.console_config?.sidebar, hasMobControlSurface],
+  );
+
   // =========================================================================
-  // OPEN FIRST AGENT
+  // OPEN INITIAL TARGET
   // =========================================================================
 
   React.useEffect(() => {
-    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
-    const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
-    if (!first) return;
+    if (initialTargetOpened.current || dock.focusedTarget || !experience) return;
+    const layoutConfig = experience.console_config?.layout;
+    let target: MobKitDockTarget | null = null;
+    const configuredControl = normalizeNavKind(layoutConfig?.initial_control);
+    if (configuredControl && visibleControls.includes(configuredControl)) {
+      target = buildControlTarget(configuredControl as Parameters<typeof buildControlTarget>[0]);
+    }
+    const configuredAgent = layoutConfig?.initial_agent?.trim().toLowerCase();
+    if (!target && configuredAgent) {
+      const match = agents.find((agent) => {
+        return [
+          agent.identity,
+          agent.member_id,
+          agent.agent_id,
+          agent.label,
+        ].some((value) => value?.toLowerCase() === configuredAgent);
+      });
+      if (match) target = buildDockTarget(match);
+    }
+    if (!target && agents.length > 0) {
+      const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
+      if (first) target = buildDockTarget(first);
+    }
+    if (!target) return;
     initialTargetOpened.current = true;
-    openAgentChat(first);
+    const preset = normalizeDockPreset(layoutConfig?.initial_preset);
+    if (preset) dock.applyPreset(preset);
+    dock.openTarget(target, "replace_focused");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, dock]);
+  }, [agents, dock, experience, visibleControls]);
 
   React.useEffect(() => {
     const target = dock.focusedTarget;
@@ -853,14 +962,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, dock.focusedTarget]);
-
-  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const visibleControls = React.useMemo<NavKind[]>(
-    () => hasMobControlSurface
-      ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"]
-      : ["topology", "timeline", "roster", "logs", "health"],
-    [hasMobControlSurface],
-  );
 
   // =========================================================================
   // REFRESH PANEL DATA (inspect, routing, gating)
@@ -1427,9 +1528,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const activityVS = buildActivityRailViewState({
     agents,
     eventFrames: activityRef.current,
-    filterPresets: experience?.activity_feed?.filter_presets,
-    activePresetId: activeActivityPresetId,
+    filterPresets: experience?.console_config?.rail?.filter_presets || experience?.activity_feed?.filter_presets,
+    activePresetId: activeActivityPresetId || experience?.console_config?.rail?.active_preset_id || "all",
   });
+  const actionConfig = experience?.console_config?.actions;
+  const configuredActionLabels = {
+    inspect: actionLabel(actionConfig, "inspect_label", "Details"),
+    chat: actionLabel(actionConfig, "chat_label", "Open chat"),
+    send: actionLabel(actionConfig, "send_label", "Send"),
+    respawn: actionLabel(actionConfig, "respawn_label", "Respawn"),
+    retire: actionLabel(actionConfig, "retire_label", "Retire"),
+    reset: actionLabel(actionConfig, "reset_label", "Reset"),
+  };
+  const configuredActionVisibility = {
+    inspect: actionVisible(actionConfig, "show_inspect"),
+    chat: actionVisible(actionConfig, "show_chat"),
+    respawn: actionVisible(actionConfig, "show_respawn"),
+    retire: actionVisible(actionConfig, "show_retire"),
+    reset: actionVisible(actionConfig, "show_reset"),
+  };
 
   // =========================================================================
   // RENDER: CHAT PANEL — reads from 3 identity-keyed refs
@@ -1478,8 +1595,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey)
       ? phaseRef.current[panelKey]
       : agent?.response_phase ?? null;
-    const canRespawn = agent?.affordances?.can_respawn === true;
-    const canRetire = agent?.affordances?.can_retire === true;
+    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
+    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
 
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
@@ -1512,9 +1629,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
         onStagedChange={(action) => setStagedAttachmentsForIdentity(identity, action)}
         onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
-        onInspect={() => { if (agent) handleShowRosterDetails(agent); }}
+        onInspect={configuredActionVisibility.inspect ? () => { if (agent) handleShowRosterDetails(agent); } : undefined}
         onRespawn={canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : undefined}
         onRetire={canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : undefined}
+        inspectLabel={configuredActionLabels.inspect}
+        respawnLabel={configuredActionLabels.respawn}
+        retireLabel={configuredActionLabels.retire}
+        sendLabel={configuredActionLabels.send}
         stackSlot={stackSlot}
       />
     );
@@ -1527,17 +1648,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   function renderInspectPanel(target: Extract<MobKitDockTarget, { kind: "identity-inspect" }>) {
     const inspect = inspectByIdentity[target.identity];
     const agent = agents.find((candidate) => candidate.identity === target.identity || candidate.member_id === target.identity);
-    const canRespawn = agent?.affordances?.can_respawn === true;
-    const canRetire = agent?.affordances?.can_retire === true;
-    const canReset = experience?.runtime_capabilities?.can_retire_members === true;
+    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
+    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
+    const canReset = configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
     return (
       <div className="console-panel" data-testid={`inspect-panel:${target.identity}`}>
         <div className="console-panel__header">
           <h3>{target.identity}</h3>
           <div className="console-panel__actions">
-            {canRespawn ? <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>Respawn</button> : null}
-            {canReset ? <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>Reset</button> : null}
-            {canRetire ? <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>Retire</button> : null}
+            {canRespawn ? <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>{configuredActionLabels.respawn}</button> : null}
+            {canReset ? <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>{configuredActionLabels.reset}</button> : null}
+            {canRetire ? <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>{configuredActionLabels.retire}</button> : null}
           </div>
         </div>
         {!inspect ? <p>Loading identity details…</p> : (
@@ -1592,7 +1713,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // MAIN RENDER
   // =========================================================================
 
-  const mobName = experience?.agent_sidebar?.title || "mob";
+  const mobName = experience?.console_config?.title || experience?.agent_sidebar?.title || "mob";
+  const brand = experience?.console_config?.brand;
+  const environmentLabel = experience?.console_config?.environment?.label || "dev";
+  const railConfig = experience?.console_config?.rail;
+  const railVisible = railConfig?.visible !== false;
+  const watchedIdentities = new Set(agents
+    .filter((agent) => agent.watched)
+    .map((agent) => agent.identity || agent.member_id)
+    .filter((value): value is string => Boolean(value)));
   const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
 
   function toggleTheme() {
@@ -1637,6 +1766,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         onDetails={(a) => handleShowRosterDetails(a)}
         onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
         canResetLifecycle={hasMobControlSurface}
+        actionLabels={configuredActionLabels}
+        actionVisibility={configuredActionVisibility}
       />
     );
     if (target.kind === "gates") return (
@@ -1660,11 +1791,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       <SpriteSheet />
       <Topbar
         mobName={mobName}
+        brandLabel={brand?.label}
+        brandLogoUrl={brand?.logo_url}
+        brandLogoAlt={brand?.logo_alt}
         mobStatus={mobStatus}
+        environment={environmentLabel}
         theme={theme}
         onToggleTheme={toggleTheme}
         sidebarCollapsed={sidebarCollapsed}
         railCollapsed={railCollapsed}
+        railVisible={railVisible}
         onToggleSidebar={toggleSidebarCollapsed}
         onToggleRail={toggleRailCollapsed}
       />
@@ -1680,9 +1816,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           recentActivity={activityRef.current}
           collapsed={sidebarCollapsed}
           visibleControls={visibleControls}
+          customButtons={experience?.console_config?.sidebar?.buttons}
+          grouping={experience?.console_config?.agent_list}
           onSelect={(a) => openAgentChat(a)}
           onOpenControl={(kind) => {
-            if (!visibleControls.includes(kind)) return;
             dock.openTarget(buildControlTarget(kind), "replace_focused");
           }}
         />
@@ -1706,11 +1843,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             }}
           />
         </div>
-        <div className="pane-resizer pane-resizer--activity" aria-hidden="true" data-testid="resize:activity" onPointerDown={handleActivityResize} />
-        <SignalsRail
-          frames={activityRef.current}
-          collapsed={railCollapsed}
-        />
+        {railVisible ? (
+          <>
+            <div className="pane-resizer pane-resizer--activity" aria-hidden="true" data-testid="resize:activity" onPointerDown={handleActivityResize} />
+            <SignalsRail
+              frames={activityRef.current}
+              collapsed={railCollapsed}
+              filterPresets={railConfig?.filter_presets}
+              activePresetId={activeActivityPresetId || railConfig?.active_preset_id}
+              emptyText={railConfig?.empty_text}
+              watchedIdentities={watchedIdentities}
+              onPresetChange={setActiveActivityPresetId}
+            />
+          </>
+        ) : null}
       </div>
     </div>
   );

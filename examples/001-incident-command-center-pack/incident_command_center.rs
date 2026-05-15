@@ -220,6 +220,7 @@ async fn build_runtime_bundle_with_client(
         trusted_oidc: trusted_oidc(),
         console: ConsolePolicy {
             require_app_auth: false,
+            ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: include_str!("../../meerkat-mobkit/assets/release-targets.json")

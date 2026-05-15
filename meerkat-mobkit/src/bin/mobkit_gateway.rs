@@ -12,9 +12,10 @@ use meerkat_mob::{MobDefinition, MobStorage, ProfileName, SpawnMemberSpec};
 use meerkat_mobkit::contact_directory::ContactDirectory;
 use meerkat_mobkit::{
     AuthPolicy, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore, ConsolePolicy,
-    ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION, MobBootstrapOptions,
-    MobBootstrapSpec, ObjectStoreBlobStore, ReleaseMetadata, RuntimeDecisionState,
-    RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    ConsoleUiConfig, ConventionalPaths, GatewayPeerKeys, MOBKIT_CONTRACT_VERSION,
+    MobBootstrapOptions, MobBootstrapSpec, ObjectStoreBlobStore, ReleaseMetadata,
+    RuntimeDecisionState, RuntimeOpsPolicy, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation,
 };
 use meerkat_store::SqliteSessionStore;
@@ -200,6 +201,9 @@ fn config_fingerprint(
         files.push(path.clone());
     }
     if let Some(path) = &paths.gating_toml {
+        files.push(path.clone());
+    }
+    if let Some(path) = &paths.console_toml {
         files.push(path.clone());
     }
     if let Some(path) = &paths.routing_toml {
@@ -433,7 +437,7 @@ fn build_persistent_session_service(
     Ok((service, adapter, binary_blob_store))
 }
 
-fn runtime_decision_state(runtime_id: &str) -> RuntimeDecisionState {
+fn runtime_decision_state(runtime_id: &str, console_ui: ConsoleUiConfig) -> RuntimeDecisionState {
     RuntimeDecisionState {
         bigquery: BigQueryNaming {
             dataset: "tux_local".to_string(),
@@ -448,6 +452,7 @@ fn runtime_decision_state(runtime_id: &str) -> RuntimeDecisionState {
         },
         console: ConsolePolicy {
             require_app_auth: false,
+            ui: console_ui,
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata: ReleaseMetadata {
@@ -602,6 +607,11 @@ async fn run() -> anyhow::Result<()> {
 
     std::env::set_current_dir(&workspace_root).ok();
     let (definition, used_workspace_config) = load_definition(&workspace_root, &key, &paths)?;
+    let console_ui = match &paths.console_toml {
+        Some(path) => load_console_ui_config_from_path_for_realm(path, realm)
+            .with_context(|| format!("failed to load {}", path.display()))?,
+        None => ConsoleUiConfig::default(),
+    };
     let runtime_id = definition.id.to_string();
     let image_generation = mob_definition_may_use_image_generation(&definition);
 
@@ -741,7 +751,7 @@ async fn run() -> anyhow::Result<()> {
         "created",
     ));
 
-    let decisions = runtime_decision_state(&runtime_id);
+    let decisions = runtime_decision_state(&runtime_id, console_ui);
     axum::serve(listener, runtime.build_reference_app_router(decisions))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

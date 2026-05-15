@@ -37,6 +37,9 @@ export interface MobKitBuilderConfig {
   preSpawnCallback: unknown;
   errorCallback: ErrorCallback | null;
   eventLog: Record<string, unknown> | null;
+  consoleConfigPath: string | null;
+  consoleRequireAppAuth: boolean | null;
+  demoLlm: boolean;
   gatingConfigPath: string | null;
   routingConfigPath: string | null;
   schedulingFiles: string[];
@@ -63,6 +66,9 @@ function defaultConfig(): MobKitBuilderConfig {
     preSpawnCallback: null,
     errorCallback: null,
     eventLog: null,
+    consoleConfigPath: null,
+    consoleRequireAppAuth: null,
+    demoLlm: false,
     gatingConfigPath: null,
     routingConfigPath: null,
     schedulingFiles: [],
@@ -121,6 +127,27 @@ export class MobKitBuilder {
 
   eventLog(options: { storage: unknown;[key: string]: unknown }): this {
     this._config.eventLog = { ...options };
+    return this;
+  }
+
+  consoleConfig(configPath: string): this {
+    this._config.consoleConfigPath = configPath;
+    return this;
+  }
+
+  consoleAuthRequired(required: boolean): this {
+    this._config.consoleRequireAppAuth = required;
+    return this;
+  }
+
+  /**
+   * Use the gateway's deterministic in-process LLM client.
+   *
+   * This is intended for local demos, smoke tests, and examples that need
+   * autonomous agents to stay live without requiring provider credentials.
+   */
+  demoLlm(enabled = true): this {
+    this._config.demoLlm = enabled;
     return this;
   }
 
@@ -244,6 +271,13 @@ export class MobKitBuilder {
   }
 
   private _applyConventionDefaults(): void {
+    if (this._config.consoleConfigPath === null) {
+      const candidate = "config/console.toml";
+      if (existsSync(candidate)) {
+        this._config.consoleConfigPath = candidate;
+      }
+    }
+
     if (this._config.gatingConfigPath === null) {
       const candidate = "config/gating.toml";
       if (existsSync(candidate)) {

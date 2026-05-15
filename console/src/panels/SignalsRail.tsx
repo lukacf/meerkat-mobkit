@@ -1,9 +1,14 @@
 import React from "react";
-import type { ConsoleFrame } from "../types";
+import type { ConsoleFrame, ConsoleRailFilterPresetConfig } from "../types";
 
 interface SignalsRailProps {
   frames: ConsoleFrame[];
   collapsed: boolean;
+  filterPresets?: ConsoleRailFilterPresetConfig[];
+  activePresetId?: string;
+  emptyText?: string;
+  watchedIdentities?: Set<string>;
+  onPresetChange?: (presetId: string) => void;
   onSelect?: (frame: ConsoleFrame) => void;
 }
 
@@ -28,6 +33,12 @@ interface SignalGroup {
   at: string;
   items: Signal[];
 }
+
+const DEFAULT_FILTER_PRESETS: ConsoleRailFilterPresetConfig[] = [
+  { id: "all", label: "All" },
+  { id: "warning", label: "Attn", alertLevels: ["warning", "critical"] },
+  { id: "critical", label: "Crit", alertLevels: ["critical"] },
+];
 
 const PEER_TOOLS = new Set(["send_request", "send_message", "send_response"]);
 const LOW_VALUE_REPLIES = new Set(["done", "ok", "okay", "acknowledged"]);
@@ -397,25 +408,57 @@ export function buildSignalGroupsForTest(frames: ConsoleFrame[]): SignalGroup[] 
   return groupSignals(next);
 }
 
-export function SignalsRail({ frames, collapsed, onSelect }: SignalsRailProps): React.JSX.Element {
-  const [filter, setFilter] = React.useState<"all" | "warning" | "critical">("all");
+export function SignalsRail({
+  frames,
+  collapsed,
+  filterPresets,
+  activePresetId,
+  emptyText,
+  watchedIdentities,
+  onPresetChange,
+  onSelect,
+}: SignalsRailProps): React.JSX.Element {
+  const presets = React.useMemo(() => {
+    const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
+    return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
+  }, [filterPresets]);
+  const [filter, setFilter] = React.useState<string>(activePresetId || presets[0]?.id || "all");
   const [expandedGroups, setExpandedGroups] = React.useState<Set<string>>(() => new Set());
+
+  React.useEffect(() => {
+    if (activePresetId && presets.some((preset) => preset.id === activePresetId)) {
+      setFilter(activePresetId);
+    }
+  }, [activePresetId, presets]);
 
   const groups: SignalGroup[] = React.useMemo(() => {
     return buildSignalGroupsForTest(frames);
   }, [frames]);
 
-  const counts = React.useMemo(() => ({
-    all: groups.length,
-    critical: groups.filter((s) => s.severity === "critical").length,
-    warning: groups.filter((s) => s.severity === "warning").length,
-  }), [groups]);
+  function groupMatchesPreset(group: SignalGroup, preset: ConsoleRailFilterPresetConfig): boolean {
+    if (preset.watchedOnly) {
+      const watched = watchedIdentities || new Set<string>();
+      const isWatched = group.items.some((item) => {
+        const identity = item.raw.identity || "";
+        return identity && watched.has(identity);
+      });
+      if (!isWatched) return false;
+    }
+    const alertLevels = new Set((preset.alertLevels || []).map((level) => level.toLowerCase()));
+    if (alertLevels.size > 0 && !alertLevels.has(group.severity)) return false;
+    return true;
+  }
 
-  const shown = groups.filter((s) =>
-    filter === "all" ? true :
-    filter === "critical" ? s.severity === "critical" :
-    s.severity !== "info",
-  );
+  const activePreset = presets.find((preset) => preset.id === filter) || presets[0] || DEFAULT_FILTER_PRESETS[0];
+  const counts = React.useMemo(() => {
+    return new Map(presets.map((preset) => [
+      preset.id,
+      groups.filter((group) => groupMatchesPreset(group, preset)).length,
+    ]));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, presets, watchedIdentities]);
+
+  const shown = groups.filter((group) => groupMatchesPreset(group, activePreset));
 
   const recent15m = groups.filter((s) => (Date.now() - (s.items[0]?.raw.timestampMs || 0)) < 15 * 60 * 1000).length;
 
@@ -451,32 +494,24 @@ export function SignalsRail({ frames, collapsed, onSelect }: SignalsRailProps): 
         <span className="rail__sub">{recent15m} in 15m</span>
       </div>
       <div className="rail__filters">
-        <button
-          className={`rail__filter ${filter === "all" ? "is-active" : ""}`}
-          onClick={() => setFilter("all")}
-          data-testid="signals-filter:all"
-        >
-          All <span className="rail__filter-count">{counts.all}</span>
-        </button>
-        <button
-          className={`rail__filter ${filter === "warning" ? "is-active" : ""}`}
-          onClick={() => setFilter("warning")}
-          data-testid="signals-filter:warning"
-        >
-          Attn <span className="rail__filter-count">{counts.warning + counts.critical}</span>
-        </button>
-        <button
-          className={`rail__filter ${filter === "critical" ? "is-active" : ""}`}
-          onClick={() => setFilter("critical")}
-          data-testid="signals-filter:critical"
-        >
-          Crit <span className="rail__filter-count">{counts.critical}</span>
-        </button>
+        {presets.map((preset) => (
+          <button
+            key={preset.id}
+            className={`rail__filter ${filter === preset.id ? "is-active" : ""}`}
+            onClick={() => {
+              setFilter(preset.id);
+              onPresetChange?.(preset.id);
+            }}
+            data-testid={`signals-filter:${preset.id}`}
+          >
+            {preset.label} <span className="rail__filter-count">{counts.get(preset.id) || 0}</span>
+          </button>
+        ))}
       </div>
       <div className="rail__list">
         {shown.length === 0 && (
           <div className="rail__empty">
-            No meaningful signals yet.
+            {emptyText || "No meaningful signals yet."}
           </div>
         )}
         {shown.map((s) => {

@@ -153,6 +153,7 @@ fn build_state(
         },
         console: ConsolePolicy {
             require_app_auth: true,
+            ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: release_json(),

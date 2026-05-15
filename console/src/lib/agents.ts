@@ -74,6 +74,7 @@ export function normalizeAgents(
             ? { labels: entry.labels as Record<string, string> }
             : {}),
         ...(entry.group !== undefined && { group: String(entry.group) }),
+        ...(entry.subgroup !== undefined && { subgroup: String(entry.subgroup) }),
         ...(entry.addressable !== undefined
           ? { addressable: Boolean(entry.addressable) }
           : statusRow?.addressability
@@ -106,6 +107,11 @@ export function normalizeAgents(
         ...(statusRow.lease_healthy !== undefined ? { lease_healthy: statusRow.lease_healthy } : {}),
         ...(statusRow.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {}),
         ...(statusRow.labels?.group ? { group: statusRow.labels.group } : {}),
+        ...(statusRow.labels?.console_subgroup
+          ? { subgroup: statusRow.labels.console_subgroup }
+          : statusRow.labels?.org
+            ? { subgroup: statusRow.labels.org }
+            : {}),
         addressable,
         affordances: { can_send_message: addressable },
         model_capabilities: { image_input: false },

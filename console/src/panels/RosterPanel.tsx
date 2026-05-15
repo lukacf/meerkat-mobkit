@@ -9,6 +9,20 @@ interface RosterPanelProps {
   onDetails: (agent: ConsoleAgent) => void;
   onLifecycle: (identity: string, method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset") => void;
   canResetLifecycle?: boolean;
+  actionLabels?: {
+    chat?: string;
+    inspect?: string;
+    respawn?: string;
+    retire?: string;
+    reset?: string;
+  };
+  actionVisibility?: {
+    chat?: boolean;
+    inspect?: boolean;
+    respawn?: boolean;
+    retire?: boolean;
+    reset?: boolean;
+  };
 }
 
 const ROLE_BUCKETS = ["all", "personal", "coordinator", "domain", "internal"] as const;
@@ -37,7 +51,17 @@ function displayPeer(peer: unknown): string {
   return "";
 }
 
-export function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDetails, onLifecycle, canResetLifecycle = false }: RosterPanelProps): React.JSX.Element {
+export function RosterPanel({
+  agents,
+  selectedMemberId,
+  onSelect,
+  onChat,
+  onDetails,
+  onLifecycle,
+  canResetLifecycle = false,
+  actionLabels,
+  actionVisibility,
+}: RosterPanelProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
   const [role, setRole] = React.useState<Role>("all");
   const [sel, setSel] = React.useState<string>(agents[0]?.member_id || "");
@@ -146,16 +170,16 @@ export function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDeta
                 </dd>
               </dl>
               <div className="rd__actions">
-                <button onClick={() => onDetails(active)}>Details</button>
-                <button onClick={() => onChat(active)}>Open chat</button>
-                {active.affordances?.can_respawn ? (
-                  <button onClick={() => onLifecycle(activeIdentity, "mobkit/respawn")}>Respawn</button>
+                {actionVisibility?.inspect !== false ? <button onClick={() => onDetails(active)}>{actionLabels?.inspect || "Details"}</button> : null}
+                {actionVisibility?.chat !== false ? <button onClick={() => onChat(active)}>{actionLabels?.chat || "Open chat"}</button> : null}
+                {actionVisibility?.respawn !== false && active.affordances?.can_respawn ? (
+                  <button onClick={() => onLifecycle(activeIdentity, "mobkit/respawn")}>{actionLabels?.respawn || "Respawn"}</button>
                 ) : null}
-                {canResetLifecycle ? (
-                  <button onClick={() => onLifecycle(activeIdentity, "mobkit/reset")}>Reset</button>
+                {actionVisibility?.reset !== false && canResetLifecycle ? (
+                  <button onClick={() => onLifecycle(activeIdentity, "mobkit/reset")}>{actionLabels?.reset || "Reset"}</button>
                 ) : null}
-                {active.affordances?.can_retire ? (
-                  <button className="danger" onClick={() => onLifecycle(activeIdentity, "mobkit/retire")}>Retire</button>
+                {actionVisibility?.retire !== false && active.affordances?.can_retire ? (
+                  <button className="danger" onClick={() => onLifecycle(activeIdentity, "mobkit/retire")}>{actionLabels?.retire || "Retire"}</button>
                 ) : null}
               </div>
             </>

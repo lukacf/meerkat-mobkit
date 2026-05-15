@@ -97,6 +97,7 @@ fn decision_state() -> meerkat_mobkit::RuntimeDecisionState {
         trusted_oidc: trusted_oidc(),
         console: ConsolePolicy {
             require_app_auth: false,
+            ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: include_str!("../assets/release-targets.json").to_string(),

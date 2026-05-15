@@ -509,6 +509,8 @@ describe("Identity-first runtime APIs (REQ-47)", () => {
       preSpawnCallback: null,
       errorCallback: null,
       eventLog: null,
+      consoleConfigPath: null,
+      consoleRequireAppAuth: null,
       gatingConfigPath: null,
       routingConfigPath: null,
       schedulingFiles: [],

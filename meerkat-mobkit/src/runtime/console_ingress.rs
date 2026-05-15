@@ -1,6 +1,7 @@
 //! Console ingress types and JSON request/response structures.
 
 use super::*;
+use crate::console_config::ConsoleUiConfig;
 use crate::rpc::MOBKIT_CONTRACT_VERSION;
 
 /// Console-facing view of a single mob member.
@@ -197,7 +198,7 @@ pub fn handle_console_rest_json_route_with_snapshot(
         .cloned()
         .unwrap_or_else(|| default_console_live_snapshot(decisions));
     let body = if base_path == CONSOLE_EXPERIENCE_ROUTE {
-        build_console_experience_contract(&modules, &live_snapshot)
+        build_console_experience_contract(&modules, &live_snapshot, &decisions.console.ui)
     } else {
         serde_json::json!({
             "contract_version": MOBKIT_CONTRACT_VERSION,
@@ -245,6 +246,7 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
 fn build_console_experience_contract(
     modules: &[String],
     live_snapshot: &ConsoleLiveSnapshot,
+    console_config: &ConsoleUiConfig,
 ) -> Value {
     let is_aggregate_console = live_snapshot.runtime_id.as_deref() == Some("console-aggregator");
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
@@ -482,9 +484,11 @@ fn build_console_experience_contract(
             .collect()
     };
 
+    let console_title = console_config.title.as_deref().unwrap_or("Mob Console");
     serde_json::json!({
         "contract_version": MOBKIT_CONTRACT_VERSION,
         "runtime_id": live_snapshot.runtime_id,
+        "console_config": console_config,
         "runtime_capabilities": {
             "can_spawn_members": can_spawn_members,
             "can_send_messages": can_send_messages,
@@ -499,7 +503,7 @@ fn build_console_experience_contract(
         },
         "base_panel": {
             "panel_id": "console.home",
-            "title": "Mob Console",
+            "title": console_title,
             "route": CONSOLE_EXPERIENCE_ROUTE,
             "capabilities": {
                 "can_render": true,

@@ -213,3 +213,73 @@ test("sidebar resolves encoded identity references while nesting workers", () =>
 
   assert.equal(__sidebarTest.findSpawnHost(worker, [commander, worker], commander)?.member_id, "identity:luka");
 });
+
+test("sidebar can group agents by configured metadata selectors and subgroups", () => {
+  const agents: ConsoleAgent[] = [
+    {
+      agent_id: "initiative:billing",
+      member_id: "initiative:billing",
+      identity: "initiative:billing",
+      label: "Billing Initiative",
+      kind: "mob_agent",
+      role: "initiative",
+      group: "Domains",
+      labels: {
+        console_group: "Initiatives",
+        org: "Payments",
+      },
+    },
+    {
+      agent_id: "initiative:comms",
+      member_id: "initiative:comms",
+      identity: "initiative:comms",
+      label: "Comms Initiative",
+      kind: "mob_agent",
+      role: "initiative",
+      group: "Domains",
+      labels: {
+        console_group: "Initiatives",
+        org: "Customer",
+      },
+    },
+    {
+      agent_id: "identity:luka",
+      member_id: "identity:luka",
+      identity: "identity:luka",
+      label: "Luka",
+      kind: "mob_agent",
+      role: "identity",
+      group: "Personal",
+      labels: {},
+    },
+  ];
+
+  const grouped = __sidebarTest.groupSidebarAgents(agents, {
+    group_by: ["labels.console_group", "group"],
+    subgroup_by: ["labels.org"],
+    section_order: ["Personal", "Initiatives"],
+    badges: [
+      { id: "org", label: "Org", field: "labels.org" },
+    ],
+  });
+
+  assert.deepEqual(
+    grouped.get("Initiatives")?.map((row) => [row.agent.member_id, row.subgroup]),
+    [
+      ["initiative:comms", "Customer"],
+      ["initiative:billing", "Payments"],
+    ],
+  );
+  assert.deepEqual(
+    grouped.get("Personal")?.map((row) => row.agent.member_id),
+    ["identity:luka"],
+  );
+  assert.deepEqual(
+    __sidebarTest.configuredAgentBadges(agents[0], {
+      badges: [
+        { id: "org", label: "Org", field: "labels.org" },
+      ],
+    }),
+    [{ id: "org", label: "Org", value: "Payments", tone: undefined }],
+  );
+});

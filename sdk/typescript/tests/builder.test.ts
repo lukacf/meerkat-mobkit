@@ -89,6 +89,33 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.gatingConfigPath, "config/gating.toml");
   });
 
+  it("consoleConfig() sets consoleConfigPath and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.consoleConfig("config/console.toml");
+    assert.equal(result, builder);
+    assert.equal(builder._config.consoleConfigPath, "config/console.toml");
+  });
+
+  it("consoleAuthRequired() sets consoleRequireAppAuth and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.consoleAuthRequired(false);
+    assert.equal(result, builder);
+    assert.equal(builder._config.consoleRequireAppAuth, false);
+  });
+
+  it("demoLlm() enables deterministic gateway LLM mode and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.demoLlm();
+    assert.equal(result, builder);
+    assert.equal(builder._config.demoLlm, true);
+  });
+
+  it("demoLlm(false) disables deterministic gateway LLM mode", () => {
+    const builder = MobKit.builder().demoLlm();
+    builder.demoLlm(false);
+    assert.equal(builder._config.demoLlm, false);
+  });
+
   it("routing() sets routingConfigPath and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.routing("deployment/routing.toml");
@@ -171,6 +198,9 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.preSpawnCallback, null);
     assert.equal(cfg.errorCallback, null);
     assert.equal(cfg.eventLog, null);
+    assert.equal(cfg.consoleConfigPath, null);
+    assert.equal(cfg.consoleRequireAppAuth, null);
+    assert.equal(cfg.demoLlm, false);
     assert.equal(cfg.gatingConfigPath, null);
     assert.equal(cfg.routingConfigPath, null);
     assert.deepEqual(cfg.schedulingFiles, []);
@@ -208,6 +238,9 @@ describe("MobKitBuilder method chaining", () => {
     const builder = MobKit.builder()
       .mob("mob.toml")
       .gateway("/bin/gw")
+      .consoleConfig("console.toml")
+      .consoleAuthRequired(false)
+      .demoLlm()
       .gating("gating.toml")
       .routing("routing.toml")
       .scheduling("s1.toml")
@@ -216,6 +249,9 @@ describe("MobKitBuilder method chaining", () => {
 
     assert.equal(builder._config.mobConfigPath, "mob.toml");
     assert.equal(builder._config.gatewayBin, "/bin/gw");
+    assert.equal(builder._config.consoleConfigPath, "console.toml");
+    assert.equal(builder._config.consoleRequireAppAuth, false);
+    assert.equal(builder._config.demoLlm, true);
     assert.equal(builder._config.gatingConfigPath, "gating.toml");
     assert.equal(builder._config.routingConfigPath, "routing.toml");
     assert.deepEqual(builder._config.schedulingFiles, ["s1.toml"]);

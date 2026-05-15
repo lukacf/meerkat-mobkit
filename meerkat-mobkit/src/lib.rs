@@ -7,6 +7,7 @@ pub mod baseline;
 pub mod blob_store;
 pub mod config_convention;
 pub mod console_aggregator;
+pub mod console_config;
 pub mod console_contracts;
 pub mod contact_directory;
 pub mod decisions;
@@ -49,6 +50,14 @@ pub use console_aggregator::{
     MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect, ReplaySubscriptionState,
     ReplaySubscriptionTransition, SendEffect, SendState, SendTransition, SourceIngestionEffect,
     SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
+};
+pub use console_config::{
+    ConsoleActionsUiConfig, ConsoleAgentBadgeConfig, ConsoleAgentListConfig,
+    ConsoleAgentSectionConfig, ConsoleAppearanceConfig, ConsoleBrandingConfig, ConsoleConfigError,
+    ConsoleEnvironmentConfig, ConsoleLayoutConfig, ConsoleRailFilterPresetConfig,
+    ConsoleRailUiConfig, ConsoleSidebarButtonConfig, ConsoleSidebarUiConfig, ConsoleUiConfig,
+    load_console_ui_config_from_path_for_realm, load_console_ui_config_from_toml,
+    load_console_ui_config_from_toml_for_realm,
 };
 pub use console_contracts::{
     ConsoleIdentityEventEnvelope, ConsoleInteractionRejectedError, ReplayUnavailableError,
