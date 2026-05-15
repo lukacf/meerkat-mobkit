@@ -116,7 +116,7 @@ class LeaseGrant:
         return {
             "identity": self.identity,
             "fencing_token": self.fencing_token,
-            "ttl_ms": self.ttl_ms,
+            "ttl": self.ttl_ms,
         }
 
     @classmethod
@@ -124,7 +124,7 @@ class LeaseGrant:
         return cls(
             identity=data["identity"],
             fencing_token=data["fencing_token"],
-            ttl_ms=data["ttl_ms"],
+            ttl_ms=data.get("ttl", data.get("ttl_ms", 0)),
         )
 
 
@@ -134,12 +134,19 @@ class LeaseAcquireResult:
 
     status: str
     grant: LeaseGrant | None = None
+    identity: str | None = None
     holder: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"status": self.status}
-        if self.grant is not None:
-            result["grant"] = self.grant.to_dict()
+        if self.status == "already_held":
+            result: dict[str, Any] = {
+                "result": "already_held",
+                "identity": self.identity or (self.grant.identity if self.grant else ""),
+            }
+        else:
+            result = {"result": "acquired"}
+            if self.grant is not None:
+                result.update(self.grant.to_dict())
         if self.holder is not None:
             result["holder"] = self.holder
         return result
@@ -147,9 +154,11 @@ class LeaseAcquireResult:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LeaseAcquireResult:
         grant_raw = data.get("grant")
+        status = data.get("result", data.get("status", "acquired"))
         return cls(
-            status=data["status"],
-            grant=LeaseGrant.from_dict(grant_raw) if grant_raw else None,
+            status="already_held" if status == "already_held" else status,
+            grant=LeaseGrant.from_dict(grant_raw or data) if grant_raw or status == "acquired" else None,
+            identity=data.get("identity"),
             holder=data.get("holder"),
         )
 
@@ -160,19 +169,27 @@ class LeaseRenewResult:
 
     status: str
     grant: LeaseGrant | None = None
+    identity: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"status": self.status}
+        if self.status == "lost":
+            return {
+                "result": "lost",
+                "identity": self.identity or (self.grant.identity if self.grant else ""),
+            }
+        result: dict[str, Any] = {"result": "renewed"}
         if self.grant is not None:
-            result["grant"] = self.grant.to_dict()
+            result.update(self.grant.to_dict())
         return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LeaseRenewResult:
         grant_raw = data.get("grant")
+        status = data.get("result", data.get("status", "renewed"))
         return cls(
-            status=data["status"],
-            grant=LeaseGrant.from_dict(grant_raw) if grant_raw else None,
+            status=status,
+            grant=LeaseGrant.from_dict(grant_raw or data) if grant_raw or status == "renewed" else None,
+            identity=data.get("identity"),
         )
 
 
@@ -197,6 +214,10 @@ class ContinuityStoreProvider(Protocol):
 
     async def upsert_continuity_record(
         self, record: ContinuityRecord, fencing_token: int,
+    ) -> None: ...
+
+    async def delete_continuity_record(
+        self, identity: str, fencing_token: int,
     ) -> None: ...
 
 

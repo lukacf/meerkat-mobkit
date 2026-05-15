@@ -853,6 +853,27 @@ describe("parsePersistedEvent", () => {
     }
   });
 
+  it("parses Rust internally tagged agent events", () => {
+    const result = parsePersistedEvent({
+      id: "evt-rust-agent",
+      seq: 7,
+      timestamp_ms: 1700000000003,
+      member_id: "mem-1",
+      event: {
+        kind: "agent",
+        agent_id: "agent-1",
+        event_type: "run_completed",
+        payload: { ok: true },
+      },
+    });
+    assert.equal(result.event.kind, "agent");
+    if (result.event.kind === "agent") {
+      assert.equal(result.event.agentId, "agent-1");
+      assert.equal(result.event.eventType, "run_completed");
+      assert.deepEqual(result.event.payload, { ok: true });
+    }
+  });
+
   it("parses Module unified event", () => {
     const result = parsePersistedEvent({
       id: "evt-2",
@@ -872,6 +893,26 @@ describe("parsePersistedEvent", () => {
       assert.equal(result.event.module, "mod_memory");
       assert.equal(result.event.eventType, "store_updated");
       assert.deepEqual(result.event.payload, { key: "val" });
+    }
+  });
+
+  it("parses Rust internally tagged module events", () => {
+    const result = parsePersistedEvent({
+      id: "evt-rust-module",
+      seq: 8,
+      timestamp_ms: 1700000000004,
+      event: {
+        kind: "module",
+        module: "routing",
+        event_type: "route_added",
+        payload: { route: "pager" },
+      },
+    });
+    assert.equal(result.event.kind, "module");
+    if (result.event.kind === "module") {
+      assert.equal(result.event.module, "routing");
+      assert.equal(result.event.eventType, "route_added");
+      assert.deepEqual(result.event.payload, { route: "pager" });
     }
   });
 

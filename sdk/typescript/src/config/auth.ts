@@ -9,6 +9,7 @@ export interface GoogleAuthConfig {
   readonly discoveryUrl: string;
   readonly audience: string | null;
   readonly leewaySeconds: number;
+  toDict(): Record<string, unknown>;
 }
 
 export function google(
@@ -19,14 +20,18 @@ export function google(
     leewaySeconds?: number;
   },
 ): GoogleAuthConfig {
-  return {
+  const config = {
     clientId,
     discoveryUrl:
       options?.discoveryUrl ??
       "https://accounts.google.com/.well-known/openid-configuration",
     audience: options?.audience ?? null,
     leewaySeconds: options?.leewaySeconds ?? 60,
+    toDict() {
+      return googleAuthConfigToDict(config);
+    },
   };
+  return config;
 }
 
 export function googleAuthConfigToDict(
@@ -48,6 +53,7 @@ export interface JwtAuthConfig {
   readonly issuer: string | null;
   readonly audience: string | null;
   readonly leewaySeconds: number;
+  toDict(): Record<string, unknown>;
 }
 
 export function jwt(
@@ -58,12 +64,16 @@ export function jwt(
     leewaySeconds?: number;
   },
 ): JwtAuthConfig {
-  return {
+  const config = {
     sharedSecret,
     issuer: options?.issuer ?? null,
     audience: options?.audience ?? null,
     leewaySeconds: options?.leewaySeconds ?? 60,
+    toDict() {
+      return jwtAuthConfigToDict(config);
+    },
   };
+  return config;
 }
 
 export function jwtAuthConfigToDict(

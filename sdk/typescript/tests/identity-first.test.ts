@@ -448,18 +448,26 @@ describe("Provider result types (REQ-49c)", () => {
 
     const wire = leaseGrantToDict(grant);
     assert.equal(wire.fencing_token, 99);
-    assert.equal(wire.ttl_ms, 30000);
+    assert.equal(wire.ttl, 30000);
   });
 
   it("LeaseAcquireResult: acquired", async () => {
-    const { parseLeaseAcquireResult } = await import("../src/types.js");
+    const { parseLeaseAcquireResult, leaseAcquireResultToDict } = await import("../src/types.js");
     const result = parseLeaseAcquireResult({
-      status: "acquired",
-      grant: { identity: "lead:main", fencing_token: 1, ttl_ms: 30000 },
+      result: "acquired",
+      identity: "lead:main",
+      fencing_token: 1,
+      ttl: 30000,
     });
     assert.equal(result.status, "acquired");
     assert.ok(result.grant);
     assert.equal(result.grant!.fencingToken, 1);
+    assert.deepEqual(leaseAcquireResultToDict(result), {
+      result: "acquired",
+      identity: "lead:main",
+      fencing_token: 1,
+      ttl: 30000,
+    });
   });
 
   it("LeaseAcquireResult: already_held", async () => {
@@ -473,13 +481,21 @@ describe("Provider result types (REQ-49c)", () => {
   });
 
   it("LeaseRenewResult: renewed", async () => {
-    const { parseLeaseRenewResult } = await import("../src/types.js");
+    const { parseLeaseRenewResult, leaseRenewResultToDict } = await import("../src/types.js");
     const result = parseLeaseRenewResult({
-      status: "renewed",
-      grant: { identity: "x:1", fencing_token: 2, ttl_ms: 30000 },
+      result: "renewed",
+      identity: "x:1",
+      fencing_token: 2,
+      ttl: 30000,
     });
     assert.equal(result.status, "renewed");
     assert.ok(result.grant);
+    assert.deepEqual(leaseRenewResultToDict(result), {
+      result: "renewed",
+      identity: "x:1",
+      fencing_token: 2,
+      ttl: 30000,
+    });
   });
 
   it("LeaseRenewResult: lost", async () => {
@@ -674,6 +690,7 @@ describe("Provider interfaces (REQ-48)", () => {
       },
       async saveSessionSnapshot(_identity, _sessionId, _generation, _version, _fencingToken, _snapshot) {},
       async upsertContinuityRecord(_record, _fencingToken) {},
+      async deleteContinuityRecord(_identity, _fencingToken) {},
     };
     const result = await store.resolveMany(["x:1"]);
     assert.equal(result["x:1"].state, "uninitialized");
@@ -765,6 +782,7 @@ describe("Builder identity-first extensions (REQ-50)", () => {
       async loadSessionSnapshot() { return null; },
       async saveSessionSnapshot() {},
       async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
     };
     const result = builder.continuityStore(store);
     assert.equal(result, builder);
@@ -798,6 +816,7 @@ describe("Builder identity-first extensions (REQ-50)", () => {
       async loadSessionSnapshot() { return null; },
       async saveSessionSnapshot() {},
       async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
     });
     await assert.rejects(builder.build(), (err: Error) => {
       assert.ok(err.message.includes("mutually exclusive"));
@@ -820,6 +839,24 @@ describe("Builder identity-first extensions (REQ-50)", () => {
     });
   });
 
+  it("external-authoritative path requires store, lease provider, and scratchDir", async () => {
+    const { MobKit } = await import("../src/builder.js");
+    const builder = MobKit.builder();
+    builder.continuityStore({
+      async resolveMany() { return {}; },
+      async loadSessionSnapshot() { return null; },
+      async saveSessionSnapshot() {},
+      async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
+    });
+
+    await assert.rejects(builder.build(), (err: Error) => {
+      assert.ok(err.message.includes("leaseProvider"));
+      assert.ok(err.message.includes("scratchDir"));
+      return true;
+    });
+  });
+
   it("stores config fields correctly", async () => {
     const { MobKit } = await import("../src/builder.js");
     const builder = MobKit.builder();
@@ -828,6 +865,7 @@ describe("Builder identity-first extensions (REQ-50)", () => {
       async loadSessionSnapshot() { return null; },
       async saveSessionSnapshot() {},
       async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
     };
     const lease = {
       async acquireLeases() { return {}; },
@@ -842,6 +880,18 @@ describe("Builder identity-first extensions (REQ-50)", () => {
 
   it("runtime init params advertise identity-first provider callbacks", async () => {
     const { MobKitRuntime } = await import("../src/runtime.js");
+    const continuityStore = {
+      async resolveMany() { return {}; },
+      async loadSessionSnapshot() { return null; },
+      async saveSessionSnapshot() {},
+      async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
+    };
+    const leaseProvider = {
+      async acquireLeases() { return {}; },
+      async renewLeases() { return {}; },
+      async releaseLeases() {},
+    };
     const rosterProvider = { async roster() { return []; } };
     const topologyProvider = { async computeEdges() { return []; } };
     const agentCustomizer = { async customizeBuild() {} };
@@ -861,10 +911,10 @@ describe("Builder identity-first extensions (REQ-50)", () => {
       implicitDelegateIdleRetireSecs: undefined,
       gatewayBin: "/bin/rpc_gateway",
       modules: [],
-      persistentState: "/tmp/state",
-      continuityStore: null,
-      leaseProvider: null,
-      scratchDir: null,
+      persistentState: null,
+      continuityStore,
+      leaseProvider,
+      scratchDir: "/tmp/scratch",
       rosterProvider,
       agentCustomizer,
       topologyProvider,
@@ -875,6 +925,9 @@ describe("Builder identity-first extensions (REQ-50)", () => {
     assert.equal(params.has_roster_provider, true);
     assert.equal(params.has_topology_provider, true);
     assert.equal(params.has_agent_customizer, true);
+    assert.equal(params.has_continuity_store, true);
+    assert.equal(params.has_lease_provider, true);
+    assert.equal(params.scratch_dir, "/tmp/scratch");
   });
 });
 
@@ -900,6 +953,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async loadSessionSnapshot() { return null; },
       async saveSessionSnapshot() {},
       async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
     });
 
     const result = await dispatcher.handleCallback("callback/continuity_store/resolve_many", {
@@ -923,6 +977,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       },
       async saveSessionSnapshot() {},
       async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
     });
 
     const result = await dispatcher.handleCallback("callback/continuity_store/load_session_snapshot", {
@@ -944,6 +999,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
         savedArgs = { identity, sessionId, generation, version, fencingToken, hasData: snapshot.data.length > 0 };
       },
       async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
     });
 
     await dispatcher.handleCallback("callback/continuity_store/save_session_snapshot", {
@@ -972,6 +1028,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async upsertContinuityRecord(record, fencingToken) {
         upsertedRecord = { ...record, fencingToken };
       },
+      async deleteContinuityRecord() {},
     });
 
     await dispatcher.handleCallback("callback/continuity_store/upsert_continuity_record", {
@@ -987,6 +1044,28 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.ok(upsertedRecord !== null);
     assert.equal(upsertedRecord!.identity, "lead:main");
     assert.equal(upsertedRecord!.fencingToken, 42);
+  });
+
+  it("routes callback/continuity_store/delete_continuity_record", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+    let deleted: Record<string, unknown> | null = null;
+
+    dispatcher.registerContinuityStore({
+      async resolveMany() { return {}; },
+      async loadSessionSnapshot() { return null; },
+      async saveSessionSnapshot() {},
+      async upsertContinuityRecord() {},
+      async deleteContinuityRecord(identity, fencingToken) {
+        deleted = { identity, fencingToken };
+      },
+    });
+
+    await dispatcher.handleCallback("callback/continuity_store/delete_continuity_record", {
+      identity: "lead:main",
+      fencing_token: 42,
+    });
+    assert.deepEqual(deleted, { identity: "lead:main", fencingToken: 42 });
   });
 
   it("routes callback/lease_provider/acquire_leases to LeaseProvider", async () => {
@@ -1009,7 +1088,14 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       identities: ["x:1"],
       runtime_instance: "rt-1",
     });
-    assert.ok(result !== null);
+    assert.deepEqual(result, {
+      "x:1": {
+        result: "acquired",
+        identity: "x:1",
+        fencing_token: 1,
+        ttl: 30000,
+      },
+    });
   });
 
   it("routes callback/lease_provider/renew_leases to LeaseProvider", async () => {
@@ -1021,7 +1107,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
       async renewLeases(grants) {
         const result: Record<string, { status: string }> = {};
         for (const g of grants) {
-          result[g.identity] = { status: "renewed" };
+          result[g.identity] = { status: "renewed", grant: g };
         }
         return result;
       },
@@ -1029,9 +1115,16 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     });
 
     const result = await dispatcher.handleCallback("callback/lease_provider/renew_leases", {
-      grants: [{ identity: "x:1", fencing_token: 1, ttl_ms: 30000 }],
+      grants: [{ identity: "x:1", fencing_token: 1, ttl: 30000 }],
     });
-    assert.ok(result !== null);
+    assert.deepEqual(result, {
+      "x:1": {
+        result: "renewed",
+        identity: "x:1",
+        fencing_token: 1,
+        ttl: 30000,
+      },
+    });
   });
 
   it("routes callback/lease_provider/release_leases to LeaseProvider", async () => {
@@ -1046,7 +1139,7 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     });
 
     await dispatcher.handleCallback("callback/lease_provider/release_leases", {
-      grants: [{ identity: "x:1", fencing_token: 1, ttl_ms: 30000 }],
+      grants: [{ identity: "x:1", fencing_token: 1, ttl: 30000 }],
     });
     assert.equal(releasedCount, 1);
   });

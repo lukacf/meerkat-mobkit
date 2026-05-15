@@ -41,6 +41,18 @@ function asStringRecord(value: unknown): Record<string, string> {
   return result;
 }
 
+function validateAgentIdentity(identity: string): string {
+  if (
+    identity.length === 0 ||
+    identity.trim() !== identity ||
+    /\s/.test(identity) ||
+    identity.includes("/")
+  ) {
+    throw new Error(`invalid agent identity: ${identity}`);
+  }
+  return identity;
+}
+
 // -- Constants ------------------------------------------------------------
 
 export const MEMBER_STATE_ACTIVE = "active" as const;
@@ -578,6 +590,25 @@ export type UnifiedEvent = UnifiedAgentEvent | UnifiedModuleEvent;
 
 function parseUnifiedEvent(raw: unknown): UnifiedEvent {
   const d = asRecord(raw);
+  if (d.kind === "agent") {
+    return {
+      kind: "agent",
+      agentId: String(d.agent_id ?? d.agentId ?? ""),
+      eventType: String(d.event_type ?? d.eventType ?? ""),
+      payload:
+        typeof d.payload === "object" && d.payload !== null
+          ? asRecord(d.payload)
+          : null,
+    };
+  }
+  if (d.kind === "module") {
+    return {
+      kind: "module",
+      module: String(d.module ?? ""),
+      eventType: String(d.event_type ?? d.eventType ?? ""),
+      payload: asRecord(d.payload),
+    };
+  }
   if ("Agent" in d) {
     const agent = asRecord(d.Agent);
     return {
@@ -908,6 +939,182 @@ export function parseMobRun(raw: unknown): MobRun {
   };
 }
 
+// -- Rich member / helper / catalog / cross-mob results --------------------
+
+export type MobMemberStatus =
+  | "active"
+  | "retiring"
+  | "broken"
+  | "completed"
+  | "unknown";
+
+export interface MobUnreachablePeer {
+  readonly peer: string;
+  readonly reason: string | null;
+}
+
+export function parseMobUnreachablePeer(raw: unknown): MobUnreachablePeer {
+  const d = asRecord(raw);
+  return {
+    peer: String(d.peer ?? ""),
+    reason: typeof d.reason === "string" ? d.reason : null,
+  };
+}
+
+export interface PeerConnectivitySnapshot {
+  readonly reachablePeerCount: number;
+  readonly unknownPeerCount: number;
+  readonly unreachablePeers: readonly MobUnreachablePeer[];
+}
+
+export function parsePeerConnectivitySnapshot(raw: unknown): PeerConnectivitySnapshot {
+  const d = asRecord(raw);
+  return {
+    reachablePeerCount: Number(d.reachable_peer_count ?? 0),
+    unknownPeerCount: Number(d.unknown_peer_count ?? 0),
+    unreachablePeers: asRecordArray(d.unreachable_peers).map(parseMobUnreachablePeer),
+  };
+}
+
+export interface RichMemberSnapshot {
+  readonly status: string;
+  readonly outputPreview: string | null;
+  readonly error: string | null;
+  readonly tokensUsed: number;
+  readonly isFinal: boolean;
+  readonly currentSessionId: string | null;
+  readonly peerConnectivity: PeerConnectivitySnapshot | null;
+}
+
+export function parseRichMemberSnapshot(raw: unknown): RichMemberSnapshot {
+  const d = asRecord(raw);
+  return {
+    status: String(d.status ?? "unknown"),
+    outputPreview: typeof d.output_preview === "string" ? d.output_preview : null,
+    error: typeof d.error === "string" ? d.error : null,
+    tokensUsed: Number(d.tokens_used ?? 0),
+    isFinal: Boolean(d.is_final),
+    currentSessionId:
+      typeof d.current_session_id === "string" ? d.current_session_id : null,
+    peerConnectivity:
+      typeof d.peer_connectivity === "object" && d.peer_connectivity !== null
+        ? parsePeerConnectivitySnapshot(d.peer_connectivity)
+        : null,
+  };
+}
+
+export interface HelperResult {
+  readonly output: string | null;
+  readonly tokensUsed: number;
+  readonly sessionId: string | null;
+}
+
+export function parseHelperResult(raw: unknown): HelperResult {
+  const d = asRecord(raw);
+  return {
+    output: typeof d.output === "string" ? d.output : null,
+    tokensUsed: Number(d.tokens_used ?? 0),
+    sessionId: typeof d.session_id === "string" ? d.session_id : null,
+  };
+}
+
+export interface MobRunSnapshot {
+  readonly runId: string;
+  readonly mobId: string;
+  readonly flowId: string;
+  readonly status: string;
+  readonly stepLedger: readonly Record<string, unknown>[];
+  readonly failureLedger: readonly Record<string, unknown>[];
+}
+
+export function parseMobRunSnapshot(raw: unknown): MobRunSnapshot {
+  const d = asRecord(raw);
+  return {
+    runId: String(d.run_id ?? ""),
+    mobId: String(d.mob_id ?? ""),
+    flowId: String(d.flow_id ?? ""),
+    status: String(d.status ?? "unknown"),
+    stepLedger: asRecordArray(d.step_ledger),
+    failureLedger: asRecordArray(d.failure_ledger),
+  };
+}
+
+export interface CrossMobContactEntry {
+  readonly mobId: string;
+  readonly transport: string;
+}
+
+export function parseCrossMobContactEntry(raw: unknown): CrossMobContactEntry {
+  const d = asRecord(raw);
+  let transport = d.transport;
+  if (typeof transport === "object" && transport !== null) {
+    const t = asRecord(transport);
+    if (typeof t.Tcp === "string") transport = `tcp://${t.Tcp}`;
+    else if (typeof t.Uds === "string") transport = `uds://${t.Uds}`;
+    else transport = "inproc";
+  } else if (transport === "Inproc") {
+    transport = "inproc";
+  }
+  return {
+    mobId: String(d.mob_id ?? ""),
+    transport: String(transport ?? ""),
+  };
+}
+
+export interface CatalogEntry {
+  readonly id: string;
+  readonly displayName: string;
+  readonly provider: string;
+  readonly tier: string;
+  readonly contextWindow: number | null;
+  readonly maxOutputTokens: number | null;
+  readonly vision: boolean;
+  readonly imageToolResults: boolean;
+}
+
+export function parseCatalogEntry(raw: unknown): CatalogEntry {
+  const d = asRecord(raw);
+  const profile = asRecord(d.profile);
+  return {
+    id: String(d.id ?? ""),
+    displayName: String(d.display_name ?? ""),
+    provider: String(d.provider ?? ""),
+    tier: String(d.tier ?? ""),
+    contextWindow: d.context_window == null ? null : Number(d.context_window),
+    maxOutputTokens: d.max_output_tokens == null ? null : Number(d.max_output_tokens),
+    vision: Boolean(profile.vision),
+    imageToolResults: Boolean(profile.image_tool_results),
+  };
+}
+
+export interface ProviderDefaults {
+  readonly provider: string;
+  readonly defaultModelId: string;
+  readonly models: readonly CatalogEntry[];
+}
+
+export function parseProviderDefaults(raw: unknown): ProviderDefaults {
+  const d = asRecord(raw);
+  return {
+    provider: String(d.provider ?? ""),
+    defaultModelId: String(d.default_model_id ?? ""),
+    models: asRecordArray(d.models).map(parseCatalogEntry),
+  };
+}
+
+export interface ModelsCatalogResult {
+  readonly models: readonly CatalogEntry[];
+  readonly providerDefaults: readonly ProviderDefaults[];
+}
+
+export function parseModelsCatalogResult(raw: unknown): ModelsCatalogResult {
+  const d = asRecord(raw);
+  return {
+    models: asRecordArray(d.models).map(parseCatalogEntry),
+    providerDefaults: asRecordArray(d.provider_defaults).map(parseProviderDefaults),
+  };
+}
+
 // -- ErrorCategory / ErrorEvent -------------------------------------------
 
 export const ErrorCategory = {
@@ -987,7 +1194,7 @@ export interface DurableAgentSpec {
 export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
   const d = asRecord(raw);
   return {
-    identity: String(d.identity ?? ""),
+    identity: validateAgentIdentity(String(d.identity ?? "")),
     profile: String(d.profile ?? ""),
     addressability: String(d.addressability ?? "addressable"),
     displayName: typeof d.display_name === "string" ? d.display_name : null,
@@ -1196,11 +1403,17 @@ export interface ManagedPeerEdge {
 
 export function parseManagedPeerEdge(raw: unknown): ManagedPeerEdge {
   const d = asRecord(raw);
-  return { a: String(d.a ?? ""), b: String(d.b ?? "") };
+  const a = validateAgentIdentity(String(d.a ?? ""));
+  const b = validateAgentIdentity(String(d.b ?? ""));
+  if (a === b) {
+    throw new Error(`managed peer edge cannot connect an identity to itself: ${a}`);
+  }
+  return a < b ? { a, b } : { a: b, b: a };
 }
 
 export function managedPeerEdgeToDict(edge: ManagedPeerEdge): Record<string, string> {
-  return { a: edge.a, b: edge.b };
+  const parsed = parseManagedPeerEdge(edge);
+  return { a: parsed.a, b: parsed.b };
 }
 
 // -- ExternalToolDef (REQ-49a) --------------------------------------------
@@ -1504,7 +1717,7 @@ export function parseLeaseGrant(raw: unknown): LeaseGrant {
   return {
     identity: String(d.identity ?? ""),
     fencingToken: Number(d.fencing_token ?? 0),
-    ttlMs: Number(d.ttl_ms ?? 0),
+    ttlMs: Number(d.ttl ?? d.ttl_ms ?? 0),
   };
 }
 
@@ -1512,7 +1725,7 @@ export function leaseGrantToDict(grant: LeaseGrant): Record<string, unknown> {
   return {
     identity: grant.identity,
     fencing_token: grant.fencingToken,
-    ttl_ms: grant.ttlMs,
+    ttl: grant.ttlMs,
   };
 }
 
@@ -1520,18 +1733,41 @@ export function leaseGrantToDict(grant: LeaseGrant): Record<string, unknown> {
 
 export interface LeaseAcquireResult {
   readonly status: "acquired" | "alreadyHeld";
+  readonly identity?: string;
   readonly grant?: LeaseGrant;
   readonly holder?: string;
 }
 
 export function parseLeaseAcquireResult(raw: unknown): LeaseAcquireResult {
   const d = asRecord(raw);
-  const wireStatus = String(d.status ?? "acquired");
+  const wireStatus = String(d.result ?? d.status ?? "acquired");
   const status = wireStatus === "already_held" ? "alreadyHeld" as const : "acquired" as const;
   return {
     status,
-    grant: d.grant != null ? parseLeaseGrant(d.grant) : undefined,
+    identity: typeof d.identity === "string" ? d.identity : undefined,
+    grant: d.grant != null
+      ? parseLeaseGrant(d.grant)
+      : status === "acquired"
+        ? parseLeaseGrant(d)
+        : undefined,
     holder: typeof d.holder === "string" ? d.holder : undefined,
+  };
+}
+
+export function leaseAcquireResultToDict(
+  result: LeaseAcquireResult,
+): Record<string, unknown> {
+  if (result.status === "alreadyHeld") {
+    return {
+      result: "already_held",
+      identity: result.identity ?? result.grant?.identity ?? "",
+      holder: result.holder ?? "",
+    };
+  }
+  const grant = result.grant;
+  return {
+    result: "acquired",
+    ...(grant ? leaseGrantToDict(grant) : {}),
   };
 }
 
@@ -1539,15 +1775,37 @@ export function parseLeaseAcquireResult(raw: unknown): LeaseAcquireResult {
 
 export interface LeaseRenewResult {
   readonly status: "renewed" | "lost";
+  readonly identity?: string;
   readonly grant?: LeaseGrant;
 }
 
 export function parseLeaseRenewResult(raw: unknown): LeaseRenewResult {
   const d = asRecord(raw);
-  const status = String(d.status ?? "renewed") as LeaseRenewResult["status"];
+  const status = String(d.result ?? d.status ?? "renewed") as LeaseRenewResult["status"];
   return {
     status,
-    grant: d.grant != null ? parseLeaseGrant(d.grant) : undefined,
+    identity: typeof d.identity === "string" ? d.identity : undefined,
+    grant: d.grant != null
+      ? parseLeaseGrant(d.grant)
+      : status === "renewed"
+        ? parseLeaseGrant(d)
+        : undefined,
+  };
+}
+
+export function leaseRenewResultToDict(
+  result: LeaseRenewResult,
+): Record<string, unknown> {
+  if (result.status === "lost") {
+    return {
+      result: "lost",
+      identity: result.identity ?? result.grant?.identity ?? "",
+    };
+  }
+  const grant = result.grant;
+  return {
+    result: "renewed",
+    ...(grant ? leaseGrantToDict(grant) : {}),
   };
 }
 
@@ -1565,6 +1823,7 @@ export interface ContinuityStore {
     snapshot: SessionSnapshot,
   ): Promise<void>;
   upsertContinuityRecord(record: ContinuityRecord, fencingToken: number): Promise<void>;
+  deleteContinuityRecord(identity: string, fencingToken: number): Promise<void>;
 }
 
 export interface LeaseProvider {

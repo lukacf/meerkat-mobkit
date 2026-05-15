@@ -1397,6 +1397,21 @@ external_addressable = true
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let has_continuity_store = params
+        .get("has_continuity_store")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let has_lease_provider = params
+        .get("has_lease_provider")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let scratch_dir = params
+        .get("scratch_dir")
+        .and_then(|v| v.as_str())
+        .map(std::path::PathBuf::from);
+
     // 3. Set up stdout writer channel for multiplexed output
     let (stdout_tx, mut stdout_rx) = mpsc::channel::<String>(64);
     let stdout_writer = tokio::spawn(async move {
@@ -1467,6 +1482,29 @@ external_addressable = true
         );
         let _ = stdout.flush();
         std::process::exit(1);
+    }
+
+    if (has_continuity_store || has_lease_provider || scratch_dir.is_some())
+        && !(has_continuity_store && has_lease_provider && scratch_dir.is_some())
+    {
+        let mut missing = Vec::new();
+        if !has_continuity_store {
+            missing.push("continuity_store");
+        }
+        if !has_lease_provider {
+            missing.push("lease_provider");
+        }
+        if scratch_dir.is_none() {
+            missing.push("scratch_dir");
+        }
+        fail_init(
+            &request_id,
+            -32602,
+            format!(
+                "external-authoritative path requires continuity_store + lease_provider + scratch_dir; missing: {}",
+                missing.join(", ")
+            ),
+        );
     }
 
     let mut gateway_options = parse_gateway_runtime_options(&params, persistent_state.as_deref())
@@ -1584,7 +1622,22 @@ external_addressable = true
         // Use MemoryStore to avoid JSONL writes — the gateway uses EphemeralSessionService
         // so agent-level persistence is not needed. This avoids failures on read-only
         // filesystems (e.g., GKE containers) where the default JSONL store can't write.
-        let temp_dir = tempfile::tempdir().expect("create temp dir for agent working space");
+        let temp_dir = if scratch_dir.is_none() {
+            Some(tempfile::tempdir().expect("create temp dir for agent working space"))
+        } else {
+            None
+        };
+        let agent_workspace = scratch_dir
+            .as_deref()
+            .or_else(|| temp_dir.as_ref().map(|dir| dir.path()))
+            .expect("scratch dir or temp dir");
+        if let Err(err) = std::fs::create_dir_all(agent_workspace) {
+            fail_init(
+                &request_id,
+                -32603,
+                format!("failed to create scratch directory: {err}"),
+            );
+        }
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
         let blob_store: Arc<dyn meerkat_core::BlobStore> =
             Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
@@ -1594,7 +1647,7 @@ external_addressable = true
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
         ));
-        let mut factory = AgentFactory::new(temp_dir.path())
+        let mut factory = AgentFactory::new(agent_workspace)
             .builtins(false)
             .comms(true)
             .session_store(Arc::new(meerkat::MemoryStore::new()));
@@ -1620,7 +1673,7 @@ external_addressable = true
             });
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
-        (spec, Some(temp_dir))
+        (spec, temp_dir)
     };
 
     // Wire callback/after_create — notify Python/TS SDK after each session creation.
@@ -1724,13 +1777,16 @@ external_addressable = true
             LocalLeaseProvider, RosterContext,
             contracts::LeaseProvider as LeaseProviderTrait,
             gateway_bridges::{
-                GatewayAgentCustomizer, GatewayRosterProvider, GatewayTopologyProvider,
+                GatewayAgentCustomizer, GatewayContinuityStore, GatewayLeaseProvider,
+                GatewayRosterProvider, GatewayTopologyProvider,
             },
         };
 
         // Build provider bridges
         let continuity_store: Arc<dyn meerkat_mobkit::identity_first::ContinuityStore> =
-            if let Some(ref state_path) = persistent_state {
+            if has_continuity_store {
+                Arc::new(GatewayContinuityStore::new(bridge.clone()))
+            } else if let Some(ref state_path) = persistent_state {
                 Arc::new(
                     LocalContinuityStore::open(state_path.join("continuity.db")).unwrap_or_else(
                         |e| {
@@ -1758,7 +1814,11 @@ external_addressable = true
                 )
             };
 
-        let lease_provider: Arc<dyn LeaseProviderTrait> = Arc::new(LocalLeaseProvider::new());
+        let lease_provider: Arc<dyn LeaseProviderTrait> = if has_lease_provider {
+            Arc::new(GatewayLeaseProvider::new(bridge.clone()))
+        } else {
+            Arc::new(LocalLeaseProvider::new())
+        };
 
         // Construct the session bridge from the mob handle. The gateway
         // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so

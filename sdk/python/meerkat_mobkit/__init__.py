@@ -28,8 +28,11 @@ from .agent_builder import SessionAgentBuilder
 # Errors
 from .errors import (
     MOB_EVENTS_STALE_CURSOR_CODE,
+    CAPABILITY_UNAVAILABLE_CODE,
+    MEMORY_BACKEND_UNAVAILABLE_CODE,
     CapabilityUnavailableError,
     ContractMismatchError,
+    MemoryBackendUnavailableError,
     MobEventsStaleError,
     MobKitError,
     NotConnectedError,
@@ -135,7 +138,10 @@ __all__ = [
     "RpcError",
     "MobEventsStaleError",
     "MOB_EVENTS_STALE_CURSOR_CODE",
+    "CAPABILITY_UNAVAILABLE_CODE",
+    "MEMORY_BACKEND_UNAVAILABLE_CODE",
     "CapabilityUnavailableError",
+    "MemoryBackendUnavailableError",
     "ContractMismatchError",
     "NotConnectedError",
     # Typed return models

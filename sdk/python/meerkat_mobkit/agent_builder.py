@@ -207,6 +207,12 @@ class CallbackDispatcher:
             await store.upsert_continuity_record(record, params["fencing_token"])
             return None
 
+        if op == "delete_continuity_record":
+            await store.delete_continuity_record(
+                params["identity"], params["fencing_token"]
+            )
+            return None
+
         raise ValueError(f"unknown continuity_store operation: {op}")
 
     async def _handle_lease_provider(self, method: str, params: dict[str, Any]) -> Any:

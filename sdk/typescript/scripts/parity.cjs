@@ -5,6 +5,9 @@ const {
   MobkitTypedClient,
   buildConsoleModulesRoute,
   defineModuleSpec,
+  leaseAcquireResultToDict,
+  parseDurableAgentSpec,
+  parsePersistedEvent,
 } = require("../dist/index.cjs");
 
 const gatewayBin = process.env.MOBKIT_RPC_GATEWAY_BIN;
@@ -102,6 +105,47 @@ check("module-authoring helper normalizes schema", () => {
     restart_policy: "on_failure",
     boundary: "mcp",
   }, "unexpected module spec");
+});
+
+check("identity-first lease callback uses rust wire tags", () => {
+  const wire = leaseAcquireResultToDict({
+    status: "acquired",
+    grant: { identity: "lead:main", fencingToken: 7, ttlMs: 5000 },
+  });
+  assertDeepEqual(wire, {
+    result: "acquired",
+    identity: "lead:main",
+    fencing_token: 7,
+    ttl: 5000,
+  }, "unexpected lease callback shape");
+});
+
+check("persisted events parse rust internal tags", () => {
+  const event = parsePersistedEvent({
+    id: "e-1",
+    seq: 1,
+    timestamp_ms: 1000,
+    member_id: "lead",
+    event: {
+      kind: "agent",
+      agent_id: "lead",
+      event_type: "run_completed",
+      payload: { ok: true },
+    },
+  });
+  assertDeepEqual(event.event, {
+    kind: "agent",
+    agentId: "lead",
+    eventType: "run_completed",
+    payload: { ok: true },
+  }, "unexpected persisted event parse");
+});
+
+check("identity-first agent identity rejects invalid shape", () => {
+  assert.throws(
+    () => parseDurableAgentSpec({ identity: "bad identity", profile: "worker" }),
+    /invalid agent identity/,
+  );
 });
 
 const failed = results.filter((item) => !item.ok).length;

@@ -18,6 +18,8 @@ import {
   durableAgentSpecToDict,
   sessionSnapshotToDict,
   leaseGrantToDict,
+  leaseAcquireResultToDict,
+  leaseRenewResultToDict,
   managedPeerEdgeToDict,
   type ErrorEvent,
   type SessionCreatedContext,
@@ -273,6 +275,16 @@ export class CallbackDispatcher {
       return null;
     }
 
+    if (method === "callback/continuity_store/delete_continuity_record") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const identity = String(params.identity ?? "");
+      const fencingToken = Number(params.fencing_token ?? 0);
+      await this._continuityStore.deleteContinuityRecord(identity, fencingToken);
+      return null;
+    }
+
     // -- Lease callbacks ----------------------------------------------------
 
     if (method === "callback/lease_provider/acquire_leases") {
@@ -283,7 +295,13 @@ export class CallbackDispatcher {
         ? params.identities.map(String)
         : [];
       const runtimeInstance = String(params.runtime_instance ?? "");
-      return this._leaseProvider.acquireLeases(identities, runtimeInstance);
+      const result = await this._leaseProvider.acquireLeases(identities, runtimeInstance);
+      return Object.fromEntries(
+        Object.entries(result).map(([identity, value]) => [
+          identity,
+          leaseAcquireResultToDict({ identity, ...value }),
+        ]),
+      );
     }
 
     if (method === "callback/lease_provider/renew_leases") {
@@ -292,7 +310,13 @@ export class CallbackDispatcher {
       }
       const rawGrants = Array.isArray(params.grants) ? params.grants : [];
       const grants: LeaseGrant[] = rawGrants.map(parseLeaseGrant);
-      return this._leaseProvider.renewLeases(grants);
+      const result = await this._leaseProvider.renewLeases(grants);
+      return Object.fromEntries(
+        Object.entries(result).map(([identity, value]) => [
+          identity,
+          leaseRenewResultToDict({ identity, ...value }),
+        ]),
+      );
     }
 
     if (method === "callback/lease_provider/release_leases") {

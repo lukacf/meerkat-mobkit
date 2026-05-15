@@ -510,6 +510,45 @@ class TestPersistedEvent:
         assert r.event.agent_id == "agent-1"
         assert r.event.event_type == "run_completed"
 
+    def test_from_dict_accepts_rust_internal_agent_event(self):
+        r = PersistedEvent.from_dict(
+            {
+                "id": "ev-rust",
+                "seq": 2,
+                "timestamp_ms": 1001,
+                "member_id": "agent-1",
+                "event": {
+                    "kind": "agent",
+                    "agent_id": "agent-1",
+                    "event_type": "run_completed",
+                    "payload": {"ok": True},
+                },
+            }
+        )
+        assert isinstance(r.event, UnifiedAgentEvent)
+        assert r.event.agent_id == "agent-1"
+        assert r.event.event_type == "run_completed"
+
+    def test_from_dict_accepts_rust_internal_module_event(self):
+        r = PersistedEvent.from_dict(
+            {
+                "id": "ev-module",
+                "seq": 3,
+                "timestamp_ms": 1002,
+                "member_id": None,
+                "event": {
+                    "kind": "module",
+                    "module": "routing",
+                    "event_type": "route_added",
+                    "payload": {"route": "pager"},
+                },
+            }
+        )
+        assert isinstance(r.event, UnifiedModuleEvent)
+        assert r.event.module == "routing"
+        assert r.event.event_type == "route_added"
+        assert r.event.payload == {"route": "pager"}
+
 
 class TestUnifiedAgentEvent:
     def test_direct_construction(self):

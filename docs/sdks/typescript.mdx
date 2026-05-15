@@ -4,46 +4,43 @@ description: "TypeScript SDK for MobKit with type-safe contracts, parity tests, 
 icon: "js"
 ---
 
-The TypeScript SDK (`@meerkat/mobkit-sdk`) provides type-safe access to MobKit's JSON-RPC API from Node.js and browser environments.
+The TypeScript SDK (`@rkat/mobkit-sdk`) provides type-safe access to the MobKit JSON-RPC gateway from Node.js.
 
 ## Installation
 
 ```bash
-npm install @meerkat/mobkit-sdk
+npm install @rkat/mobkit-sdk
 ```
 
 ## Quick start
 
 ```typescript
-import { MobKitClient } from "@meerkat/mobkit-sdk";
+import { MobKit, memory } from "@rkat/mobkit-sdk";
 
-const client = new MobKitClient({
-  endpoint: "http://localhost:8080",
-});
+const rt = await MobKit.builder()
+  .mob("config/mob.toml")
+  .memory(memory.elephant("http://127.0.0.1:8080"))
+  .persistentState(".mobkit/state")
+  .gateway("./target/debug/rpc_gateway")
+  .build();
 
-// Check runtime health
-const health = await client.health();
-console.log("Running:", health.running);
+const handle = rt.mobHandle();
+const status = await handle.status();
+console.log("Running:", status.running);
 
-// Query memory
-const results = await client.memoryQuery({
-  query: "What happened in the last deployment?",
+const results = await handle.memoryQuery("What happened in the last deployment?", {
   limit: 5,
 });
 
-// Evaluate schedules
-const evaluation = await client.schedulingEvaluate({
-  schedules: [
-    {
-      schedule_id: "daily-report",
-      interval: "0 9 * * *",
-      timezone: "Europe/Stockholm",
-      jitter_ms: 0,
-      enabled: true,
-    },
-  ],
-  tick_ms: Date.now(),
-});
+const evaluation = await handle.schedulingEvaluate([
+  {
+    schedule_id: "daily-report",
+    interval: "0 9 * * *",
+    timezone: "Europe/Stockholm",
+    jitter_ms: 0,
+    enabled: true,
+  },
+], Date.now());
 ```
 
 ## Type definitions
@@ -67,8 +64,8 @@ interface EventEnvelope<T> {
 
 interface UnifiedEvent {
   kind: "agent" | "module";
-  agent_id?: string;
-  event_type?: string;
+  agentId?: string;
+  eventType?: string;
   module?: string;
   payload?: unknown;
 }
@@ -152,6 +149,14 @@ for (const run of runs) {
   console.log(run.runId, run.status, run.stepLedger.length);
 }
 ```
+
+## Rust parity notes
+
+The TypeScript SDK targets the JSON-RPC gateway. Rust also exposes lower-level native builder options for in-process embedding; those remain Rust-native and are not mirrored one-for-one in the gateway SDKs.
+
+External identity providers are all-or-nothing: configure `continuityStore()`, `leaseProvider()`, and `scratchDir()` together. The SDK sends the corresponding init flags to Rust, and provider callbacks use Rust's wire shape (`result` tags and `ttl`).
+
+Gateway memory config currently accepts the Elephant backend as `{ backend, endpoint }`. Store, collection, and space selectors are retained on the helper object for app code but are not sent to the Rust gateway. Gateway auth config supports JWT validation; Google/OIDC helpers are model objects, not accepted by `mobkit/init` today.
 
 ## HTTP transport timeout
 

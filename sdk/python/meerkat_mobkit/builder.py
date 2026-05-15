@@ -118,7 +118,12 @@ class MobKitBuilder:
 
     def memory(self, config: Any = None, *, stores: list[str] | None = None) -> MobKitBuilder:
         """Set memory config. Accepts config object or stores=["knowledge_graph", ...]."""
-        self._config.memory_config = config or {"stores": stores or []}
+        if config is None and stores is not None:
+            raise ValueError(
+                "memory(stores=...) is not supported by the Rust gateway; "
+                "pass memory.elephant(endpoint)"
+            )
+        self._config.memory_config = config
         return self
 
     def auth(self, config: Any) -> MobKitBuilder:
@@ -210,6 +215,20 @@ class MobKitBuilder:
                 "persistent_state and continuity_store/lease_provider/scratch_dir "
                 "are mutually exclusive — use one path or the other"
             )
+        if has_external:
+            missing = []
+            if self._config.continuity_store is None:
+                missing.append("continuity_store")
+            if self._config.lease_provider is None:
+                missing.append("lease_provider")
+            if self._config.scratch_dir is None:
+                missing.append("scratch_dir")
+            if missing:
+                raise ValueError(
+                    "external-authoritative path requires continuity_store() + "
+                    "lease_provider() + scratch_dir(); missing: "
+                    + ", ".join(missing)
+                )
 
     def _apply_convention_defaults(self) -> None:
         """Fill in conventional config paths when not explicitly set.

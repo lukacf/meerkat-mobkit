@@ -133,6 +133,32 @@ describe("MobHandle.capabilities()", () => {
   });
 });
 
+describe("MobHandle Rust gateway parity wrappers", () => {
+  it("sends scheduling evaluate and dispatch RPC names", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ ok: true }));
+
+    await handle.schedulingEvaluate([{ id: "daily" }], 1234);
+    await handle.schedulingDispatch([{ id: "daily" }], 5678);
+
+    assert.equal(calls[0].method, "mobkit/scheduling/evaluate");
+    assert.deepEqual(calls[0].params, { schedules: [{ id: "daily" }], tick_ms: 1234 });
+    assert.equal(calls[1].method, "mobkit/scheduling/dispatch");
+    assert.deepEqual(calls[1].params, { schedules: [{ id: "daily" }], tick_ms: 5678 });
+  });
+
+  it("sends session store BigQuery RPC name", async () => {
+    const { handle, calls, setResponse } = createMockRuntime();
+    setResponse(() => ({ rows: 1 }));
+
+    const result = await handle.sessionStoreBigQuery({ operation: "probe" });
+
+    assert.equal(calls[0].method, "mobkit/session_store/bigquery");
+    assert.deepEqual(calls[0].params, { operation: "probe" });
+    assert.deepEqual(result, { rows: 1 });
+  });
+});
+
 describe("MobHandle.spawn()", () => {
   it("sends mobkit/spawn_member with discovery spec", async () => {
     const { handle, calls, setResponse } = createMockRuntime();

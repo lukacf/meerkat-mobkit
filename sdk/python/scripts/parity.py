@@ -11,10 +11,16 @@ from typing import Any, Callable
 try:
     from meerkat_mobkit._client import MobkitTypedClient
     from meerkat_mobkit.helpers import build_console_modules_route, define_module_spec
+    from meerkat_mobkit.identity_first_models import DurableAgentSpec
+    from meerkat_mobkit.identity_first_providers import LeaseAcquireResult, LeaseGrant
+    from meerkat_mobkit.types import PersistedEvent, UnifiedAgentEvent
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from meerkat_mobkit._client import MobkitTypedClient  # type: ignore[no-redef]
     from meerkat_mobkit.helpers import build_console_modules_route, define_module_spec  # type: ignore[no-redef]
+    from meerkat_mobkit.identity_first_models import DurableAgentSpec  # type: ignore[no-redef]
+    from meerkat_mobkit.identity_first_providers import LeaseAcquireResult, LeaseGrant  # type: ignore[no-redef]
+    from meerkat_mobkit.types import PersistedEvent, UnifiedAgentEvent  # type: ignore[no-redef]
 
 
 def main() -> int:
@@ -106,6 +112,51 @@ def main() -> int:
         },
         "unexpected module spec",
     ))
+
+    check("identity-first lease callback uses rust wire tags", lambda: _assert_eq(
+        LeaseAcquireResult(
+            status="acquired",
+            grant=LeaseGrant(identity="lead:main", fencing_token=7, ttl_ms=5000),
+        ).to_dict(),
+        {
+            "result": "acquired",
+            "identity": "lead:main",
+            "fencing_token": 7,
+            "ttl": 5000,
+        },
+        "unexpected lease callback shape",
+    ))
+
+    def _event_check() -> None:
+        event = PersistedEvent.from_dict({
+            "id": "e-1",
+            "seq": 1,
+            "timestamp_ms": 1000,
+            "member_id": "lead",
+            "event": {
+                "kind": "agent",
+                "agent_id": "lead",
+                "event_type": "run_completed",
+                "payload": {"ok": True},
+            },
+        })
+        if not isinstance(event.event, UnifiedAgentEvent):
+            raise AssertionError(f"unexpected event type: {event.event}")
+        _assert_eq(event.event.agent_id, "lead", "unexpected agent id")
+        _assert_eq(event.event.event_type, "run_completed", "unexpected event type")
+
+    check("persisted events parse rust internal tags", _event_check)
+
+    def _identity_validation_check() -> None:
+        try:
+            DurableAgentSpec(identity="bad identity", profile="worker")
+        except ValueError as exc:
+            if "invalid agent identity" in str(exc):
+                return
+            raise
+        raise AssertionError("invalid identity was accepted")
+
+    check("identity-first agent identity rejects invalid shape", _identity_validation_check)
 
     failed = sum(1 for c in checks if not c["ok"])
     passed = len(checks) - failed

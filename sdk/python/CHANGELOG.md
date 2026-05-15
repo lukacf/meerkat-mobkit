@@ -133,7 +133,7 @@ Rename in your code:
 - spec = DiscoverySpec(profile="worker", meerkat_id="agent-1", labels={...})
 + spec = DiscoverySpec(role="worker", agent_identity="agent-1", labels={...})
 
-- await handle.ensure_member("agent-1", profile="worker")
+- await handle.ensure_member("agent-1", role="worker")
 + await handle.ensure_member("agent-1", role="worker")
 
 - await handle.spawn_helper("h1", "task", profile="worker")

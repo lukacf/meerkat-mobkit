@@ -177,33 +177,32 @@ describe("memory.elephantMemoryConfigToDict", () => {
     assert.equal(dict.stores, undefined);
   });
 
-  it("includes spaceId when set", () => {
+  it("omits spaceId because the Rust gateway does not accept it", () => {
     const config = memory.elephant("http://e:8080", { spaceId: "sp-x" });
     const dict = memory.elephantMemoryConfigToDict(config);
-    assert.equal(dict.space_id, "sp-x");
+    assert.equal(dict.space_id, undefined);
   });
 
-  it("includes collection when set", () => {
+  it("omits collection because the Rust gateway does not accept it", () => {
     const config = memory.elephant("http://e:8080", { collection: "col-y" });
     const dict = memory.elephantMemoryConfigToDict(config);
-    assert.equal(dict.collection, "col-y");
+    assert.equal(dict.collection, undefined);
   });
 
-  it("includes stores when non-empty", () => {
+  it("omits stores because the Rust gateway does not accept them", () => {
     const config = memory.elephant("http://e:8080", {
       stores: ["s1", "s2"],
     });
     const dict = memory.elephantMemoryConfigToDict(config);
-    assert.deepEqual(dict.stores, ["s1", "s2"]);
+    assert.equal(dict.stores, undefined);
   });
 
-  it("stores copy is independent of original config", () => {
+  it("preserves config stores locally without sending them to the gateway", () => {
     const original = ["s1"];
     const config = memory.elephant("http://e:8080", { stores: original });
     const dict = memory.elephantMemoryConfigToDict(config);
-    // Mutating the dict copy should not affect anything else
-    (dict.stores as string[]).push("s2");
     assert.deepEqual(config.stores, ["s1"]);
+    assert.equal(dict.stores, undefined);
   });
 });
 

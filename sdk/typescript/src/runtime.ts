@@ -21,6 +21,10 @@ import type { MobKitBuilderConfig } from "./builder.js";
 import { CallbackDispatcher, type SessionAgentBuilder } from "./agent-builder.js";
 import {
   MOB_EVENTS_STALE_CURSOR_CODE,
+  CAPABILITY_UNAVAILABLE_CODE,
+  MEMORY_BACKEND_UNAVAILABLE_CODE,
+  CapabilityUnavailableError,
+  MemoryBackendUnavailableError,
   MobEventsStaleError,
   NotConnectedError,
   RpcError,
@@ -62,6 +66,11 @@ import {
   parsePersistedEvent,
   parseMobStructuralEvent,
   parseMobRun,
+  parseRichMemberSnapshot,
+  parseHelperResult,
+  parseMobRunSnapshot,
+  parseCrossMobContactEntry,
+  parseModelsCatalogResult,
   eventQueryToDict,
   parseIdentityStatus,
   parseBlobGetResult,
@@ -92,6 +101,11 @@ import {
   type PersistedEvent,
   type MobStructuralEvent,
   type MobRun,
+  type RichMemberSnapshot,
+  type HelperResult,
+  type MobRunSnapshot,
+  type CrossMobContactEntry,
+  type ModelsCatalogResult,
   type EventQuery,
   type IdentityStatus,
   type BlobGetResult,
@@ -353,6 +367,15 @@ export class MobKitRuntime {
     if (this._config.rosterProvider !== null) {
       params.has_roster_provider = true;
     }
+    if (this._config.continuityStore !== null) {
+      params.has_continuity_store = true;
+    }
+    if (this._config.leaseProvider !== null) {
+      params.has_lease_provider = true;
+    }
+    if (this._config.scratchDir !== null) {
+      params.scratch_dir = this._config.scratchDir;
+    }
     if (this._config.topologyProvider !== null) {
       params.has_topology_provider = true;
     }
@@ -380,13 +403,19 @@ export class MobKitRuntime {
 
     if ("error" in response) {
       const err = response.error as Record<string, unknown>;
-      throw new RpcError(
-        Number(err.code ?? -1),
-        String(err.message ?? String(err)),
-        rid,
-        method,
-        err.data,
-      );
+      const code = Number(err.code ?? -1);
+      const message = String(err.message ?? String(err));
+      if (code === CAPABILITY_UNAVAILABLE_CODE) {
+        throw new CapabilityUnavailableError(message, rid, method, err.data);
+      }
+      if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
+        throw new MemoryBackendUnavailableError(message, rid, method, err.data);
+      }
+      const rpcError = new RpcError(code, message, rid, method, err.data);
+      if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
+        throw MobEventsStaleError.fromRpcError(rpcError);
+      }
+      throw rpcError;
     }
     return response.result;
   }
@@ -491,6 +520,16 @@ export class MobKitRuntime {
   async deleteIdentity(identity: string): Promise<unknown> {
     return this._rpc("mobkit/delete_identity", { identity });
   }
+
+  /** Inspect identity continuity/runtime state. */
+  async inspectIdentity(identity: string): Promise<unknown> {
+    return this._rpc("mobkit/inspect_identity", { identity });
+  }
+
+  /** Re-run identity-first reconciliation. */
+  async reconcileIdentity(): Promise<unknown> {
+    return this._rpc("mobkit/reconcile_identity", {});
+  }
 }
 
 // -- MobHandle ------------------------------------------------------------
@@ -518,6 +557,12 @@ export class MobHandle {
   async capabilities(): Promise<CapabilitiesResult> {
     return parseCapabilitiesResult(
       await this._runtime._rpc("mobkit/capabilities"),
+    );
+  }
+
+  async modelsCatalog(): Promise<ModelsCatalogResult> {
+    return parseModelsCatalogResult(
+      await this._runtime._rpc("mobkit/models/catalog"),
     );
   }
 
@@ -762,13 +807,19 @@ export class MobHandle {
     }
     if ("error" in body) {
       const err = body.error as Record<string, unknown>;
-      throw new RpcError(
-        Number(err.code ?? -1),
-        String(err.message ?? String(err)),
-        id,
-        method,
-        err.data,
-      );
+      const code = Number(err.code ?? -1);
+      const message = String(err.message ?? String(err));
+      if (code === CAPABILITY_UNAVAILABLE_CODE) {
+        throw new CapabilityUnavailableError(message, id, method, err.data);
+      }
+      if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
+        throw new MemoryBackendUnavailableError(message, id, method, err.data);
+      }
+      const rpcError = new RpcError(code, message, id, method, err.data);
+      if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
+        throw MobEventsStaleError.fromRpcError(rpcError);
+      }
+      throw rpcError;
     }
     if (!response.ok) {
       throw new TransportError(
@@ -847,6 +898,18 @@ export class MobHandle {
     });
   }
 
+  async memberStatus(memberId: string): Promise<RichMemberSnapshot> {
+    return parseRichMemberSnapshot(
+      await this._runtime._rpc("mobkit/member_status", { member_id: memberId }),
+    );
+  }
+
+  async forceCancelMember(memberId: string): Promise<void> {
+    await this._runtime._rpc("mobkit/force_cancel_member", {
+      member_id: memberId,
+    });
+  }
+
   /**
    * Wait until all current mob members are startup-ready for orchestration.
    *
@@ -874,6 +937,19 @@ export class MobHandle {
   }
 
   // -- Flows --------------------------------------------------------------
+
+  async cancelFlow(runId: string): Promise<void> {
+    await this._runtime._rpc("mobkit/cancel_flow", { run_id: runId });
+  }
+
+  async flowStatus(runId: string): Promise<MobRunSnapshot | null> {
+    const raw = await this._runtime._rpc("mobkit/flow_status", { run_id: runId });
+    if (raw === null) return null;
+    if (typeof raw === "object" && raw !== null && (raw as Record<string, unknown>).status === "not_found") {
+      return null;
+    }
+    return parseMobRunSnapshot(raw);
+  }
 
   /**
    * List all configured flow IDs in this mob definition. Relays meerkat
@@ -939,6 +1015,48 @@ export class MobHandle {
       }
     }
     throw new Error(`unexpected run_flow response: ${JSON.stringify(raw)}`);
+  }
+
+  async collectCompleted(): Promise<Array<[string, RichMemberSnapshot]>> {
+    const raw = await this._runtime._rpc("mobkit/collect_completed");
+    const entries = typeof raw === "object" && raw !== null
+      ? (Array.isArray((raw as Record<string, unknown>).completed)
+        ? ((raw as Record<string, unknown>).completed as unknown[])
+        : [])
+      : Array.isArray(raw)
+        ? raw
+        : [];
+    const result: Array<[string, RichMemberSnapshot]> = [];
+    for (const entry of entries) {
+      const record = typeof entry === "object" && entry !== null
+        ? (entry as Record<string, unknown>)
+        : {};
+      const memberId = String(record.member_id ?? "");
+      result.push([memberId, parseRichMemberSnapshot(record.snapshot ?? record)]);
+    }
+    return result;
+  }
+
+  // -- Scheduling ---------------------------------------------------------
+
+  async schedulingEvaluate(
+    schedules: readonly Record<string, unknown>[],
+    tickMs: number,
+  ): Promise<unknown> {
+    return this._runtime._rpc("mobkit/scheduling/evaluate", {
+      schedules: [...schedules],
+      tick_ms: tickMs,
+    });
+  }
+
+  async schedulingDispatch(
+    schedules: readonly Record<string, unknown>[],
+    tickMs: number,
+  ): Promise<unknown> {
+    return this._runtime._rpc("mobkit/scheduling/dispatch", {
+      schedules: [...schedules],
+      tick_ms: tickMs,
+    });
   }
 
   // -- Routing ------------------------------------------------------------
@@ -1077,6 +1195,10 @@ export class MobHandle {
     return new ToolCaller(this, moduleId);
   }
 
+  async sessionStoreBigQuery(options: Record<string, unknown>): Promise<unknown> {
+    return this._runtime._rpc("mobkit/session_store/bigquery", options);
+  }
+
   // -- Gating -------------------------------------------------------------
 
   async gatingEvaluate(
@@ -1144,6 +1266,178 @@ export class MobHandle {
   async reconcileEdges(): Promise<ReconcileEdgesReport> {
     return parseReconcileEdgesReport(
       await this._runtime._rpc("mobkit/reconcile_edges"),
+    );
+  }
+
+  // -- Cross-mob ----------------------------------------------------------
+
+  async listExternalMobs(): Promise<CrossMobContactEntry[]> {
+    const raw = await this._runtime._rpc("mobkit/cross_mob/directory");
+    const mobs = typeof raw === "object" && raw !== null
+      ? (Array.isArray((raw as Record<string, unknown>).mobs)
+        ? ((raw as Record<string, unknown>).mobs as unknown[])
+        : [])
+      : [];
+    return mobs.map(parseCrossMobContactEntry);
+  }
+
+  async peerInfo(memberId: string): Promise<Record<string, string>> {
+    const raw = await this._runtime._rpc("mobkit/cross_mob/peer_info", {
+      member_id: memberId,
+    });
+    const out: Record<string, string> = {};
+    if (typeof raw === "object" && raw !== null) {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        out[k] = String(v);
+      }
+    }
+    return out;
+  }
+
+  async peerPubkey(): Promise<string> {
+    const raw = await this._runtime._rpc("mobkit/peer_pubkey");
+    return typeof raw === "object" && raw !== null
+      ? String((raw as Record<string, unknown>).pubkey_b64 ?? "")
+      : "";
+  }
+
+  async wireLocal(
+    localMemberId: string,
+    remoteCommsName: string,
+    remotePeerId: string,
+    remoteAddress: string,
+    options?: { remotePubkeyB64?: string },
+  ): Promise<void> {
+    const params: Record<string, unknown> = {
+      local_member_id: localMemberId,
+      remote_comms_name: remoteCommsName,
+      remote_peer_id: remotePeerId,
+      remote_address: remoteAddress,
+    };
+    if (options?.remotePubkeyB64) {
+      params.remote_pubkey_b64 = options.remotePubkeyB64;
+    }
+    await this._runtime._rpc("mobkit/cross_mob/wire_local", params);
+  }
+
+  async unwireLocal(
+    localMemberId: string,
+    remoteCommsName: string,
+    remotePeerId: string,
+    remoteAddress: string,
+    options?: { remotePubkeyB64?: string },
+  ): Promise<void> {
+    const params: Record<string, unknown> = {
+      local_member_id: localMemberId,
+      remote_comms_name: remoteCommsName,
+      remote_peer_id: remotePeerId,
+      remote_address: remoteAddress,
+    };
+    if (options?.remotePubkeyB64) {
+      params.remote_pubkey_b64 = options.remotePubkeyB64;
+    }
+    await this._runtime._rpc("mobkit/cross_mob/unwire_local", params);
+  }
+
+  async wireCrossMob(
+    localMemberId: string,
+    remoteMemberId: string,
+    remoteHandle: MobHandle,
+  ): Promise<void> {
+    const localInfo = await this.peerInfo(localMemberId);
+    const remoteInfo = await remoteHandle.peerInfo(remoteMemberId);
+    await this.wireLocal(
+      localMemberId,
+      remoteInfo.comms_name,
+      remoteInfo.peer_id,
+      remoteInfo.address,
+    );
+    try {
+      await remoteHandle.wireLocal(
+        remoteMemberId,
+        localInfo.comms_name,
+        localInfo.peer_id,
+        localInfo.address,
+      );
+    } catch (err) {
+      try {
+        await this.unwireLocal(
+          localMemberId,
+          remoteInfo.comms_name,
+          remoteInfo.peer_id,
+          remoteInfo.address,
+        );
+      } catch {
+        // Best-effort rollback; preserve the original remote error.
+      }
+      throw err;
+    }
+  }
+
+  async sendCrossMob(
+    remoteMemberId: string,
+    remoteHandle: MobHandle,
+    message: string | DispatchContentBlock[],
+  ): Promise<SendMessageResult> {
+    return remoteHandle.send(remoteMemberId, message);
+  }
+
+  // -- Helper members -----------------------------------------------------
+
+  async spawnHelper(
+    agentIdentity: string,
+    task: string,
+    options?: {
+      role?: string;
+      runtimeMode?: string;
+      backend?: string;
+    },
+  ): Promise<HelperResult> {
+    const helperOptions: Record<string, unknown> = {};
+    if (options?.role) helperOptions.role = options.role;
+    if (options?.runtimeMode) helperOptions.runtime_mode = options.runtimeMode;
+    if (options?.backend) helperOptions.backend = options.backend;
+    const params: Record<string, unknown> = { agent_identity: agentIdentity, task };
+    if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
+    return parseHelperResult(await this._runtime._rpc("mobkit/spawn_helper", params));
+  }
+
+  async forkHelper(
+    sourceMemberId: string,
+    agentIdentity: string,
+    task: string,
+    options?: {
+      forkContext?: Record<string, unknown>;
+      role?: string;
+      runtimeMode?: string;
+      backend?: string;
+    },
+  ): Promise<HelperResult> {
+    const helperOptions: Record<string, unknown> = {};
+    if (options?.role) helperOptions.role = options.role;
+    if (options?.runtimeMode) helperOptions.runtime_mode = options.runtimeMode;
+    if (options?.backend) helperOptions.backend = options.backend;
+    const params: Record<string, unknown> = {
+      source_member_id: sourceMemberId,
+      agent_identity: agentIdentity,
+      task,
+    };
+    if (options?.forkContext) params.fork_context = options.forkContext;
+    if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
+    return parseHelperResult(await this._runtime._rpc("mobkit/fork_helper", params));
+  }
+
+  async attachSession(
+    role: string,
+    agentIdentity: string,
+    sessionId: string,
+  ): Promise<RichMemberSnapshot> {
+    return parseRichMemberSnapshot(
+      await this._runtime._rpc("mobkit/attach_existing_session", {
+        role,
+        agent_identity: agentIdentity,
+        session_id: sessionId,
+      }),
     );
   }
 

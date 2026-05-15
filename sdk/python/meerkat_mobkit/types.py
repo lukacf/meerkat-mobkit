@@ -319,7 +319,23 @@ UnifiedEvent = UnifiedAgentEvent | UnifiedModuleEvent
 
 
 def _parse_unified_event(raw: dict[str, Any]) -> UnifiedEvent:
-    """Parse a serialized UnifiedEvent (externally tagged Rust enum)."""
+    """Parse a serialized UnifiedEvent.
+
+    Rust currently emits internally tagged events, e.g.
+    ``{"kind": "agent", "agent_id": "..."}``. The older externally tagged
+    shape is still accepted for compatibility with pre-0.6 fixtures.
+    """
+    if raw.get("kind") == "agent":
+        return UnifiedAgentEvent(
+            agent_id=raw.get("agent_id", raw.get("agentId", "")),
+            event_type=raw.get("event_type", raw.get("eventType", "")),
+        )
+    if raw.get("kind") == "module":
+        return UnifiedModuleEvent(
+            module=raw.get("module", ""),
+            event_type=raw.get("event_type", raw.get("eventType", "")),
+            payload=raw.get("payload", {}),
+        )
     if "Agent" in raw:
         agent = raw["Agent"]
         return UnifiedAgentEvent(

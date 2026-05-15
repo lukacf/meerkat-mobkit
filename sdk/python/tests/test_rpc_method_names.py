@@ -452,6 +452,37 @@ async def test_peer_pubkey_rpc_name():
 
 
 @pytest.mark.asyncio
+async def test_scheduling_evaluate_and_dispatch_rpc_names():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/scheduling/evaluate": {"due": []},
+        "mobkit/scheduling/dispatch": {"dispatched": []},
+    })
+
+    evaluate = await handle.scheduling_evaluate([{"id": "daily"}], 1234)
+    dispatch = await handle.scheduling_dispatch([{"id": "daily"}], 5678)
+
+    assert calls[0][0] == "mobkit/scheduling/evaluate"
+    assert calls[0][1] == {"schedules": [{"id": "daily"}], "tick_ms": 1234}
+    assert calls[1][0] == "mobkit/scheduling/dispatch"
+    assert calls[1][1] == {"schedules": [{"id": "daily"}], "tick_ms": 5678}
+    assert evaluate == {"due": []}
+    assert dispatch == {"dispatched": []}
+
+
+@pytest.mark.asyncio
+async def test_session_store_bigquery_rpc_name():
+    handle, calls = make_mock_mob_handle({
+        "mobkit/session_store/bigquery": {"rows": 1}
+    })
+
+    result = await handle.session_store_bigquery(operation="probe")
+
+    assert calls[0][0] == "mobkit/session_store/bigquery"
+    assert calls[0][1] == {"operation": "probe"}
+    assert result == {"rows": 1}
+
+
+@pytest.mark.asyncio
 async def test_wire_local_forwards_optional_pubkey():
     """wire_local must forward remote_pubkey_b64 when provided."""
     handle, calls = make_mock_mob_handle()

@@ -20,7 +20,11 @@ _log = logging.getLogger("meerkat_mobkit")
 
 from .agent_builder import CallbackDispatcher, SessionAgentBuilder
 from .errors import (
+    CAPABILITY_UNAVAILABLE_CODE,
+    MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
+    CapabilityUnavailableError,
+    MemoryBackendUnavailableError,
     MobEventsStaleError,
     NotConnectedError,
     RpcError,
@@ -63,6 +67,41 @@ _request_counter = itertools.count(1)
 
 def _next_request_id(method: str) -> str:
     return f"{method}:{next(_request_counter)}"
+
+
+def _rpc_error_from_payload(
+    err: dict[str, Any],
+    *,
+    request_id: str,
+    method: str,
+) -> RpcError:
+    code = int(err.get("code", -1))
+    message = str(err.get("message", err))
+    data = err.get("data")
+    if code == CAPABILITY_UNAVAILABLE_CODE:
+        return CapabilityUnavailableError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == MEMORY_BACKEND_UNAVAILABLE_CODE:
+        return MemoryBackendUnavailableError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    base = RpcError(
+        code=code,
+        message=message,
+        request_id=request_id,
+        method=method,
+        data=data,
+    )
+    if code == MOB_EVENTS_STALE_CURSOR_CODE:
+        return MobEventsStaleError.from_rpc_error(base)
+    return base
 
 
 def _read_upload_source(
@@ -163,6 +202,10 @@ class MobKitRuntime:
                 self._dispatcher.register_error_callback(self._config.error_callback)
             # Register identity-first providers before transport start —
             # restore_flow during init may trigger provider callbacks.
+            if self._config.continuity_store is not None:
+                self._dispatcher.register_continuity_store(self._config.continuity_store)
+            if self._config.lease_provider is not None:
+                self._dispatcher.register_lease_provider(self._config.lease_provider)
             if self._config.roster_provider is not None:
                 self._dispatcher.register_roster_provider(self._config.roster_provider)
             if self._config.topology_provider is not None:
@@ -189,6 +232,8 @@ class MobKitRuntime:
                     raise TransportError(
                         f"gateway process died during bootstrap: {init_err}"
                     )
+                if isinstance(init_err, RpcError):
+                    raise
                 raise TransportError(
                     f"mobkit/init failed: {init_err}"
                 )
@@ -237,6 +282,12 @@ class MobKitRuntime:
         # Identity-first provider flags
         if self._config.roster_provider is not None:
             params["has_roster_provider"] = True
+        if self._config.continuity_store is not None:
+            params["has_continuity_store"] = True
+        if self._config.lease_provider is not None:
+            params["has_lease_provider"] = True
+        if self._config.scratch_dir is not None:
+            params["scratch_dir"] = self._config.scratch_dir
         if self._config.topology_provider is not None:
             params["has_topology_provider"] = True
         if self._config.agent_customizer is not None:
@@ -249,14 +300,7 @@ class MobKitRuntime:
         rid = _next_request_id(method)
         response = self._transport.send_sync(_rpc_request(rid, method, params))
         if "error" in response:
-            err = response["error"]
-            raise RpcError(
-                code=err.get("code", -1),
-                message=err.get("message", str(err)),
-                request_id=rid,
-                method=method,
-                data=err.get("data"),
-            )
+            raise _rpc_error_from_payload(response["error"], request_id=rid, method=method)
         return response.get("result")
 
     async def _rpc(self, method: str, params: dict[str, Any] | None = None) -> Any:
@@ -265,14 +309,7 @@ class MobKitRuntime:
         rid = _next_request_id(method)
         response = await self._transport.send_async(_rpc_request(rid, method, params))
         if "error" in response:
-            err = response["error"]
-            raise RpcError(
-                code=err.get("code", -1),
-                message=err.get("message", str(err)),
-                request_id=rid,
-                method=method,
-                data=err.get("data"),
-            )
+            raise _rpc_error_from_payload(response["error"], request_id=rid, method=method)
         return response.get("result")
 
     @property
@@ -609,6 +646,28 @@ class MobHandle:
         raw = await self._runtime._rpc("mobkit/events/subscribe", params)
         return SubscribeResult.from_dict(raw)
 
+    async def scheduling_evaluate(
+        self,
+        schedules: list[dict[str, Any]],
+        tick_ms: int,
+    ) -> Any:
+        """Evaluate configured schedules at ``tick_ms``."""
+        return await self._runtime._rpc(
+            "mobkit/scheduling/evaluate",
+            {"schedules": schedules, "tick_ms": tick_ms},
+        )
+
+    async def scheduling_dispatch(
+        self,
+        schedules: list[dict[str, Any]],
+        tick_ms: int,
+    ) -> Any:
+        """Dispatch due schedules at ``tick_ms``."""
+        return await self._runtime._rpc(
+            "mobkit/scheduling/dispatch",
+            {"schedules": schedules, "tick_ms": tick_ms},
+        )
+
     async def resolve_routing(self, recipient: str, **kwargs: Any) -> RoutingResolution:
         """Resolve a routing target for the given recipient."""
         raw = await self._runtime._rpc(
@@ -640,6 +699,10 @@ class MobHandle:
         """Return the curated model catalog with provider defaults."""
         raw = await self._runtime._rpc("mobkit/models/catalog")
         return ModelsCatalogResult.from_dict(raw)
+
+    async def session_store_bigquery(self, **kwargs: Any) -> Any:
+        """Run a BigQuery session-store RPC operation."""
+        return await self._runtime._rpc("mobkit/session_store/bigquery", kwargs)
 
     def tool_caller(self, module_id: str) -> ToolCaller:
         """Return a callable scoped to one MCP module.
@@ -859,13 +922,8 @@ class MobHandle:
             raise TransportError(f"multipart RPC failed: {exc.reason}") from exc
         response = json.loads(response_text)
         if "error" in response:
-            err = response["error"]
-            raise RpcError(
-                code=err.get("code", -1),
-                message=err.get("message", str(err)),
-                request_id=request_id,
-                method=method,
-                data=err.get("data"),
+            raise _rpc_error_from_payload(
+                response["error"], request_id=request_id, method=method
             )
         return response.get("result")
 
