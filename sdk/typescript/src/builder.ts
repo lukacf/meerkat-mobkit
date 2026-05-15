@@ -42,6 +42,7 @@ export interface MobKitBuilderConfig {
   schedulingFiles: string[];
   memoryConfig: unknown;
   authConfig: unknown;
+  implicitDelegateIdleRetireSecs: number | null | undefined;
   gatewayBin: string | null;
   modules: unknown[];
   persistentState: string | null;
@@ -67,6 +68,7 @@ function defaultConfig(): MobKitBuilderConfig {
     schedulingFiles: [],
     memoryConfig: null,
     authConfig: null,
+    implicitDelegateIdleRetireSecs: undefined,
     gatewayBin: null,
     modules: [],
     persistentState: null,
@@ -150,6 +152,16 @@ export class MobKitBuilder {
 
   auth(config: unknown): this {
     this._config.authConfig = config;
+    return this;
+  }
+
+  implicitDelegateIdleRetirement(seconds: number | null): this {
+    if (seconds !== null && (!Number.isFinite(seconds) || seconds < 0)) {
+      throw new Error(
+        "implicit delegate idle retirement seconds must be non-negative or null",
+      );
+    }
+    this._config.implicitDelegateIdleRetireSecs = seconds;
     return this;
   }
 

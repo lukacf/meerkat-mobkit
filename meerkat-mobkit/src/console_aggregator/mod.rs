@@ -18,6 +18,7 @@ use crate::blob_store::BinaryBlobStore;
 use crate::mob_handle_runtime::{
     MobRuntime, assert_member_accepts_images, send_message_on_mob_with_mode,
 };
+use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
 
 pub use state::{
@@ -67,6 +68,14 @@ struct ResolvedConsoleMember {
 }
 
 pub trait ConsoleVisibilityPolicy: Send + Sync {
+    fn include_implicit_delegate_members(&self) -> bool {
+        true
+    }
+
+    fn member_visible(&self, _member: &ConsoleMember) -> bool {
+        true
+    }
+
     fn identity_visible(&self, _record: &ConsoleIdentityRecord) -> bool {
         true
     }
@@ -84,6 +93,30 @@ pub trait ConsoleVisibilityPolicy: Send + Sync {
 pub struct AllowAllConsoleVisibilityPolicy;
 
 impl ConsoleVisibilityPolicy for AllowAllConsoleVisibilityPolicy {}
+
+#[derive(Debug, Default)]
+pub struct HideImplicitDelegateMembersConsoleVisibilityPolicy;
+
+impl ConsoleVisibilityPolicy for HideImplicitDelegateMembersConsoleVisibilityPolicy {
+    fn include_implicit_delegate_members(&self) -> bool {
+        false
+    }
+
+    fn member_visible(&self, member: &ConsoleMember) -> bool {
+        !is_implicit_delegate_member(member.role.as_str(), &member.labels)
+    }
+
+    fn identity_visible(&self, record: &ConsoleIdentityRecord) -> bool {
+        !is_implicit_delegate_member(
+            record
+                .labels
+                .get("role")
+                .map(String::as_str)
+                .unwrap_or_default(),
+            &record.labels,
+        )
+    }
+}
 
 #[derive(Clone)]
 pub struct ConsoleRuntimeRegistration {
@@ -109,16 +142,6 @@ impl MobKitConsoleAggregator {
         Self::new(Arc::new(InMemoryConsoleLogStore::new()))
     }
 
-    pub(crate) fn single_runtime(
-        runtime_key: impl Into<String>,
-        runtime: MobRuntime,
-        console_events: ConsoleEventStore,
-    ) -> Self {
-        let aggregator = Self::in_memory();
-        aggregator.register_runtime_handles(runtime_key, "", runtime, console_events);
-        aggregator
-    }
-
     pub fn subscribe(&self) -> broadcast::Receiver<ConsoleTimelineEvent> {
         self.inner.event_tx.subscribe()
     }
@@ -134,22 +157,6 @@ impl MobKitConsoleAggregator {
             registration.runtime.mob_runtime().clone(),
             registration.runtime.console_events(),
             registration.visibility_policy,
-        );
-    }
-
-    pub(crate) fn register_runtime_handles(
-        &self,
-        runtime_key: impl Into<String>,
-        identity_namespace: impl Into<String>,
-        runtime: MobRuntime,
-        console_events: ConsoleEventStore,
-    ) {
-        self.register_runtime_handles_with_policy(
-            runtime_key,
-            identity_namespace,
-            runtime,
-            console_events,
-            Arc::new(AllowAllConsoleVisibilityPolicy),
         );
     }
 
@@ -696,6 +703,9 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     let Some(state) = entry.runtime.agent_mob_mcp_state() else {
         return resolved;
     };
+    if !entry.visibility_policy.include_implicit_delegate_members() {
+        return resolved;
+    }
     for (mob_id, _state) in state.mob_list().await {
         if mob_id.as_str() == primary_mob_id {
             continue;
@@ -1428,6 +1438,10 @@ async fn identity_record_for_member(
         .get("display_name")
         .cloned()
         .unwrap_or_else(|| runtime_member_id.clone());
+    let mut labels = member.labels.clone();
+    labels
+        .entry("role".to_string())
+        .or_insert_with(|| member.role.to_string());
     Some(ConsoleIdentityRecord {
         identity,
         display_name,
@@ -1442,8 +1456,15 @@ async fn identity_record_for_member(
             "hidden_by_policy"
         }
         .to_string(),
-        labels: member.labels.clone(),
+        labels,
     })
+}
+
+pub(crate) fn is_implicit_delegate_member(
+    role: &str,
+    labels: &std::collections::BTreeMap<String, String>,
+) -> bool {
+    role.eq_ignore_ascii_case("delegate") && labels.contains_key("source_mob_id")
 }
 
 fn member_is_addressable(member: &MobMemberListEntry) -> bool {

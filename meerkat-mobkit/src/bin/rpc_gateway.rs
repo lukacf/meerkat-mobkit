@@ -301,6 +301,45 @@ mod tests {
         assert_eq!(modules[0].restart_policy, RestartPolicy::Never);
         assert!(pre_spawn.is_empty());
     }
+
+    #[test]
+    fn gateway_runtime_options_parse_implicit_delegate_retirement() {
+        let params = json!({
+            "runtime_options": {
+                "implicit_delegate_idle_retire_secs": 42,
+                "implicit_delegate_idle_sweep_interval_ms": 2500
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert_eq!(
+            options.runtime_options.implicit_delegate_idle_retire_secs,
+            Some(42)
+        );
+        assert_eq!(
+            options
+                .runtime_options
+                .implicit_delegate_idle_sweep_interval_ms,
+            2500
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_null_disables_implicit_delegate_retirement() {
+        let params = json!({
+            "runtime_options": {
+                "implicit_delegate_idle_retire_secs": null
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert_eq!(
+            options.runtime_options.implicit_delegate_idle_retire_secs,
+            None
+        );
+    }
 }
 
 fn parse_gateway_runtime_options(
@@ -320,6 +359,8 @@ fn parse_gateway_runtime_options(
         "gating_config_path",
         "auth_config",
         "event_log",
+        "implicit_delegate_idle_retire_secs",
+        "implicit_delegate_idle_sweep_interval_ms",
     ];
     let unsupported = runtime_options
         .keys()
@@ -360,6 +401,30 @@ fn parse_gateway_runtime_options(
     }
     if let Some(event_log) = runtime_options.get("event_log") {
         parsed.event_log = Some(parse_gateway_event_log_config(event_log)?);
+    }
+    if let Some(value) = runtime_options.get("implicit_delegate_idle_retire_secs") {
+        parsed.runtime_options.implicit_delegate_idle_retire_secs = if value.is_null() {
+            None
+        } else {
+            Some(value.as_u64().ok_or_else(|| {
+                "runtime_options.implicit_delegate_idle_retire_secs must be a non-negative integer or null".to_string()
+            })?)
+        };
+    }
+    if let Some(value) = runtime_options.get("implicit_delegate_idle_sweep_interval_ms") {
+        let interval = value.as_u64().ok_or_else(|| {
+            "runtime_options.implicit_delegate_idle_sweep_interval_ms must be a positive integer"
+                .to_string()
+        })?;
+        if interval == 0 {
+            return Err(
+                "runtime_options.implicit_delegate_idle_sweep_interval_ms must be greater than zero"
+                    .to_string(),
+            );
+        }
+        parsed
+            .runtime_options
+            .implicit_delegate_idle_sweep_interval_ms = interval;
     }
     Ok(parsed)
 }

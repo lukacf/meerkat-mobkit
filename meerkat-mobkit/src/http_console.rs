@@ -25,9 +25,10 @@ use std::time::{Duration, Instant};
 
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
-    ConsoleCursor, ConsoleFrame, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
-    ConsoleSendError, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineQuery,
-    MobKitConsoleAggregator,
+    AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleLogResult,
+    ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
+    ConsoleTimelineEvent, ConsoleTimelineQuery, ConsoleVisibilityPolicy,
+    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -60,6 +61,7 @@ pub struct ConsoleJsonState {
     pub(crate) console_aggregator: Option<MobKitConsoleAggregator>,
     pub(crate) mob_events: Option<MobEventsStore>,
     pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
+    pub(crate) visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
 }
 
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
@@ -82,6 +84,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         console_aggregator: None,
         mob_events: None,
         metadata_table: None,
+        visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
     })
 }
 
@@ -100,6 +103,7 @@ pub fn console_json_router_with_aggregator(
         console_aggregator: Some(console_aggregator),
         mob_events: None,
         metadata_table: None,
+        visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
     })
 }
 
@@ -136,13 +140,56 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     mob_events: Option<MobEventsStore>,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
 ) -> Router {
+    console_json_router_with_runtime_events_and_policy(
+        decisions,
+        runtime,
+        module_runtime,
+        contact_directory,
+        event_log,
+        gateway_peer_keys,
+        console_events,
+        console_log_store,
+        mob_events,
+        metadata_table,
+        Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn console_json_router_with_runtime_events_and_policy(
+    decisions: RuntimeDecisionState,
+    runtime: MobRuntime,
+    module_runtime: Option<std::sync::Arc<tokio::sync::Mutex<MobkitRuntimeHandle>>>,
+    contact_directory: Option<ContactDirectory>,
+    event_log: Option<std::sync::Arc<dyn EventLogStore>>,
+    gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
+    console_events: Option<ConsoleEventStore>,
+    console_log_store: Option<std::sync::Arc<dyn ConsoleLogStore>>,
+    mob_events: Option<MobEventsStore>,
+    metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
+    visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
         if let Some(store) = console_log_store {
             let aggregator = MobKitConsoleAggregator::new(store);
-            aggregator.register_runtime_handles("default", "", runtime.clone(), events);
+            aggregator.register_runtime_handles_with_policy(
+                "default",
+                "",
+                runtime.clone(),
+                events,
+                visibility_policy.clone(),
+            );
             aggregator
         } else {
-            MobKitConsoleAggregator::single_runtime("default", runtime.clone(), events)
+            let aggregator = MobKitConsoleAggregator::in_memory();
+            aggregator.register_runtime_handles_with_policy(
+                "default",
+                "",
+                runtime.clone(),
+                events,
+                visibility_policy.clone(),
+            );
+            aggregator
         }
     });
     console_json_router_with_state(ConsoleJsonState {
@@ -156,6 +203,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         console_aggregator,
         mob_events,
         metadata_table,
+        visibility_policy,
     })
 }
 
@@ -240,7 +288,13 @@ pub async fn console_json_handler(
         .collect();
     let live_snapshot = match &state.runtime {
         Some(runtime) => Some(
-            build_live_snapshot(runtime, &config_module_ids, state.console_events.as_ref()).await,
+            build_live_snapshot(
+                runtime,
+                &config_module_ids,
+                state.console_events.as_ref(),
+                state.visibility_policy.as_ref(),
+            )
+            .await,
         ),
         None => match &state.console_aggregator {
             Some(aggregator) => build_aggregator_live_snapshot(aggregator, &config_module_ids)
@@ -248,7 +302,11 @@ pub async fn console_json_handler(
                 .ok(),
             None => None,
         },
-    };
+    }
+    .map(|mut snapshot| {
+        apply_console_visibility_policy(&mut snapshot, state.visibility_policy.as_ref());
+        snapshot
+    });
 
     let response = handle_console_rest_json_route_with_snapshot(
         &state.decisions,
@@ -3219,6 +3277,7 @@ async fn build_live_snapshot(
     runtime: &MobRuntime,
     config_module_ids: &[String],
     console_events: Option<&ConsoleEventStore>,
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
 ) -> ConsoleLiveSnapshot {
     let handle = runtime.handle();
     let running = matches!(
@@ -3227,7 +3286,10 @@ async fn build_live_snapshot(
     );
     let (mut members, mut session_owner_by_id) =
         project_console_members_from_handle(&handle, runtime.session_service(), None, None).await;
-    append_bridge_session_delegate_members(runtime, &mut members, &mut session_owner_by_id).await;
+    if visibility_policy.include_implicit_delegate_members() {
+        append_bridge_session_delegate_members(runtime, &mut members, &mut session_owner_by_id)
+            .await;
+    }
     dedupe_console_members_by_identity(&mut members);
 
     // Use configured module IDs when available because topology and health
@@ -3307,12 +3369,38 @@ async fn build_live_snapshot(
     )
 }
 
+fn apply_console_visibility_policy(
+    snapshot: &mut ConsoleLiveSnapshot,
+    visibility_policy: &dyn ConsoleVisibilityPolicy,
+) {
+    let mut hidden = BTreeSet::new();
+    snapshot.members.retain(|member| {
+        let visible = visibility_policy.member_visible(member);
+        if !visible {
+            hidden.insert(member.agent_identity.clone());
+        }
+        visible
+    });
+    snapshot
+        .agents
+        .retain(|agent| !hidden.contains(&agent.agent_id));
+    snapshot
+        .loaded_modules
+        .retain(|module_id| !hidden.contains(module_id));
+}
+
 async fn reset_all_live_console_agents(
     runtime: &MobRuntime,
     console_events: Option<&ConsoleEventStore>,
     console_aggregator: Option<&MobKitConsoleAggregator>,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
-    let snapshot = build_live_snapshot(runtime, &[], console_events).await;
+    let snapshot = build_live_snapshot(
+        runtime,
+        &[],
+        console_events,
+        &AllowAllConsoleVisibilityPolicy,
+    )
+    .await;
     let mut main_identities = BTreeSet::new();
     let mut delegate_members = BTreeSet::new();
     for member in snapshot.members {
@@ -3751,16 +3839,18 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, cursor_is_after,
-        dedupe_console_members_by_identity, externalize_image_upload_placeholders,
-        externalize_single_image_upload, query_timeline_snapshot,
+        MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload,
+        apply_console_visibility_policy, cursor_is_after, dedupe_console_members_by_identity,
+        externalize_image_upload_placeholders, externalize_single_image_upload,
+        query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
+    use crate::console_aggregator::HideImplicitDelegateMembersConsoleVisibilityPolicy;
     use crate::console_aggregator::{
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
         ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
-    use crate::runtime::ConsoleMember;
+    use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
     use bytes::Bytes;
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -3835,6 +3925,98 @@ mod tests {
             vec!["incident-commander", "qa-child"]
         );
         assert_eq!(members[1].session_id.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn console_visibility_policy_hides_implicit_delegate_members_from_snapshot() {
+        let mut snapshot = ConsoleLiveSnapshot::new(
+            Some("runtime".to_string()),
+            true,
+            vec!["incident-commander".to_string(), "qa-child".to_string()],
+            vec![
+                ConsoleAgentLiveSnapshot {
+                    agent_id: "incident-commander".to_string(),
+                    member_id: "incident-commander".to_string(),
+                    label: "Incident Commander".to_string(),
+                    kind: "meerkat".to_string(),
+                    identity: Some("incident-commander".to_string()),
+                    role: Some("commander".to_string()),
+                    state: Some("active".to_string()),
+                    session_id: None,
+                    model_capabilities: Default::default(),
+                    response_phase: None,
+                    watched: None,
+                    alert_level: None,
+                    degraded: None,
+                    degraded_reason: None,
+                },
+                ConsoleAgentLiveSnapshot {
+                    agent_id: "qa-child".to_string(),
+                    member_id: "qa-child".to_string(),
+                    label: "QA Child".to_string(),
+                    kind: "meerkat".to_string(),
+                    identity: Some("qa-child".to_string()),
+                    role: Some("delegate".to_string()),
+                    state: Some("active".to_string()),
+                    session_id: Some("delegate-session".to_string()),
+                    model_capabilities: Default::default(),
+                    response_phase: None,
+                    watched: None,
+                    alert_level: None,
+                    degraded: None,
+                    degraded_reason: None,
+                },
+            ],
+            vec![
+                ConsoleMember {
+                    agent_identity: "incident-commander".to_string(),
+                    role: "commander".to_string(),
+                    state: "active".to_string(),
+                    model_capabilities: Default::default(),
+                    runtime_mode: None,
+                    session_id: None,
+                    wired_to: Vec::new(),
+                    labels: BTreeMap::new(),
+                },
+                ConsoleMember {
+                    agent_identity: "qa-child".to_string(),
+                    role: "delegate".to_string(),
+                    state: "active".to_string(),
+                    model_capabilities: Default::default(),
+                    runtime_mode: None,
+                    session_id: Some("delegate-session".to_string()),
+                    wired_to: vec!["qa-parent".to_string()],
+                    labels: BTreeMap::from([(
+                        "source_mob_id".to_string(),
+                        "implicit-qa-mob".to_string(),
+                    )]),
+                },
+            ],
+            true,
+        );
+
+        apply_console_visibility_policy(
+            &mut snapshot,
+            &HideImplicitDelegateMembersConsoleVisibilityPolicy,
+        );
+
+        assert_eq!(
+            snapshot
+                .members
+                .iter()
+                .map(|member| member.agent_identity.as_str())
+                .collect::<Vec<_>>(),
+            vec!["incident-commander"]
+        );
+        assert_eq!(
+            snapshot
+                .agents
+                .iter()
+                .map(|agent| agent.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["incident-commander"]
+        );
+        assert_eq!(snapshot.loaded_modules, vec!["incident-commander"]);
     }
 
     #[tokio::test]

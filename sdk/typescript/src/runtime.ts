@@ -332,6 +332,10 @@ export class MobKitRuntime {
     if (this._config.eventLog) {
       runtimeOptions.event_log = serializeConfig(this._config.eventLog);
     }
+    if (this._config.implicitDelegateIdleRetireSecs !== undefined) {
+      runtimeOptions.implicit_delegate_idle_retire_secs =
+        this._config.implicitDelegateIdleRetireSecs;
+    }
     params.runtime_options = runtimeOptions;
     if (this._config.persistentState) {
       params.persistent_state = this._config.persistentState;

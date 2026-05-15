@@ -227,6 +227,10 @@ class MobKitRuntime:
             runtime_options["auth_config"] = _serialize_config(self._config.auth_config)
         if self._config.event_log:
             runtime_options["event_log"] = _serialize_config(self._config.event_log)
+        if self._config.implicit_delegate_idle_retire_configured:
+            runtime_options["implicit_delegate_idle_retire_secs"] = (
+                self._config.implicit_delegate_idle_retire_secs
+            )
         params["runtime_options"] = runtime_options
         if self._config.persistent_state:
             params["persistent_state"] = self._config.persistent_state
