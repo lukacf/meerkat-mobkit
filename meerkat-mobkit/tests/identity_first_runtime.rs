@@ -26,12 +26,12 @@ use meerkat_mobkit::identity_first::orchestrator::{
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId,
-    CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
+    BridgeError, CheckpointVersion, ContinuityFailure, ContinuityFailureKind, ContinuityGeneration,
     ContinuityRecord, ContinuityResolveState, ContinuityStoreError, CustomizerError,
     DispatchIdempotencyKey, DispatchInput, DispatchOrigin, DurabilityPolicy, DurableAgentSpec,
     FencingToken, IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig,
-    IdentityRuntimeError, LeaseAcquireResult, LeaseGrant, ManagedPeerEdge, SessionSnapshot,
-    TopologyContext, TopologyError,
+    IdentityRuntimeError, LeaseAcquireResult, LeaseGrant, ManagedPeerEdge, SessionBridge,
+    SessionSnapshot, TopologyContext, TopologyError,
 };
 use meerkat_mobkit::identity_first::{LocalContinuityStore, LocalLeaseProvider};
 
@@ -1401,6 +1401,156 @@ async fn identity_first_runtime_topology_compute_edges() {
     let edge = &result.managed_edges[0];
     assert_eq!(edge.a(), &make_identity("a:main"));
     assert_eq!(edge.b(), &make_identity("b:main"));
+}
+
+#[tokio::test]
+async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
+    #[derive(Default)]
+    struct RecordingBridge {
+        wires: tokio::sync::Mutex<Vec<(String, String)>>,
+        unwires: tokio::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl SessionBridge for RecordingBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(meerkat_core::types::SessionId::new())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(meerkat_core::types::SessionId::new())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Ok(SessionSnapshot { data: Vec::new() })
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+
+        async fn wire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.wires
+                .lock()
+                .await
+                .push((a.as_str().to_string(), b.as_str().to_string()));
+            Ok(())
+        }
+
+        async fn unwire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.unwires
+                .lock()
+                .await
+                .push((a.as_str().to_string(), b.as_str().to_string()));
+            Ok(())
+        }
+    }
+
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|e| TopologyError::InvalidEdge(format!("{e}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_provider = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(RecordingBridge::default());
+    let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: store,
+        lease_provider,
+        runtime_instance_id: "test-runtime".to_string(),
+        has_runtime_store: false,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(bridge.clone()),
+        default_timeout: None,
+    });
+    let roster = vec![
+        make_spec("a:main"),
+        make_spec("b:main"),
+        make_spec("c:main"),
+    ];
+
+    restore_flow(
+        &runtime,
+        &roster,
+        Some(&StaticTopology(vec![("a:main", "b:main")])),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        bridge.wires.lock().await.as_slice(),
+        &[("rt:a:main:0".to_string(), "rt:b:main:0".to_string())]
+    );
+
+    restore_flow(
+        &runtime,
+        &roster,
+        Some(&StaticTopology(vec![("b:main", "c:main")])),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        bridge.wires.lock().await.as_slice(),
+        &[
+            ("rt:a:main:0".to_string(), "rt:b:main:0".to_string()),
+            ("rt:b:main:0".to_string(), "rt:c:main:0".to_string()),
+        ]
+    );
+    assert_eq!(
+        bridge.unwires.lock().await.as_slice(),
+        &[("rt:a:main:0".to_string(), "rt:b:main:0".to_string())]
+    );
 }
 
 // ===========================================================================

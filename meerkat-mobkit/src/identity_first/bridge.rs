@@ -90,6 +90,20 @@ pub trait SessionBridge: Send + Sync {
     /// Retire a mob member.
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError>;
 
+    /// Wire two active same-mob members by their concrete runtime IDs.
+    async fn wire_peer(&self, _a: &AgentRuntimeId, _b: &AgentRuntimeId) -> Result<(), BridgeError> {
+        Err(BridgeError::Mob("peer wiring not supported".to_string()))
+    }
+
+    /// Unwire two active same-mob members by their concrete runtime IDs.
+    async fn unwire_peer(
+        &self,
+        _a: &AgentRuntimeId,
+        _b: &AgentRuntimeId,
+    ) -> Result<(), BridgeError> {
+        Err(BridgeError::Mob("peer unwiring not supported".to_string()))
+    }
+
     /// Inspect the current execution state of a mob member.
     async fn inspect_member(
         &self,
@@ -344,6 +358,26 @@ impl SessionBridge for MobSessionBridge {
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
         Ok(())
+    }
+
+    async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
+        self.handle
+            .wire(
+                meerkat_mob::AgentIdentity::from(a.as_str()),
+                MeerkatId::from(b.as_str()),
+            )
+            .await
+            .map_err(|e| BridgeError::Mob(e.to_string()))
+    }
+
+    async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
+        self.handle
+            .unwire(
+                meerkat_mob::AgentIdentity::from(a.as_str()),
+                MeerkatId::from(b.as_str()),
+            )
+            .await
+            .map_err(|e| BridgeError::Mob(e.to_string()))
     }
 
     async fn inspect_member(

@@ -367,6 +367,8 @@ pub async fn restore_flow(
         }
     }
 
+    runtime.reconcile_managed_peer_edges(&managed_edges).await?;
+
     Ok(RestoreFlowResult {
         outcomes,
         managed_edges,
