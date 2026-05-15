@@ -69,6 +69,7 @@ fn decision_state() -> meerkat_mobkit::RuntimeDecisionState {
         trusted_oidc: trusted_oidc(),
         console: ConsolePolicy {
             require_app_auth: true,
+            ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: release_json(),
@@ -110,6 +111,7 @@ fn phase7_auth_001_provider_support_model_and_dec_002_default_behavior() {
     };
     let console = ConsolePolicy {
         require_app_auth: true,
+        ..ConsolePolicy::default()
     };
 
     let google_ok = enforce_console_route_access(
@@ -171,6 +173,7 @@ fn phase7_auth_002_allowlist_and_service_identity_path() {
     };
     let console = ConsolePolicy {
         require_app_auth: true,
+        ..ConsolePolicy::default()
     };
 
     let user_ok = enforce_console_route_access(
@@ -235,6 +238,7 @@ fn phase7_auth_002_generic_oidc_allow_path_when_configured_default() {
     };
     let console = ConsolePolicy {
         require_app_auth: true,
+        ..ConsolePolicy::default()
     };
     let allow = enforce_console_route_access(
         &auth,

@@ -1,5 +1,10 @@
 import React from "react";
-import type { ConsoleAgent, ConsoleFrame } from "../types";
+import type {
+  ConsoleAgent,
+  ConsoleAgentListConfig,
+  ConsoleFrame,
+  ConsoleSidebarButtonConfig,
+} from "../types";
 
 export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health";
 
@@ -9,6 +14,8 @@ interface SidebarProps {
   recentActivity: ConsoleFrame[];
   collapsed: boolean;
   visibleControls?: NavKind[];
+  customButtons?: ConsoleSidebarButtonConfig[];
+  grouping?: ConsoleAgentListConfig;
   onSelect: (agent: ConsoleAgent) => void;
   onOpenControl: (kind: NavKind) => void;
 }
@@ -21,7 +28,7 @@ interface SidebarProps {
 ///
 /// Embedders can drop the query string into the iframe URL without
 /// touching the React tree. Reads once on mount; reload to change.
-const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "logs", "health"];
+export const ALL_NAV: NavKind[] = ["topology", "timeline", "gating", "roster", "routing", "logs", "health"];
 const NAV_LABEL: Record<NavKind, string> = {
   topology: "Topology",
   timeline: "Today",
@@ -31,6 +38,12 @@ const NAV_LABEL: Record<NavKind, string> = {
   logs: "Logs",
   health: "Health",
 };
+
+export function normalizeNavKind(value: unknown): NavKind | null {
+  return typeof value === "string" && ALL_NAV.includes(value as NavKind)
+    ? value as NavKind
+    : null;
+}
 
 function parseNavList(raw: string | null): Set<NavKind> {
   const out = new Set<NavKind>();
@@ -57,6 +70,7 @@ interface AgentRow {
   agent: ConsoleAgent;
   childOfHost: boolean;
   depth: number;
+  subgroup?: string | null;
 }
 
 function isWorkerish(a: ConsoleAgent): boolean {
@@ -163,6 +177,9 @@ export const __sidebarTest = {
   isSpawnedDelegateLike,
   findSpawnHost,
   groupSidebarAgents,
+  configuredAgentGroup,
+  configuredAgentSubgroup,
+  configuredAgentBadges,
 };
 
 function bucketOf(a: ConsoleAgent): Bucket {
@@ -176,6 +193,106 @@ function bucketOf(a: ConsoleAgent): Bucket {
 }
 
 const SECTION_ORDER: Bucket[] = ["Personal", "Coordinators", "Domains", "Internal", "Other"];
+
+function configuredSelectors(config: ConsoleAgentListConfig | undefined, key: "group_by" | "subgroup_by"): string[] {
+  return (config?.[key] || []).map((value) => value.trim()).filter(Boolean);
+}
+
+function configuredFieldValue(agent: ConsoleAgent, selector: string): string | null {
+  const normalized = selector.trim();
+  if (!normalized) return null;
+  if (normalized.startsWith("labels.")) {
+    const key = normalized.slice("labels.".length);
+    return agent.labels?.[key]?.trim() || null;
+  }
+  if (normalized.startsWith("label:")) {
+    const key = normalized.slice("label:".length);
+    return agent.labels?.[key]?.trim() || null;
+  }
+  switch (normalized) {
+    case "group": return agent.group?.trim() || null;
+    case "subgroup": return agent.subgroup?.trim() || null;
+    case "role": return agent.role?.trim() || null;
+    case "kind": return agent.kind?.trim() || null;
+    case "identity": return agent.identity?.trim() || null;
+    case "member_id": return agent.member_id?.trim() || null;
+    case "agent_id": return agent.agent_id?.trim() || null;
+    default:
+      return agent.labels?.[normalized]?.trim() || null;
+  }
+}
+
+function firstConfiguredValue(agent: ConsoleAgent, selectors: string[]): string | null {
+  for (const selector of selectors) {
+    const value = configuredFieldValue(agent, selector);
+    if (value) return value;
+  }
+  return null;
+}
+
+function configuredAgentGroup(
+  agent: ConsoleAgent,
+  config: ConsoleAgentListConfig | undefined,
+  parentById?: Map<string, string>,
+  byId?: Map<string, ConsoleAgent>,
+): string | null {
+  const selectors = configuredSelectors(config, "group_by");
+  if (selectors.length === 0) return null;
+  let current: ConsoleAgent | undefined = agent;
+  const seen = new Set<string>();
+  while (current) {
+    const value = firstConfiguredValue(current, selectors);
+    if (value) return value;
+    if (!parentById || !byId || seen.has(current.member_id)) break;
+    seen.add(current.member_id);
+    const parentId = parentById.get(current.member_id);
+    if (!parentId) break;
+    current = byId.get(parentId);
+  }
+  return config?.fallback_group?.trim() || "Agents";
+}
+
+function configuredAgentSubgroup(
+  agent: ConsoleAgent,
+  config: ConsoleAgentListConfig | undefined,
+  parentById?: Map<string, string>,
+  byId?: Map<string, ConsoleAgent>,
+): string | null {
+  const selectors = configuredSelectors(config, "subgroup_by");
+  if (selectors.length === 0) return null;
+  let current: ConsoleAgent | undefined = agent;
+  const seen = new Set<string>();
+  while (current) {
+    const value = firstConfiguredValue(current, selectors);
+    if (value) return value;
+    if (!parentById || !byId || seen.has(current.member_id)) break;
+    seen.add(current.member_id);
+    const parentId = parentById.get(current.member_id);
+    if (!parentId) break;
+    current = byId.get(parentId);
+  }
+  return config?.fallback_subgroup?.trim() || null;
+}
+
+function configuredAgentBadges(agent: ConsoleAgent, config: ConsoleAgentListConfig | undefined): Array<{
+  id: string;
+  label: string;
+  value: string;
+  tone?: string;
+}> {
+  return (config?.badges || [])
+    .map((badge) => {
+      const value = configuredFieldValue(agent, badge.field || "");
+      if (!badge.id || !badge.label || !value) return null;
+      return {
+        id: badge.id,
+        label: badge.label,
+        value,
+        tone: badge.tone,
+      };
+    })
+    .filter((badge): badge is { id: string; label: string; value: string; tone?: string } => Boolean(badge));
+}
 
 function bucketForAgent(a: ConsoleAgent, parentById: Map<string, string>, byId: Map<string, ConsoleAgent>): Bucket {
   const seen = new Set<string>();
@@ -202,8 +319,13 @@ function depthForAgent(a: ConsoleAgent, parentById: Map<string, string>): number
   return depth;
 }
 
-function compareRows(host: ConsoleAgent | null) {
+function compareRows(host: ConsoleAgent | null, orderSubgroups = false) {
   return (a: AgentRow, b: AgentRow): number => {
+    if (orderSubgroups && a.subgroup !== b.subgroup) {
+      if (!a.subgroup) return 1;
+      if (!b.subgroup) return -1;
+      return a.subgroup.localeCompare(b.subgroup);
+    }
     if (host) {
       if (a.agent.member_id === host.member_id) return -1;
       if (b.agent.member_id === host.member_id) return 1;
@@ -213,7 +335,7 @@ function compareRows(host: ConsoleAgent | null) {
   };
 }
 
-function orderRowsPreorder(rows: AgentRow[], parentById: Map<string, string>, host: ConsoleAgent | null): AgentRow[] {
+function orderRowsPreorder(rows: AgentRow[], parentById: Map<string, string>, host: ConsoleAgent | null, orderSubgroups = false): AgentRow[] {
   const byParent = new Map<string, AgentRow[]>();
   const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
   const roots: AgentRow[] = [];
@@ -226,7 +348,7 @@ function orderRowsPreorder(rows: AgentRow[], parentById: Map<string, string>, ho
       roots.push(row);
     }
   }
-  const sortRows = compareRows(host);
+  const sortRows = compareRows(host, orderSubgroups);
   roots.sort(sortRows);
   for (const children of byParent.values()) children.sort(sortRows);
 
@@ -239,8 +361,8 @@ function orderRowsPreorder(rows: AgentRow[], parentById: Map<string, string>, ho
   return ordered;
 }
 
-function groupSidebarAgents(filtered: ConsoleAgent[]): Map<Bucket, AgentRow[]> {
-  const g = new Map<Bucket, AgentRow[]>();
+function groupSidebarAgents(filtered: ConsoleAgent[], config?: ConsoleAgentListConfig): Map<string, AgentRow[]> {
+  const g = new Map<string, AgentRow[]>();
   const host = filtered.find(isCommanderLike);
   const byId = new Map(filtered.map((a) => [a.member_id, a]));
   const parentById = new Map<string, string>();
@@ -250,14 +372,37 @@ function groupSidebarAgents(filtered: ConsoleAgent[]): Map<Bucket, AgentRow[]> {
   }
   for (const a of filtered) {
     const childOfHost = parentById.has(a.member_id);
-    const key = bucketForAgent(a, parentById, byId);
+    const configuredGroup = configuredAgentGroup(a, config, parentById, byId);
+    const key = configuredGroup || bucketForAgent(a, parentById, byId);
+    const subgroup = configuredAgentSubgroup(a, config, parentById, byId);
     if (!g.has(key)) g.set(key, []);
-    g.get(key)!.push({ agent: a, childOfHost, depth: depthForAgent(a, parentById) });
+    g.get(key)!.push({ agent: a, childOfHost, depth: depthForAgent(a, parentById), subgroup });
   }
   for (const [key, rows] of g.entries()) {
-    g.set(key, orderRowsPreorder(rows, parentById, host || null));
+    g.set(key, orderRowsPreorder(rows, parentById, host || null, configuredSelectors(config, "subgroup_by").length > 0));
   }
   return g;
+}
+
+function orderedSectionNames(grouped: Map<string, AgentRow[]>, config?: ConsoleAgentListConfig): string[] {
+  const names = Array.from(new Set([
+    ...Array.from(grouped.keys()),
+    ...(config?.sections || []).map((section) => section.name).filter(Boolean),
+  ]));
+  const configuredOrder = (config?.section_order || []).map((value) => value.trim()).filter(Boolean);
+  const order = configuredOrder.length > 0 ? configuredOrder : SECTION_ORDER;
+  const rank = new Map(order.map((name, index) => [name.toLowerCase(), index] as const));
+  return names.sort((a, b) => {
+    const ar = rank.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    const br = rank.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return a.localeCompare(b);
+  });
+}
+
+function sectionConfigFor(name: string, config?: ConsoleAgentListConfig) {
+  const needle = name.toLowerCase();
+  return (config?.sections || []).find((section) => section.name?.toLowerCase() === needle) || null;
 }
 
 function deriveStateAttr(agent: ConsoleAgent): "active" | "degraded" | "retired" {
@@ -295,6 +440,8 @@ export function Sidebar({
   recentActivity,
   collapsed,
   visibleControls,
+  customButtons,
+  grouping,
   onSelect,
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
@@ -319,8 +466,23 @@ export function Sidebar({
   }, [agents, q]);
 
   const grouped = React.useMemo(() => {
-    return groupSidebarAgents(filtered);
-  }, [filtered]);
+    return groupSidebarAgents(filtered, grouping);
+  }, [filtered, grouping]);
+  const sectionNames = React.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
+  const defaultCollapsedKey = React.useMemo(
+    () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
+    [grouping?.sections],
+  );
+  const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(() => {
+    return new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name));
+  });
+  React.useEffect(() => {
+    setCollapsedSections(new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name)));
+  }, [defaultCollapsedKey]);
+  const customSidebarButtons = React.useMemo(
+    () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
+    [customButtons],
+  );
 
   if (collapsed) {
     return (
@@ -351,7 +513,7 @@ export function Sidebar({
         />
       </div>
 
-      {navKinds.length > 0 && (
+      {(navKinds.length > 0 || customSidebarButtons.length > 0) && (
           <div className="sidebar__section sidebar__section--nav">
             <div className="sidebar__sec-head">
             <span className="sidebar__sec-label">Workbench</span>
@@ -367,50 +529,134 @@ export function Sidebar({
               {NAV_LABEL[kind]}
             </button>
           ))}
+          {customSidebarButtons.map((button) => {
+            const control = normalizeNavKind(button.control);
+            if (control) {
+              return (
+                <button
+                  key={button.id}
+                  className="sidebar__navitem"
+                  onClick={() => onOpenControl(control)}
+                  data-testid={`nav-custom:${button.id}`}
+                  title={button.label}
+                >
+                  {button.label}
+                </button>
+              );
+            }
+            if (button.href) {
+              return (
+                <a
+                  key={button.id}
+                  className="sidebar__navitem"
+                  href={button.href}
+                  target={button.target || undefined}
+                  rel={button.target === "_blank" ? "noreferrer" : undefined}
+                  data-testid={`nav-custom:${button.id}`}
+                  title={button.label}
+                >
+                  {button.label}
+                </a>
+              );
+            }
+            return null;
+          })}
           </div>
         </div>
       )}
 
-      {SECTION_ORDER.map((bucket) => {
-        const list = grouped.get(bucket);
-        if (!list || list.length === 0) return null;
+      {sectionNames.map((bucket) => {
+        const list = grouped.get(bucket) || [];
+        const sectionConfig = sectionConfigFor(bucket, grouping);
+        if (list.length === 0 && !sectionConfig) return null;
+        const subgroups = new Set(list.map((row) => row.subgroup).filter((value): value is string => Boolean(value)));
+        const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0
+          && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
+        let lastSubgroup: string | null = null;
+        const collapsedSection = collapsedSections.has(bucket);
         return (
-          <div className="sidebar__section" key={bucket}>
-            <div className="sidebar__sec-head">
+          <div className="sidebar__section" key={bucket} data-collapsed={collapsedSection ? "true" : undefined}>
+            <button
+              type="button"
+              className="sidebar__sec-head sidebar__sec-head--button"
+              onClick={() => {
+                setCollapsedSections((current) => {
+                  const next = new Set(current);
+                  if (next.has(bucket)) next.delete(bucket);
+                  else next.add(bucket);
+                  return next;
+                });
+              }}
+              data-testid={`sidebar-section-toggle:${bucket}`}
+            >
               <span className="sidebar__sec-label">{bucket}</span>
               <span className="sidebar__sec-spacer" />
               <span className="sidebar__sec-count">{list.length}</span>
-            </div>
-            {list.map(({ agent, childOfHost, depth }) => {
+            </button>
+            {list.length === 0 && !collapsedSection ? (
+              <div className="sidebar__empty" data-testid={`sidebar-section-empty:${bucket}`}>
+                {sectionConfig?.empty_title ? <span className="sidebar__empty-title">{sectionConfig.empty_title}</span> : null}
+                <span>{sectionConfig?.empty_text || "No agents in this section."}</span>
+              </div>
+            ) : null}
+            {!collapsedSection && list.map(({ agent, childOfHost, depth, subgroup }) => {
               const stateAttr = deriveStateAttr(agent);
               const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
               const inbox = inboxCount(agent);
+              const badges = configuredAgentBadges(agent, grouping);
+              const subgroupHeader = showSubgroups && subgroup && subgroup !== lastSubgroup
+                ? (() => {
+                    lastSubgroup = subgroup;
+                    return (
+                      <div className="sidebar__subgroup" key={`${bucket}:${subgroup}`}>
+                        <span>{subgroup}</span>
+                      </div>
+                    );
+                  })()
+                : null;
               return (
-                <div
-                  key={agent.member_id}
-                  className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
-                  data-state={stateAttr}
-                  data-child-of-host={childOfHost ? "true" : undefined}
-                  data-depth={childOfHost ? String(Math.min(depth, 3)) : undefined}
-                  data-testid={`sidebar-agent:${agent.member_id}`}
-                  onClick={() => onSelect(agent)}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <span className="agent__dot" />
-                  <span className="agent__body">
-                    <span className="agent__name">{agent.label}</span>
-                    <span className="agent__id">{agent.identity || agent.member_id}</span>
-                  </span>
-                  <span className="agent__meta">
-                    <span className="agent__pulse">
-                      {pulse.map((v, i) => (
-                        <span key={i} style={{ height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` }} />
-                      ))}
+                <React.Fragment key={agent.member_id}>
+                  {subgroupHeader}
+                  <div
+                    className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
+                    data-state={stateAttr}
+                    data-child-of-host={childOfHost ? "true" : undefined}
+                    data-depth={childOfHost ? String(Math.min(depth, 3)) : undefined}
+                    data-testid={`sidebar-agent:${agent.member_id}`}
+                    onClick={() => onSelect(agent)}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <span className="agent__dot" />
+                    <span className="agent__body">
+                      <span className="agent__name">{agent.label}</span>
+                      <span className="agent__id">{agent.identity || agent.member_id}</span>
+                      {badges.length > 0 ? (
+                        <span className="agent__badges">
+                          {badges.map((badge) => (
+                            <span
+                              className="agent__badge"
+                              data-tone={badge.tone || "neutral"}
+                              key={badge.id}
+                              title={`${badge.label}: ${badge.value}`}
+                            >
+                              <span>{badge.label}</span>
+                              <strong>{badge.value}</strong>
+                            </span>
+                          ))}
+                        </span>
+                      ) : null}
                     </span>
-                    {inbox > 0 && <span className="agent__inbox">{inbox}</span>}
-                  </span>
-                </div>
+                    <span className="agent__meta">
+                      <span className="agent__pulse">
+                        {pulse.map((v, i) => (
+                          <span key={i} style={{ height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` }} />
+                        ))}
+                      </span>
+                      {inbox > 0 && <span className="agent__inbox">{inbox}</span>}
+                    </span>
+                  </div>
+                </React.Fragment>
               );
             })}
           </div>

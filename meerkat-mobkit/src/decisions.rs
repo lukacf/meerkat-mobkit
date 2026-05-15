@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::console_config::ConsoleUiConfig;
 use crate::types::{ModuleConfig, RestartPolicy};
 
 pub const REQUIRED_RELEASE_TARGETS: &[&str] = &["crates.io", "npm", "pypi", "github-releases"];
@@ -115,12 +116,15 @@ impl Default for AuthPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsolePolicy {
     pub require_app_auth: bool,
+    #[serde(default, skip_serializing_if = "ConsoleUiConfig::is_default")]
+    pub ui: ConsoleUiConfig,
 }
 
 impl Default for ConsolePolicy {
     fn default() -> Self {
         Self {
             require_app_auth: true,
+            ui: ConsoleUiConfig::default(),
         }
     }
 }

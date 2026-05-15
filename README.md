@@ -78,6 +78,74 @@ You define agents as profiles in a mob config, wire them together with peer conn
 - **Authentication** — JWT/OIDC validation with JWKS discovery and email allowlists
 - **SDKs** — Python, TypeScript, and Rust with typed returns and contract parity tests
 
+## Console Configuration
+
+The stock console can be shaped with `config/console.toml` when using the conventional workspace layout. The config is projected through `/console/experience` so embedders and the built-in React console see the same contract.
+
+```toml
+title = "OB3"
+
+[brand]
+label = "Open Brain"
+logo_url = "/assets/ob3.svg"
+logo_alt = "OB3"
+
+[appearance]
+default_theme = "dark"
+default_variant = "graphite"
+
+[environment]
+label = "prod"
+
+[layout]
+initial_preset = "two_columns"
+initial_control = "roster"
+sidebar_collapsed = false
+
+[rail]
+visible = true
+collapsed = false
+active_preset_id = "critical"
+empty_text = "No meaningful signals yet."
+
+[[rail.filter_presets]]
+id = "critical"
+label = "Critical"
+alert_levels = ["critical"]
+
+[sidebar]
+visible_controls = ["topology", "roster", "logs", "health"]
+
+[[sidebar.buttons]]
+id = "ob3-board"
+label = "OB3 Board"
+href = "https://example.test/ob3"
+target = "_blank"
+
+[agent_list]
+group_by = ["labels.console_group", "labels.group", "role"]
+subgroup_by = ["labels.org", "labels.realm"]
+section_order = ["Personal", "Initiatives", "Internal"]
+
+[[agent_list.badges]]
+id = "org"
+label = "Org"
+field = "labels.org"
+
+[[agent_list.sections]]
+name = "Initiatives"
+empty_title = "No initiatives"
+empty_text = "Create one in Linear."
+
+[actions]
+inspect_label = "Profile"
+chat_label = "Open chat"
+send_label = "Send to agent"
+show_reset = false
+```
+
+Agent metadata comes from mob member labels, so a spawned member labelled `console_group = "Initiatives"` and `org = "Payments"` appears under `Initiatives / Payments`. Realm-specific overlays can be added under `[realms.<name>]`; the local TUX gateway applies the overlay matching its init `realm`. TypeScript SDK embedders can pass the same file through `MobKit.builder().consoleConfig("config/console.toml")` when booting the RPC gateway, and can explicitly use `.consoleAuthRequired(false)` for local unauthenticated console demos.
+
 ## Install
 
 ```bash

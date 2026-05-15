@@ -70,7 +70,10 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
             ],
         },
         trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy { require_app_auth },
+        console: ConsolePolicy {
+            require_app_auth,
+            ..ConsolePolicy::default()
+        },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: release_json(),
     })
@@ -375,6 +378,127 @@ fn phase0_contract_010_console_experience_preserves_watch_and_degraded_fields() 
                 "degradedReason":"lease_expired",
             }
         ])
+    );
+}
+
+#[test]
+fn console_experience_projects_configurable_sidebar_and_agent_grouping() {
+    let mut state = decision_state(false);
+    state.console.ui = meerkat_mobkit::load_console_ui_config_from_toml(
+        r#"
+title = "OB3"
+
+[brand]
+label = "Open Brain"
+logo_url = "/assets/ob3.svg"
+logo_alt = "OB3"
+
+[appearance]
+default_theme = "dark"
+default_variant = "graphite"
+
+[environment]
+label = "prod"
+
+[layout]
+initial_preset = "two_columns"
+initial_control = "roster"
+sidebar_collapsed = true
+
+[rail]
+visible = true
+collapsed = false
+active_preset_id = "critical"
+empty_text = "No signals."
+
+[[rail.filter_presets]]
+id = "critical"
+label = "Critical"
+alert_levels = ["critical"]
+
+[sidebar]
+visible_controls = ["topology", "roster", "logs"]
+
+[[sidebar.buttons]]
+id = "ob3-board"
+label = "OB3 Board"
+href = "https://example.test/ob3"
+target = "_blank"
+
+[agent_list]
+group_by = ["labels.console_group", "labels.group", "role"]
+subgroup_by = ["labels.org"]
+section_order = ["Personal", "Initiatives", "Internal"]
+
+[[agent_list.badges]]
+id = "org"
+label = "Org"
+field = "labels.org"
+
+[[agent_list.sections]]
+name = "Initiatives"
+empty_title = "No initiatives"
+empty_text = "Create one in Linear."
+
+[actions]
+inspect_label = "Profile"
+send_label = "Send to agent"
+show_reset = false
+"#,
+    )
+    .expect("console config parses");
+
+    let response = handle_console_rest_json_route(
+        &state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/experience".to_string(),
+            auth: None,
+        },
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.body["base_panel"]["title"], json!("OB3"));
+    assert_eq!(
+        response.body["console_config"]["brand"],
+        json!({
+            "label": "Open Brain",
+            "logo_url": "/assets/ob3.svg",
+            "logo_alt": "OB3",
+        })
+    );
+    assert_eq!(
+        response.body["console_config"]["layout"]["initial_preset"],
+        json!("two_columns")
+    );
+    assert_eq!(
+        response.body["console_config"]["rail"]["filter_presets"][0]["alertLevels"],
+        json!(["critical"])
+    );
+    assert_eq!(
+        response.body["console_config"]["sidebar"]["visible_controls"],
+        json!(["topology", "roster", "logs"])
+    );
+    assert_eq!(
+        response.body["console_config"]["sidebar"]["buttons"][0],
+        json!({
+            "id": "ob3-board",
+            "label": "OB3 Board",
+            "href": "https://example.test/ob3",
+            "target": "_blank",
+        })
+    );
+    assert_eq!(
+        response.body["console_config"]["agent_list"]["subgroup_by"],
+        json!(["labels.org"])
+    );
+    assert_eq!(
+        response.body["console_config"]["agent_list"]["badges"][0]["field"],
+        json!("labels.org")
+    );
+    assert_eq!(
+        response.body["console_config"]["actions"]["inspect_label"],
+        json!("Profile")
     );
 }
 

@@ -2,12 +2,16 @@ import React from "react";
 
 interface TopbarProps {
   mobName: string;
+  brandLabel?: string;
+  brandLogoUrl?: string;
+  brandLogoAlt?: string;
   mobStatus?: string;
   environment?: string;
   theme: "dark" | "light";
   onToggleTheme: () => void;
   sidebarCollapsed: boolean;
   railCollapsed: boolean;
+  railVisible?: boolean;
   onToggleSidebar: () => void;
   onToggleRail: () => void;
 }
@@ -37,12 +41,16 @@ function PanelGlyph({ side, open }: { side: "left" | "right"; open: boolean }): 
 
 export function Topbar({
   mobName,
+  brandLabel = "MobKit",
+  brandLogoUrl,
+  brandLogoAlt,
   mobStatus = "idle",
   environment = "dev",
   theme,
   onToggleTheme,
   sidebarCollapsed,
   railCollapsed,
+  railVisible = true,
   onToggleSidebar,
   onToggleRail,
 }: TopbarProps): React.JSX.Element {
@@ -60,8 +68,10 @@ export function Topbar({
         <PanelGlyph side="left" open={!sidebarCollapsed} />
       </button>
       <div className="mobkit-topbar__brand">
-        <span className="mobkit-topbar__brand-mark" />
-        <span>MobKit</span>
+        {brandLogoUrl
+          ? <img className="mobkit-topbar__brand-logo" src={brandLogoUrl} alt={brandLogoAlt || brandLabel} />
+          : <span className="mobkit-topbar__brand-mark" />}
+        <span>{brandLabel}</span>
       </div>
       <div className="mobkit-topbar__mob">
         <span className="mobkit-topbar__mob-status" title={mobStatus} />
@@ -83,17 +93,19 @@ export function Topbar({
           {theme === "dark" ? "☀ light" : "☾ dark"}
         </button>
       </div>
-      <button
-        type="button"
-        className="mobkit-topbar__toggle mobkit-topbar__toggle--right"
-        onClick={onToggleRail}
-        aria-pressed={!railCollapsed}
-        aria-label={railCollapsed ? "Expand signals rail" : "Collapse signals rail"}
-        title={railCollapsed ? "Expand signals rail" : "Collapse signals rail"}
-        data-testid="signals-rail-collapse-toggle"
-      >
-        <PanelGlyph side="right" open={!railCollapsed} />
-      </button>
+      {railVisible ? (
+        <button
+          type="button"
+          className="mobkit-topbar__toggle mobkit-topbar__toggle--right"
+          onClick={onToggleRail}
+          aria-pressed={!railCollapsed}
+          aria-label={railCollapsed ? "Expand signals rail" : "Collapse signals rail"}
+          title={railCollapsed ? "Expand signals rail" : "Collapse signals rail"}
+          data-testid="signals-rail-collapse-toggle"
+        >
+          <PanelGlyph side="right" open={!railCollapsed} />
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -78,6 +78,7 @@ export interface ConsoleAgent extends SidebarWatchFields {
   wired_to?: string[];
   labels?: Record<string, string>;
   group?: string;
+  subgroup?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
   model_capabilities?: ConsoleModelCapabilities;
@@ -97,9 +98,114 @@ export interface ConsoleExperienceAgentSnapshotRow extends Partial<IdentityStatu
   wired_to?: string[];
   labels?: Record<string, string>;
   group?: string;
+  subgroup?: string;
   addressable?: boolean;
   affordances?: ConsoleAgentAffordances;
   model_capabilities?: ConsoleModelCapabilities;
+}
+
+export interface ConsoleSidebarButtonConfig {
+  id: string;
+  label: string;
+  control?: string;
+  href?: string;
+  target?: string;
+  icon_name?: string;
+  iconName?: string;
+}
+
+export interface ConsoleSidebarUiConfig {
+  visible_controls?: string[];
+  hidden_controls?: string[];
+  buttons?: ConsoleSidebarButtonConfig[];
+}
+
+export interface ConsoleAgentListConfig {
+  group_by?: string[];
+  subgroup_by?: string[];
+  section_order?: string[];
+  fallback_group?: string;
+  fallback_subgroup?: string;
+  collapse_single_subgroup?: boolean;
+  badges?: ConsoleAgentBadgeConfig[];
+  sections?: ConsoleAgentSectionConfig[];
+}
+
+export interface ConsoleAgentBadgeConfig {
+  id: string;
+  label: string;
+  field: string;
+  tone?: string;
+}
+
+export interface ConsoleAgentSectionConfig {
+  name: string;
+  collapsed?: boolean;
+  empty_title?: string;
+  empty_text?: string;
+}
+
+export interface ConsoleBrandingConfig {
+  label?: string;
+  logo_url?: string;
+  logo_alt?: string;
+}
+
+export interface ConsoleAppearanceConfig {
+  default_theme?: string;
+  default_variant?: string;
+}
+
+export interface ConsoleEnvironmentConfig {
+  label?: string;
+}
+
+export interface ConsoleLayoutConfig {
+  initial_preset?: string;
+  initial_control?: string;
+  initial_agent?: string;
+  sidebar_collapsed?: boolean;
+}
+
+export interface ConsoleRailFilterPresetConfig {
+  id: string;
+  label: string;
+  watchedOnly?: boolean;
+  alertLevels?: string[];
+}
+
+export interface ConsoleRailUiConfig {
+  visible?: boolean;
+  collapsed?: boolean;
+  active_preset_id?: string;
+  empty_text?: string;
+  filter_presets?: ConsoleRailFilterPresetConfig[];
+}
+
+export interface ConsoleActionsUiConfig {
+  inspect_label?: string;
+  chat_label?: string;
+  send_label?: string;
+  respawn_label?: string;
+  retire_label?: string;
+  reset_label?: string;
+  show_inspect?: boolean;
+  show_chat?: boolean;
+  show_respawn?: boolean;
+  show_retire?: boolean;
+  show_reset?: boolean;
+}
+
+export interface ConsoleUiConfig {
+  title?: string;
+  brand?: ConsoleBrandingConfig;
+  appearance?: ConsoleAppearanceConfig;
+  environment?: ConsoleEnvironmentConfig;
+  layout?: ConsoleLayoutConfig;
+  rail?: ConsoleRailUiConfig;
+  sidebar?: ConsoleSidebarUiConfig;
+  agent_list?: ConsoleAgentListConfig;
+  actions?: ConsoleActionsUiConfig;
 }
 
 export interface ConsoleTopologyNode {
@@ -137,6 +243,8 @@ export interface RuntimeCapabilities {
 
 export interface ConsoleExperience {
   contract_version?: string;
+  runtime_id?: string;
+  console_config?: ConsoleUiConfig;
   runtime_capabilities?: RuntimeCapabilities;
   agent_sidebar?: ConsoleExperienceSection<{
     title?: string;

@@ -2109,6 +2109,7 @@ function normalizeAgents(experience, modules) {
         ...entry.wired_to !== void 0 && { wired_to: entry.wired_to },
         ...statusRow?.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : entry.labels !== void 0 ? { labels: entry.labels } : {},
         ...entry.group !== void 0 && { group: String(entry.group) },
+        ...entry.subgroup !== void 0 && { subgroup: String(entry.subgroup) },
         ...entry.addressable !== void 0 ? { addressable: Boolean(entry.addressable) } : statusRow?.addressability ? { addressable: statusRow.addressability === "addressable" } : {},
         ...entry.affordances !== void 0 && { affordances: entry.affordances },
         model_capabilities: modelCapabilities,
@@ -2135,6 +2136,7 @@ function normalizeAgents(experience, modules) {
         ...statusRow.lease_healthy !== void 0 ? { lease_healthy: statusRow.lease_healthy } : {},
         ...statusRow.labels && Object.keys(statusRow.labels).length > 0 ? { labels: statusRow.labels } : {},
         ...statusRow.labels?.group ? { group: statusRow.labels.group } : {},
+        ...statusRow.labels?.console_subgroup ? { subgroup: statusRow.labels.console_subgroup } : statusRow.labels?.org ? { subgroup: statusRow.labels.org } : {},
         addressable,
         affordances: { can_send_message: addressable },
         model_capabilities: { image_input: false }
@@ -5864,7 +5866,17 @@ function displayPeer(peer) {
   }
   return "";
 }
-function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDetails, onLifecycle, canResetLifecycle = false }) {
+function RosterPanel({
+  agents,
+  selectedMemberId,
+  onSelect,
+  onChat,
+  onDetails,
+  onLifecycle,
+  canResetLifecycle = false,
+  actionLabels,
+  actionVisibility
+}) {
   const [q, setQ] = import_react15.default.useState("");
   const [role, setRole] = import_react15.default.useState("all");
   const [sel, setSel] = import_react15.default.useState(agents[0]?.member_id || "");
@@ -5977,11 +5989,11 @@ function RosterPanel({ agents, selectedMemberId, onSelect, onChat, onDetails, on
           /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("dd", { children: activePeers.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "rd__peers", children: activePeers.map((peer) => /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "chip", children: peer }, peer)) }) : /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("span", { className: "mono dim", children: "none" }) })
         ] }),
         /* @__PURE__ */ (0, import_jsx_runtime23.jsxs)("div", { className: "rd__actions", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onDetails(active), children: "Details" }),
-          /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onChat(active), children: "Open chat" }),
-          active.affordances?.can_respawn ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"), children: "Respawn" }) : null,
-          canResetLifecycle ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: "Reset" }) : null,
-          active.affordances?.can_retire ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { className: "danger", onClick: () => onLifecycle(activeIdentity, "mobkit/retire"), children: "Retire" }) : null
+          actionVisibility?.inspect !== false ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onDetails(active), children: actionLabels?.inspect || "Details" }) : null,
+          actionVisibility?.chat !== false ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onChat(active), children: actionLabels?.chat || "Open chat" }) : null,
+          actionVisibility?.respawn !== false && active.affordances?.can_respawn ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/respawn"), children: actionLabels?.respawn || "Respawn" }) : null,
+          actionVisibility?.reset !== false && canResetLifecycle ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { onClick: () => onLifecycle(activeIdentity, "mobkit/reset"), children: actionLabels?.reset || "Reset" }) : null,
+          actionVisibility?.retire !== false && active.affordances?.can_retire ? /* @__PURE__ */ (0, import_jsx_runtime23.jsx)("button", { className: "danger", onClick: () => onLifecycle(activeIdentity, "mobkit/retire"), children: actionLabels?.retire || "Retire" }) : null
         ] })
       ] }) })
     ] })
@@ -6382,12 +6394,16 @@ function PanelGlyph({ side, open }) {
 }
 function Topbar({
   mobName,
+  brandLabel = "MobKit",
+  brandLogoUrl,
+  brandLogoAlt,
   mobStatus = "idle",
   environment = "dev",
   theme,
   onToggleTheme,
   sidebarCollapsed,
   railCollapsed,
+  railVisible = true,
   onToggleSidebar,
   onToggleRail
 }) {
@@ -6406,8 +6422,8 @@ function Topbar({
       }
     ),
     /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "mobkit-topbar__brand", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
-      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: "MobKit" })
+      brandLogoUrl ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("img", { className: "mobkit-topbar__brand-logo", src: brandLogoUrl, alt: brandLogoAlt || brandLabel }) : /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "mobkit-topbar__brand-mark" }),
+      /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: brandLabel })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "mobkit-topbar__mob", children: [
       /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "mobkit-topbar__mob-status", title: mobStatus }),
@@ -6432,7 +6448,7 @@ function Topbar({
         children: theme === "dark" ? "\u2600 light" : "\u263E dark"
       }
     ) }),
-    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+    railVisible ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
       "button",
       {
         type: "button",
@@ -6444,7 +6460,7 @@ function Topbar({
         "data-testid": "signals-rail-collapse-toggle",
         children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(PanelGlyph, { side: "right", open: !railCollapsed })
       }
-    )
+    ) : null
   ] });
 }
 
@@ -6483,6 +6499,9 @@ var NAV_LABEL = {
   logs: "Logs",
   health: "Health"
 };
+function normalizeNavKind(value) {
+  return typeof value === "string" && ALL_NAV.includes(value) ? value : null;
+}
 function parseNavList(raw) {
   const out = /* @__PURE__ */ new Set();
   if (!raw) return out;
@@ -6580,6 +6599,90 @@ function bucketOf(a) {
   return "Domains";
 }
 var SECTION_ORDER = ["Personal", "Coordinators", "Domains", "Internal", "Other"];
+function configuredSelectors(config, key) {
+  return (config?.[key] || []).map((value) => value.trim()).filter(Boolean);
+}
+function configuredFieldValue(agent, selector) {
+  const normalized = selector.trim();
+  if (!normalized) return null;
+  if (normalized.startsWith("labels.")) {
+    const key = normalized.slice("labels.".length);
+    return agent.labels?.[key]?.trim() || null;
+  }
+  if (normalized.startsWith("label:")) {
+    const key = normalized.slice("label:".length);
+    return agent.labels?.[key]?.trim() || null;
+  }
+  switch (normalized) {
+    case "group":
+      return agent.group?.trim() || null;
+    case "subgroup":
+      return agent.subgroup?.trim() || null;
+    case "role":
+      return agent.role?.trim() || null;
+    case "kind":
+      return agent.kind?.trim() || null;
+    case "identity":
+      return agent.identity?.trim() || null;
+    case "member_id":
+      return agent.member_id?.trim() || null;
+    case "agent_id":
+      return agent.agent_id?.trim() || null;
+    default:
+      return agent.labels?.[normalized]?.trim() || null;
+  }
+}
+function firstConfiguredValue(agent, selectors) {
+  for (const selector of selectors) {
+    const value = configuredFieldValue(agent, selector);
+    if (value) return value;
+  }
+  return null;
+}
+function configuredAgentGroup(agent, config, parentById, byId) {
+  const selectors = configuredSelectors(config, "group_by");
+  if (selectors.length === 0) return null;
+  let current = agent;
+  const seen = /* @__PURE__ */ new Set();
+  while (current) {
+    const value = firstConfiguredValue(current, selectors);
+    if (value) return value;
+    if (!parentById || !byId || seen.has(current.member_id)) break;
+    seen.add(current.member_id);
+    const parentId = parentById.get(current.member_id);
+    if (!parentId) break;
+    current = byId.get(parentId);
+  }
+  return config?.fallback_group?.trim() || "Agents";
+}
+function configuredAgentSubgroup(agent, config, parentById, byId) {
+  const selectors = configuredSelectors(config, "subgroup_by");
+  if (selectors.length === 0) return null;
+  let current = agent;
+  const seen = /* @__PURE__ */ new Set();
+  while (current) {
+    const value = firstConfiguredValue(current, selectors);
+    if (value) return value;
+    if (!parentById || !byId || seen.has(current.member_id)) break;
+    seen.add(current.member_id);
+    const parentId = parentById.get(current.member_id);
+    if (!parentId) break;
+    current = byId.get(parentId);
+  }
+  return config?.fallback_subgroup?.trim() || null;
+}
+function configuredAgentBadges(agent, config) {
+  return (config?.badges || []).map((badge) => {
+    const value = configuredFieldValue(agent, badge.field || "");
+    if (!badge.id || !badge.label || !value) return null;
+    return {
+      id: badge.id,
+      label: badge.label,
+      value,
+      tone: badge.tone
+    };
+  }).filter((badge) => Boolean(badge));
+}
 function bucketForAgent(a, parentById, byId) {
   const seen = /* @__PURE__ */ new Set();
   let current = a;
@@ -6603,8 +6706,13 @@ function depthForAgent(a, parentById) {
   }
   return depth;
 }
-function compareRows(host) {
+function compareRows(host, orderSubgroups = false) {
   return (a, b) => {
+    if (orderSubgroups && a.subgroup !== b.subgroup) {
+      if (!a.subgroup) return 1;
+      if (!b.subgroup) return -1;
+      return a.subgroup.localeCompare(b.subgroup);
+    }
     if (host) {
       if (a.agent.member_id === host.member_id) return -1;
       if (b.agent.member_id === host.member_id) return 1;
@@ -6613,7 +6721,7 @@ function compareRows(host) {
     return a.agent.label.localeCompare(b.agent.label);
   };
 }
-function orderRowsPreorder(rows, parentById, host) {
+function orderRowsPreorder(rows, parentById, host, orderSubgroups = false) {
   const byParent = /* @__PURE__ */ new Map();
   const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
   const roots = [];
@@ -6626,7 +6734,7 @@ function orderRowsPreorder(rows, parentById, host) {
       roots.push(row);
     }
   }
-  const sortRows = compareRows(host);
+  const sortRows = compareRows(host, orderSubgroups);
   roots.sort(sortRows);
   for (const children of byParent.values()) children.sort(sortRows);
   const ordered = [];
@@ -6637,7 +6745,7 @@ function orderRowsPreorder(rows, parentById, host) {
   for (const root of roots) visit(root);
   return ordered;
 }
-function groupSidebarAgents(filtered) {
+function groupSidebarAgents(filtered, config) {
   const g = /* @__PURE__ */ new Map();
   const host = filtered.find(isCommanderLike);
   const byId = new Map(filtered.map((a) => [a.member_id, a]));
@@ -6648,14 +6756,35 @@ function groupSidebarAgents(filtered) {
   }
   for (const a of filtered) {
     const childOfHost = parentById.has(a.member_id);
-    const key = bucketForAgent(a, parentById, byId);
+    const configuredGroup = configuredAgentGroup(a, config, parentById, byId);
+    const key = configuredGroup || bucketForAgent(a, parentById, byId);
+    const subgroup = configuredAgentSubgroup(a, config, parentById, byId);
     if (!g.has(key)) g.set(key, []);
-    g.get(key).push({ agent: a, childOfHost, depth: depthForAgent(a, parentById) });
+    g.get(key).push({ agent: a, childOfHost, depth: depthForAgent(a, parentById), subgroup });
   }
   for (const [key, rows] of g.entries()) {
-    g.set(key, orderRowsPreorder(rows, parentById, host || null));
+    g.set(key, orderRowsPreorder(rows, parentById, host || null, configuredSelectors(config, "subgroup_by").length > 0));
   }
   return g;
+}
+function orderedSectionNames(grouped, config) {
+  const names = Array.from(/* @__PURE__ */ new Set([
+    ...Array.from(grouped.keys()),
+    ...(config?.sections || []).map((section) => section.name).filter(Boolean)
+  ]));
+  const configuredOrder = (config?.section_order || []).map((value) => value.trim()).filter(Boolean);
+  const order = configuredOrder.length > 0 ? configuredOrder : SECTION_ORDER;
+  const rank = new Map(order.map((name, index) => [name.toLowerCase(), index]));
+  return names.sort((a, b) => {
+    const ar = rank.get(a.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    const br = rank.get(b.toLowerCase()) ?? Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return a.localeCompare(b);
+  });
+}
+function sectionConfigFor(name, config) {
+  const needle = name.toLowerCase();
+  return (config?.sections || []).find((section) => section.name?.toLowerCase() === needle) || null;
 }
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
@@ -6687,6 +6816,8 @@ function Sidebar({
   recentActivity,
   collapsed,
   visibleControls,
+  customButtons,
+  grouping,
   onSelect,
   onOpenControl
 }) {
@@ -6705,8 +6836,23 @@ function Sidebar({
     );
   }, [agents, q]);
   const grouped = import_react19.default.useMemo(() => {
-    return groupSidebarAgents(filtered);
-  }, [filtered]);
+    return groupSidebarAgents(filtered, grouping);
+  }, [filtered, grouping]);
+  const sectionNames = import_react19.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
+  const defaultCollapsedKey = import_react19.default.useMemo(
+    () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
+    [grouping?.sections]
+  );
+  const [collapsedSections, setCollapsedSections] = import_react19.default.useState(() => {
+    return new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name));
+  });
+  import_react19.default.useEffect(() => {
+    setCollapsedSections(new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name)));
+  }, [defaultCollapsedKey]);
+  const customSidebarButtons = import_react19.default.useMemo(
+    () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
+    [customButtons]
+  );
   if (collapsed) {
     return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
       "aside",
@@ -6735,57 +6881,136 @@ function Sidebar({
         "data-testid": "sidebar-search"
       }
     ) }),
-    navKinds.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
+    (navKinds.length > 0 || customSidebarButtons.length > 0) && /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__section sidebar__section--nav", children: [
       /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "sidebar__sec-head", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-label", children: "Workbench" }) }),
-      /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "sidebar__navgrid", children: navKinds.map((kind) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
-        "button",
-        {
-          className: "sidebar__navitem",
-          onClick: () => onOpenControl(kind),
-          "data-testid": `nav:${kind}`,
-          children: NAV_LABEL[kind]
-        },
-        kind
-      )) })
+      /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__navgrid", children: [
+        navKinds.map((kind) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+          "button",
+          {
+            className: "sidebar__navitem",
+            onClick: () => onOpenControl(kind),
+            "data-testid": `nav:${kind}`,
+            children: NAV_LABEL[kind]
+          },
+          kind
+        )),
+        customSidebarButtons.map((button) => {
+          const control = normalizeNavKind(button.control);
+          if (control) {
+            return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+              "button",
+              {
+                className: "sidebar__navitem",
+                onClick: () => onOpenControl(control),
+                "data-testid": `nav-custom:${button.id}`,
+                title: button.label,
+                children: button.label
+              },
+              button.id
+            );
+          }
+          if (button.href) {
+            return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)(
+              "a",
+              {
+                className: "sidebar__navitem",
+                href: button.href,
+                target: button.target || void 0,
+                rel: button.target === "_blank" ? "noreferrer" : void 0,
+                "data-testid": `nav-custom:${button.id}`,
+                title: button.label,
+                children: button.label
+              },
+              button.id
+            );
+          }
+          return null;
+        })
+      ] })
     ] }),
-    SECTION_ORDER.map((bucket) => {
-      const list = grouped.get(bucket);
-      if (!list || list.length === 0) return null;
-      return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__section", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__sec-head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-label", children: bucket }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-spacer" }),
-          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-count", children: list.length })
-        ] }),
-        list.map(({ agent, childOfHost, depth }) => {
+    sectionNames.map((bucket) => {
+      const list = grouped.get(bucket) || [];
+      const sectionConfig = sectionConfigFor(bucket, grouping);
+      if (list.length === 0 && !sectionConfig) return null;
+      const subgroups = new Set(list.map((row) => row.subgroup).filter((value) => Boolean(value)));
+      const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0 && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
+      let lastSubgroup = null;
+      const collapsedSection = collapsedSections.has(bucket);
+      return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__section", "data-collapsed": collapsedSection ? "true" : void 0, children: [
+        /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+          "button",
+          {
+            type: "button",
+            className: "sidebar__sec-head sidebar__sec-head--button",
+            onClick: () => {
+              setCollapsedSections((current) => {
+                const next = new Set(current);
+                if (next.has(bucket)) next.delete(bucket);
+                else next.add(bucket);
+                return next;
+              });
+            },
+            "data-testid": `sidebar-section-toggle:${bucket}`,
+            children: [
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-label", children: bucket }),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-spacer" }),
+              /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__sec-count", children: list.length })
+            ]
+          }
+        ),
+        list.length === 0 && !collapsedSection ? /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${bucket}`, children: [
+          sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "sidebar__empty-title", children: sectionConfig.empty_title }) : null,
+          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: sectionConfig?.empty_text || "No agents in this section." })
+        ] }) : null,
+        !collapsedSection && list.map(({ agent, childOfHost, depth, subgroup }) => {
           const stateAttr = deriveStateAttr(agent);
           const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
           const inbox = inboxCount(agent);
-          return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
-            "div",
-            {
-              className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
-              "data-state": stateAttr,
-              "data-child-of-host": childOfHost ? "true" : void 0,
-              "data-depth": childOfHost ? String(Math.min(depth, 3)) : void 0,
-              "data-testid": `sidebar-agent:${agent.member_id}`,
-              onClick: () => onSelect(agent),
-              role: "button",
-              tabIndex: 0,
-              children: [
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__dot" }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "agent__body", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__name", children: agent.label }),
-                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id })
-                ] }),
-                /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "agent__meta", children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
-                  inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__inbox", children: inbox })
-                ] })
-              ]
-            },
-            agent.member_id
-          );
+          const badges = configuredAgentBadges(agent, grouping);
+          const subgroupHeader = showSubgroups && subgroup && subgroup !== lastSubgroup ? (() => {
+            lastSubgroup = subgroup;
+            return /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("div", { className: "sidebar__subgroup", children: /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: subgroup }) }, `${bucket}:${subgroup}`);
+          })() : null;
+          return /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(import_react19.default.Fragment, { children: [
+            subgroupHeader,
+            /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+              "div",
+              {
+                className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
+                "data-state": stateAttr,
+                "data-child-of-host": childOfHost ? "true" : void 0,
+                "data-depth": childOfHost ? String(Math.min(depth, 3)) : void 0,
+                "data-testid": `sidebar-agent:${agent.member_id}`,
+                onClick: () => onSelect(agent),
+                role: "button",
+                tabIndex: 0,
+                children: [
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__dot" }),
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "agent__body", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__name", children: agent.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
+                    badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)(
+                      "span",
+                      {
+                        className: "agent__badge",
+                        "data-tone": badge.tone || "neutral",
+                        title: `${badge.label}: ${badge.value}`,
+                        children: [
+                          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { children: badge.label }),
+                          /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("strong", { children: badge.value })
+                        ]
+                      },
+                      badge.id
+                    )) }) : null
+                  ] }),
+                  /* @__PURE__ */ (0, import_jsx_runtime27.jsxs)("span", { className: "agent__meta", children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
+                    inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime27.jsx)("span", { className: "agent__inbox", children: inbox })
+                  ] })
+                ]
+              }
+            )
+          ] }, agent.member_id);
         })
       ] }, bucket);
     })
@@ -6795,6 +7020,11 @@ function Sidebar({
 // src/panels/SignalsRail.tsx
 var import_react20 = __toESM(require("react"));
 var import_jsx_runtime28 = require("react/jsx-runtime");
+var DEFAULT_FILTER_PRESETS = [
+  { id: "all", label: "All" },
+  { id: "warning", label: "Attn", alertLevels: ["warning", "critical"] },
+  { id: "critical", label: "Crit", alertLevels: ["critical"] }
+];
 var PEER_TOOLS = /* @__PURE__ */ new Set(["send_request", "send_message", "send_response"]);
 var LOW_VALUE_REPLIES = /* @__PURE__ */ new Set(["done", "ok", "okay", "acknowledged"]);
 var LOW_VALUE_REPLY_PATTERNS = [
@@ -7094,20 +7324,51 @@ function buildSignalGroupsForTest(frames) {
   }
   return groupSignals(next);
 }
-function SignalsRail({ frames, collapsed, onSelect }) {
-  const [filter, setFilter] = import_react20.default.useState("all");
+function SignalsRail({
+  frames,
+  collapsed,
+  filterPresets,
+  activePresetId,
+  emptyText,
+  watchedIdentities,
+  onPresetChange,
+  onSelect
+}) {
+  const presets = import_react20.default.useMemo(() => {
+    const configured = (filterPresets || []).filter((preset) => preset.id && preset.label);
+    return configured.length > 0 ? configured : DEFAULT_FILTER_PRESETS;
+  }, [filterPresets]);
+  const [filter, setFilter] = import_react20.default.useState(activePresetId || presets[0]?.id || "all");
   const [expandedGroups, setExpandedGroups] = import_react20.default.useState(() => /* @__PURE__ */ new Set());
+  import_react20.default.useEffect(() => {
+    if (activePresetId && presets.some((preset) => preset.id === activePresetId)) {
+      setFilter(activePresetId);
+    }
+  }, [activePresetId, presets]);
   const groups = import_react20.default.useMemo(() => {
     return buildSignalGroupsForTest(frames);
   }, [frames]);
-  const counts = import_react20.default.useMemo(() => ({
-    all: groups.length,
-    critical: groups.filter((s) => s.severity === "critical").length,
-    warning: groups.filter((s) => s.severity === "warning").length
-  }), [groups]);
-  const shown = groups.filter(
-    (s) => filter === "all" ? true : filter === "critical" ? s.severity === "critical" : s.severity !== "info"
-  );
+  function groupMatchesPreset(group, preset) {
+    if (preset.watchedOnly) {
+      const watched = watchedIdentities || /* @__PURE__ */ new Set();
+      const isWatched = group.items.some((item) => {
+        const identity = item.raw.identity || "";
+        return identity && watched.has(identity);
+      });
+      if (!isWatched) return false;
+    }
+    const alertLevels = new Set((preset.alertLevels || []).map((level) => level.toLowerCase()));
+    if (alertLevels.size > 0 && !alertLevels.has(group.severity)) return false;
+    return true;
+  }
+  const activePreset = presets.find((preset) => preset.id === filter) || presets[0] || DEFAULT_FILTER_PRESETS[0];
+  const counts = import_react20.default.useMemo(() => {
+    return new Map(presets.map((preset) => [
+      preset.id,
+      groups.filter((group) => groupMatchesPreset(group, preset)).length
+    ]));
+  }, [groups, presets, watchedIdentities]);
+  const shown = groups.filter((group) => groupMatchesPreset(group, activePreset));
   const recent15m = groups.filter((s) => Date.now() - (s.items[0]?.raw.timestampMs || 0) < 15 * 60 * 1e3).length;
   function toggleGroup(group) {
     if (group.items.length <= 1) {
@@ -7140,46 +7401,25 @@ function SignalsRail({ frames, collapsed, onSelect }) {
         " in 15m"
       ] })
     ] }),
-    /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rail__filters", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-        "button",
-        {
-          className: `rail__filter ${filter === "all" ? "is-active" : ""}`,
-          onClick: () => setFilter("all"),
-          "data-testid": "signals-filter:all",
-          children: [
-            "All ",
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "rail__filter-count", children: counts.all })
-          ]
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-        "button",
-        {
-          className: `rail__filter ${filter === "warning" ? "is-active" : ""}`,
-          onClick: () => setFilter("warning"),
-          "data-testid": "signals-filter:warning",
-          children: [
-            "Attn ",
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "rail__filter-count", children: counts.warning + counts.critical })
-          ]
-        }
-      ),
-      /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
-        "button",
-        {
-          className: `rail__filter ${filter === "critical" ? "is-active" : ""}`,
-          onClick: () => setFilter("critical"),
-          "data-testid": "signals-filter:critical",
-          children: [
-            "Crit ",
-            /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "rail__filter-count", children: counts.critical })
-          ]
-        }
-      )
-    ] }),
+    /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rail__filters", children: presets.map((preset) => /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
+      "button",
+      {
+        className: `rail__filter ${filter === preset.id ? "is-active" : ""}`,
+        onClick: () => {
+          setFilter(preset.id);
+          onPresetChange?.(preset.id);
+        },
+        "data-testid": `signals-filter:${preset.id}`,
+        children: [
+          preset.label,
+          " ",
+          /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("span", { className: "rail__filter-count", children: counts.get(preset.id) || 0 })
+        ]
+      },
+      preset.id
+    )) }),
     /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "rail__list", children: [
-      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rail__empty", children: "No meaningful signals yet." }),
+      shown.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)("div", { className: "rail__empty", children: emptyText || "No meaningful signals yet." }),
       shown.map((s) => {
         const expanded = expandedGroups.has(s.id);
         return /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)(
@@ -7562,6 +7802,10 @@ function ChatPane({
   onInspect,
   onRespawn,
   onRetire,
+  inspectLabel = "Details",
+  respawnLabel = "Respawn",
+  retireLabel = "Retire",
+  sendLabel = "Send",
   stackSlot
 }) {
   const bodyRef = import_react21.default.useRef(null);
@@ -7744,9 +7988,9 @@ function ChatPane({
         ] })
       ] }),
       /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "conv__actions", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: "Details" }),
-        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: "Respawn" }) : null,
-        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: "Retire" }) : null
+        onInspect ? /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("button", { className: "conv__action", onClick: onInspect, "data-testid": "conv-action:details", children: inspectLabel }) : null,
+        agent?.affordances?.can_respawn && onRespawn ? /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("button", { className: "conv__action", onClick: onRespawn, "data-testid": "conv-action:respawn", children: respawnLabel }) : null,
+        agent?.affordances?.can_retire && onRetire ? /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("button", { className: "conv__action", onClick: onRetire, "data-testid": "conv-action:retire", children: retireLabel }) : null
       ] })
     ] }),
     /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
@@ -7884,14 +8128,17 @@ function ChatPane({
             /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)("div", { className: "composer__row", children: [
               /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "composer__chip mono", children: agent?.role || "agent" }),
               /* @__PURE__ */ (0, import_jsx_runtime29.jsx)("span", { className: "composer__spacer" }),
-              /* @__PURE__ */ (0, import_jsx_runtime29.jsx)(
+              /* @__PURE__ */ (0, import_jsx_runtime29.jsxs)(
                 "button",
                 {
                   className: "composer__send",
                   disabled: !draft.trim() && staged.length === 0 || staged.length > 0 && !canAttachImages || sending,
                   onClick: submitComposer,
                   "data-testid": `chat-send:${identity}`,
-                  children: "Send  \u23CE"
+                  children: [
+                    sendLabel,
+                    "  \u23CE"
+                  ]
                 }
               )
             ] })
@@ -8612,6 +8859,22 @@ function PendingStack({
 
 // src/ConsoleApp.tsx
 var import_jsx_runtime32 = require("react/jsx-runtime");
+function normalizeConsoleTheme(value) {
+  return value === "dark" || value === "light" ? value : null;
+}
+function normalizeConsoleVariant(value) {
+  return value === "rams" || value === "terminal" || value === "graphite" ? value : null;
+}
+function normalizeDockPreset(value) {
+  return value === "single" || value === "two_columns" || value === "two_rows" || value === "grid" ? value : null;
+}
+function actionLabel(actions, key, fallback) {
+  const value = actions?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+function actionVisible(actions, key) {
+  return actions?.[key] !== false;
+}
 function richBlockHasVisibleContent(block) {
   if (!block || typeof block !== "object") return false;
   const record = block;
@@ -8762,7 +9025,7 @@ function ConsoleApp({ baseUrl }) {
   const [inspectByIdentity, setInspectByIdentity] = import_react24.default.useState({});
   const [routingData, setRoutingData] = import_react24.default.useState({ routes: [], deliveries: [] });
   const [gatingData, setGatingData] = import_react24.default.useState({ pending: [], audit: [] });
-  const [activeActivityPresetId, setActiveActivityPresetId] = import_react24.default.useState("all");
+  const [activeActivityPresetId, setActiveActivityPresetId] = import_react24.default.useState("");
   const [selectedRosterMemberId, setSelectedRosterMemberId] = import_react24.default.useState("");
   const [loading, setLoading] = import_react24.default.useState(true);
   const [error, setError] = import_react24.default.useState("");
@@ -9210,7 +9473,9 @@ function ConsoleApp({ baseUrl }) {
     const nextAgents = normalizeAgents(experienceJson, loadedModules);
     setExperience(experienceJson);
     setAgents(nextAgents);
-    setActiveActivityPresetId((c) => c || experienceJson.activity_feed?.active_preset_id || "all");
+    setActiveActivityPresetId(
+      (c) => c || experienceJson.console_config?.rail?.active_preset_id || experienceJson.activity_feed?.active_preset_id || "all"
+    );
     return nextAgents;
   }, [baseUrl]);
   import_react24.default.useEffect(() => {
@@ -9234,12 +9499,88 @@ function ConsoleApp({ baseUrl }) {
     return () => window.clearInterval(timer);
   }, [loadExperience]);
   import_react24.default.useEffect(() => {
-    if (initialTargetOpened.current || dock.focusedTarget || agents.length === 0) return;
-    const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
-    if (!first) return;
+    const appearance = experience?.console_config?.appearance;
+    if (!appearance) return;
+    const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
+    if (configuredTheme) {
+      try {
+        if (!localStorage.getItem("mobkit-console-theme")) setTheme(configuredTheme);
+      } catch {
+        setTheme(configuredTheme);
+      }
+    }
+    const configuredVariant = normalizeConsoleVariant(appearance.default_variant);
+    if (configuredVariant) {
+      try {
+        if (!localStorage.getItem("mobkit-console-variant")) setVariant(configuredVariant);
+      } catch {
+        setVariant(configuredVariant);
+      }
+    }
+  }, [experience?.console_config?.appearance, setVariant]);
+  import_react24.default.useEffect(() => {
+    const configured = experience?.console_config?.layout?.sidebar_collapsed;
+    if (typeof configured !== "boolean") return;
+    try {
+      if (localStorage.getItem("mobkit-console-sidebar-collapsed") !== null) return;
+    } catch {
+    }
+    setSidebarCollapsed(configured);
+  }, [experience?.console_config?.layout?.sidebar_collapsed]);
+  import_react24.default.useEffect(() => {
+    const configured = experience?.console_config?.rail?.collapsed;
+    if (typeof configured !== "boolean") return;
+    try {
+      if (localStorage.getItem("mobkit-console-rail-collapsed") !== null) return;
+    } catch {
+    }
+    setRailCollapsed(configured);
+  }, [experience?.console_config?.rail?.collapsed]);
+  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
+  const visibleControls = import_react24.default.useMemo(
+    () => {
+      const runtimeControls = hasMobControlSurface ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"] : ["topology", "timeline", "roster", "logs", "health"];
+      const sidebarConfig = experience?.console_config?.sidebar;
+      const allowedByRuntime = new Set(runtimeControls);
+      const configuredVisible = (sidebarConfig?.visible_controls || []).map(normalizeNavKind).filter((kind) => Boolean(kind) && allowedByRuntime.has(kind));
+      if (configuredVisible.length > 0) return configuredVisible;
+      const hidden = new Set(
+        (sidebarConfig?.hidden_controls || []).map(normalizeNavKind).filter((kind) => Boolean(kind))
+      );
+      return runtimeControls.filter((kind) => !hidden.has(kind));
+    },
+    [experience?.console_config?.sidebar, hasMobControlSurface]
+  );
+  import_react24.default.useEffect(() => {
+    if (initialTargetOpened.current || dock.focusedTarget || !experience) return;
+    const layoutConfig = experience.console_config?.layout;
+    let target = null;
+    const configuredControl = normalizeNavKind(layoutConfig?.initial_control);
+    if (configuredControl && visibleControls.includes(configuredControl)) {
+      target = buildControlTarget(configuredControl);
+    }
+    const configuredAgent = layoutConfig?.initial_agent?.trim().toLowerCase();
+    if (!target && configuredAgent) {
+      const match = agents.find((agent) => {
+        return [
+          agent.identity,
+          agent.member_id,
+          agent.agent_id,
+          agent.label
+        ].some((value) => value?.toLowerCase() === configuredAgent);
+      });
+      if (match) target = buildDockTarget(match);
+    }
+    if (!target && agents.length > 0) {
+      const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
+      if (first) target = buildDockTarget(first);
+    }
+    if (!target) return;
     initialTargetOpened.current = true;
-    openAgentChat(first);
-  }, [agents, dock]);
+    const preset = normalizeDockPreset(layoutConfig?.initial_preset);
+    if (preset) dock.applyPreset(preset);
+    dock.openTarget(target, "replace_focused");
+  }, [agents, dock, experience, visibleControls]);
   import_react24.default.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
@@ -9252,11 +9593,6 @@ function ConsoleApp({ baseUrl }) {
       dock.openTarget(buildControlTarget("roster"), "replace_focused");
     }
   }, [agents, dock.focusedTarget]);
-  const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const visibleControls = import_react24.default.useMemo(
-    () => hasMobControlSurface ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"] : ["topology", "timeline", "roster", "logs", "health"],
-    [hasMobControlSurface]
-  );
   const refreshPanelData = import_react24.default.useCallback(async () => {
     const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean);
     const inspects = openPanels.filter((t) => t.kind === "identity-inspect");
@@ -9716,9 +10052,25 @@ function ConsoleApp({ baseUrl }) {
   const activityVS = buildActivityRailViewState({
     agents,
     eventFrames: activityRef.current,
-    filterPresets: experience?.activity_feed?.filter_presets,
-    activePresetId: activeActivityPresetId
+    filterPresets: experience?.console_config?.rail?.filter_presets || experience?.activity_feed?.filter_presets,
+    activePresetId: activeActivityPresetId || experience?.console_config?.rail?.active_preset_id || "all"
   });
+  const actionConfig = experience?.console_config?.actions;
+  const configuredActionLabels = {
+    inspect: actionLabel(actionConfig, "inspect_label", "Details"),
+    chat: actionLabel(actionConfig, "chat_label", "Open chat"),
+    send: actionLabel(actionConfig, "send_label", "Send"),
+    respawn: actionLabel(actionConfig, "respawn_label", "Respawn"),
+    retire: actionLabel(actionConfig, "retire_label", "Retire"),
+    reset: actionLabel(actionConfig, "reset_label", "Reset")
+  };
+  const configuredActionVisibility = {
+    inspect: actionVisible(actionConfig, "show_inspect"),
+    chat: actionVisible(actionConfig, "show_chat"),
+    respawn: actionVisible(actionConfig, "show_respawn"),
+    retire: actionVisible(actionConfig, "show_retire"),
+    reset: actionVisible(actionConfig, "show_reset")
+  };
   function renderChatPanel(panel) {
     const target = panel.target;
     if (!target || target.kind !== "agent-chat") return null;
@@ -9747,8 +10099,8 @@ function ConsoleApp({ baseUrl }) {
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
     const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey) ? phaseRef.current[panelKey] : agent?.response_phase ?? null;
-    const canRespawn = agent?.affordances?.can_respawn === true;
-    const canRetire = agent?.affordances?.can_retire === true;
+    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
+    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
     const stackSlot = stackItems.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
@@ -9781,11 +10133,15 @@ function ConsoleApp({ baseUrl }) {
         onDraftChange: (v) => setDraftByKey((c) => ({ ...c, [panelKey]: v })),
         onStagedChange: (action) => setStagedAttachmentsForIdentity(identity, action),
         onSend: (attachments) => onSendMessage(panel.id, target, attachments),
-        onInspect: () => {
+        onInspect: configuredActionVisibility.inspect ? () => {
           if (agent) handleShowRosterDetails(agent);
-        },
+        } : void 0,
         onRespawn: canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : void 0,
         onRetire: canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : void 0,
+        inspectLabel: configuredActionLabels.inspect,
+        respawnLabel: configuredActionLabels.respawn,
+        retireLabel: configuredActionLabels.retire,
+        sendLabel: configuredActionLabels.send,
         stackSlot
       }
     );
@@ -9793,16 +10149,16 @@ function ConsoleApp({ baseUrl }) {
   function renderInspectPanel(target) {
     const inspect = inspectByIdentity[target.identity];
     const agent = agents.find((candidate) => candidate.identity === target.identity || candidate.member_id === target.identity);
-    const canRespawn = agent?.affordances?.can_respawn === true;
-    const canRetire = agent?.affordances?.can_retire === true;
-    const canReset = experience?.runtime_capabilities?.can_retire_members === true;
+    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
+    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
+    const canReset = configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
     return /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "console-panel", "data-testid": `inspect-panel:${target.identity}`, children: [
       /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "console-panel__header", children: [
         /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("h3", { children: target.identity }),
         /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("div", { className: "console-panel__actions", children: [
-          canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: "Respawn" }) : null,
-          canReset ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: "Reset" }) : null,
-          canRetire ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: "Retire" }) : null
+          canRespawn ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { "data-testid": `inspect-action:${target.identity}:respawn`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/respawn"), children: configuredActionLabels.respawn }) : null,
+          canReset ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { "data-testid": `inspect-action:${target.identity}:reset`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/reset"), children: configuredActionLabels.reset }) : null,
+          canRetire ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("button", { "data-testid": `inspect-action:${target.identity}:retire`, type: "button", onClick: () => void onLifecycleAction(target.identity, "mobkit/retire"), children: configuredActionLabels.retire }) : null
         ] })
       ] }),
       !inspect ? /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("p", { children: "Loading identity details\u2026" }) : /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)("dl", { className: "console-panel__grid", children: [
@@ -9852,7 +10208,12 @@ function ConsoleApp({ baseUrl }) {
     void refreshInspectIdentity(target.identity).catch(() => {
     });
   }
-  const mobName = experience?.agent_sidebar?.title || "mob";
+  const mobName = experience?.console_config?.title || experience?.agent_sidebar?.title || "mob";
+  const brand = experience?.console_config?.brand;
+  const environmentLabel = experience?.console_config?.environment?.label || "dev";
+  const railConfig = experience?.console_config?.rail;
+  const railVisible = railConfig?.visible !== false;
+  const watchedIdentities = new Set(agents.filter((agent) => agent.watched).map((agent) => agent.identity || agent.member_id).filter((value) => Boolean(value)));
   const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
   function toggleTheme() {
     const next = theme === "dark" ? "light" : "dark";
@@ -9900,7 +10261,9 @@ function ConsoleApp({ baseUrl }) {
         onChat: (a) => openAgentChat(a),
         onDetails: (a) => handleShowRosterDetails(a),
         onLifecycle: (identity, method) => void onLifecycleAction(identity, method),
-        canResetLifecycle: hasMobControlSurface
+        canResetLifecycle: hasMobControlSurface,
+        actionLabels: configuredActionLabels,
+        actionVisibility: configuredActionVisibility
       }
     );
     if (target.kind === "gates") return /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
@@ -9927,11 +10290,16 @@ function ConsoleApp({ baseUrl }) {
           Topbar,
           {
             mobName,
+            brandLabel: brand?.label,
+            brandLogoUrl: brand?.logo_url,
+            brandLogoAlt: brand?.logo_alt,
             mobStatus,
+            environment: environmentLabel,
             theme,
             onToggleTheme: toggleTheme,
             sidebarCollapsed,
             railCollapsed,
+            railVisible,
             onToggleSidebar: toggleSidebarCollapsed,
             onToggleRail: toggleRailCollapsed
           }
@@ -9952,9 +10320,10 @@ function ConsoleApp({ baseUrl }) {
                   recentActivity: activityRef.current,
                   collapsed: sidebarCollapsed,
                   visibleControls,
+                  customButtons: experience?.console_config?.sidebar?.buttons,
+                  grouping: experience?.console_config?.agent_list,
                   onSelect: (a) => openAgentChat(a),
                   onOpenControl: (kind) => {
-                    if (!visibleControls.includes(kind)) return;
                     dock.openTarget(buildControlTarget(kind), "replace_focused");
                   }
                 }
@@ -9980,14 +10349,21 @@ function ConsoleApp({ baseUrl }) {
                   }
                 }
               ) }),
-              /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "pane-resizer pane-resizer--activity", "aria-hidden": "true", "data-testid": "resize:activity", onPointerDown: handleActivityResize }),
-              /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
-                SignalsRail,
-                {
-                  frames: activityRef.current,
-                  collapsed: railCollapsed
-                }
-              )
+              railVisible ? /* @__PURE__ */ (0, import_jsx_runtime32.jsxs)(import_jsx_runtime32.Fragment, { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)("div", { className: "pane-resizer pane-resizer--activity", "aria-hidden": "true", "data-testid": "resize:activity", onPointerDown: handleActivityResize }),
+                /* @__PURE__ */ (0, import_jsx_runtime32.jsx)(
+                  SignalsRail,
+                  {
+                    frames: activityRef.current,
+                    collapsed: railCollapsed,
+                    filterPresets: railConfig?.filter_presets,
+                    activePresetId: activeActivityPresetId || railConfig?.active_preset_id,
+                    emptyText: railConfig?.empty_text,
+                    watchedIdentities,
+                    onPresetChange: setActiveActivityPresetId
+                  }
+                )
+              ] }) : null
             ]
           }
         )

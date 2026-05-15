@@ -89,7 +89,10 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
             ],
         },
         trusted_oidc: trusted_oidc(),
-        console: ConsolePolicy { require_app_auth },
+        console: ConsolePolicy {
+            require_app_auth,
+            ..ConsolePolicy::default()
+        },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: release_json(),
     })

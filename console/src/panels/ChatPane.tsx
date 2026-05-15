@@ -28,9 +28,13 @@ interface ChatPaneProps {
   onDraftChange: (value: string) => void;
   onStagedChange: React.Dispatch<React.SetStateAction<StagedAttachment[]>>;
   onSend: (attachments?: File[]) => boolean | Promise<boolean>;
-  onInspect: () => void;
+  onInspect?: () => void;
   onRespawn?: () => void;
   onRetire?: () => void;
+  inspectLabel?: string;
+  respawnLabel?: string;
+  retireLabel?: string;
+  sendLabel?: string;
   /// Pending-message stack rendered between conversation body and
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
   /// reserves the slot. Pass `null` (or omit) to suppress.
@@ -390,6 +394,10 @@ export function ChatPane({
   onInspect,
   onRespawn,
   onRetire,
+  inspectLabel = "Details",
+  respawnLabel = "Respawn",
+  retireLabel = "Retire",
+  sendLabel = "Send",
   stackSlot,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
@@ -606,12 +614,12 @@ export function ChatPane({
           </div>
         </div>
         <div className="conv__actions">
-          <button className="conv__action" onClick={onInspect} data-testid="conv-action:details">Details</button>
+          {onInspect ? <button className="conv__action" onClick={onInspect} data-testid="conv-action:details">{inspectLabel}</button> : null}
           {agent?.affordances?.can_respawn && onRespawn ? (
-            <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn">Respawn</button>
+            <button className="conv__action" onClick={onRespawn} data-testid="conv-action:respawn">{respawnLabel}</button>
           ) : null}
           {agent?.affordances?.can_retire && onRetire ? (
-            <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire">Retire</button>
+            <button className="conv__action" onClick={onRetire} data-testid="conv-action:retire">{retireLabel}</button>
           ) : null}
         </div>
       </div>
@@ -749,7 +757,7 @@ export function ChatPane({
               onClick={submitComposer}
               data-testid={`chat-send:${identity}`}
             >
-              Send  ⏎
+              {sendLabel}  ⏎
             </button>
           </div>
         </div>

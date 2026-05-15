@@ -27,14 +27,14 @@ use base64::Engine;
 use meerkat_mobkit::unified_runtime::EventLogError;
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, Base64BlobStoreAdapter, BigQueryNaming, BinaryBlobStore,
-    ConsolePolicy, DiscoverySpec, ElephantMemoryBackendConfig, EventLogConfig, EventLogStore,
-    EventQuery, InMemoryMetadataStore, MOBKIT_CONTRACT_VERSION, MemoryBackendConfig,
+    ConsolePolicy, ConsoleUiConfig, DiscoverySpec, ElephantMemoryBackendConfig, EventLogConfig,
+    EventLogStore, EventQuery, InMemoryMetadataStore, MOBKIT_CONTRACT_VERSION, MemoryBackendConfig,
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ObjectStoreBlobStore,
     PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata, RestartPolicy,
     RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition,
     SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, mob_handle_runtime::mob_definition_may_use_image_generation,
-    start_mobkit_runtime,
+    handle_unified_rpc_json, load_console_ui_config_from_path_for_realm,
+    mob_handle_runtime::mob_definition_may_use_image_generation, start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
 
@@ -66,6 +66,9 @@ struct GatewayRuntimeOptions {
     gating: GatewayGatingConfig,
     event_log: Option<EventLogConfig>,
     decisions: Option<RuntimeDecisionState>,
+    console_ui: ConsoleUiConfig,
+    console_require_app_auth: Option<bool>,
+    demo_llm: bool,
 }
 
 #[derive(Default)]
@@ -340,6 +343,71 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn gateway_runtime_options_parse_console_config_path() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let path = tmp.path().join("console.toml");
+        std::fs::write(
+            &path,
+            r#"
+[sidebar]
+visible_controls = ["topology", "roster"]
+
+[agent_list]
+group_by = ["labels.console_group", "group"]
+"#,
+        )
+        .expect("write console config");
+        let params = json!({
+            "runtime_options": {
+                "console_config_path": path.to_string_lossy()
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert_eq!(
+            options.console_ui.sidebar.visible_controls,
+            Some(vec!["topology".to_string(), "roster".to_string()])
+        );
+        assert_eq!(
+            options.console_ui.agent_list.group_by,
+            vec!["labels.console_group".to_string(), "group".to_string()]
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_can_disable_console_auth_for_local_console() {
+        let params = json!({
+            "runtime_options": {
+                "console_require_app_auth": false
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert!(
+            !options
+                .decisions
+                .expect("decisions")
+                .console
+                .require_app_auth
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_parse_demo_llm() {
+        let params = json!({
+            "runtime_options": {
+                "demo_llm": true
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert!(options.demo_llm);
+    }
 }
 
 fn parse_gateway_runtime_options(
@@ -358,6 +426,9 @@ fn parse_gateway_runtime_options(
         "scheduling_files",
         "gating_config_path",
         "auth_config",
+        "console_config_path",
+        "console_require_app_auth",
+        "demo_llm",
         "event_log",
         "implicit_delegate_idle_retire_secs",
         "implicit_delegate_idle_sweep_interval_ms",
@@ -399,6 +470,23 @@ fn parse_gateway_runtime_options(
     if let Some(auth_config) = runtime_options.get("auth_config") {
         parsed.decisions = Some(parse_gateway_auth_config(auth_config)?);
     }
+    if let Some(path) = runtime_options
+        .get("console_config_path")
+        .and_then(Value::as_str)
+    {
+        parsed.console_ui = load_console_ui_config_from_path_for_realm(path, None)
+            .map_err(|err| format!("runtime_options.console_config_path is invalid: {err}"))?;
+    }
+    if let Some(value) = runtime_options.get("console_require_app_auth") {
+        parsed.console_require_app_auth = Some(value.as_bool().ok_or_else(|| {
+            "runtime_options.console_require_app_auth must be a boolean".to_string()
+        })?);
+    }
+    if let Some(value) = runtime_options.get("demo_llm") {
+        parsed.demo_llm = value
+            .as_bool()
+            .ok_or_else(|| "runtime_options.demo_llm must be a boolean".to_string())?;
+    }
     if let Some(event_log) = runtime_options.get("event_log") {
         parsed.event_log = Some(parse_gateway_event_log_config(event_log)?);
     }
@@ -425,6 +513,16 @@ fn parse_gateway_runtime_options(
         parsed
             .runtime_options
             .implicit_delegate_idle_sweep_interval_ms = interval;
+    }
+    if let Some(require_app_auth) = parsed.console_require_app_auth {
+        parsed
+            .decisions
+            .get_or_insert_with(minimal_decision_state)
+            .console
+            .require_app_auth = require_app_auth;
+    }
+    if let Some(decisions) = parsed.decisions.as_mut() {
+        decisions.console.ui = parsed.console_ui.clone();
     }
     Ok(parsed)
 }
@@ -616,6 +714,7 @@ fn parse_gateway_auth_config(value: &Value) -> Result<RuntimeDecisionState, Stri
         },
         console: ConsolePolicy {
             require_app_auth: true,
+            ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata: ReleaseMetadata {
@@ -1374,6 +1473,15 @@ external_addressable = true
         .unwrap_or_else(|e| {
             fail_init(&request_id, -32602, e);
         });
+    let default_llm_client: Option<Arc<dyn meerkat_client::LlmClient>> =
+        match gateway_options.demo_llm {
+            true => {
+                let client: Arc<dyn meerkat_client::LlmClient> =
+                    Arc::new(meerkat_client::TestClient::default());
+                Some(client)
+            }
+            false => None,
+        };
 
     // 5. Build session service with callback bridge.
     let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
@@ -1462,10 +1570,11 @@ external_addressable = true
                 blob_store,
             ));
         let mut spec = MobBootstrapSpec::new(definition, mob_storage, session_service)
+            .with_session_runtime_adapter(adapter.clone())
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
-                default_llm_client: None,
+                default_llm_client: default_llm_client.clone(),
             });
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
@@ -1503,10 +1612,11 @@ external_addressable = true
         let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_session_runtime_adapter(adapter.clone())
             .with_options(MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
-                default_llm_client: None,
+                default_llm_client: default_llm_client.clone(),
             });
         spec.runtime_adapter = Some(adapter);
         spec.binary_blob_store = Some(binary_blob_store);
@@ -1740,10 +1850,11 @@ external_addressable = true
 
     // 7. Start HTTP with graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    let decision_state = gateway_options
+    let mut decision_state = gateway_options
         .decisions
         .clone()
         .unwrap_or_else(minimal_decision_state);
+    decision_state.console.ui = gateway_options.console_ui.clone();
     let app = runtime.build_reference_app_router(decision_state);
     let serve_task = tokio::spawn({
         let mut shutdown_rx = shutdown_rx.clone();

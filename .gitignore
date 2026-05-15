@@ -15,6 +15,7 @@ docs/rct/traceability.legacy-*.md
 
 # Playwright MCP logs/snapshots
 .playwright-mcp/
+/output/playwright/
 
 # Console build temp
 console/.tmp/

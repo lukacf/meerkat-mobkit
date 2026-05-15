@@ -52,6 +52,7 @@ fn require_auth_decisions() -> RuntimeDecisionState {
         trusted_oidc: trusted_oidc(),
         console: ConsolePolicy {
             require_app_auth: true,
+            ..ConsolePolicy::default()
         },
         ops: RuntimeOpsPolicy::default(),
         release_metadata_json: release_json(),
