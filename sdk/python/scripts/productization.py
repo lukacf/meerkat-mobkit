@@ -441,6 +441,17 @@ async def main() -> int:
             },
             "compat module spec mismatch",
         )
+        env_dict = define_module_spec(
+            module_id="routing",
+            command="python3",
+            args=["routing.py"],
+            boundary="mcp",
+        )
+        _assert_eq(
+            env_dict["boundary"],
+            "mcp",
+            "module boundary should be preserved for gateway init",
+        )
 
         decorated_spec = decorate_module_spec(
             base_spec,
@@ -449,6 +460,8 @@ async def main() -> int:
                 command=spec.command,
                 args=spec.args + ("--prod",),
                 restart_policy="on_failure",
+                boundary=spec.boundary,
+                env=spec.env,
             ),
         )
 

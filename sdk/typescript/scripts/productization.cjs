@@ -362,6 +362,7 @@ async function run() {
       command: "node",
       args: ["routing.js"],
       restartPolicy: "never",
+      boundary: "mcp",
     });
 
     const decoratedSpec = decorateModuleSpec(
@@ -402,6 +403,7 @@ async function run() {
       command: "node",
       args: ["routing.js", "--prod"],
       restart_policy: "on_failure",
+      boundary: "mcp",
     }, "unexpected decorated spec");
 
     assertDeepEqual(toolResult, {

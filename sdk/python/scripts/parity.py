@@ -95,12 +95,14 @@ def main() -> int:
             command="python3",
             args=["router.py"],
             restart_policy="on_failure",
+            boundary="mcp",
         ),
         {
             "id": "router",
             "command": "python3",
             "args": ["router.py"],
             "restart_policy": "on_failure",
+            "boundary": "mcp",
         },
         "unexpected module spec",
     ))
