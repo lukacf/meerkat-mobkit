@@ -6,7 +6,7 @@
 //! - Lifecycle: `retire()`, `respawn()`, `reset()`, `delete_identity()`
 //! - Ownership: lease tracking, fencing, and invariant enforcement
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,7 +18,7 @@ use super::types::{
     AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
     ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchInput, DurabilityPolicy,
     DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo,
-    NotAddressable, SessionSnapshot,
+    ManagedPeerEdge, NotAddressable, SessionSnapshot,
 };
 
 // ---------------------------------------------------------------------------
@@ -231,6 +231,7 @@ pub struct IdentityRuntime {
     has_runtime_store: bool,
     durability_policy: DurabilityPolicy,
     bridge: Option<Arc<dyn SessionBridge>>,
+    managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
     default_timeout: Duration,
 }
 
@@ -246,6 +247,7 @@ impl IdentityRuntime {
             has_runtime_store: config.has_runtime_store,
             durability_policy: config.durability_policy,
             bridge: config.bridge,
+            managed_peer_edges: RwLock::new(BTreeSet::new()),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
         }
     }
@@ -253,6 +255,81 @@ impl IdentityRuntime {
     #[must_use]
     pub fn has_session_bridge(&self) -> bool {
         self.bridge.is_some()
+    }
+
+    /// Apply identity-first managed topology to the concrete mob graph.
+    ///
+    /// Topology providers return stable logical identities. The mob comms graph
+    /// is keyed by active runtime member IDs, so this resolves each endpoint
+    /// through continuity records before calling the same-mob bridge wire APIs.
+    pub async fn reconcile_managed_peer_edges(
+        &self,
+        desired_edges: &[ManagedPeerEdge],
+    ) -> Result<(), IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.clone() else {
+            return Ok(());
+        };
+
+        let active_runtimes: BTreeMap<AgentIdentity, AgentRuntimeId> = {
+            let entries = self.entries.read().await;
+            entries
+                .iter()
+                .filter_map(|(identity, entry)| {
+                    if entry.state != IdentityLifecycleState::Active {
+                        return None;
+                    }
+                    entry
+                        .continuity
+                        .as_ref()
+                        .map(|record| (identity.clone(), record.agent_runtime_id.clone()))
+                })
+                .collect()
+        };
+
+        let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired_edges
+            .iter()
+            .map(|edge| (edge.a().clone(), edge.b().clone()))
+            .collect();
+
+        let mut managed = self.managed_peer_edges.write().await;
+
+        for (a, b) in &desired {
+            let (Some(runtime_a), Some(runtime_b)) =
+                (active_runtimes.get(a), active_runtimes.get(b))
+            else {
+                continue;
+            };
+
+            bridge
+                .wire_peer(runtime_a, runtime_b)
+                .await
+                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge wire_peer: {e}")))?;
+            managed.insert((a.clone(), b.clone()));
+        }
+
+        let stale: Vec<(AgentIdentity, AgentIdentity)> = managed
+            .iter()
+            .filter(|edge| !desired.contains(*edge))
+            .cloned()
+            .collect();
+
+        for (a, b) in stale {
+            let key = (a.clone(), b.clone());
+            let (Some(runtime_a), Some(runtime_b)) =
+                (active_runtimes.get(&a), active_runtimes.get(&b))
+            else {
+                managed.remove(&key);
+                continue;
+            };
+
+            bridge
+                .unwire_peer(runtime_a, runtime_b)
+                .await
+                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge unwire_peer: {e}")))?;
+            managed.remove(&key);
+        }
+
+        Ok(())
     }
 
     /// Emit an event for the given identity. Best-effort — no error if no subscribers.
