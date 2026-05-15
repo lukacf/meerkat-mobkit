@@ -1666,6 +1666,120 @@ test("mapFramesToTimelineEntries renders live typed comms system notices as comm
   assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
 });
 
+test("mapFramesToTimelineEntries renders live tool-config system notices as metadata", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "catalog-worker",
+      member_id: "catalog-worker",
+      label: "catalog-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-tool-config-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-15T09:00:00.000Z"),
+        data: {
+          role: "system_notice",
+          kind: "tool_scope",
+          render_class: "tool_scope_notice",
+          body: "Deferred catalog changed at turn boundary: new deferred tools available: docs_search",
+          blocks: [{
+            type: "tool_config",
+            payload: {
+              operation: "reload",
+              target: "deferred_catalog",
+              status: "deferred_catalog_delta(added_hidden=1,removed_hidden=0,pending_sources=0)",
+              status_info: {
+                kind: "deferred_catalog_delta",
+                added_hidden_count: 1,
+                removed_hidden_count: 0,
+                pending_source_count: 0,
+              },
+              persisted: false,
+              domain: "deferred_catalog",
+            },
+          }],
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "divider");
+  assert.equal(
+    block?.type === "divider" ? block.text : "",
+    "Deferred catalog changed at turn boundary: new deferred tools available: docs_search",
+  );
+});
+
+test("mapFramesToTimelineEntries renders live non-comms system notices without tool or image blocks", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "ops-worker",
+      member_id: "ops-worker",
+      label: "ops-worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-mcp-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-15T09:01:00.000Z"),
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "mcp",
+            body: "MCP server docs connected",
+            blocks: [{
+              type: "mcp",
+              server_id: "docs",
+              detail: "MCP server docs connected",
+              persisted: true,
+            }],
+          },
+        },
+      },
+      {
+        id: "live-runtime-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-15T09:02:00.000Z"),
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "generic",
+            body: "Runtime recovered from transient stream lag",
+            blocks: [{
+              type: "runtime_notice",
+              category: "stream",
+              detail: "Runtime recovered from transient stream lag",
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const mcpBlock = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(mcpBlock?.type, "divider");
+  assert.equal(mcpBlock?.type === "divider" ? mcpBlock.text : "", "MCP server docs connected");
+
+  const runtimeBlock = entries[1] && "blocks" in entries[1] ? entries[1].blocks?.[0] : null;
+  assert.equal(runtimeBlock?.type, "paragraph");
+  assert.equal(
+    runtimeBlock?.type === "paragraph" ? runtimeBlock.text : "",
+    "Runtime recovered from transient stream lag",
+  );
+});
+
 test("mapFramesToTimelineEntries hides external-event system notices that duplicate user input", () => {
   const entries = mapFramesToTimelineEntries(
     {

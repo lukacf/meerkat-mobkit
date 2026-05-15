@@ -2872,6 +2872,36 @@ function renderAssistantImageEntry(agent, frame, entryId, blobBaseUrl) {
     }]
   };
 }
+function renderGeneratedImageToolResultEntries(agent, frame, entryId, blobBaseUrl) {
+  const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+  const name = typeof data.name === "string" ? data.name : typeof data.tool_name === "string" ? data.tool_name : "";
+  if (name !== "generate_image") return [];
+  let result = data.result;
+  if (typeof result === "string") {
+    try {
+      result = JSON.parse(result);
+    } catch {
+      return [];
+    }
+  }
+  if (!result || typeof result !== "object") return [];
+  const images = result.images;
+  if (!Array.isArray(images)) return [];
+  return images.flatMap((image, index) => {
+    if (!image || typeof image !== "object") return [];
+    const imageFrame = {
+      ...frame,
+      data: { image }
+    };
+    const imageEntry = renderAssistantImageEntry(
+      agent,
+      imageFrame,
+      `${entryId}:generated-image:${index}`,
+      blobBaseUrl
+    );
+    return imageEntry ? [imageEntry] : [];
+  });
+}
 function imageEntryKey(entry) {
   if (entry.kind !== "message" || entry.variant !== "rich" || !("blocks" in entry)) {
     return null;
@@ -3136,6 +3166,22 @@ function typedNoticeBlockText(block) {
   ].filter(Boolean);
   return parts.join("\n");
 }
+function isExternalEventOnlySystemNotice(message) {
+  if (!message || typeof message !== "object") return false;
+  const record = message;
+  if (textFromUnknown(record.kind) === "external_event") return true;
+  const blocks = record.blocks;
+  if (!Array.isArray(blocks)) return false;
+  let sawExternalEventBlock = false;
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const type = textFromUnknown(block.type);
+    if (!type) continue;
+    if (type !== "external_event") return false;
+    sawExternalEventBlock = true;
+  }
+  return sawExternalEventBlock;
+}
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
   const rich = [];
   const bodyText = textFromUnknown(body);
@@ -3176,7 +3222,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
     if (type === "tool_config" || type === "mcp") {
       const payload = record.payload && typeof record.payload === "object" ? record.payload : record;
       const label = type === "mcp" ? "MCP" : "Tool config";
-      const text = typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
+      const text = bodyText || typedNoticeBlockText(payload) || typedNoticeBlockText(record) || label;
       rich.push({ type: "divider", text });
       continue;
     }
@@ -3276,9 +3322,12 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : {};
   const message = record.message && typeof record.message === "object" ? record.message : {
     role: "system_notice",
+    kind: record.kind,
+    render_class: record.render_class,
     body: record.body,
     blocks: record.blocks
   };
+  if (isExternalEventOnlySystemNotice(message)) return null;
   const parsed = historyMessageText(message, void 0, options.blobBaseUrl);
   if (parsed.role !== "meta") return null;
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
@@ -3286,10 +3335,6 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
     if (block.type !== "tool-call") return true;
     return !options.consumeDuplicateToolBlock?.(block);
   }) : parsedBlocks;
-  const hasConversationNoticeBlock = filteredParsedBlocks.some(
-    (block) => block.type === "tool-call" || block.type === "image"
-  );
-  if (!hasConversationNoticeBlock) return null;
   const text = parsed.text.trim();
   if (!text && filteredParsedBlocks.length === 0) return null;
   const blocks = filteredParsedBlocks.length > 0 ? filteredParsedBlocks : parseConversationRichBlocks(text);
@@ -3388,6 +3433,18 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
+      const imageEntries = renderGeneratedImageToolResultEntries(
+        agent,
+        frame,
+        entryId,
+        options.blobBaseUrl
+      );
+      for (const imageEntry of imageEntries) {
+        const key = imageEntryKey(imageEntry);
+        if (key && emittedImages.has(key)) continue;
+        if (key) emittedImages.add(key);
+        entries.push(imageEntry);
+      }
       continue;
     }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
