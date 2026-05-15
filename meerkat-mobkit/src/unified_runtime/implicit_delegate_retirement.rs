@@ -8,16 +8,16 @@ use meerkat_core::{AgentExecutionSnapshot, TurnPhase};
 use meerkat_mob::{AgentIdentity, MemberState};
 use meerkat_mob_mcp::MobMcpState;
 
-use crate::mob_handle_runtime::MobRuntime;
+use crate::mob_handle_runtime::{
+    DELEGATE_IDLE_RETIRE_DISABLED_LABEL, DELEGATE_IDLE_RETIRE_SECS_LABEL,
+    DelegateIdleRetireOverride, ImplicitDelegateRetirementOverrides, MobRuntime,
+};
 use crate::runtime::RuntimeOptions;
 
 use super::UnifiedRuntime;
 
 impl UnifiedRuntime {
     pub(crate) async fn configure_implicit_delegate_retirement(&self, options: &RuntimeOptions) {
-        let Some(idle_secs) = options.implicit_delegate_idle_retire_secs else {
-            return;
-        };
         let Some(state) = self.mob_runtime.agent_mob_mcp_state() else {
             return;
         };
@@ -26,7 +26,10 @@ impl UnifiedRuntime {
         let task = tokio::spawn(run_implicit_delegate_retirement(
             self.mob_runtime.clone(),
             state,
-            Duration::from_secs(idle_secs),
+            self.mob_runtime.implicit_delegate_retirement_overrides(),
+            options
+                .implicit_delegate_idle_retire_secs
+                .map(Duration::from_secs),
             sweep_interval,
         ));
         *self.implicit_delegate_retirement_task.lock().await = Some(task);
@@ -36,7 +39,8 @@ impl UnifiedRuntime {
 async fn run_implicit_delegate_retirement(
     runtime: MobRuntime,
     state: Arc<MobMcpState>,
-    idle_after: Duration,
+    per_delegate_overrides: Option<ImplicitDelegateRetirementOverrides>,
+    default_idle_after: Option<Duration>,
     sweep_interval: Duration,
 ) {
     let primary_mob_id = runtime.handle().mob_id().to_string();
@@ -65,6 +69,18 @@ async fn run_implicit_delegate_retirement(
                     idle_since.remove(&key);
                     continue;
                 }
+                let per_delegate_override = match per_delegate_overrides.as_ref() {
+                    Some(overrides) => overrides.get(mob_id.as_str(), &identity).await,
+                    None => None,
+                };
+                let Some(idle_after) = delegate_member_idle_retire_after(
+                    &member.labels,
+                    per_delegate_override,
+                    default_idle_after,
+                ) else {
+                    idle_since.remove(&key);
+                    continue;
+                };
                 let Some(session_id) = handle
                     .resolve_bridge_session_id(&member.agent_identity)
                     .await
@@ -123,6 +139,32 @@ fn delegate_execution_is_idle(snapshot: &AgentExecutionSnapshot) -> bool {
     turn_phase_is_idle(snapshot.turn_phase)
 }
 
+fn delegate_member_idle_retire_after(
+    labels: &std::collections::BTreeMap<String, String>,
+    per_delegate_override: Option<DelegateIdleRetireOverride>,
+    default_idle_after: Option<Duration>,
+) -> Option<Duration> {
+    match per_delegate_override {
+        Some(DelegateIdleRetireOverride::Disabled) => return None,
+        Some(DelegateIdleRetireOverride::Seconds(seconds)) => {
+            return Some(Duration::from_secs(seconds));
+        }
+        None => {}
+    }
+    match labels
+        .get(DELEGATE_IDLE_RETIRE_SECS_LABEL)
+        .map(String::as_str)
+    {
+        Some(value) if value.eq_ignore_ascii_case(DELEGATE_IDLE_RETIRE_DISABLED_LABEL) => None,
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .map(Duration::from_secs)
+            .or(default_idle_after),
+        None => default_idle_after,
+    }
+}
+
 pub(crate) fn turn_phase_is_idle(phase: TurnPhase) -> bool {
     matches!(phase, TurnPhase::Ready) || phase.is_terminal()
 }
@@ -145,5 +187,85 @@ mod tests {
         assert!(!turn_phase_is_idle(TurnPhase::Extracting));
         assert!(!turn_phase_is_idle(TurnPhase::ErrorRecovery));
         assert!(!turn_phase_is_idle(TurnPhase::Cancelling));
+    }
+
+    #[test]
+    fn implicit_delegate_idle_retire_label_overrides_runtime_default() {
+        let labels = std::collections::BTreeMap::from([(
+            DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+            "12".to_string(),
+        )]);
+
+        assert_eq!(
+            delegate_member_idle_retire_after(&labels, None, Some(Duration::from_mins(5))),
+            Some(Duration::from_secs(12))
+        );
+    }
+
+    #[test]
+    fn implicit_delegate_idle_retire_label_can_disable_member_retirement() {
+        let labels = std::collections::BTreeMap::from([(
+            DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+            DELEGATE_IDLE_RETIRE_DISABLED_LABEL.to_string(),
+        )]);
+
+        assert_eq!(
+            delegate_member_idle_retire_after(&labels, None, Some(Duration::from_mins(5))),
+            None
+        );
+    }
+
+    #[test]
+    fn implicit_delegate_idle_retire_call_override_wins_over_label() {
+        let labels = std::collections::BTreeMap::from([(
+            DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+            "12".to_string(),
+        )]);
+
+        assert_eq!(
+            delegate_member_idle_retire_after(
+                &labels,
+                Some(DelegateIdleRetireOverride::Seconds(9)),
+                Some(Duration::from_mins(5))
+            ),
+            Some(Duration::from_secs(9))
+        );
+    }
+
+    #[test]
+    fn implicit_delegate_idle_retire_call_override_can_disable_retirement() {
+        assert_eq!(
+            delegate_member_idle_retire_after(
+                &std::collections::BTreeMap::new(),
+                Some(DelegateIdleRetireOverride::Disabled),
+                Some(Duration::from_mins(5))
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn implicit_delegate_idle_retire_invalid_label_uses_runtime_default() {
+        let labels = std::collections::BTreeMap::from([(
+            DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+            "eventually".to_string(),
+        )]);
+
+        assert_eq!(
+            delegate_member_idle_retire_after(&labels, None, Some(Duration::from_mins(5))),
+            Some(Duration::from_mins(5))
+        );
+    }
+
+    #[test]
+    fn implicit_delegate_idle_retire_uses_runtime_default_when_unlabeled() {
+        assert_eq!(
+            delegate_member_idle_retire_after(
+                &std::collections::BTreeMap::new(),
+                None,
+                Some(Duration::from_mins(5))
+            ),
+            Some(Duration::from_mins(5))
+        );
     }
 }

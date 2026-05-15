@@ -1,5 +1,6 @@
 //! Mob member lifecycle management — bootstrap, spawn, reconcile, and roster queries.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -22,6 +23,9 @@ use meerkat_store::StoreAdapter;
 use serde_json::Value;
 
 use crate::blob_store::{Base64BlobStoreAdapter, BinaryBlobStore, ObjectStoreBlobStore};
+
+pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
+pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
 
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -228,9 +232,47 @@ fn no_op_pre_build_hook() -> PreBuildHook {
     Arc::new(|_req: &mut CreateSessionRequest| Box::pin(async { Ok(()) }))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DelegateIdleRetireOverride {
+    Disabled,
+    Seconds(u64),
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ImplicitDelegateRetirementOverrides {
+    inner: Arc<tokio::sync::RwLock<BTreeMap<(String, String), DelegateIdleRetireOverride>>>,
+}
+
+impl ImplicitDelegateRetirementOverrides {
+    pub(crate) async fn set(
+        &self,
+        mob_id: impl Into<String>,
+        member_id: impl Into<String>,
+        override_policy: DelegateIdleRetireOverride,
+    ) {
+        self.inner
+            .write()
+            .await
+            .insert((mob_id.into(), member_id.into()), override_policy);
+    }
+
+    pub(crate) async fn get(
+        &self,
+        mob_id: &str,
+        member_id: &str,
+    ) -> Option<DelegateIdleRetireOverride> {
+        self.inner
+            .read()
+            .await
+            .get(&(mob_id.to_string(), member_id.to_string()))
+            .copied()
+    }
+}
+
 struct AutoWireParentMobToolsFactory {
     inner: Arc<dyn meerkat_core::service::MobToolsFactory>,
     state: Arc<meerkat_mob_mcp::MobMcpState>,
+    implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -250,6 +292,9 @@ impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
             inner,
             state: Arc::clone(&self.state),
             owner_identity,
+            implicit_delegate_retirement_overrides: self
+                .implicit_delegate_retirement_overrides
+                .clone(),
         }))
     }
 }
@@ -258,19 +303,34 @@ struct AutoWireParentMobToolDispatcher {
     inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
     state: Arc<meerkat_mob_mcp::MobMcpState>,
     owner_identity: Option<String>,
+    implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
     fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
-        self.inner.tools()
+        self.inner
+            .tools()
+            .iter()
+            .map(|tool| {
+                if tool.name == "delegate" {
+                    Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
+                } else {
+                    Arc::clone(tool)
+                }
+            })
+            .collect::<Vec<_>>()
+            .into()
     }
 
     async fn dispatch(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
     ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        if call.name == "delegate" {
+            return self.dispatch_delegate(call).await;
+        }
         if call.name != "mob_spawn_member" {
             return self.inner.dispatch(call).await;
         }
@@ -329,6 +389,99 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
     }
 }
 
+impl AutoWireParentMobToolDispatcher {
+    async fn dispatch_delegate(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+        let mut args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let idle_retire_override = delegate_idle_retire_override_from_args(call.name, &mut args)?;
+        let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
+            meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
+        })?;
+        let call = meerkat_core::types::ToolCallView {
+            id: call.id,
+            name: call.name,
+            args: &args,
+        };
+        let outcome = self.inner.dispatch(call).await?;
+
+        if !outcome.result.is_error
+            && let Some(override_policy) = idle_retire_override
+            && let Ok(payload) = serde_json::from_str::<Value>(&outcome.result.text_content())
+            && let (Some(mob_id), Some(member_id)) = (
+                payload.get("mob_id").and_then(Value::as_str),
+                payload.get("agent_identity").and_then(Value::as_str),
+            )
+        {
+            self.implicit_delegate_retirement_overrides
+                .set(mob_id, member_id, override_policy)
+                .await;
+        }
+
+        Ok(outcome)
+    }
+}
+
+fn delegate_idle_retire_override_from_args(
+    tool_name: &str,
+    args: &mut Value,
+) -> Result<Option<DelegateIdleRetireOverride>, meerkat_core::ToolError> {
+    let Some(object) = args.as_object_mut() else {
+        return Ok(None);
+    };
+    let Some(value) = object.remove("idle_retire_secs") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(Some(DelegateIdleRetireOverride::Disabled));
+    }
+    value
+        .as_u64()
+        .map(DelegateIdleRetireOverride::Seconds)
+        .map(Some)
+        .ok_or_else(|| {
+            meerkat_core::ToolError::invalid_arguments(
+                tool_name,
+                "idle_retire_secs must be a non-negative integer or null",
+            )
+        })
+}
+
+fn delegate_tool_def_with_idle_retire_secs(
+    tool: &meerkat_core::types::ToolDef,
+) -> meerkat_core::types::ToolDef {
+    let mut patched = tool.clone();
+    if !patched.description.contains("IDLE RETIREMENT:") {
+        patched.description.push_str(
+            "\n\nIDLE RETIREMENT:\n\
+             Omit idle_retire_secs to use the runtime default. Pass an integer \
+             number of seconds to override idle auto-retirement for this helper. \
+             Pass null to disable auto-retirement for this helper.",
+        );
+    }
+    if let Some(properties) = patched
+        .input_schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        properties
+            .entry("idle_retire_secs".to_string())
+            .or_insert_with(|| {
+                serde_json::json!({
+                    "description": "Override idle auto-retirement for this helper. Omit to use the runtime default, use an integer number of seconds to override, or null to disable auto-retirement for this helper.",
+                    "anyOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "null"}
+                    ]
+                })
+            });
+    }
+    patched
+}
+
 fn owner_identity_from_comms_name(name: &str) -> Option<String> {
     name.rsplit('/')
         .next()
@@ -339,19 +492,24 @@ fn owner_identity_from_comms_name(name: &str) -> Option<String> {
 fn install_agent_mob_tools(
     slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
     session_service: Arc<dyn MobSessionService>,
-) -> Arc<meerkat_mob_mcp::MobMcpState> {
+) -> (
+    Arc<meerkat_mob_mcp::MobMcpState>,
+    ImplicitDelegateRetirementOverrides,
+) {
     let state = Arc::new(meerkat_mob_mcp::MobMcpState::new(session_service));
+    let implicit_delegate_retirement_overrides = ImplicitDelegateRetirementOverrides::default();
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     ));
     let factory = Arc::new(AutoWireParentMobToolsFactory {
         inner,
         state: Arc::clone(&state),
+        implicit_delegate_retirement_overrides: implicit_delegate_retirement_overrides.clone(),
     });
     *slot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
-    state
+    (state, implicit_delegate_retirement_overrides)
 }
 
 #[cfg(test)]
@@ -1273,6 +1431,7 @@ pub struct MobBootstrapSpec {
     pub session_service: Arc<dyn MobSessionService>,
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
+    pub(crate) implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -1303,6 +1462,7 @@ impl MobBootstrapSpec {
             session_service,
             binary_blob_store: None,
             agent_mob_mcp_state: None,
+            implicit_delegate_retirement_overrides: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -1452,12 +1612,11 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: runtime_adapter.clone(),
         }) as Arc<dyn MobSessionService>;
-        let agent_mob_mcp_state = Some(install_agent_mob_tools(
-            mob_tools_slot,
-            Arc::clone(&session_service),
-        ));
+        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
+            install_agent_mob_tools(mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
-        spec.agent_mob_mcp_state = agent_mob_mcp_state;
+        spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
+        spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -1587,12 +1746,11 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
-        let agent_mob_mcp_state = Some(install_agent_mob_tools(
-            mob_tools_slot,
-            Arc::clone(&session_service),
-        ));
+        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
+            install_agent_mob_tools(mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
-        spec.agent_mob_mcp_state = agent_mob_mcp_state;
+        spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
+        spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -1661,12 +1819,11 @@ impl MobBootstrapSpec {
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
         }) as Arc<dyn MobSessionService>;
-        let agent_mob_mcp_state = Some(install_agent_mob_tools(
-            mob_tools_slot,
-            Arc::clone(&session_service),
-        ));
+        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
+            install_agent_mob_tools(mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
-        spec.agent_mob_mcp_state = agent_mob_mcp_state;
+        spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
+        spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -1772,6 +1929,7 @@ pub struct MobRuntime {
     handle: MobHandle,
     session_service: Option<Arc<dyn MobSessionService>>,
     agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
+    implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
     binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     baseline_member_specs: Arc<tokio::sync::RwLock<Vec<SpawnMemberSpec>>>,
     /// Keeps the ephemeral temp directory alive for the lifetime of the runtime.
@@ -1786,6 +1944,8 @@ impl MobRuntime {
         let binary_blob_store = spec.binary_blob_store.clone();
         let mob_id = spec.definition.id.clone();
         let agent_mob_mcp_state = spec.agent_mob_mcp_state.clone();
+        let implicit_delegate_retirement_overrides =
+            spec.implicit_delegate_retirement_overrides.clone();
         let effective_runtime_adapter = spec
             .runtime_adapter
             .clone()
@@ -1820,6 +1980,7 @@ impl MobRuntime {
             handle,
             session_service: Some(session_service),
             agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
             binary_blob_store,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             _ephemeral_dir: ephemeral_dir,
@@ -1831,6 +1992,7 @@ impl MobRuntime {
             handle,
             session_service: None,
             agent_mob_mcp_state: None,
+            implicit_delegate_retirement_overrides: None,
             binary_blob_store: None,
             baseline_member_specs: Arc::new(tokio::sync::RwLock::new(Vec::new())),
             _ephemeral_dir: None,
@@ -1843,6 +2005,12 @@ impl MobRuntime {
 
     pub fn agent_mob_mcp_state(&self) -> Option<Arc<meerkat_mob_mcp::MobMcpState>> {
         self.agent_mob_mcp_state.clone()
+    }
+
+    pub(crate) fn implicit_delegate_retirement_overrides(
+        &self,
+    ) -> Option<ImplicitDelegateRetirementOverrides> {
+        self.implicit_delegate_retirement_overrides.clone()
     }
 
     pub async fn set_baseline_member_specs(&self, specs: Vec<SpawnMemberSpec>) {
@@ -2165,6 +2333,99 @@ pub async fn send_message_on_mob_with_mode(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delegate_tool_schema_exposes_idle_retire_secs() {
+        let tool = meerkat_core::types::ToolDef::new(
+            "delegate",
+            "Delegate work",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": {"type": "string"}
+                },
+                "required": ["task"]
+            }),
+        );
+
+        let patched = delegate_tool_def_with_idle_retire_secs(&tool);
+        let idle_retire_secs = &patched.input_schema["properties"]["idle_retire_secs"];
+
+        assert!(patched.description.contains("IDLE RETIREMENT:"));
+        assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
+        assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
+        assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn delegate_idle_retire_secs_arg_is_stripped_and_parsed() {
+        let mut args = serde_json::json!({
+            "task": "inspect",
+            "idle_retire_secs": 42
+        });
+
+        let parsed = delegate_idle_retire_override_from_args("delegate", &mut args)
+            .expect("valid idle retire arg");
+
+        assert_eq!(parsed, Some(DelegateIdleRetireOverride::Seconds(42)));
+        assert!(args.get("idle_retire_secs").is_none());
+    }
+
+    #[test]
+    fn delegate_idle_retire_secs_null_disables_member_retirement() {
+        let mut args = serde_json::json!({
+            "task": "inspect",
+            "idle_retire_secs": null
+        });
+
+        let parsed = delegate_idle_retire_override_from_args("delegate", &mut args)
+            .expect("valid idle retire arg");
+
+        assert_eq!(parsed, Some(DelegateIdleRetireOverride::Disabled));
+        assert!(args.get("idle_retire_secs").is_none());
+    }
+
+    #[test]
+    fn delegate_idle_retire_secs_omitted_inherits_runtime_default() {
+        let mut args = serde_json::json!({"task": "inspect"});
+
+        let parsed = delegate_idle_retire_override_from_args("delegate", &mut args)
+            .expect("omitted idle retire arg");
+
+        assert_eq!(parsed, None);
+        assert_eq!(args, serde_json::json!({"task": "inspect"}));
+    }
+
+    #[test]
+    fn delegate_idle_retire_secs_rejects_negative_or_fractional_values() {
+        let mut negative = serde_json::json!({"task": "inspect", "idle_retire_secs": -1});
+        let mut fractional = serde_json::json!({"task": "inspect", "idle_retire_secs": 1.5});
+
+        assert!(delegate_idle_retire_override_from_args("delegate", &mut negative).is_err());
+        assert!(delegate_idle_retire_override_from_args("delegate", &mut fractional).is_err());
+    }
+
+    #[tokio::test]
+    async fn implicit_delegate_retirement_overrides_round_trip_per_member() {
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+
+        overrides
+            .set("mob-a", "worker-1", DelegateIdleRetireOverride::Seconds(12))
+            .await;
+        overrides
+            .set("mob-a", "worker-2", DelegateIdleRetireOverride::Disabled)
+            .await;
+
+        assert_eq!(
+            overrides.get("mob-a", "worker-1").await,
+            Some(DelegateIdleRetireOverride::Seconds(12))
+        );
+        assert_eq!(
+            overrides.get("mob-a", "worker-2").await,
+            Some(DelegateIdleRetireOverride::Disabled)
+        );
+        assert_eq!(overrides.get("mob-a", "worker-3").await, None);
+    }
 
     #[test]
     fn image_generation_substrate_defaults_off_for_inline_profiles() {
