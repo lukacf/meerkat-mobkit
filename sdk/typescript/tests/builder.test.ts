@@ -133,6 +133,24 @@ describe("MobKitBuilder chainable methods", () => {
     assert.deepEqual(builder._config.authConfig, { provider: "google" });
   });
 
+  it("implicitDelegateIdleRetirement() sets seconds and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.implicitDelegateIdleRetirement(30);
+    assert.equal(result, builder);
+    assert.equal(builder._config.implicitDelegateIdleRetireSecs, 30);
+  });
+
+  it("implicitDelegateIdleRetirement() accepts null to disable", () => {
+    const builder = MobKit.builder();
+    builder.implicitDelegateIdleRetirement(null);
+    assert.equal(builder._config.implicitDelegateIdleRetireSecs, null);
+  });
+
+  it("implicitDelegateIdleRetirement() rejects negative seconds", () => {
+    const builder = MobKit.builder();
+    assert.throws(() => builder.implicitDelegateIdleRetirement(-1));
+  });
+
   it("modules() sets modules array and returns this", () => {
     const builder = MobKit.builder();
     const specs = [{ id: "mod-a", command: "cmd" }];
@@ -158,6 +176,7 @@ describe("MobKitBuilder default config", () => {
     assert.deepEqual(cfg.schedulingFiles, []);
     assert.equal(cfg.memoryConfig, null);
     assert.equal(cfg.authConfig, null);
+    assert.equal(cfg.implicitDelegateIdleRetireSecs, undefined);
     assert.equal(cfg.gatewayBin, null);
     assert.deepEqual(cfg.modules, []);
   });

@@ -21,6 +21,8 @@ class MobKitBuilderConfig:
     scheduling_files: list[str] = field(default_factory=list)
     memory_config: Any | None = None
     auth_config: Any | None = None
+    implicit_delegate_idle_retire_secs: int | None = None
+    implicit_delegate_idle_retire_configured: bool = False
     gateway_bin: str | None = None
     modules: list[dict[str, Any]] = field(default_factory=list)
     extra_routes: Any | None = None
@@ -121,6 +123,22 @@ class MobKitBuilder:
 
     def auth(self, config: Any) -> MobKitBuilder:
         self._config.auth_config = config
+        return self
+
+    def implicit_delegate_idle_retirement(
+        self, seconds: int | None
+    ) -> MobKitBuilder:
+        """Configure idle auto-retirement for implicit delegation members.
+
+        The default is owned by the gateway. Pass ``None`` to disable automatic
+        retirement for runtimes that intentionally keep implicit delegates warm.
+        """
+        if seconds is not None and seconds < 0:
+            raise ValueError(
+                "implicit delegate idle retirement seconds must be non-negative or None"
+            )
+        self._config.implicit_delegate_idle_retire_secs = seconds
+        self._config.implicit_delegate_idle_retire_configured = True
         return self
 
     def gateway(self, bin_path: str) -> MobKitBuilder:

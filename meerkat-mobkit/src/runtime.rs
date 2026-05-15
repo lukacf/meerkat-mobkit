@@ -486,6 +486,18 @@ pub struct RuntimeOptions {
     pub supervisor_test_force_terminate_failure: bool,
     #[serde(default)]
     pub memory_backend: Option<MemoryBackendConfig>,
+    #[serde(default = "default_implicit_delegate_idle_retire_secs")]
+    pub implicit_delegate_idle_retire_secs: Option<u64>,
+    #[serde(default = "default_implicit_delegate_idle_sweep_interval_ms")]
+    pub implicit_delegate_idle_sweep_interval_ms: u64,
+}
+
+fn default_implicit_delegate_idle_retire_secs() -> Option<u64> {
+    Some(300)
+}
+
+fn default_implicit_delegate_idle_sweep_interval_ms() -> u64 {
+    10_000
 }
 
 impl Default for RuntimeOptions {
@@ -496,6 +508,9 @@ impl Default for RuntimeOptions {
             supervisor_restart_backoff_ms: 0,
             supervisor_test_force_terminate_failure: false,
             memory_backend: None,
+            implicit_delegate_idle_retire_secs: default_implicit_delegate_idle_retire_secs(),
+            implicit_delegate_idle_sweep_interval_ms:
+                default_implicit_delegate_idle_sweep_interval_ms(),
         }
     }
 }

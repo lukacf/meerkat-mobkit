@@ -156,6 +156,9 @@ impl UnifiedRuntime {
 
     pub async fn shutdown(&self) -> UnifiedRuntimeShutdownReport {
         self.shutting_down.store(true, Ordering::SeqCst);
+        if let Some(task) = self.implicit_delegate_retirement_task.lock().await.take() {
+            task.abort();
+        }
 
         // Phase 1: Drain in-flight events
         let drain_start = std::time::Instant::now();

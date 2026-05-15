@@ -35,6 +35,7 @@ function createMockRuntime(): {
     schedulingFiles: [],
     memoryConfig: null,
     authConfig: null,
+    implicitDelegateIdleRetireSecs: undefined,
     gatewayBin: null,
     modules: [],
     persistentState: null,

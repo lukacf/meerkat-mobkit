@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from meerkat_mobkit.builder import MobKit, MobKitBuilder
+from meerkat_mobkit.runtime import MobKitRuntime
 
 
 class TestBuilderChain:
@@ -18,6 +19,22 @@ class TestBuilderChain:
     def test_mob_sets_config_path(self):
         b = MobKit.builder().mob("config/mob.toml")
         assert b._config.mob_config_path == "config/mob.toml"
+
+    def test_implicit_delegate_idle_retirement_sets_runtime_option(self):
+        b = MobKit.builder().implicit_delegate_idle_retirement(30)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["implicit_delegate_idle_retire_secs"] == 30
+
+    def test_implicit_delegate_idle_retirement_can_be_disabled(self):
+        b = MobKit.builder().implicit_delegate_idle_retirement(None)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["implicit_delegate_idle_retire_secs"] is None
+
+    def test_implicit_delegate_idle_retirement_rejects_negative_seconds(self):
+        with pytest.raises(ValueError):
+            MobKit.builder().implicit_delegate_idle_retirement(-1)
 
 
 class TestConventionDefaults:

@@ -32,6 +32,7 @@ pub mod edge_reconcile;
 pub mod edge_types;
 pub mod event_log;
 pub mod http;
+pub(crate) mod implicit_delegate_retirement;
 pub mod lifecycle;
 pub mod mob_events;
 pub mod mob_ops;
@@ -127,6 +128,7 @@ pub struct UnifiedRuntime {
     console_events: ConsoleEventStore,
     mob_events: MobEventsStore,
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    implicit_delegate_retirement_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -204,6 +206,7 @@ impl UnifiedRuntime {
             console_events: ConsoleEventStore::new(),
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
+            implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             gateway_peer_keys: None,
@@ -263,6 +266,7 @@ impl UnifiedRuntime {
         let mob_runtime = MobRuntime::bootstrap(mob_spec)
             .await
             .map_err(UnifiedRuntimeBootstrapError::Mob)?;
+        let runtime_options = options.clone();
         let module_start_result = std::thread::spawn(move || {
             start_mobkit_runtime_with_options(module_config, module_agent_events, timeout, options)
         })
@@ -270,7 +274,12 @@ impl UnifiedRuntime {
 
         match module_start_result {
             Ok(Ok(module_runtime)) => {
-                Ok(Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await)
+                let runtime =
+                    Self::from_parts(mob_runtime, module_runtime, persistent_metadata).await;
+                runtime
+                    .configure_implicit_delegate_retirement(&runtime_options)
+                    .await;
+                Ok(runtime)
             }
             Ok(Err(error)) => {
                 let startup_error = UnifiedRuntimeBootstrapError::Module(error);
