@@ -7,6 +7,7 @@ export interface ElephantMemoryConfig {
   readonly spaceId: string | null;
   readonly collection: string | null;
   readonly stores: readonly string[];
+  toDict(): Record<string, unknown>;
 }
 
 export function elephant(
@@ -17,12 +18,16 @@ export function elephant(
     stores?: string[];
   },
 ): ElephantMemoryConfig {
-  return {
+  const config = {
     endpoint,
     spaceId: options?.spaceId ?? null,
     collection: options?.collection ?? null,
     stores: options?.stores ?? [],
+    toDict() {
+      return elephantMemoryConfigToDict(config);
+    },
   };
+  return config;
 }
 
 export function elephantMemoryConfigToDict(
@@ -32,8 +37,5 @@ export function elephantMemoryConfigToDict(
     backend: "elephant",
     endpoint: config.endpoint,
   };
-  if (config.spaceId) result.space_id = config.spaceId;
-  if (config.collection) result.collection = config.collection;
-  if (config.stores.length > 0) result.stores = [...config.stores];
   return result;
 }

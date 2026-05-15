@@ -132,6 +132,9 @@ class TestCallbackDispatcherContinuityStore:
             async def upsert_continuity_record(self, *args):
                 pass
 
+            async def delete_continuity_record(self, *args):
+                pass
+
         d = CallbackDispatcher()
         d.register_continuity_store(MockStore())
 
@@ -158,6 +161,9 @@ class TestCallbackDispatcherContinuityStore:
             async def upsert_continuity_record(self, *args):
                 pass
 
+            async def delete_continuity_record(self, *args):
+                pass
+
         d = CallbackDispatcher()
         d.register_continuity_store(MockStore())
 
@@ -181,6 +187,9 @@ class TestCallbackDispatcherContinuityStore:
                 pass
 
             async def upsert_continuity_record(self, *args):
+                pass
+
+            async def delete_continuity_record(self, *args):
                 pass
 
         d = CallbackDispatcher()
@@ -212,6 +221,9 @@ class TestCallbackDispatcherContinuityStore:
                 saved["snapshot"] = snapshot
 
             async def upsert_continuity_record(self, *args):
+                pass
+
+            async def delete_continuity_record(self, *args):
                 pass
 
         d = CallbackDispatcher()
@@ -269,6 +281,36 @@ class TestCallbackDispatcherContinuityStore:
         assert isinstance(upserted["record"], ContinuityRecord)
         assert upserted["fencing_token"] == 42
 
+    @pytest.mark.asyncio
+    async def test_delete_continuity_record_routed(self):
+        deleted = {}
+
+        class MockStore:
+            async def resolve_many(self, identities):
+                return {}
+
+            async def load_session_snapshot(self, session_id):
+                return None
+
+            async def save_session_snapshot(self, *args):
+                pass
+
+            async def upsert_continuity_record(self, *args):
+                pass
+
+            async def delete_continuity_record(self, identity, fencing_token):
+                deleted["identity"] = identity
+                deleted["fencing_token"] = fencing_token
+
+        d = CallbackDispatcher()
+        d.register_continuity_store(MockStore())
+
+        await d.handle_callback(
+            "callback/continuity_store/delete_continuity_record",
+            {"identity": "lead:main", "fencing_token": 42},
+        )
+        assert deleted == {"identity": "lead:main", "fencing_token": 42}
+
 
 class TestCallbackDispatcherLeaseProvider:
     @pytest.mark.asyncio
@@ -297,7 +339,8 @@ class TestCallbackDispatcherLeaseProvider:
             "runtime_instance": "rt-1",
         })
         assert "a:main" in result
-        assert result["a:main"]["status"] == "acquired"
+        assert result["a:main"]["result"] == "acquired"
+        assert result["a:main"]["ttl"] == 5000
 
     @pytest.mark.asyncio
     async def test_renew_leases_routed(self):
@@ -330,7 +373,8 @@ class TestCallbackDispatcherLeaseProvider:
             ],
         })
         assert "a:main" in result
-        assert result["a:main"]["status"] == "renewed"
+        assert result["a:main"]["result"] == "renewed"
+        assert result["a:main"]["ttl"] == 5000
 
     @pytest.mark.asyncio
     async def test_release_leases_routed(self):

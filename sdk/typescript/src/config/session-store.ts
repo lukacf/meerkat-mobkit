@@ -7,16 +7,21 @@
 export interface JsonSessionStoreConfig {
   readonly path: string;
   readonly staleLockThresholdSeconds: number;
+  toDict(): Record<string, unknown>;
 }
 
 export function json(
   path: string,
   options?: { staleLockThresholdSeconds?: number },
 ): JsonSessionStoreConfig {
-  return {
+  const config = {
     path,
     staleLockThresholdSeconds: options?.staleLockThresholdSeconds ?? 30,
+    toDict() {
+      return jsonSessionStoreConfigToDict(config);
+    },
   };
+  return config;
 }
 
 export function jsonSessionStoreConfigToDict(
@@ -36,6 +41,7 @@ export interface BigQuerySessionStoreConfig {
   readonly table: string;
   readonly projectId: string | null;
   readonly gcIntervalHours: number;
+  toDict(): Record<string, unknown>;
 }
 
 export function bigquery(
@@ -43,12 +49,16 @@ export function bigquery(
   table: string,
   options?: { projectId?: string; gcIntervalHours?: number },
 ): BigQuerySessionStoreConfig {
-  return {
+  const config = {
     dataset,
     table,
     projectId: options?.projectId ?? null,
     gcIntervalHours: options?.gcIntervalHours ?? 6,
+    toDict() {
+      return bigquerySessionStoreConfigToDict(config);
+    },
   };
+  return config;
 }
 
 export function bigquerySessionStoreConfigToDict(

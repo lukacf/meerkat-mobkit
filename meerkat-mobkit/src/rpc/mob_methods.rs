@@ -16,6 +16,12 @@ use crate::unified_runtime::UnifiedRuntime;
 
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
+fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
+    (error.contains("ArchiveSession failed")
+        && error.contains("NotFound for registered runtime session"))
+        || error.contains("previous member cleanup ambiguous")
+}
+
 /// Parse HelperOptions from an optional JSON "options" object.
 pub(crate) fn parse_helper_options(options_val: Option<&Value>) -> Result<HelperOptions, String> {
     let mut opts = HelperOptions::default();
@@ -541,13 +547,22 @@ pub(super) async fn handle_retire_member(
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
-            match runtime.mob_handle().retire(MeerkatId::from(mid)).await {
+            let handle = runtime.mob_handle();
+            match handle.retire(MeerkatId::from(mid)).await {
                 Ok(()) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: Some(serde_json::json!({"accepted": true})),
                     error: None,
                 },
+                Err(err) if lifecycle_archive_cleanup_completed(&err.to_string()) => {
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({"accepted": true})),
+                        error: None,
+                    }
+                }
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
@@ -581,17 +596,44 @@ pub(super) async fn handle_respawn_member(
     let member_id = params.get("member_id").and_then(Value::as_str);
     match member_id {
         Some(mid) if !mid.is_empty() => {
-            match runtime
-                .mob_handle()
-                .respawn(MeerkatId::from(mid), None)
-                .await
-            {
+            let handle = runtime.mob_handle();
+            let identity = MeerkatId::from(mid);
+            let entry_before_respawn = handle.get_member(&identity).await;
+            match handle.respawn(identity.clone(), None).await {
                 Ok(_receipt) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,
                     result: Some(serde_json::json!({"accepted": true})),
                     error: None,
                 },
+                Err(err) if lifecycle_archive_cleanup_completed(&err.to_string()) => {
+                    if handle.get_member(&identity).await.is_none()
+                        && let Some(entry) = entry_before_respawn
+                    {
+                        let mut spec = SpawnMemberSpec::new(entry.role.clone(), identity.clone());
+                        if !entry.labels.is_empty() {
+                            spec = spec.with_labels(entry.labels.clone());
+                        }
+                        if let Err(ensure_err) = handle.ensure_member(spec).await {
+                            return JsonRpcResponse {
+                                jsonrpc: JSONRPC_VERSION.to_string(),
+                                id: response_id,
+                                result: None,
+                                error: Some(JsonRpcError {
+                                    code: -32000,
+                                    message: format!("respawn_member failed: {ensure_err}"),
+                                    data: None,
+                                }),
+                            };
+                        }
+                    }
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({"accepted": true})),
+                        error: None,
+                    }
+                }
                 Err(err) => JsonRpcResponse {
                     jsonrpc: JSONRPC_VERSION.to_string(),
                     id: response_id,

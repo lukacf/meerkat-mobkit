@@ -14,6 +14,16 @@ use super::types::{
     AgentBuildDraft, AgentIdentity, AgentRuntimeId, DurableAgentSpec, SessionSnapshot,
 };
 
+fn is_missing_event_injector_error(error: &str) -> bool {
+    error.contains("missing event injector capability")
+}
+
+fn is_archive_not_found_cleanup_error(error: &str) -> bool {
+    (error.contains("ArchiveSession failed")
+        && error.contains("NotFound for registered runtime session"))
+        || error.contains("previous member cleanup ambiguous")
+}
+
 // ---------------------------------------------------------------------------
 // BridgeError
 // ---------------------------------------------------------------------------
@@ -283,6 +293,7 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = MeerkatId::from(runtime_id.as_str());
+        let member_entry_before_delivery = self.handle.get_member(&mid).await;
         let member = self
             .handle
             .member(&mid)
@@ -309,10 +320,44 @@ impl SessionBridge for MobSessionBridge {
         // check. The identity layer owns addressability enforcement — the
         // bridge is an internal delivery mechanism regardless of whether the
         // identity is Addressable or InternalOnly.
-        let _receipt = member
-            .internal_turn(content.clone())
-            .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))?;
+        let _receipt = match member.internal_turn(content.clone()).await {
+            Ok(receipt) => receipt,
+            Err(err) if is_missing_event_injector_error(&err.to_string()) => {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    error = %err,
+                    "identity bridge delivery found a stale dispatch capability; repairing member before retry"
+                );
+                match self.handle.respawn(mid.clone(), None).await {
+                    Ok(_) => {}
+                    Err(respawn_err)
+                        if is_archive_not_found_cleanup_error(&respawn_err.to_string()) =>
+                    {
+                        if self.handle.get_member(&mid).await.is_none()
+                            && let Some(entry) = member_entry_before_delivery
+                        {
+                            let mut spec = SpawnMemberSpec::new(entry.role.clone(), mid.clone());
+                            if !entry.labels.is_empty() {
+                                spec = spec.with_labels(entry.labels.clone());
+                            }
+                            self.handle
+                                .ensure_member(spec)
+                                .await
+                                .map_err(|e| BridgeError::Mob(e.to_string()))?;
+                        }
+                    }
+                    Err(respawn_err) => return Err(BridgeError::Mob(respawn_err.to_string())),
+                }
+                self.handle
+                    .member(&mid)
+                    .await
+                    .map_err(|e| BridgeError::Mob(e.to_string()))?
+                    .internal_turn(content.clone())
+                    .await
+                    .map_err(|e| BridgeError::Mob(e.to_string()))?
+            }
+            Err(err) => return Err(BridgeError::Mob(err.to_string())),
+        };
 
         // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
         // Query the bridge session id directly from the mob handle.

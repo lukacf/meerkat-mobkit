@@ -58,6 +58,8 @@ export class RpcError extends MobKitError {
  * and the `/mobkit/mob_events/stream` SSE route (HTTP 410 Gone).
  */
 export const MOB_EVENTS_STALE_CURSOR_CODE = -32010 as const;
+export const CAPABILITY_UNAVAILABLE_CODE = -32004 as const;
+export const MEMORY_BACKEND_UNAVAILABLE_CODE = -32012 as const;
 
 /**
  * Raised when the caller passes an `after_seq` past the current ledger
@@ -103,10 +105,27 @@ export class MobEventsStaleError extends RpcError {
 // -- Capability errors ----------------------------------------------------
 
 /** Raised when a requested capability is not available on the runtime. */
-export class CapabilityUnavailableError extends MobKitError {
-  constructor(message: string) {
-    super(message);
+export class CapabilityUnavailableError extends RpcError {
+  constructor(
+    message: string,
+    requestId = "",
+    method = "",
+    data?: unknown,
+  ) {
+    super(CAPABILITY_UNAVAILABLE_CODE, message, requestId, method, data);
     this.name = "CapabilityUnavailableError";
+  }
+}
+
+export class MemoryBackendUnavailableError extends RpcError {
+  constructor(
+    message: string,
+    requestId: string,
+    method: string,
+    data?: unknown,
+  ) {
+    super(MEMORY_BACKEND_UNAVAILABLE_CODE, message, requestId, method, data);
+    this.name = "MemoryBackendUnavailableError";
   }
 }
 
@@ -150,7 +169,9 @@ export function isRpcError(err: unknown): err is RpcError {
   const candidate = err as { name?: unknown; code?: unknown };
   return (
     candidate.name === "RpcError" ||
-    candidate.name === "MobEventsStaleError"
+    candidate.name === "MobEventsStaleError" ||
+    candidate.name === "CapabilityUnavailableError" ||
+    candidate.name === "MemoryBackendUnavailableError"
   ) && typeof candidate.code === "number";
 }
 

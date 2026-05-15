@@ -176,11 +176,11 @@ status = await handle.status()
 print(status.running, status.loaded_modules)
 
 # Ensure a member exists (spawn if missing)
-snapshot = await handle.ensure_member("user-123", profile="personal")
+snapshot = await handle.ensure_member("user-123", role="personal")
 print(snapshot.meerkat_id, snapshot.state)
 
 # Find members by label
-members = await handle.find_members(labels={"owner": "user-123"})
+members = await handle.find_members("owner", "user-123")
 
 # Re-run discovery and reconcile the roster
 result = await handle.reconcile(["routing", "delivery"])
@@ -226,7 +226,7 @@ importable from the top-level package.
 
 ```python
 # Slack DM from a new user — ensure agent exists, then deliver
-snapshot = await handle.ensure_member(user_id, profile="personal", labels={"owner": user_id})
+snapshot = await handle.ensure_member(user_id, role="personal", labels={"owner": user_id})
 result = await handle.send(user_id, slack_message)
 async for event in handle.subscribe_agent(user_id):
     forward_to_slack(event)
@@ -254,6 +254,9 @@ rt = await (
 | `.mob(path)` | Path to mob TOML config |
 | `.mob_inline(toml_str)` | Inline mob TOML string (no temp file) |
 | `.persistent_state(path)` | Enable persistent state at path |
+| `.continuity_store(provider)` | External identity continuity store |
+| `.lease_provider(provider)` | External identity lease provider |
+| `.scratch_dir(path)` | Required scratch path for external identity providers |
 | `.roster(provider)` | Identity-first roster provider |
 | `.topology_provider(provider)` | Identity-first topology provider |
 | `.agent_customizer(customizer)` | Identity-first agent customizer |
@@ -268,6 +271,16 @@ rt = await (
 | `.gateway(bin_path)` | Path to rpc_gateway binary |
 | `.modules(specs)` | Module specifications |
 | `.build()` | Build and connect the runtime |
+
+External identity providers follow the Rust gateway's authoritative path: set
+`.continuity_store(provider)`, `.lease_provider(provider)`, and
+`.scratch_dir(path)` together. The Python callback dispatcher speaks the Rust
+wire contract for leases (`result` tags and `ttl`) and continuity deletes.
+
+Gateway memory config currently accepts Elephant as `{backend, endpoint}`.
+`memory(stores=...)` is intentionally rejected because the Rust gateway does not
+accept store lists in `mobkit/init`. JWT auth is the gateway-supported auth mode;
+Google/OIDC helpers are not accepted by gateway init today.
 
 ## Runtime lifecycle
 

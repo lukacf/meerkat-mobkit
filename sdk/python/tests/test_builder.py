@@ -36,6 +36,37 @@ class TestBuilderChain:
         with pytest.raises(ValueError):
             MobKit.builder().implicit_delegate_idle_retirement(-1)
 
+    def test_memory_stores_without_gateway_config_is_rejected(self):
+        with pytest.raises(ValueError, match="not supported by the Rust gateway"):
+            MobKit.builder().memory(stores=["main"])
+
+    def test_external_authoritative_path_requires_all_three_parts(self):
+        class Store:
+            pass
+
+        b = MobKit.builder().continuity_store(Store())
+        with pytest.raises(ValueError, match="lease_provider.*scratch_dir"):
+            b._validate()
+
+    def test_external_provider_init_params_include_flags_and_scratch_dir(self):
+        class Store:
+            pass
+
+        class Lease:
+            pass
+
+        b = (
+            MobKit.builder()
+            .continuity_store(Store())
+            .lease_provider(Lease())
+            .scratch_dir("/tmp/mobkit-scratch")
+        )
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["has_continuity_store"] is True
+        assert params["has_lease_provider"] is True
+        assert params["scratch_dir"] == "/tmp/mobkit-scratch"
+
 
 class TestConventionDefaults:
     def test_gating_discovered(self, tmp_path, monkeypatch):

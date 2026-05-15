@@ -2041,11 +2041,15 @@ pub async fn handle_unified_rpc_json(
                 .get("correlation_id")
                 .and_then(|v| v.as_str())
                 .map(crate::identity_first::CorrelationId::new);
+            let idempotency_key = di_val
+                .get("idempotency_key")
+                .and_then(|v| v.as_str())
+                .map(crate::identity_first::DispatchIdempotencyKey::new);
             let dispatch_input = crate::identity_first::DispatchInput {
                 content,
                 origin,
                 correlation_id,
-                idempotency_key: None,
+                idempotency_key,
             };
             match identity_rt.dispatch(&identity, &dispatch_input).await {
                 Ok((token, durable)) => JsonRpcResponse {

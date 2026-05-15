@@ -138,18 +138,18 @@ describe("MobKitBuilder chainable methods", () => {
     assert.deepEqual(builder._config.memoryConfig, { engine: "elephant" });
   });
 
-  it("memory() sets memoryConfig with options.stores when no config", () => {
+  it("memory() rejects options.stores without a Rust gateway config", () => {
     const builder = MobKit.builder();
-    builder.memory(undefined, { stores: ["main", "archive"] });
-    assert.deepEqual(builder._config.memoryConfig, {
-      stores: ["main", "archive"],
-    });
+    assert.throws(
+      () => builder.memory(undefined, { stores: ["main", "archive"] }),
+      /not supported by the Rust gateway/,
+    );
   });
 
-  it("memory() defaults to empty stores when called with no args", () => {
+  it("memory() defaults to null when called with no args", () => {
     const builder = MobKit.builder();
     builder.memory();
-    assert.deepEqual(builder._config.memoryConfig, { stores: [] });
+    assert.equal(builder._config.memoryConfig, null);
   });
 
   it("auth() sets authConfig and returns this", () => {

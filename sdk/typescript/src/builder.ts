@@ -172,8 +172,13 @@ export class MobKitBuilder {
   }
 
   memory(config?: unknown, options?: { stores?: string[] }): this {
+    if (config === undefined && options?.stores !== undefined) {
+      throw new Error(
+        "memory(stores=...) is not supported by the Rust gateway; pass memory.elephant(endpoint)",
+      );
+    }
     this._config.memoryConfig =
-      config ?? { stores: options?.stores ?? [] };
+      config ?? null;
     return this;
   }
 
@@ -261,12 +266,25 @@ export class MobKitBuilder {
     const hasPersistent = this._config.persistentState !== null;
     const hasExternal =
       this._config.continuityStore !== null ||
-      this._config.leaseProvider !== null;
+      this._config.leaseProvider !== null ||
+      this._config.scratchDir !== null;
     if (hasPersistent && hasExternal) {
       throw new Error(
         "persistentState and continuityStore/leaseProvider are mutually exclusive — " +
           "use one path or the other, not both",
       );
+    }
+    if (hasExternal) {
+      const missing: string[] = [];
+      if (this._config.continuityStore === null) missing.push("continuityStore");
+      if (this._config.leaseProvider === null) missing.push("leaseProvider");
+      if (this._config.scratchDir === null) missing.push("scratchDir");
+      if (missing.length > 0) {
+        throw new Error(
+          "external-authoritative path requires continuityStore() + leaseProvider() + " +
+            `scratchDir(); missing: ${missing.join(", ")}`,
+        );
+      }
     }
   }
 

@@ -227,7 +227,7 @@ class TestLeaseGrant:
         assert g.to_dict() == {
             "identity": "a:main",
             "fencing_token": 1,
-            "ttl_ms": 5000,
+            "ttl": 5000,
         }
 
     def test_from_dict(self):
@@ -260,20 +260,24 @@ class TestLeaseAcquireResult:
     def test_to_dict_acquired(self):
         grant = LeaseGrant(identity="a:main", fencing_token=1, ttl_ms=5000)
         d = LeaseAcquireResult(status="acquired", grant=grant).to_dict()
-        assert d["status"] == "acquired"
-        assert d["grant"]["fencing_token"] == 1
+        assert d["result"] == "acquired"
+        assert d["fencing_token"] == 1
+        assert d["ttl"] == 5000
 
     def test_to_dict_already_held(self):
         d = LeaseAcquireResult(
-            status="already_held", holder="other",
+            status="already_held", identity="a:main", holder="other",
         ).to_dict()
-        assert d["status"] == "already_held"
+        assert d["result"] == "already_held"
+        assert d["identity"] == "a:main"
         assert d["holder"] == "other"
 
     def test_from_dict_acquired(self):
         r = LeaseAcquireResult.from_dict({
-            "status": "acquired",
-            "grant": {"identity": "a:main", "fencing_token": 5, "ttl_ms": 3000},
+            "result": "acquired",
+            "identity": "a:main",
+            "fencing_token": 5,
+            "ttl": 3000,
         })
         assert r.status == "acquired"
         assert r.grant.fencing_token == 5
@@ -301,17 +305,20 @@ class TestLeaseRenewResult:
     def test_to_dict_renewed(self):
         grant = LeaseGrant(identity="a:main", fencing_token=2, ttl_ms=5000)
         d = LeaseRenewResult(status="renewed", grant=grant).to_dict()
-        assert d["status"] == "renewed"
-        assert "grant" in d
+        assert d["result"] == "renewed"
+        assert d["fencing_token"] == 2
+        assert d["ttl"] == 5000
 
     def test_to_dict_lost(self):
-        d = LeaseRenewResult(status="lost").to_dict()
-        assert d == {"status": "lost"}
+        d = LeaseRenewResult(status="lost", identity="a:main").to_dict()
+        assert d == {"result": "lost", "identity": "a:main"}
 
     def test_from_dict_renewed(self):
         r = LeaseRenewResult.from_dict({
-            "status": "renewed",
-            "grant": {"identity": "a:main", "fencing_token": 10, "ttl_ms": 9000},
+            "result": "renewed",
+            "identity": "a:main",
+            "fencing_token": 10,
+            "ttl": 9000,
         })
         assert r.status == "renewed"
         assert r.grant.fencing_token == 10
@@ -339,6 +346,7 @@ class TestContinuityStoreProtocol:
         assert "load_session_snapshot" in members
         assert "save_session_snapshot" in members
         assert "upsert_continuity_record" in members
+        assert "delete_continuity_record" in members
 
     def test_mock_implementation(self):
         """A class implementing all methods satisfies the protocol."""
@@ -357,6 +365,9 @@ class TestContinuityStoreProtocol:
                 pass
 
             async def upsert_continuity_record(self, record, fencing_token):
+                pass
+
+            async def delete_continuity_record(self, identity, fencing_token):
                 pass
 
         store = MockStore()

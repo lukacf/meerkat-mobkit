@@ -13,17 +13,10 @@ class ElephantMemoryConfig:
     stores: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {
+        return {
             "backend": "elephant",
             "endpoint": self.endpoint,
         }
-        if self.space_id:
-            result["space_id"] = self.space_id
-        if self.collection:
-            result["collection"] = self.collection
-        if self.stores:
-            result["stores"] = self.stores
-        return result
 
 
 def elephant(endpoint: str, **kwargs: Any) -> ElephantMemoryConfig:

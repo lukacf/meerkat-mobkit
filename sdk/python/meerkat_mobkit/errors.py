@@ -7,6 +7,8 @@ from typing import Any
 # the `/mobkit/mob_events/stream` SSE route when the caller's `after_seq`
 # is past the current ledger frontier.
 MOB_EVENTS_STALE_CURSOR_CODE: int = -32010
+CAPABILITY_UNAVAILABLE_CODE: int = -32004
+MEMORY_BACKEND_UNAVAILABLE_CODE: int = -32012
 
 
 class MobKitError(Exception):
@@ -81,8 +83,44 @@ class MobEventsStaleError(RpcError):
         )
 
 
-class CapabilityUnavailableError(MobKitError):
+class CapabilityUnavailableError(RpcError):
     """Raised when a requested capability is not available on the runtime."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            CAPABILITY_UNAVAILABLE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class MemoryBackendUnavailableError(RpcError):
+    """Raised when the configured memory backend cannot serve a request."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            MEMORY_BACKEND_UNAVAILABLE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
 
 
 class ContractMismatchError(MobKitError):

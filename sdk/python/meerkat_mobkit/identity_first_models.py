@@ -7,6 +7,17 @@ from typing import Any
 _VALID_ORIGINS = frozenset({"connector", "scheduler", "policy", "flow", "system"})
 
 
+def _validate_agent_identity(identity: str) -> str:
+    if (
+        not identity
+        or identity.strip() != identity
+        or any(ch.isspace() for ch in identity)
+        or "/" in identity
+    ):
+        raise ValueError(f"invalid agent identity: {identity}")
+    return identity
+
+
 # ---------------------------------------------------------------------------
 # Content blocks (REQ-43)
 # ---------------------------------------------------------------------------
@@ -92,6 +103,9 @@ class DurableAgentSpec:
     labels: dict[str, str] = field(default_factory=dict)
     context: Any | None = None
     additional_instructions: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.identity = _validate_agent_identity(self.identity)
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -191,6 +205,16 @@ class ManagedPeerEdge:
 
     a: str
     b: str
+
+    def __post_init__(self) -> None:
+        a = _validate_agent_identity(self.a)
+        b = _validate_agent_identity(self.b)
+        if a == b:
+            raise ValueError(f"managed peer edge cannot connect an identity to itself: {a}")
+        if b < a:
+            a, b = b, a
+        self.a = a
+        self.b = b
 
     def to_dict(self) -> dict[str, Any]:
         return {"a": self.a, "b": self.b}
