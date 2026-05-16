@@ -72,6 +72,13 @@ fn extract_content(params: &Value) -> Result<Option<ContentInput>, String> {
     Ok(None)
 }
 
+fn content_input_to_console_value(content: &ContentInput) -> Value {
+    match content {
+        ContentInput::Text(text) => Value::String(text.clone()),
+        ContentInput::Blocks(blocks) => serde_json::to_value(blocks).unwrap_or(Value::Null),
+    }
+}
+
 /// Optional `handling_mode: "queue" | "steer"` JSON-RPC parameter.
 /// Defaults to `Queue` when missing or null; unknown strings remain invalid.
 fn parse_handling_mode(params: &Value) -> Result<meerkat_core::types::HandlingMode, &'static str> {
@@ -146,34 +153,81 @@ pub(super) async fn handle_send_message(
                     }),
                 };
             }
+            let content_value = content_input_to_console_value(&content);
+            let interaction_id = format!("mobkit-send-{}", meerkat_core::types::SessionId::new());
+            let handling_mode_value = match handling_mode {
+                meerkat_core::types::HandlingMode::Queue => "queue",
+                meerkat_core::types::HandlingMode::Steer => "steer",
+            };
+            let _ = runtime
+                .console_events()
+                .reserve_interaction_value(
+                    member_id,
+                    Some(member_id),
+                    &interaction_id,
+                    "mobkit/send_message",
+                    content_value.clone(),
+                )
+                .await;
             match send_message_on_mob_with_mode(
                 &runtime.mob_handle(),
                 member_id,
-                content,
+                content.clone(),
                 handling_mode,
             )
             .await
             {
-                Ok(session_id) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: Some(serde_json::json!({
-                        "accepted": true,
-                        "member_id": member_id,
-                        "session_id": session_id
-                    })),
-                    error: None,
-                },
-                Err(err) => JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id: response_id,
-                    result: None,
-                    error: Some(JsonRpcError {
-                        code: -32000,
-                        message: format!("send_message failed: {err}"),
-                        data: None,
-                    }),
-                },
+                Ok(session_id) => {
+                    runtime
+                        .console_events()
+                        .append(
+                            member_id,
+                            Some(interaction_id),
+                            "user_input",
+                            serde_json::json!({
+                                "content": content_value,
+                                "origin": "mobkit/send_message",
+                                "session_id": session_id,
+                                "handling_mode": handling_mode_value,
+                            }),
+                        )
+                        .await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: Some(serde_json::json!({
+                            "accepted": true,
+                            "member_id": member_id,
+                            "session_id": session_id
+                        })),
+                        error: None,
+                    }
+                }
+                Err(err) => {
+                    runtime
+                        .console_events()
+                        .append(
+                            member_id,
+                            Some(interaction_id),
+                            "interaction_failed",
+                            serde_json::json!({
+                                "reason": err.to_string(),
+                                "origin": "mobkit/send_message",
+                                "content": content_value,
+                            }),
+                        )
+                        .await;
+                    JsonRpcResponse {
+                        jsonrpc: JSONRPC_VERSION.to_string(),
+                        id: response_id,
+                        result: None,
+                        error: Some(JsonRpcError {
+                            code: -32000,
+                            message: format!("send_message failed: {err}"),
+                            data: None,
+                        }),
+                    }
+                }
             }
         }
         _ => JsonRpcResponse {
