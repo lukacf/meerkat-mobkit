@@ -13,8 +13,17 @@ use crate::types::{EventEnvelope, UnifiedEvent};
 
 const IDENTITY_REPLAY_CAP: usize = 1024;
 const ALL_EVENTS_REPLAY_CAP: usize = 4096;
-const EVENT_CHANNEL_CAP: usize = 512;
+const EVENT_CHANNEL_BASE_CAP: usize = 4096;
+const EVENT_CHANNEL_CAP_PER_MEMBER: usize = 128;
+const EVENT_CHANNEL_DEFAULT_MEMBER_BUDGET: usize = 256;
+const EVENT_CHANNEL_MAX_CAP: usize = 65_536;
 const PENDING_INTERACTION_CAP: usize = 256;
+
+pub(crate) fn event_channel_capacity_for_members(member_count: usize) -> usize {
+    EVENT_CHANNEL_BASE_CAP
+        .saturating_add(member_count.saturating_mul(EVENT_CHANNEL_CAP_PER_MEMBER))
+        .clamp(EVENT_CHANNEL_BASE_CAP, EVENT_CHANNEL_MAX_CAP)
+}
 
 #[derive(Clone)]
 pub(crate) struct ConsoleEventStore {
@@ -40,7 +49,11 @@ struct PendingInteraction {
 
 impl ConsoleEventStore {
     pub(crate) fn new() -> Self {
-        let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAP);
+        Self::with_member_capacity(EVENT_CHANNEL_DEFAULT_MEMBER_BUDGET)
+    }
+
+    pub(crate) fn with_member_capacity(member_count: usize) -> Self {
+        let (event_tx, _) = broadcast::channel(event_channel_capacity_for_members(member_count));
         let bootstrap = ConsoleIdentityEventEnvelope {
             event_id: "console-evt-1".to_string(),
             interaction_id: None,
@@ -497,5 +510,15 @@ mod tests {
             replay.first().and_then(|event| event.data["idx"].as_u64()),
             Some(8)
         );
+    }
+
+    #[test]
+    fn event_channel_capacity_scales_with_member_count() {
+        assert_eq!(event_channel_capacity_for_members(0), 4096);
+        assert!(
+            event_channel_capacity_for_members(136) >= 136 * 128,
+            "large mobs need broadcast headroom for startup bursts"
+        );
+        assert_eq!(event_channel_capacity_for_members(10_000), 65_536);
     }
 }

@@ -643,7 +643,6 @@ async fn query_timeline_snapshot(
     const MAX_SNAPSHOT_PAGES: usize = 100;
     const STORE_PAGE_LIMIT: usize = 1_000;
     const DEFAULT_SNAPSHOT_LIMIT: usize = 200;
-    aggregator.refresh_session_history().await?;
     let mut frames = Vec::new();
     let mut latest_cursor = query.after.clone();
     if query.after.is_none() {

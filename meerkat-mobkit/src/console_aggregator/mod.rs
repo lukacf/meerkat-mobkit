@@ -2,10 +2,11 @@ mod state;
 mod store;
 mod types;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use futures::future::join_all;
 use meerkat_core::{ContentInput, Message};
 use meerkat_mob::MobHandle;
 use meerkat_mob::ids::MeerkatId;
@@ -38,16 +39,33 @@ pub use types::{
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
+const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
+const SESSION_HISTORY_REFRESH_TTL_MS: u64 = 30_000;
 
 #[derive(Clone)]
 pub struct MobKitConsoleAggregator {
     inner: Arc<AggregatorInner>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ConsoleAggregatorOptions {
+    pub session_history_backfill_enabled: bool,
+}
+
+impl Default for ConsoleAggregatorOptions {
+    fn default() -> Self {
+        Self {
+            session_history_backfill_enabled: true,
+        }
+    }
+}
+
 struct AggregatorInner {
     store: Arc<dyn ConsoleLogStore>,
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
+    active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
+    options: ConsoleAggregatorOptions,
 }
 
 #[derive(Clone)]
@@ -128,18 +146,31 @@ pub struct ConsoleRuntimeRegistration {
 
 impl MobKitConsoleAggregator {
     pub fn new(store: Arc<dyn ConsoleLogStore>) -> Self {
+        Self::new_with_options(store, ConsoleAggregatorOptions::default())
+    }
+
+    pub fn new_with_options(
+        store: Arc<dyn ConsoleLogStore>,
+        options: ConsoleAggregatorOptions,
+    ) -> Self {
         let (event_tx, _) = broadcast::channel(TIMELINE_CHANNEL_CAP);
         Self {
             inner: Arc::new(AggregatorInner {
                 store,
                 runtimes: RwLock::new(BTreeMap::new()),
                 event_tx,
+                active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                options,
             }),
         }
     }
 
     pub fn in_memory() -> Self {
         Self::new(Arc::new(InMemoryConsoleLogStore::new()))
+    }
+
+    pub fn in_memory_with_options(options: ConsoleAggregatorOptions) -> Self {
+        Self::new_with_options(Arc::new(InMemoryConsoleLogStore::new()), options)
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ConsoleTimelineEvent> {
@@ -181,46 +212,52 @@ impl MobKitConsoleAggregator {
             runtimes.insert(runtime_key.clone(), entry);
         }
         let inner = self.inner.clone();
-        let events_for_backfill = console_events.clone();
-        let runtime_key_for_task = runtime_key;
+        let events_for_live = console_events.clone();
+        let events_for_live_recovery = console_events.clone();
+        let runtime_key_for_live = runtime_key.clone();
         tokio::spawn(async move {
-            let mut ingestion_state = SourceIngestionState::Registered;
-            let mut rx = console_events.subscribe();
-            if let Ok((next, _effects)) =
-                ingestion_state.apply(SourceIngestionTransition::StartBackfill)
-            {
-                ingestion_state = next;
-            }
-            if let Ok(events) = events_for_backfill.replay_all(None).await {
-                for envelope in events {
-                    let _ = project_console_event(&inner, &runtime_key_for_task, envelope).await;
-                }
-            }
-            let _ = backfill_session_history(&inner, &runtime_key_for_task).await;
-            if let Ok((next, _effects)) =
-                ingestion_state.apply(SourceIngestionTransition::BackfillComplete)
-            {
-                ingestion_state = next;
-            }
-            let _ = ingestion_state.apply(SourceIngestionTransition::StartLive);
-
+            let mut rx = events_for_live.subscribe();
             loop {
                 match rx.recv().await {
                     Ok(envelope) => {
                         let _ =
-                            project_console_event(&inner, &runtime_key_for_task, envelope).await;
+                            project_console_event(&inner, &runtime_key_for_live, envelope).await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         let _ = recover_lagged_source_events(
                             &inner,
-                            &runtime_key_for_task,
-                            &events_for_backfill,
+                            &runtime_key_for_live,
+                            &events_for_live_recovery,
                         )
                         .await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+        });
+
+        let inner = self.inner.clone();
+        let events_for_replay = console_events;
+        let runtime_key_for_replay = runtime_key;
+        tokio::spawn(async move {
+            let mut ingestion_state = SourceIngestionState::Registered;
+            if let Ok((next, _effects)) =
+                ingestion_state.apply(SourceIngestionTransition::StartBackfill)
+            {
+                ingestion_state = next;
+            }
+            if let Ok(events) = events_for_replay.replay_all(None).await {
+                for envelope in events {
+                    let _ = project_console_event(&inner, &runtime_key_for_replay, envelope).await;
+                }
+            }
+            spawn_session_history_backfill(inner.clone(), runtime_key_for_replay.clone());
+            if let Ok((next, _effects)) =
+                ingestion_state.apply(SourceIngestionTransition::BackfillComplete)
+            {
+                ingestion_state = next;
+            }
+            let _ = ingestion_state.apply(SourceIngestionTransition::StartLive);
         });
     }
 
@@ -306,7 +343,6 @@ impl MobKitConsoleAggregator {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let explicit_identity = query.identity.clone();
-        self.refresh_session_history().await?;
         let mut page = self.inner.store.query_frames(query).await?;
         let mut visible_frames = Vec::with_capacity(page.frames.len());
         for frame in page.frames {
@@ -332,8 +368,13 @@ impl MobKitConsoleAggregator {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        for runtime_key in runtime_keys {
-            backfill_session_history(&self.inner, &runtime_key).await?;
+        let results =
+            join_all(runtime_keys.into_iter().map(|runtime_key| {
+                backfill_session_history(self.inner.clone(), runtime_key, true)
+            }))
+            .await;
+        for result in results {
+            result?;
         }
         Ok(())
     }
@@ -795,19 +836,23 @@ impl std::fmt::Display for ConsoleSendError {
 impl std::error::Error for ConsoleSendError {}
 
 async fn backfill_session_history(
-    inner: &AggregatorInner,
-    runtime_key: &str,
+    inner: Arc<AggregatorInner>,
+    runtime_key: String,
+    force_refresh: bool,
 ) -> ConsoleLogResult<()> {
-    const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
+    if !inner.options.session_history_backfill_enabled {
+        return Ok(());
+    }
     let Some(entry) = inner
         .runtimes
         .read()
         .ok()
-        .and_then(|entries| entries.get(runtime_key).cloned())
+        .and_then(|entries| entries.get(&runtime_key).cloned())
     else {
         return Ok(());
     };
     let members = member_sources_for_entry(&entry).await;
+    let mut targets = Vec::new();
     for resolved in members {
         let member = resolved.member;
         let Some(record) = identity_record_for_member(&entry, &resolved.handle, &member).await
@@ -820,104 +865,214 @@ async fn backfill_session_history(
         let Some(session_id) = record.session_id.clone() else {
             continue;
         };
-        let watermark_runtime_key =
-            session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
-        let mut offset = inner
-            .store
-            .source_watermark(
-                &watermark_runtime_key,
-                ConsoleFrameSourceKind::SessionHistory,
-            )
-            .await?
-            .and_then(|watermark| parse_session_history_watermark(&watermark, &session_id))
-            .unwrap_or(0);
-        loop {
-            let page = match entry
-                .runtime
-                .read_session_history(&session_id, offset, Some(SESSION_HISTORY_PAGE_LIMIT))
-                .await
-            {
-                Ok(page) => page,
-                Err(err) => {
-                    append_backfill_gap(
-                        inner,
-                        &entry.runtime_key,
-                        &record.identity,
-                        err.to_string(),
-                    )
-                    .await?;
-                    break;
+        targets.push(SessionBackfillTarget {
+            entry: entry.clone(),
+            record,
+            session_id,
+        });
+    }
+    backfill_session_history_targets(inner, targets, force_refresh).await
+}
+
+#[derive(Clone)]
+struct SessionBackfillTarget {
+    entry: RuntimeEntry,
+    record: ConsoleIdentityRecord,
+    session_id: String,
+}
+
+async fn backfill_session_history_targets(
+    inner: Arc<AggregatorInner>,
+    targets: Vec<SessionBackfillTarget>,
+    force_refresh: bool,
+) -> ConsoleLogResult<()> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for target in targets {
+        tasks.spawn(backfill_one_session_history(
+            inner.clone(),
+            target,
+            force_refresh,
+        ));
+    }
+    let mut first_error = None;
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
                 }
-            };
-            let page_value = match serde_json::to_value(page) {
-                Ok(value) => value,
-                Err(err) => {
-                    append_backfill_gap(
-                        inner,
-                        &entry.runtime_key,
-                        &record.identity,
-                        err.to_string(),
-                    )
-                    .await?;
-                    break;
-                }
-            };
-            let base_offset = page_value
-                .get("offset")
-                .and_then(Value::as_u64)
-                .unwrap_or(offset as u64) as usize;
-            let Some(messages) = page_value.get("messages").and_then(Value::as_array) else {
-                append_backfill_gap(
-                    inner,
-                    &entry.runtime_key,
-                    &record.identity,
-                    "session history page missing messages".to_string(),
-                )
-                .await?;
-                break;
-            };
-            if messages.is_empty() {
-                break;
             }
-            for (idx, message) in messages.iter().enumerate() {
-                let absolute_offset = base_offset + idx;
-                let Some(mut frame) = frame_from_session_history_message(
-                    &entry.runtime_key,
-                    &record.identity,
-                    &session_id,
-                    absolute_offset,
-                    message.clone(),
-                ) else {
-                    continue;
-                };
-                if history_frame_has_existing_counterpart(inner, &frame).await? {
-                    continue;
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(Box::new(std::io::Error::other(format!(
+                        "session backfill task failed: {err}"
+                    ))) as ConsoleLogError);
                 }
-                if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
-                    frame.payload = redacted;
-                    frame.status = ConsoleFrameStatus::Redacted;
-                }
-                append_and_emit(inner, frame).await?;
-            }
-            offset = base_offset + messages.len();
-            inner
-                .store
-                .record_source_watermark(
-                    &watermark_runtime_key,
-                    ConsoleFrameSourceKind::SessionHistory,
-                    &format!("{session_id}:{offset}"),
-                )
-                .await?;
-            let has_more = page_value
-                .get("has_more")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            if !has_more || messages.len() < SESSION_HISTORY_PAGE_LIMIT {
-                break;
             }
         }
     }
+    if let Some(err) = first_error {
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+async fn backfill_one_session_history(
+    inner: Arc<AggregatorInner>,
+    target: SessionBackfillTarget,
+    force_refresh: bool,
+) -> ConsoleLogResult<()> {
+    let SessionBackfillTarget {
+        entry,
+        record,
+        session_id,
+    } = target;
+    let watermark_runtime_key =
+        session_history_watermark_runtime_key(&entry.runtime_key, &session_id);
+    let watermark = inner
+        .store
+        .source_watermark(
+            &watermark_runtime_key,
+            ConsoleFrameSourceKind::SessionHistory,
+        )
+        .await?;
+    let now_ms = current_time_ms();
+    let mut offset = watermark
+        .as_deref()
+        .and_then(|watermark| parse_session_history_watermark(watermark, &session_id))
+        .unwrap_or(0);
+    if !force_refresh
+        && watermark
+            .as_deref()
+            .is_some_and(|watermark| session_history_watermark_is_fresh(watermark, now_ms))
+    {
+        return Ok(());
+    }
+    loop {
+        let page = match entry
+            .runtime
+            .read_session_history(&session_id, offset, Some(SESSION_HISTORY_PAGE_LIMIT))
+            .await
+        {
+            Ok(page) => page,
+            Err(err) => {
+                append_backfill_gap(
+                    &inner,
+                    &entry.runtime_key,
+                    &record.identity,
+                    err.to_string(),
+                )
+                .await?;
+                break;
+            }
+        };
+        let page_value = match serde_json::to_value(page) {
+            Ok(value) => value,
+            Err(err) => {
+                append_backfill_gap(
+                    &inner,
+                    &entry.runtime_key,
+                    &record.identity,
+                    err.to_string(),
+                )
+                .await?;
+                break;
+            }
+        };
+        let base_offset = page_value
+            .get("offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(offset as u64) as usize;
+        let Some(messages) = page_value.get("messages").and_then(Value::as_array) else {
+            append_backfill_gap(
+                &inner,
+                &entry.runtime_key,
+                &record.identity,
+                "session history page missing messages".to_string(),
+            )
+            .await?;
+            break;
+        };
+        if messages.is_empty() {
+            record_session_history_watermark(&inner, &watermark_runtime_key, &session_id, offset)
+                .await?;
+            break;
+        }
+        for (idx, message) in messages.iter().enumerate() {
+            let absolute_offset = base_offset + idx;
+            let Some(mut frame) = frame_from_session_history_message(
+                &entry.runtime_key,
+                &record.identity,
+                &session_id,
+                absolute_offset,
+                message.clone(),
+            ) else {
+                continue;
+            };
+            if history_frame_has_existing_counterpart(&inner, &frame).await? {
+                continue;
+            }
+            if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
+                frame.payload = redacted;
+                frame.status = ConsoleFrameStatus::Redacted;
+            }
+            append_and_emit(&inner, frame).await?;
+        }
+        offset = base_offset + messages.len();
+        record_session_history_watermark(&inner, &watermark_runtime_key, &session_id, offset)
+            .await?;
+        let has_more = page_value
+            .get("has_more")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !has_more || messages.len() < SESSION_HISTORY_PAGE_LIMIT {
+            break;
+        }
+    }
     Ok(())
+}
+
+async fn record_session_history_watermark(
+    inner: &AggregatorInner,
+    watermark_runtime_key: &str,
+    session_id: &str,
+    offset: usize,
+) -> ConsoleLogResult<()> {
+    inner
+        .store
+        .record_source_watermark(
+            watermark_runtime_key,
+            ConsoleFrameSourceKind::SessionHistory,
+            &format_session_history_watermark(session_id, offset, current_time_ms()),
+        )
+        .await
+}
+
+fn spawn_session_history_backfill(inner: Arc<AggregatorInner>, runtime_key: String) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    tokio::spawn(async move {
+        {
+            let mut active = inner.active_session_backfills.lock().await;
+            if !active.insert(runtime_key.clone()) {
+                return;
+            }
+        }
+        let result = backfill_session_history(inner.clone(), runtime_key.clone(), false).await;
+        let mut active = inner.active_session_backfills.lock().await;
+        active.remove(&runtime_key);
+        drop(active);
+        if let Err(err) = result {
+            tracing::warn!(
+                runtime_key = %runtime_key,
+                error = %err,
+                "console session-history backfill failed"
+            );
+        }
+    });
 }
 
 async fn recover_lagged_source_events(
@@ -1251,11 +1406,22 @@ fn frame_from_session_history_message(
 }
 
 fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
-    let (watermark_session_id, offset) = watermark.rsplit_once(':')?;
-    if watermark_session_id != session_id {
-        return None;
-    }
-    offset.parse().ok()
+    let rest = watermark.strip_prefix(session_id)?.strip_prefix(':')?;
+    rest.split(':').next()?.parse().ok()
+}
+
+fn format_session_history_watermark(session_id: &str, offset: usize, checked_at_ms: u64) -> String {
+    format!("{session_id}:{offset}:{checked_at_ms}")
+}
+
+fn session_history_watermark_is_fresh(watermark: &str, now_ms: u64) -> bool {
+    let Some(checked_at_ms) = watermark
+        .rsplit_once(':')
+        .and_then(|(_, checked_at_ms)| checked_at_ms.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    now_ms.saturating_sub(checked_at_ms) < SESSION_HISTORY_REFRESH_TTL_MS
 }
 
 async fn history_frame_has_existing_counterpart(
@@ -1600,9 +1766,351 @@ fn runtime_registry_lock_error() -> ConsoleLogError {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+    use std::time::Instant;
+
+    use meerkat::{AgentFactory, Config, build_ephemeral_service};
+    use meerkat_client::TestClient;
+    use meerkat_core::{
+        AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, EventStream,
+        RunResult, SessionControlError, SessionError, SessionHistoryPage, SessionHistoryQuery,
+        SessionId, SessionQuery, SessionService, SessionServiceCommsExt, SessionServiceControlExt,
+        SessionServiceHistoryExt, SessionSummary, SessionView, StartTurnRequest, StreamError,
+    };
+    use meerkat_mob::{MobDefinition, MobSessionService, MobStorage, SpawnMemberSpec};
     use serde_json::json;
 
     use super::*;
+    use crate::mob_handle_runtime::MobBootstrapSpec;
+
+    struct CountingConsoleLogStore {
+        inner: InMemoryConsoleLogStore,
+        source_watermark_calls: AtomicUsize,
+        record_watermark_calls: AtomicUsize,
+    }
+
+    impl CountingConsoleLogStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryConsoleLogStore::new(),
+                source_watermark_calls: AtomicUsize::new(0),
+                record_watermark_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn source_watermark_calls(&self) -> usize {
+            self.source_watermark_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[derive(Clone)]
+    struct DelayedHistorySessionService {
+        inner: Arc<dyn MobSessionService>,
+        delay: Duration,
+        read_calls: Arc<AtomicUsize>,
+        active_reads: Arc<AtomicUsize>,
+        max_active_reads: Arc<AtomicUsize>,
+    }
+
+    impl DelayedHistorySessionService {
+        fn new(inner: Arc<dyn MobSessionService>, delay: Duration) -> Self {
+            Self {
+                inner,
+                delay,
+                read_calls: Arc::new(AtomicUsize::new(0)),
+                active_reads: Arc::new(AtomicUsize::new(0)),
+                max_active_reads: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn read_calls(&self) -> usize {
+            self.read_calls.load(Ordering::SeqCst)
+        }
+
+        fn max_active_reads(&self) -> usize {
+            self.max_active_reads.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionService for DelayedHistorySessionService {
+        async fn create_session(
+            &self,
+            req: meerkat_core::CreateSessionRequest,
+        ) -> Result<RunResult, SessionError> {
+            self.inner.create_session(req).await
+        }
+
+        async fn start_turn(
+            &self,
+            id: &SessionId,
+            req: StartTurnRequest,
+        ) -> Result<RunResult, SessionError> {
+            self.inner.start_turn(id, req).await
+        }
+
+        async fn interrupt(&self, id: &SessionId) -> Result<(), SessionError> {
+            self.inner.interrupt(id).await
+        }
+
+        async fn read(&self, id: &SessionId) -> Result<SessionView, SessionError> {
+            self.inner.read(id).await
+        }
+
+        async fn list(&self, query: SessionQuery) -> Result<Vec<SessionSummary>, SessionError> {
+            self.inner.list(query).await
+        }
+
+        async fn archive(&self, id: &SessionId) -> Result<(), SessionError> {
+            self.inner.archive(id).await
+        }
+
+        async fn subscribe_session_events(
+            &self,
+            id: &SessionId,
+        ) -> Result<EventStream, StreamError> {
+            SessionService::subscribe_session_events(self.inner.as_ref(), id).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionServiceCommsExt for DelayedHistorySessionService {
+        async fn comms_runtime(&self, session_id: &SessionId) -> Option<Arc<dyn CommsRuntime>> {
+            self.inner.comms_runtime(session_id).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionServiceControlExt for DelayedHistorySessionService {
+        async fn append_system_context(
+            &self,
+            id: &SessionId,
+            req: AppendSystemContextRequest,
+        ) -> Result<AppendSystemContextResult, SessionControlError> {
+            self.inner.append_system_context(id, req).await
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionServiceHistoryExt for DelayedHistorySessionService {
+        async fn read_history(
+            &self,
+            id: &SessionId,
+            query: SessionHistoryQuery,
+        ) -> Result<SessionHistoryPage, SessionError> {
+            self.read_calls.fetch_add(1, Ordering::SeqCst);
+            let active = self.active_reads.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active_reads.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            let result = self.inner.read_history(id, query).await;
+            self.active_reads.fetch_sub(1, Ordering::SeqCst);
+            result
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MobSessionService for DelayedHistorySessionService {
+        fn supports_persistent_sessions(&self) -> bool {
+            self.inner.supports_persistent_sessions()
+        }
+
+        fn runtime_adapter(&self) -> Option<Arc<meerkat_runtime::MeerkatMachine>> {
+            self.inner.runtime_adapter()
+        }
+
+        async fn session_belongs_to_mob(
+            &self,
+            session_id: &SessionId,
+            mob_id: &meerkat_mob::MobId,
+        ) -> bool {
+            self.inner.session_belongs_to_mob(session_id, mob_id).await
+        }
+
+        async fn cancel_all_checkpointers(&self) {
+            self.inner.cancel_all_checkpointers().await;
+        }
+
+        async fn rearm_all_checkpointers(&self) {
+            self.inner.rearm_all_checkpointers().await;
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ConsoleLogStore for CountingConsoleLogStore {
+        async fn append_if_absent(
+            &self,
+            frame: NewConsoleFrame,
+        ) -> ConsoleLogResult<AppendOutcome> {
+            self.inner.append_if_absent(frame).await
+        }
+
+        async fn update_frame_status(
+            &self,
+            frame_id: &str,
+            status: ConsoleFrameStatus,
+        ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+            self.inner.update_frame_status(frame_id, status).await
+        }
+
+        async fn query_frames(
+            &self,
+            query: ConsoleTimelineQuery,
+        ) -> ConsoleLogResult<ConsoleTimelinePage> {
+            self.inner.query_frames(query).await
+        }
+
+        async fn frame_by_dedupe_key(
+            &self,
+            dedupe_key: &str,
+        ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+            self.inner.frame_by_dedupe_key(dedupe_key).await
+        }
+
+        async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
+            self.inner.latest_cursor().await
+        }
+
+        async fn clear_frames(&self) -> ConsoleLogResult<()> {
+            self.inner.clear_frames().await
+        }
+
+        async fn record_source_watermark(
+            &self,
+            runtime_key: &str,
+            source_kind: ConsoleFrameSourceKind,
+            source_cursor: &str,
+        ) -> ConsoleLogResult<()> {
+            self.record_watermark_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner
+                .record_source_watermark(runtime_key, source_kind, source_cursor)
+                .await
+        }
+
+        async fn source_watermark(
+            &self,
+            runtime_key: &str,
+            source_kind: ConsoleFrameSourceKind,
+        ) -> ConsoleLogResult<Option<String>> {
+            self.source_watermark_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.source_watermark(runtime_key, source_kind).await
+        }
+    }
+
+    async fn build_single_member_runtime() -> UnifiedRuntime {
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "console-aggregator-perf-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .expect("definition parses");
+        let runtime = UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime builds");
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "agent-a".to_string(),
+                Some("You are agent-a.".into()),
+                None,
+                None,
+            ))
+            .await
+            .expect("member spawns");
+        runtime
+    }
+
+    async fn build_stress_runtime(
+        member_count: usize,
+        history_delay: Duration,
+    ) -> (
+        tempfile::TempDir,
+        Arc<UnifiedRuntime>,
+        DelayedHistorySessionService,
+    ) {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let session_path = temp_dir.path().join("sessions");
+        std::fs::create_dir_all(&session_path).expect("session path");
+        let factory = AgentFactory::new(&session_path).comms(true);
+        let base_service = Arc::new(build_ephemeral_service(
+            factory,
+            Config::default(),
+            member_count + 8,
+        ));
+        let delayed_service = DelayedHistorySessionService::new(base_service, history_delay);
+        let session_service: Arc<dyn MobSessionService> = Arc::new(delayed_service.clone());
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "console-aggregator-stress-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )
+        .expect("definition parses");
+        let spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+            .with_options(crate::mob_handle_runtime::MobBootstrapOptions {
+                allow_ephemeral_sessions: true,
+                notify_orchestrator_on_resume: true,
+                default_llm_client: Some(Arc::new(TestClient::default())),
+            });
+        let runtime = Arc::new(
+            UnifiedRuntime::bootstrap(
+                spec,
+                crate::types::MobKitConfig {
+                    modules: Vec::new(),
+                    discovery: crate::types::DiscoverySpec {
+                        namespace: "stress".to_string(),
+                        modules: Vec::new(),
+                    },
+                    pre_spawn: Vec::new(),
+                },
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("runtime boots"),
+        );
+        for idx in 0..member_count {
+            runtime
+                .spawn(SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    format!("agent-{idx}"),
+                    Some(format!("You are agent-{idx}.").into()),
+                    None,
+                    None,
+                ))
+                .await
+                .expect("member spawns");
+        }
+        (temp_dir, runtime, delayed_service)
+    }
+
+    fn runtime_entry_for_test(runtime_key: &str, runtime: &UnifiedRuntime) -> RuntimeEntry {
+        RuntimeEntry {
+            runtime_key: runtime_key.to_string(),
+            identity_namespace: "test".to_string(),
+            runtime: runtime.mob_runtime().clone(),
+            console_events: runtime.console_events(),
+            visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+        }
+    }
 
     #[tokio::test]
     async fn query_timeline_reads_from_aggregate_store() {
@@ -1645,6 +2153,226 @@ mod tests {
             .expect("query timeline");
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].kind, "text_delta");
+    }
+
+    #[tokio::test]
+    async fn query_timeline_is_store_local_for_registered_runtimes() {
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let runtime = build_single_member_runtime().await;
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", &runtime),
+            );
+        store
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "event-1".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "delta": "hello" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("event-1".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append frame");
+
+        let page = tokio::time::timeout(
+            Duration::from_millis(250),
+            aggregator.query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            }),
+        )
+        .await
+        .expect("timeline query should not wait for session history")
+        .expect("timeline query succeeds");
+
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(
+            store.source_watermark_calls(),
+            0,
+            "query_timeline must not synchronously touch session-history watermarks"
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn query_timeline_handles_large_store_without_backfill_calls() {
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        for idx in 0..5_000 {
+            store
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("event-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: Some("session-a".to_string()),
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("event-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append frame");
+        }
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                limit: 1_000,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("large query");
+
+        assert_eq!(page.frames.len(), 1_000);
+        assert_eq!(store.source_watermark_calls(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn refresh_session_history_parallelizes_slow_member_backfills_at_scale() {
+        const MEMBER_COUNT: usize = 32;
+        let (_temp, runtime, delayed_service) =
+            build_stress_runtime(MEMBER_COUNT, Duration::from_millis(40)).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-stress".to_string(),
+                runtime_entry_for_test("runtime-stress", &runtime),
+            );
+
+        let started = Instant::now();
+        aggregator
+            .refresh_session_history()
+            .await
+            .expect("stress refresh");
+        let elapsed = started.elapsed();
+
+        assert!(
+            delayed_service.read_calls() >= MEMBER_COUNT,
+            "expected at least one history read per member, saw {}",
+            delayed_service.read_calls()
+        );
+        assert!(
+            delayed_service.max_active_reads() > 1,
+            "session history backfill should fan out instead of reading members serially"
+        );
+        assert!(
+            elapsed < Duration::from_millis(600),
+            "parallel backfill should be far below serial {}ms path, elapsed: {elapsed:?}",
+            MEMBER_COUNT * 40
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn live_event_burst_reaches_store_while_slow_backfill_is_running() {
+        const MEMBER_COUNT: usize = 24;
+        const LIVE_EVENT_COUNT: usize = 2_048;
+        let (_temp, runtime, _delayed_service) =
+            build_stress_runtime(MEMBER_COUNT, Duration::from_millis(200)).await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime(ConsoleRuntimeRegistration {
+            runtime_key: "runtime-burst".to_string(),
+            runtime: runtime.clone(),
+            identity_namespace: "stress".to_string(),
+            visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+        });
+        let console_events = runtime.console_events();
+        for idx in 0..LIVE_EVENT_COUNT {
+            console_events
+                .append(
+                    "agent-0",
+                    Some("burst-turn".to_string()),
+                    "text_delta",
+                    json!({ "delta": format!("frame-{idx}") }),
+                )
+                .await;
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut observed = 0;
+        while Instant::now() < deadline {
+            observed = count_console_event_frames(&aggregator, "stress/agent-0").await;
+            if observed >= LIVE_EVENT_COUNT {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        assert_eq!(
+            observed, LIVE_EVENT_COUNT,
+            "live pump should not drop frames while slow background backfill is running"
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    async fn count_console_event_frames(
+        aggregator: &MobKitConsoleAggregator,
+        identity: &str,
+    ) -> usize {
+        let mut after = None;
+        let mut count = 0;
+        loop {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some(identity.to_string()),
+                    after,
+                    limit: 1_000,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query burst timeline");
+            if page.frames.is_empty() {
+                break;
+            }
+            count += page
+                .frames
+                .iter()
+                .filter(|frame| frame.source.kind == ConsoleFrameSourceKind::ConsoleEvent)
+                .count();
+            after = page.next_cursor;
+            if after.is_none() {
+                break;
+            }
+        }
+        count
     }
 
     #[tokio::test]
@@ -1924,6 +2652,26 @@ mod tests {
             session_history_watermark_runtime_key("runtime-a", "session-1"),
             session_history_watermark_runtime_key("runtime-a", "session-2")
         );
+    }
+
+    #[test]
+    fn session_history_watermarks_are_cursor_and_ttl_aware() {
+        let legacy = "session:with:colon:42";
+        let checked = format_session_history_watermark("session:with:colon", 43, 1_000);
+
+        assert_eq!(
+            parse_session_history_watermark(legacy, "session:with:colon"),
+            Some(42)
+        );
+        assert_eq!(
+            parse_session_history_watermark(&checked, "session:with:colon"),
+            Some(43)
+        );
+        assert!(session_history_watermark_is_fresh(&checked, 1_500));
+        assert!(!session_history_watermark_is_fresh(
+            &checked,
+            1_000 + SESSION_HISTORY_REFRESH_TTL_MS + 1
+        ));
     }
 
     #[test]
