@@ -40,16 +40,16 @@ pub use blob_store::{
 };
 pub use config_convention::ConventionalPaths;
 pub use console_aggregator::{
-    AllowAllConsoleVisibilityPolicy, AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame,
-    ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection,
-    ConsoleIdentityRecord, ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted,
-    ConsoleLogError, ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable,
-    ConsoleRuntimeRegistration, ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelinePage,
-    ConsoleTimelineQuery, ConsoleVisibility, ConsoleVisibilityPolicy,
-    HideImplicitDelegateMembersConsoleVisibilityPolicy, InMemoryConsoleLogStore,
-    MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect, ReplaySubscriptionState,
-    ReplaySubscriptionTransition, SendEffect, SendState, SendTransition, SourceIngestionEffect,
-    SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
+    AllowAllConsoleVisibilityPolicy, AppendDisposition, AppendOutcome, ConsoleAggregatorOptions,
+    ConsoleCursor, ConsoleFrame, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
+    ConsoleIdentityInspection, ConsoleIdentityRecord,
+    ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted, ConsoleLogError,
+    ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleRuntimeRegistration,
+    ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelinePage, ConsoleTimelineQuery,
+    ConsoleVisibility, ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    InMemoryConsoleLogStore, MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect,
+    ReplaySubscriptionState, ReplaySubscriptionTransition, SendEffect, SendState, SendTransition,
+    SourceIngestionEffect, SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
 };
 pub use console_config::{
     ConsoleActionsUiConfig, ConsoleAgentBadgeConfig, ConsoleAgentListConfig,

@@ -58,6 +58,7 @@ pub struct UnifiedRuntimeBuilder {
     scratch_dir: Option<PathBuf>,
     runtime_store: Option<Arc<dyn meerkat::SessionStore>>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+    console_log_store: Option<Arc<dyn ConsoleLogStore>>,
 
     // --- Common fields ---
     module_config: Option<MobKitConfig>,
@@ -187,6 +188,15 @@ impl UnifiedRuntimeBuilder {
     /// Can be used with both `persistent_state()` and the external path.
     pub fn blob_store(mut self, store: Arc<dyn meerkat_core::BlobStore>) -> Self {
         self.blob_store = Some(store);
+        self
+    }
+
+    /// Set a custom console log store.
+    ///
+    /// This lets applications pair a durable console timeline (for fast
+    /// cursor-based history replay) with otherwise ephemeral mob state.
+    pub fn with_console_log_store(mut self, store: Arc<dyn ConsoleLogStore>) -> Self {
+        self.console_log_store = Some(store);
         self
     }
 
@@ -423,7 +433,9 @@ impl UnifiedRuntimeBuilder {
                 Arc::new(InMemoryMetadataStore::new())
             };
         let console_log_store: Arc<dyn ConsoleLogStore> =
-            if let Some(state_path) = self.persistent_state_path.as_ref() {
+            if let Some(store) = self.console_log_store.clone() {
+                store
+            } else if let Some(state_path) = self.persistent_state_path.as_ref() {
                 let console_log_path = state_path.join("mobkit_console.sqlite");
                 Arc::new(SqliteConsoleLogStore::open(&console_log_path).map_err(|e| {
                     UnifiedRuntimeBuilderError::Io(format!(
@@ -814,6 +826,20 @@ model = "gpt-5.5"
         assert!(
             err.to_string().contains("max_sessions"),
             "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn builder_accepts_custom_console_log_store_for_ephemeral_mob_state() {
+        let store: Arc<dyn ConsoleLogStore> = Arc::new(InMemoryConsoleLogStore::new());
+        let builder = UnifiedRuntimeBuilder::default().with_console_log_store(store.clone());
+
+        assert!(
+            Arc::ptr_eq(
+                builder.console_log_store.as_ref().expect("custom store"),
+                &store
+            ),
+            "builder should retain the exact console log store supplied by the app"
         );
     }
 }
