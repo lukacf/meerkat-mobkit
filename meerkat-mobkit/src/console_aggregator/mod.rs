@@ -4,7 +4,7 @@ mod types;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::future::join_all;
 use meerkat_core::{ContentInput, Message};
@@ -41,6 +41,7 @@ pub use types::{
 const TIMELINE_CHANNEL_CAP: usize = 1024;
 const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
 const SESSION_HISTORY_REFRESH_TTL_MS: u64 = 30_000;
+const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct MobKitConsoleAggregator {
@@ -221,11 +222,12 @@ impl MobKitConsoleAggregator {
                 match rx.recv().await {
                     Ok(envelope) => {
                         let _ =
-                            project_console_event(&inner, &runtime_key_for_live, envelope).await;
+                            project_console_event(inner.clone(), &runtime_key_for_live, envelope)
+                                .await;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         let _ = recover_lagged_source_events(
-                            &inner,
+                            inner.clone(),
                             &runtime_key_for_live,
                             &events_for_live_recovery,
                         )
@@ -248,10 +250,12 @@ impl MobKitConsoleAggregator {
             }
             if let Ok(events) = events_for_replay.replay_all(None).await {
                 for envelope in events {
-                    let _ = project_console_event(&inner, &runtime_key_for_replay, envelope).await;
+                    let _ = project_console_event(inner.clone(), &runtime_key_for_replay, envelope)
+                        .await;
                 }
             }
             spawn_session_history_backfill(inner.clone(), runtime_key_for_replay.clone());
+            spawn_session_history_discovery_loop(inner.clone(), runtime_key_for_replay.clone());
             if let Ok((next, _effects)) =
                 ingestion_state.apply(SourceIngestionTransition::BackfillComplete)
             {
@@ -269,15 +273,26 @@ impl MobKitConsoleAggregator {
             .map_err(|_| runtime_registry_lock_error())?
             .clone();
         let mut identities = Vec::new();
+        let mut backfill_targets = Vec::new();
         for entry in entries.values() {
             for resolved in member_sources_for_entry(entry).await {
                 if let Some(record) =
                     identity_record_for_member(entry, &resolved.handle, &resolved.member).await
                     && entry.visibility_policy.identity_visible(&record)
                 {
+                    if let Some(session_id) = record.session_id.clone() {
+                        backfill_targets.push(SessionBackfillTarget {
+                            entry: entry.clone(),
+                            record: record.clone(),
+                            session_id,
+                        });
+                    }
                     identities.push(record);
                 }
             }
+        }
+        for target in backfill_targets {
+            spawn_session_history_backfill_target(self.inner.clone(), target, false);
         }
         Ok(dedupe_identity_records(identities))
     }
@@ -296,6 +311,17 @@ impl MobKitConsoleAggregator {
         };
         if !resolved.entry.visibility_policy.identity_visible(&record) {
             return Ok(None);
+        }
+        if let Some(session_id) = record.session_id.clone() {
+            spawn_session_history_backfill_target(
+                self.inner.clone(),
+                SessionBackfillTarget {
+                    entry: resolved.entry.clone(),
+                    record: record.clone(),
+                    session_id,
+                },
+                false,
+            );
         }
         let peers = resolved
             .member
@@ -996,8 +1022,15 @@ async fn backfill_one_session_history(
             break;
         };
         if messages.is_empty() {
-            record_session_history_watermark(&inner, &watermark_runtime_key, &session_id, offset)
+            if offset > 0 {
+                record_session_history_watermark(
+                    &inner,
+                    &watermark_runtime_key,
+                    &session_id,
+                    offset,
+                )
                 .await?;
+            }
             break;
         }
         for (idx, message) in messages.iter().enumerate() {
@@ -1075,8 +1108,120 @@ fn spawn_session_history_backfill(inner: Arc<AggregatorInner>, runtime_key: Stri
     });
 }
 
-async fn recover_lagged_source_events(
+fn spawn_session_history_discovery_loop(inner: Arc<AggregatorInner>, runtime_key: String) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(SESSION_HISTORY_DISCOVERY_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            let runtime_still_registered = inner
+                .runtimes
+                .read()
+                .ok()
+                .is_some_and(|entries| entries.contains_key(&runtime_key));
+            if !runtime_still_registered {
+                break;
+            }
+            spawn_session_history_backfill(inner.clone(), runtime_key.clone());
+        }
+    });
+}
+
+fn spawn_session_history_backfill_target(
+    inner: Arc<AggregatorInner>,
+    target: SessionBackfillTarget,
+    force_refresh: bool,
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    tokio::spawn(async move {
+        let active_key = format!(
+            "{}:session-history:{}",
+            target.entry.runtime_key, target.session_id
+        );
+        {
+            let mut active = inner.active_session_backfills.lock().await;
+            if !active.insert(active_key.clone()) {
+                return;
+            }
+        }
+        let result = backfill_one_session_history(inner.clone(), target, force_refresh).await;
+        let mut active = inner.active_session_backfills.lock().await;
+        active.remove(&active_key);
+        drop(active);
+        if let Err(err) = result {
+            tracing::warn!(
+                active_key = %active_key,
+                error = %err,
+                "console targeted session-history backfill failed"
+            );
+        }
+    });
+}
+
+fn spawn_session_history_backfill_for_identity(
+    inner: Arc<AggregatorInner>,
+    identity: String,
+    force_refresh: bool,
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    tokio::spawn(async move {
+        let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
+            return;
+        };
+        spawn_session_history_backfill_target(inner, target, force_refresh);
+    });
+}
+
+async fn session_backfill_target_for_identity(
     inner: &AggregatorInner,
+    identity: &str,
+) -> Option<SessionBackfillTarget> {
+    let entries = inner
+        .runtimes
+        .read()
+        .ok()
+        .map(|entries| entries.clone())
+        .unwrap_or_default();
+    for entry in entries.values() {
+        let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
+            continue;
+        };
+        let mid = MeerkatId::from(raw_identity.as_str());
+        for resolved in member_sources_for_entry(entry)
+            .await
+            .into_iter()
+            .filter(|candidate| candidate.member.agent_identity == mid)
+        {
+            let Some(record) =
+                identity_record_for_member(entry, &resolved.handle, &resolved.member).await
+            else {
+                continue;
+            };
+            if !entry.visibility_policy.identity_visible(&record) {
+                continue;
+            }
+            let Some(session_id) = record.session_id.clone() else {
+                continue;
+            };
+            return Some(SessionBackfillTarget {
+                entry: entry.clone(),
+                record,
+                session_id,
+            });
+        }
+    }
+    None
+}
+
+async fn recover_lagged_source_events(
+    inner: Arc<AggregatorInner>,
     runtime_key: &str,
     console_events: &ConsoleEventStore,
 ) -> ConsoleLogResult<()> {
@@ -1087,12 +1232,12 @@ async fn recover_lagged_source_events(
     match console_events.replay_all(watermark.as_deref()).await {
         Ok(events) => {
             for envelope in events {
-                project_console_event(inner, runtime_key, envelope).await?;
+                project_console_event(inner.clone(), runtime_key, envelope).await?;
             }
         }
         Err(err) => {
             append_source_gap(
-                inner,
+                &inner,
                 runtime_key,
                 format!(
                     "{}:{}:{}",
@@ -1190,7 +1335,7 @@ async fn append_backfill_gap(
 }
 
 async fn project_console_event(
-    inner: &AggregatorInner,
+    inner: Arc<AggregatorInner>,
     runtime_key: &str,
     envelope: crate::console_contracts::ConsoleIdentityEventEnvelope,
 ) -> ConsoleLogResult<()> {
@@ -1211,7 +1356,12 @@ async fn project_console_event(
         .source_event_id
         .clone()
         .unwrap_or_else(|| frame.dedupe_key.clone());
-    append_and_emit(inner, frame).await?;
+    let refresh_identity = if console_event_should_refresh_session_history(&frame) {
+        Some(frame.identity.clone())
+    } else {
+        None
+    };
+    append_and_emit(&inner, frame).await?;
     inner
         .store
         .record_source_watermark(
@@ -1219,7 +1369,18 @@ async fn project_console_event(
             ConsoleFrameSourceKind::ConsoleEvent,
             &source_cursor,
         )
-        .await
+        .await?;
+    if let Some(identity) = refresh_identity {
+        spawn_session_history_backfill_for_identity(inner.clone(), identity, true);
+    }
+    Ok(())
+}
+
+fn console_event_should_refresh_session_history(frame: &NewConsoleFrame) -> bool {
+    matches!(
+        frame.kind.as_str(),
+        "interaction_complete" | "interaction_failed" | "message_delivery_failed"
+    ) || frame.session_id.is_some()
 }
 
 async fn append_and_emit(
@@ -2032,6 +2193,29 @@ comms = true
         runtime
     }
 
+    async fn build_empty_runtime(mob_id: &str) -> UnifiedRuntime {
+        let definition = MobDefinition::from_toml(&format!(
+            r#"
+[mob]
+id = "{mob_id}"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#
+        ))
+        .expect("definition parses");
+        UnifiedRuntime::builder()
+            .definition(definition)
+            .default_llm_client(Arc::new(TestClient::default()))
+            .build()
+            .await
+            .expect("runtime builds")
+    }
+
     async fn build_stress_runtime(
         member_count: usize,
         history_delay: Duration,
@@ -2214,6 +2398,107 @@ comms = true
             "query_timeline must not synchronously touch session-history watermarks"
         );
         let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn discovered_late_member_session_backfills_without_manual_refresh() -> Result<(), String>
+    {
+        let runtime = Arc::new(build_empty_runtime("console-aggregator-late-member-test").await);
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime(ConsoleRuntimeRegistration {
+            runtime_key: "runtime-late".to_string(),
+            runtime: runtime.clone(),
+            identity_namespace: "late".to_string(),
+            visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+        });
+
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "agent-late".to_string(),
+                Some("You are agent-late.".into()),
+                None,
+                None,
+            ))
+            .await
+            .expect("late member spawns");
+        let session_id = send_message_on_mob_with_mode(
+            &runtime.mob_handle(),
+            "agent-late",
+            ContentInput::Text("hello after registration".to_string()),
+            meerkat_core::types::HandlingMode::Queue,
+        )
+        .await
+        .expect("direct member send succeeds");
+        let identities = aggregator
+            .list_identities()
+            .await
+            .expect("late identities list");
+        assert!(
+            identities
+                .iter()
+                .any(|record| record.identity == "late/agent-late"
+                    && record.session_id.as_deref() == Some(session_id.as_str())),
+            "late member should be visible with its bridge session"
+        );
+
+        wait_for_session_history_text(
+            &aggregator,
+            "late/agent-late",
+            "You are agent-late.",
+            Duration::from_secs(5),
+        )
+        .await?;
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    async fn wait_for_session_history_text(
+        aggregator: &MobKitConsoleAggregator,
+        identity: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            let _ = aggregator.list_identities().await;
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some(identity.to_string()),
+                    limit: 20,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query timeline");
+            observed = page.frames;
+            if observed.iter().any(|frame| {
+                frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                    && frame.kind == "user_input"
+                    && session_history_content_text(frame).as_deref() == Some(expected)
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        Err(format!(
+            "session history text {expected:?} was not backfilled; observed frames: {observed:#?}",
+        ))
+    }
+
+    fn session_history_content_text(frame: &ConsoleFrame) -> Option<String> {
+        match frame.payload.get("content")? {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(blocks) => Some(
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join(""),
+            ),
+            _ => None,
+        }
     }
 
     #[tokio::test]
