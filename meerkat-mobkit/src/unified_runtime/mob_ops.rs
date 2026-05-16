@@ -13,9 +13,10 @@ use crate::mob_handle_runtime::MobRuntimeError;
 
 use super::UnifiedRuntime;
 
-// Upstream routed runtime-ready signals use a bounded actor queue (64 in
-// meerkat-mob 0.6.x), so bulk discovery bootstrap needs headroom.
-const MAX_CONCURRENT_SPAWN_MANY: usize = 32;
+// Upstream routed runtime-ready signals use a bounded actor queue with
+// fail-fast enqueue in meerkat-mob 0.6.x. Keep bulk discovery bootstrap
+// serialized until the upstream signal path is backpressured.
+const MAX_CONCURRENT_SPAWN_MANY: usize = 1;
 
 impl UnifiedRuntime {
     pub fn mob_handle(&self) -> MobHandle {
@@ -94,6 +95,7 @@ where
         let futures = batch.into_iter().map(&mut build);
         let mut batch_results = futures::future::try_join_all(futures).await?;
         results.append(&mut batch_results);
+        tokio::task::yield_now().await;
     }
 
     Ok(results)
@@ -107,6 +109,34 @@ mod tests {
     };
 
     use super::try_join_in_batches;
+
+    #[tokio::test]
+    async fn spawn_many_batch_size_stays_serial_until_upstream_backpressure_exists() {
+        assert_eq!(super::MAX_CONCURRENT_SPAWN_MANY, 1);
+    }
+
+    #[tokio::test]
+    async fn try_join_in_batches_can_run_serially() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let items: Vec<usize> = (0..25).collect();
+
+        let results = try_join_in_batches(items.clone(), 1, |item| {
+            let active = active.clone();
+            let max_active = max_active.clone();
+            async move {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(current, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok::<_, ()>(item)
+            }
+        })
+        .await;
+
+        assert_eq!(results, Ok(items));
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+    }
 
     #[tokio::test]
     async fn try_join_in_batches_limits_concurrent_work_and_preserves_order() {
