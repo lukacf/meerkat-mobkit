@@ -710,27 +710,40 @@ function parseToolResult(frame: ConsoleFrame): { result?: string; status: "pendi
 
   // Extract actual result content — prefer tool_execution_completed which has the real result
   let result = "";
+  const toolName = typeof record?.name === "string"
+    ? record.name
+    : typeof record?.tool_name === "string"
+      ? record.tool_name
+      : undefined;
   if (typeof record?.result === "string") {
+    const display = summarizeToolResultForDisplay(toolName, record.result);
+    if (display) {
+      result = display;
+    } else {
     // Try to parse JSON result and format it readably
-    try {
-      const parsed = JSON.parse(record.result);
-      if (typeof parsed === "object" && parsed !== null) {
-        // Remove metadata keys, keep the actual content
-        const clean = { ...parsed };
-        delete clean.source_event_type;
-        delete clean.type;
-        result = JSON.stringify(clean, null, 2);
-      } else {
+      try {
+        const parsed = JSON.parse(record.result);
+        if (typeof parsed === "object" && parsed !== null) {
+          // Remove metadata keys, keep the actual content
+          const clean = { ...parsed };
+          delete clean.source_event_type;
+          delete clean.type;
+          result = JSON.stringify(clean, null, 2);
+        } else {
+          result = record.result;
+        }
+      } catch {
         result = record.result;
       }
-    } catch {
-      result = record.result;
     }
   } else if (typeof record?.result === "object" && record.result !== null) {
-    const clean = { ...(record.result as Record<string, unknown>) };
-    delete clean.source_event_type;
-    delete clean.type;
-    result = JSON.stringify(clean, null, 2);
+    result = summarizeToolResultForDisplay(toolName, record.result) || "";
+    if (!result) {
+      const clean = { ...(record.result as Record<string, unknown>) };
+      delete clean.source_event_type;
+      delete clean.type;
+      result = JSON.stringify(clean, null, 2);
+    }
   }
 
   // For tool_result_received without a result field, don't use the metadata dump
@@ -1333,9 +1346,117 @@ function peerLastSegment(value: string): string {
   return value.split("/").pop() || value;
 }
 
+function summarizePeersResult(result: unknown): string | null {
+  let parsed = typeof result === "string"
+    ? parseJsonPayload(result)
+    : result && typeof result === "object"
+      ? result
+      : null;
+  if (typeof parsed === "string") {
+    parsed = parseJsonPayload(parsed);
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const peers = (parsed as Record<string, unknown>).peers;
+  if (!Array.isArray(peers)) return null;
+  const roleCounts = new Map<string, number>();
+  const preview: string[] = [];
+  for (const peer of peers) {
+    if (!peer || typeof peer !== "object") continue;
+    const record = peer as Record<string, unknown>;
+    const rawName = typeof record.name === "string" && record.name.trim()
+      ? record.name.trim()
+      : typeof (record.address as Record<string, unknown> | undefined)?.endpoint === "string"
+        ? String((record.address as Record<string, unknown>).endpoint).trim()
+        : typeof record.peer_id === "string"
+          ? record.peer_id.trim()
+          : "";
+    if (!rawName) continue;
+    const parts = rawName.split("/").filter(Boolean);
+    const role = parts.length >= 2 ? parts[parts.length - 2] : "peer";
+    roleCounts.set(role, (roleCounts.get(role) || 0) + 1);
+    if (preview.length < 8) preview.push(peerLastSegment(rawName));
+  }
+  const roles = [...roleCounts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 5)
+    .map(([role, count]) => `${role} ${count}`)
+    .join(", ");
+  const lines = [`${peers.length} peers${roles ? ` · ${roles}` : ""}`];
+  if (preview.length > 0) {
+    lines.push(`First peers: ${preview.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+
+function summarizeToolResultForDisplay(toolName: string | undefined, result: unknown): string | null {
+  if (toolName === "peers") {
+    const summary = summarizePeersResult(result);
+    if (summary) return summary;
+  }
+  return null;
+}
+
+type HistoryToolResult = {
+  result?: string;
+  status: "success" | "error";
+};
+
+function toolResultTextFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => {
+      if (typeof block === "string") return block;
+      if (!block || typeof block !== "object") return "";
+      const record = block as Record<string, unknown>;
+      if (typeof record.text === "string") return record.text;
+      if (typeof record.content === "string") return record.content;
+      const data = record.data && typeof record.data === "object"
+        ? record.data as Record<string, unknown>
+        : null;
+      if (typeof data?.text === "string") return data.text;
+      if (typeof data?.content === "string") return data.content;
+      return "";
+    })
+    .filter((value) => value.trim().length > 0)
+    .join("");
+}
+
+function historyToolResults(frames: ConsoleFrame[]): Map<string, HistoryToolResult> {
+  const results = new Map<string, HistoryToolResult>();
+  for (const frame of frames) {
+    if (
+      frame.sourceKind !== "session_history"
+      || (frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received")
+    ) {
+      continue;
+    }
+    const data = frame.data && typeof frame.data === "object"
+      ? frame.data as Record<string, unknown>
+      : null;
+    const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim()
+      ? data.tool_call_id.trim()
+      : typeof data?.id === "string" && data.id.trim()
+        ? data.id.trim()
+        : "";
+    if (!toolCallId) continue;
+    const rawResult = data?.result ?? data?.content;
+    const result = rawResult !== undefined
+      ? summarizeToolResultForDisplay(undefined, rawResult) || toolResultTextFromContent(rawResult)
+      : "";
+    const status = data?.is_error === true || data?.status === "error" ? "error" : "success";
+    results.set(toolCallId, {
+      status,
+      ...(result.trim() ? { result } : {}),
+    });
+  }
+  return results;
+}
+
 function blockAssistantToolBlocks(
   blocks: unknown[],
   peerRegistry?: Map<string, string>,
+  toolResults?: Map<string, HistoryToolResult>,
 ): ConversationRichToolCallBlock[] {
   const toolBlocks: ConversationRichToolCallBlock[] = [];
   for (const block of blocks) {
@@ -1370,12 +1491,17 @@ function blockAssistantToolBlocks(
       : undefined;
     const peerIntent = displayPeerIntent(rawPeerIntent);
     const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : undefined;
+    const result = toolResults?.get(id);
+    const displayResult = result?.result
+      ? summarizeToolResultForDisplay(name, result.result) || result.result
+      : undefined;
     toolBlocks.push({
       type: "tool-call",
       toolCallId: id,
       name,
       arguments: argumentsText,
-      status: "success",
+      ...(displayResult ? { result: displayResult } : {}),
+      status: result?.status || "success",
       ...(peerTarget ? { peerTarget } : {}),
       ...(peerIntent ? { peerIntent } : {}),
       ...(peerBody ? { peerBody } : {}),
@@ -1497,6 +1623,7 @@ function historyMessageText(
   message: unknown,
   peerRegistry?: Map<string, string>,
   blobBaseUrl?: string,
+  toolResults?: Map<string, HistoryToolResult>,
 ): { role: "user" | "assistant" | "system" | "meta" | null; text: string; blocks?: ConversationRichBlock[] } {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
@@ -1519,7 +1646,7 @@ function historyMessageText(
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry);
+      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry, toolResults);
       const text = blocks
         .map((block) => {
           if (!block || typeof block !== "object") return "";
@@ -1557,13 +1684,19 @@ function renderSessionHistoryTextCompleteEntry(
     consumeDuplicateToolBlock?: (block: ConversationRichToolCallBlock) => boolean;
     peerRegistry?: Map<string, string>;
     blobBaseUrl?: string;
+    toolResults?: Map<string, HistoryToolResult>;
   } = {},
 ): ConversationTimelineEntry | null {
   if (frame.sourceKind !== "session_history") return null;
   const record = frame.data && typeof frame.data === "object"
     ? frame.data as Record<string, unknown>
     : {};
-  const parsed = historyMessageText(record.message, options.peerRegistry, options.blobBaseUrl);
+  const parsed = historyMessageText(
+    record.message,
+    options.peerRegistry,
+    options.blobBaseUrl,
+    options.toolResults,
+  );
   const text = parsed.text.trim();
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   if (parsed.role === "meta") {
@@ -1675,6 +1808,7 @@ export function mapFramesToTimelineEntries(
   const entries: ConversationTimelineEntry[] = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
+  const sessionToolResults = historyToolResults(orderedFrames);
   const emittedToolCalls = new Set<string>();
   const {
     liveToolCallIds,
@@ -1877,6 +2011,7 @@ export function mapFramesToTimelineEntries(
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
           peerRegistry,
           blobBaseUrl: options.blobBaseUrl,
+          toolResults: sessionToolResults,
           consumeDuplicateToolBlock: (block) => (
             liveToolCallIds.has(block.toolCallId)
             || consumeToolSignatureCount(liveToolSignatureCounts, block)
@@ -1910,6 +2045,7 @@ export function mapFramesToTimelineEntries(
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
           peerRegistry,
           blobBaseUrl: options.blobBaseUrl,
+          toolResults: sessionToolResults,
           consumeDuplicateToolBlock: (block) => (
             liveToolCallIds.has(block.toolCallId)
             || consumeToolSignatureCount(liveToolSignatureCounts, block)
@@ -2031,6 +2167,7 @@ export function inferResponsePhaseFromFrames(
   let phase: ResponsePhase = fallback;
   for (const frame of frames) {
     switch (frame.event) {
+      case "user_input":
       case "interaction_started":
         phase = "waiting";
         break;

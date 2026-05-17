@@ -1086,23 +1086,23 @@ async fn backfill_one_session_history(
         }
         for (idx, message) in messages.iter().enumerate() {
             let absolute_offset = base_offset + idx;
-            let Some(mut frame) = frame_from_session_history_message(
+            let frames = frames_from_session_history_message(
                 &entry.runtime_key,
                 &record.identity,
                 &session_id,
                 absolute_offset,
                 message.clone(),
-            ) else {
-                continue;
-            };
-            if history_frame_has_existing_counterpart(&inner, &frame).await? {
-                continue;
+            );
+            for mut frame in frames {
+                if history_frame_has_existing_counterpart(&inner, &frame).await? {
+                    continue;
+                }
+                if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
+                    frame.payload = redacted;
+                    frame.status = ConsoleFrameStatus::Redacted;
+                }
+                append_and_emit(&inner, frame).await?;
             }
-            if let Some(redacted) = entry.visibility_policy.redact_payload(&frame) {
-                frame.payload = redacted;
-                frame.status = ConsoleFrameStatus::Redacted;
-            }
-            append_and_emit(&inner, frame).await?;
         }
         offset = base_offset + messages.len();
         record_session_history_watermark(&inner, &watermark_runtime_key, &session_id, offset)
@@ -1535,6 +1535,7 @@ fn frame_from_console_event(
     }
 }
 
+#[cfg(test)]
 fn frame_from_session_history_message(
     runtime_key: &str,
     identity: &str,
@@ -1542,8 +1543,69 @@ fn frame_from_session_history_message(
     offset: usize,
     message: Value,
 ) -> Option<NewConsoleFrame> {
+    frames_from_session_history_message(runtime_key, identity, session_id, offset, message)
+        .into_iter()
+        .next()
+}
+
+fn frames_from_session_history_message(
+    runtime_key: &str,
+    identity: &str,
+    session_id: &str,
+    offset: usize,
+    message: Value,
+) -> Vec<NewConsoleFrame> {
     let payload_hash = hash_short(&serde_json::to_string(&message).unwrap_or_default());
-    let parsed = serde_json::from_value::<Message>(message.clone()).ok()?;
+    let Some(parsed) = serde_json::from_value::<Message>(message.clone()).ok() else {
+        return Vec::new();
+    };
+    if let Message::ToolResults {
+        results,
+        created_at,
+    } = parsed
+    {
+        return results
+            .into_iter()
+            .enumerate()
+            .map(|(idx, result)| {
+                let content = serde_json::to_value(&result.content).unwrap_or(Value::Null);
+                let result_text = result.text_content();
+                let tool_use_id = result.tool_use_id.clone();
+                NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!(
+                        "session-history:{runtime_key}:{session_id}:{offset}:{idx}:{payload_hash}"
+                    ),
+                    timestamp_ms: created_at.timestamp_millis().max(0) as u64,
+                    runtime_key: runtime_key.to_string(),
+                    identity: identity.to_string(),
+                    conversation_id: Some(identity.to_string()),
+                    session_id: Some(session_id.to_string()),
+                    kind: "tool_execution_completed".to_string(),
+                    status: ConsoleFrameStatus::Completed,
+                    payload: json!({
+                        "id": tool_use_id,
+                        "tool_call_id": tool_use_id,
+                        "result": result_text,
+                        "content": content,
+                        "is_error": result.is_error,
+                        "source_event_type": "session_history",
+                        "type": "session_history",
+                    }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::SessionHistory,
+                        source_cursor: Some(format!("{session_id}:{offset}:{idx}")),
+                    },
+                    source_event_id: None,
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                }
+            })
+            .collect();
+    }
     let (kind, timestamp_ms, payload) = match &parsed {
         Message::User(user) => (
             "user_input",
@@ -1591,9 +1653,9 @@ fn frame_from_session_history_message(
                 "type": "session_history",
             }),
         ),
-        Message::System(_) | Message::ToolResults { .. } => return None,
+        Message::System(_) | Message::ToolResults { .. } => return Vec::new(),
     };
-    Some(NewConsoleFrame {
+    vec![NewConsoleFrame {
         id: None,
         dedupe_key: format!("session-history:{runtime_key}:{session_id}:{offset}:{payload_hash}"),
         timestamp_ms,
@@ -1614,7 +1676,7 @@ fn frame_from_session_history_message(
         run_id: None,
         parent_frame_id: None,
         caused_by_frame_id: None,
-    })
+    }]
 }
 
 fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
@@ -3412,6 +3474,38 @@ comms = true
         assert_eq!(frame.kind, "interaction_complete");
         assert_eq!(frame.payload["result"], json!(""));
         assert_eq!(frame.payload["text"], json!(""));
+    }
+
+    #[test]
+    fn session_history_projection_preserves_tool_results() {
+        let frames = frames_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            5,
+            json!({
+                "role": "tool_results",
+                "results": [
+                    {
+                        "tool_use_id": "call-peers",
+                        "content": "{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}",
+                        "is_error": false
+                    }
+                ],
+                "created_at": "1970-01-01T00:00:00.050Z"
+            }),
+        );
+
+        assert_eq!(frames.len(), 1);
+        let frame = &frames[0];
+        assert_eq!(frame.kind, "tool_execution_completed");
+        assert_eq!(frame.payload["tool_call_id"], json!("call-peers"));
+        assert_eq!(
+            frame.payload["result"],
+            json!("{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}")
+        );
+        assert_eq!(frame.source.kind, ConsoleFrameSourceKind::SessionHistory);
+        assert_eq!(frame.timestamp_ms, 50);
     }
 
     #[test]
