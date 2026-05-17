@@ -2,7 +2,7 @@ mod state;
 mod store;
 mod types;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -378,12 +378,18 @@ impl MobKitConsoleAggregator {
         let explicit_identity = query.identity.clone();
         let mut page = self.inner.store.query_frames(query).await?;
         let mut visible_frames = Vec::with_capacity(page.frames.len());
+        let mut identity_visibility_cache = HashMap::new();
         for frame in page.frames {
             let allow_historical_identity =
                 explicit_identity.as_deref() == Some(frame.identity.as_str());
-            if frame_is_visible(&self.inner, &frame, allow_historical_identity)
-                .await
-                .unwrap_or(false)
+            if frame_is_visible_cached(
+                &self.inner,
+                &frame,
+                allow_historical_identity,
+                &mut identity_visibility_cache,
+            )
+            .await
+            .unwrap_or(false)
             {
                 visible_frames.push(frame);
             }
@@ -1745,10 +1751,33 @@ fn normalize_transcript_fingerprint_text(text: &str) -> String {
         .to_string()
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CachedIdentityVisibility {
+    Visible,
+    Hidden,
+    Missing,
+}
+
 async fn frame_is_visible(
     inner: &AggregatorInner,
     frame: &ConsoleFrame,
     allow_historical_identity: bool,
+) -> ConsoleLogResult<bool> {
+    let mut identity_visibility_cache = HashMap::new();
+    frame_is_visible_cached(
+        inner,
+        frame,
+        allow_historical_identity,
+        &mut identity_visibility_cache,
+    )
+    .await
+}
+
+async fn frame_is_visible_cached(
+    inner: &AggregatorInner,
+    frame: &ConsoleFrame,
+    allow_historical_identity: bool,
+    identity_visibility_cache: &mut HashMap<(String, String), CachedIdentityVisibility>,
 ) -> ConsoleLogResult<bool> {
     let entry = {
         let entries = inner
@@ -1764,23 +1793,43 @@ async fn frame_is_visible(
         entry.clone()
     };
     if frame.identity != "__console__" {
-        let runtime_member_id = strip_namespace(&frame.identity, &entry.identity_namespace)
-            .unwrap_or_else(|| frame.identity.clone());
-        let runtime_member = MeerkatId::from(runtime_member_id.as_str());
-        let Some(resolved) = member_sources_for_entry(&entry)
-            .await
-            .into_iter()
-            .find(|member| member.member.agent_identity == runtime_member)
-        else {
-            return Ok(allow_historical_identity && entry.visibility_policy.frame_visible(frame));
-        };
-        let Some(record) =
-            identity_record_for_member(&entry, &resolved.handle, &resolved.member).await
-        else {
-            return Ok(false);
-        };
-        if !entry.visibility_policy.identity_visible(&record) {
-            return Ok(false);
+        let cache_key = (frame.runtime_key.clone(), frame.identity.clone());
+        let identity_visibility =
+            if let Some(cached) = identity_visibility_cache.get(&cache_key).copied() {
+                cached
+            } else {
+                let runtime_member_id = strip_namespace(&frame.identity, &entry.identity_namespace)
+                    .unwrap_or_else(|| frame.identity.clone());
+                let runtime_member = MeerkatId::from(runtime_member_id.as_str());
+                let visibility = match member_sources_for_entry(&entry)
+                    .await
+                    .into_iter()
+                    .find(|member| member.member.agent_identity == runtime_member)
+                {
+                    Some(resolved) => {
+                        match identity_record_for_member(&entry, &resolved.handle, &resolved.member)
+                            .await
+                        {
+                            Some(record) if entry.visibility_policy.identity_visible(&record) => {
+                                CachedIdentityVisibility::Visible
+                            }
+                            Some(_) => CachedIdentityVisibility::Hidden,
+                            None => CachedIdentityVisibility::Hidden,
+                        }
+                    }
+                    None => CachedIdentityVisibility::Missing,
+                };
+                identity_visibility_cache.insert(cache_key, visibility);
+                visibility
+            };
+        match identity_visibility {
+            CachedIdentityVisibility::Visible => {}
+            CachedIdentityVisibility::Hidden => return Ok(false),
+            CachedIdentityVisibility::Missing => {
+                return Ok(
+                    allow_historical_identity && entry.visibility_policy.frame_visible(frame)
+                );
+            }
         }
     }
     Ok(entry.visibility_policy.frame_visible(frame))
@@ -2689,6 +2738,66 @@ comms = true
 
         assert_eq!(page.frames.len(), 1_000);
         assert_eq!(store.source_watermark_calls(), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn explicit_identity_timeline_query_does_not_resolve_roster_per_frame() {
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let (_temp, runtime, _delayed_service) =
+            build_stress_runtime(64, Duration::from_millis(0)).await;
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", runtime.as_ref()),
+            );
+        for idx in 0..1_000 {
+            store
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("event-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "test/agent-0".to_string(),
+                    conversation_id: Some("test/agent-0".to_string()),
+                    session_id: Some("session-a".to_string()),
+                    kind: "text_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("event-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append frame");
+        }
+
+        let page = tokio::time::timeout(
+            Duration::from_secs(2),
+            aggregator.query_timeline(ConsoleTimelineQuery {
+                identity: Some("test/agent-0".to_string()),
+                limit: 1_000,
+                ..ConsoleTimelineQuery::default()
+            }),
+        )
+        .await
+        .expect("identity timeline query should not rediscover the roster per frame")
+        .expect("timeline query succeeds");
+
+        assert_eq!(page.frames.len(), 1_000);
+        assert_eq!(store.source_watermark_calls(), 0);
+        let _ = runtime.mob_handle().stop().await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
