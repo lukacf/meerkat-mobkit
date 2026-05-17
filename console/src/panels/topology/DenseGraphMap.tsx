@@ -9,6 +9,7 @@ import {
 
 interface DenseGraphMapProps {
   graph: TopoGraph;
+  edgeMode?: "all" | "focus";
 }
 
 interface LayoutNode {
@@ -242,6 +243,7 @@ function nodeRadius(graph: TopoGraph, id: string): number {
 
 export function DenseGraphMap({
   graph,
+  edgeMode = "all",
 }: DenseGraphMapProps): React.JSX.Element {
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -261,8 +263,8 @@ export function DenseGraphMap({
     [graph],
   );
   const drawFingerprint = React.useMemo(
-    () => `${layoutFingerprint}::edges=${graph.edges.length}`,
-    [layoutFingerprint, graph.edges.length],
+    () => `${layoutFingerprint}::edges=${graph.edges.length}::edgeMode=${edgeMode}`,
+    [layoutFingerprint, graph.edges.length, edgeMode],
   );
   const layout = React.useMemo(
     () => buildLayout(graph, size.width, size.height),
@@ -305,7 +307,7 @@ export function DenseGraphMap({
     ctx.clearRect(0, 0, layout.width, layout.height);
 
     const faint = cssVar(host, "--ink-faint", "rgba(148, 163, 184, 1)");
-    const edgeAlpha = graph.edges.length > 18000 ? 0.030 : graph.edges.length > 6000 ? 0.048 : 0.075;
+    const edgeAlpha = graph.edges.length > 18000 ? 0.105 : graph.edges.length > 6000 ? 0.135 : 0.18;
 
     for (const group of layout.groups) {
       const grad = ctx.createRadialGradient(group.x, group.y, 10, group.x, group.y, Math.max(110, group.count * 2.1));
@@ -319,35 +321,36 @@ export function DenseGraphMap({
       ctx.fill();
     }
 
-    ctx.lineWidth = graph.edges.length > 12000 ? 0.38 : 0.54;
-    ctx.strokeStyle = faint;
-    ctx.globalAlpha = edgeAlpha * 0.72;
-    ctx.beginPath();
-    for (const edge of graph.edges) {
-      const a = layout.byId.get(edge.from);
-      const b = layout.byId.get(edge.to);
-      if (!a || !b) continue;
-      if (a.agent.group === b.agent.group) continue;
-      const seed = hash(edgeKey(edge.from, edge.to));
-      const bend = (seed % 2 === 0 ? 1 : -1) * (18 + (seed % 42));
-      drawCurve(ctx, a, b, bend);
-    }
-    ctx.stroke();
-
-    ctx.globalAlpha = edgeAlpha * 1.45;
-    for (let gi = 0; gi < layout.groups.length; gi += 1) {
-      ctx.strokeStyle = layout.groups[gi]?.colour || faint;
+    if (edgeMode === "all") {
+      ctx.lineWidth = graph.edges.length > 12000 ? 0.48 : 0.68;
+      ctx.strokeStyle = faint;
+      ctx.globalAlpha = edgeAlpha * 0.92;
       ctx.beginPath();
       for (const edge of graph.edges) {
         const a = layout.byId.get(edge.from);
         const b = layout.byId.get(edge.to);
-        if (!a || !b || a.groupIndex !== gi || b.groupIndex !== gi) continue;
+        if (!a || !b) continue;
+        if (a.agent.group === b.agent.group) continue;
         const seed = hash(edgeKey(edge.from, edge.to));
-        drawCurve(ctx, a, b, (seed % 13) - 6);
+        const bend = (seed % 2 === 0 ? 1 : -1) * (18 + (seed % 42));
+        drawCurve(ctx, a, b, bend);
       }
       ctx.stroke();
-    }
 
+      ctx.globalAlpha = Math.min(0.42, edgeAlpha * 1.8);
+      for (let gi = 0; gi < layout.groups.length; gi += 1) {
+        ctx.strokeStyle = layout.groups[gi]?.colour || faint;
+        ctx.beginPath();
+        for (const edge of graph.edges) {
+          const a = layout.byId.get(edge.from);
+          const b = layout.byId.get(edge.to);
+          if (!a || !b || a.groupIndex !== gi || b.groupIndex !== gi) continue;
+          const seed = hash(edgeKey(edge.from, edge.to));
+          drawCurve(ctx, a, b, (seed % 13) - 6);
+        }
+        ctx.stroke();
+      }
+    }
     for (const node of layout.nodes) {
       const r = nodeRadius(graph, node.id);
       const x = node.x || 0;
