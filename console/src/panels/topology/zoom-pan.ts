@@ -66,6 +66,12 @@ export function useZoomPan(width: number, height: number): ZoomPan {
     setViewport({ tx: 0, ty: 0, scale: 1 });
   }, []);
 
+  React.useEffect(() => {
+    setViewport({ tx: 0, ty: 0, scale: 1 });
+    dragRef.current = null;
+    setIsDragging(false);
+  }, [width, height]);
+
   // Attach the wheel listener manually with passive=false so we can
   // preventDefault and stop the page from scrolling while zooming.
   // React's synthetic onWheel binds passive in modern versions.

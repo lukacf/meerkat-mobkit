@@ -18,6 +18,7 @@ interface LayoutNode {
   groupIndex: number;
   x: number;
   y: number;
+  radius: number;
 }
 
 interface GroupAnchor {
@@ -87,15 +88,21 @@ function fitLayout(nodes: LayoutNode[], groups: GroupAnchor[], width: number, he
   for (const node of nodes) {
     const x = node.x || 0;
     const y = node.y || 0;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
+    const outer = Math.max(14, node.radius + 12);
+    minX = Math.min(minX, x - outer);
+    minY = Math.min(minY, y - outer - 30);
+    maxX = Math.max(maxX, x + outer);
+    maxY = Math.max(maxY, y + outer + 34);
   }
-  const pad = Math.max(36, Math.min(width, height) * 0.08);
+  const padX = Math.max(54, Math.min(width, height) * 0.085);
+  const padY = Math.max(62, Math.min(width, height) * 0.115);
   const graphW = Math.max(1, maxX - minX);
   const graphH = Math.max(1, maxY - minY);
-  const scale = Math.min((width - pad * 2) / graphW, (height - pad * 2) / graphH);
+  const scale = Math.min(
+    (width - padX * 2) / graphW,
+    (height - padY * 2) / graphH,
+    1,
+  );
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   for (const node of nodes) {
@@ -126,7 +133,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   const cy = height / 2;
   const groupCount = Math.max(1, graph.groups.length);
   const marginX = Math.max(155, width * 0.23);
-  const marginY = Math.max(135, height * 0.24);
+  const marginY = Math.max(150, height * 0.3);
   const explicitAnchors: Array<{ x: number; y: number }> =
     groupCount === 1
       ? [{ x: cx, y: cy }]
@@ -185,7 +192,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
     const count = Math.max(1, entry.length);
     const clusterRadius = Math.min(
       Math.max(74, Math.sqrt(count) * 11.8),
-      Math.min(width, height) * (groupCount <= 4 ? 0.205 : 0.145),
+      Math.min(width, height) * (groupCount <= 4 ? 0.175 : 0.13),
     );
     const twist = ((hash(anchor.name) % 1000) / 1000) * Math.PI * 2;
     entry.forEach((agent, index) => {
@@ -198,6 +205,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
         id: agent.id,
         agent,
         groupIndex: gi,
+        radius: nodeRadius(graph, agent.id),
         x: anchor.x + Math.cos(theta) * radial * spiralBias,
         y: anchor.y + Math.sin(theta) * radial * (1.02 - ((seed % 11) / 120)),
       });
@@ -299,7 +307,7 @@ export function DenseGraphMap({
   );
   const layout = React.useMemo(
     () => buildLayout(graph, size.width, size.height),
-    // `graph` is rebuilt every console poll. The expensive force layout
+    // `graph` is rebuilt every console poll. The dense layout
     // should only rerun when graph shape changes, not when an equivalent
     // REST payload is normalized into fresh object identities.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -309,6 +317,12 @@ export function DenseGraphMap({
   React.useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  React.useEffect(() => {
+    dragRef.current = null;
+    setHoverId(null);
+    setViewport({ scale: 1, x: 0, y: 0 });
+  }, [layoutFingerprint, size.width, size.height]);
 
   React.useEffect(() => {
     const el = wrapRef.current;
@@ -436,8 +450,6 @@ export function DenseGraphMap({
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
-      canvas.style.width = `${layout.width}px`;
-      canvas.style.height = `${layout.height}px`;
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, layout.width, layout.height);
@@ -558,11 +570,7 @@ export function DenseGraphMap({
       }}
       onPointerLeave={() => setHoverId(null)}
     >
-      <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology force graph" />
-      <div className="topo-dense__status">
-        <strong>{graph.agents.length}</strong> nodes
-        <span>{graph.edges.length} edges</span>
-      </div>
+      <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology graph" />
       <div className="topo-dense__labels" aria-hidden="true">
         {layout.groups.map((g) => (
           <div

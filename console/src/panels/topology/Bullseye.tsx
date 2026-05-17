@@ -79,8 +79,9 @@ function layout(graph: ReturnType<typeof buildGraph>, width: number, height: num
     const ringIdx = Math.min(RINGS - 1, Math.floor((1 - Math.pow(t, 0.6)) * RINGS));
     buckets[ringIdx].push(a);
   }
-  const minR = Math.min(width, height) * 0.085;
-  const maxR = Math.min(width, height) * 0.445;
+  const minDim = Math.min(width, height);
+  const minR = Math.max(34, minDim * 0.075);
+  const maxR = Math.max(minR + 80, minDim * 0.385);
   const ringR = (i: number) => minR + (i / Math.max(1, RINGS - 1)) * (maxR - minR);
   const pos: Record<string, Pos> = {};
   buckets.forEach((list, ri) => {
@@ -124,7 +125,10 @@ export function Bullseye({
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const live = useTopologyActivity(activity, graph, { life: 1100 });
   const scale = visualScale(graph.agents.length);
-  const visualEdges = React.useMemo(() => sampleEdges(graph.edges, 6000), [graph.edges]);
+  const visualEdges = React.useMemo(
+    () => graph.edges.length <= 35000 ? graph.edges : sampleEdges(graph.edges, 35000),
+    [graph.edges],
+  );
   const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   const zoom = useZoomPan(width, height);
@@ -147,6 +151,7 @@ export function Bullseye({
     for (const edge of focusEdges) peers.add(edge.from === hoverId ? edge.to : edge.from);
     return peers;
   }, [focusEdges, hoverId]);
+  const showRingLabels = graph.agents.length <= 250;
 
   const radiusOf = (deg: number): number => {
     const t = Math.sqrt(deg) / 4; // gentle 0..1-ish curve
@@ -229,6 +234,7 @@ export function Bullseye({
       {/* Ring labels: anchored to the right horizontal axis with a small
           background-stroke halo so they read across rings. Hidden for
           empty rings. */}
+      {showRingLabels && (
       <g>
         {buckets.map((list, i) => {
           if (list.length === 0) return null;
@@ -246,6 +252,7 @@ export function Bullseye({
           );
         })}
       </g>
+      )}
 
       {/* Centre disk: shows total agent count. Reads as the visual
           anchor that the rings radiate from. */}
@@ -282,7 +289,7 @@ export function Bullseye({
               x2={b.x} y2={b.y}
               stroke={hot ? "var(--ok)" : "var(--ink-faint)"}
               strokeWidth={hot ? scale.edgeWidth + 0.5 : scale.edgeWidth}
-              opacity={hot ? 0.85 : graph.agents.length > 250 ? 0.24 : 0.42}
+              opacity={hot ? 0.85 : graph.agents.length > 250 ? 0.19 : 0.42}
             />
           );
         })}
