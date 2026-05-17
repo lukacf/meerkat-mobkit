@@ -46,6 +46,8 @@ export interface MobKitBuilderConfig {
   memoryConfig: unknown;
   authConfig: unknown;
   implicitDelegateIdleRetireSecs: number | null | undefined;
+  maxSessions: number | null;
+  gatewayTimeoutMs: number | null;
   gatewayBin: string | null;
   modules: unknown[];
   persistentState: string | null;
@@ -75,6 +77,8 @@ function defaultConfig(): MobKitBuilderConfig {
     memoryConfig: null,
     authConfig: null,
     implicitDelegateIdleRetireSecs: undefined,
+    maxSessions: null,
+    gatewayTimeoutMs: null,
     gatewayBin: null,
     modules: [],
     persistentState: null,
@@ -125,7 +129,7 @@ export class MobKitBuilder {
     return this;
   }
 
-  eventLog(options: { storage: unknown;[key: string]: unknown }): this {
+  eventLog(options: { storage: unknown; [key: string]: unknown }): this {
     this._config.eventLog = { ...options };
     return this;
   }
@@ -177,8 +181,7 @@ export class MobKitBuilder {
         "memory(stores=...) is not supported by the Rust gateway; pass memory.elephant(endpoint)",
       );
     }
-    this._config.memoryConfig =
-      config ?? null;
+    this._config.memoryConfig = config ?? null;
     return this;
   }
 
@@ -194,6 +197,22 @@ export class MobKitBuilder {
       );
     }
     this._config.implicitDelegateIdleRetireSecs = seconds;
+    return this;
+  }
+
+  maxSessions(maxSessions: number): this {
+    if (!Number.isInteger(maxSessions) || maxSessions <= 0) {
+      throw new Error("maxSessions must be a positive integer");
+    }
+    this._config.maxSessions = maxSessions;
+    return this;
+  }
+
+  gatewayTimeoutMs(timeoutMs: number): this {
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("gatewayTimeoutMs must be a positive integer");
+    }
+    this._config.gatewayTimeoutMs = timeoutMs;
     return this;
   }
 
@@ -276,7 +295,8 @@ export class MobKitBuilder {
     }
     if (hasExternal) {
       const missing: string[] = [];
-      if (this._config.continuityStore === null) missing.push("continuityStore");
+      if (this._config.continuityStore === null)
+        missing.push("continuityStore");
       if (this._config.leaseProvider === null) missing.push("leaseProvider");
       if (this._config.scratchDir === null) missing.push("scratchDir");
       if (missing.length > 0) {

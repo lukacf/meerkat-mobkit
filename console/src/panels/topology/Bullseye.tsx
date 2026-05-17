@@ -11,6 +11,7 @@ import {
   colourForRole,
   edgeKey,
   roleIndexFor,
+  sampleEdges,
   useTopologyActivity,
   type TopoAgent,
 } from "./data";
@@ -97,6 +98,7 @@ export function Bullseye({
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const live = useTopologyActivity(activity, graph, { life: 1100 });
   const scale = visualScale(graph.agents.length);
+  const visualEdges = React.useMemo(() => sampleEdges(graph.edges, 1500), [graph.edges]);
   const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   const zoom = useZoomPan(width, height);
@@ -231,7 +233,7 @@ export function Bullseye({
           design (which assumed dense graphs). Hot edges promote to
           accent colour. */}
       <g>
-        {graph.edges.map((e, i) => {
+        {visualEdges.map((e, i) => {
           const a = pos[e.from];
           const b = pos[e.to];
           if (!a || !b) return null;

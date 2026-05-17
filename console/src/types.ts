@@ -214,6 +214,9 @@ export interface ConsoleTopologyNode {
   role?: string;
   state?: string;
   wired_to?: string[];
+  labels?: Record<string, string>;
+  group?: string;
+  subgroup?: string;
   addressable?: boolean;
 }
 

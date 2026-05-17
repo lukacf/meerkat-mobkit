@@ -13,7 +13,7 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 
 use crate::blob_store::BinaryBlobStore;
 use crate::mob_handle_runtime::{
@@ -51,12 +51,14 @@ pub struct MobKitConsoleAggregator {
 #[derive(Debug, Clone, Copy)]
 pub struct ConsoleAggregatorOptions {
     pub session_history_backfill_enabled: bool,
+    pub max_concurrent_session_backfills: usize,
 }
 
 impl Default for ConsoleAggregatorOptions {
     fn default() -> Self {
         Self {
             session_history_backfill_enabled: true,
+            max_concurrent_session_backfills: 16,
         }
     }
 }
@@ -66,6 +68,7 @@ struct AggregatorInner {
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
     active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
+    session_backfill_permits: Arc<Semaphore>,
     options: ConsoleAggregatorOptions,
 }
 
@@ -152,8 +155,9 @@ impl MobKitConsoleAggregator {
 
     pub fn new_with_options(
         store: Arc<dyn ConsoleLogStore>,
-        options: ConsoleAggregatorOptions,
+        mut options: ConsoleAggregatorOptions,
     ) -> Self {
+        options.max_concurrent_session_backfills = options.max_concurrent_session_backfills.max(1);
         let (event_tx, _) = broadcast::channel(TIMELINE_CHANNEL_CAP);
         Self {
             inner: Arc::new(AggregatorInner {
@@ -161,6 +165,9 @@ impl MobKitConsoleAggregator {
                 runtimes: RwLock::new(BTreeMap::new()),
                 event_tx,
                 active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                session_backfill_permits: Arc::new(Semaphore::new(
+                    options.max_concurrent_session_backfills,
+                )),
                 options,
             }),
         }
@@ -950,6 +957,16 @@ async fn backfill_one_session_history(
     target: SessionBackfillTarget,
     force_refresh: bool,
 ) -> ConsoleLogResult<()> {
+    let _permit = inner
+        .session_backfill_permits
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|err| -> ConsoleLogError {
+            Box::new(std::io::Error::other(format!(
+                "session backfill limiter closed: {err}"
+            )))
+        })?;
     let SessionBackfillTarget {
         entry,
         record,
@@ -2579,9 +2596,47 @@ comms = true
             "session history backfill should fan out instead of reading members serially"
         );
         assert!(
+            delayed_service.max_active_reads()
+                <= ConsoleAggregatorOptions::default().max_concurrent_session_backfills,
+            "session history backfill should respect the default concurrency limit"
+        );
+        assert!(
             elapsed < Duration::from_millis(600),
             "parallel backfill should be far below serial {}ms path, elapsed: {elapsed:?}",
             MEMBER_COUNT * 40
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn session_history_backfill_respects_configured_concurrency_limit() {
+        const MEMBER_COUNT: usize = 16;
+        let (_temp, runtime, delayed_service) =
+            build_stress_runtime(MEMBER_COUNT, Duration::from_millis(30)).await;
+        let aggregator =
+            MobKitConsoleAggregator::in_memory_with_options(ConsoleAggregatorOptions {
+                max_concurrent_session_backfills: 4,
+                ..ConsoleAggregatorOptions::default()
+            });
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-stress".to_string(),
+                runtime_entry_for_test("runtime-stress", &runtime),
+            );
+
+        aggregator
+            .refresh_session_history()
+            .await
+            .expect("stress refresh");
+
+        assert!(
+            delayed_service.max_active_reads() <= 4,
+            "configured concurrency limit should bound session history reads, saw {}",
+            delayed_service.max_active_reads()
         );
         let _ = runtime.mob_handle().stop().await;
     }

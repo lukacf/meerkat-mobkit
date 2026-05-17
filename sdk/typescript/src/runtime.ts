@@ -18,7 +18,10 @@ import { request as httpsRequest } from "node:https";
 import { readFileSync } from "node:fs";
 
 import type { MobKitBuilderConfig } from "./builder.js";
-import { CallbackDispatcher, type SessionAgentBuilder } from "./agent-builder.js";
+import {
+  CallbackDispatcher,
+  type SessionAgentBuilder,
+} from "./agent-builder.js";
 import {
   MOB_EVENTS_STALE_CURSOR_CODE,
   CAPABILITY_UNAVAILABLE_CODE,
@@ -146,7 +149,11 @@ function serializeConfig(
   seen: WeakSet<object> = new WeakSet(),
 ): unknown {
   if (value === null || value === undefined) return value;
-  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string")
+  if (
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  )
     return value;
   if (typeof value !== "object") return String(value);
   const obj = value as object;
@@ -189,7 +196,10 @@ interface NormalizedBlobUpload {
   readonly alt?: string;
 }
 
-function normalizeBlobUpload(input: BlobUploadSource, index: number): NormalizedBlobUpload {
+function normalizeBlobUpload(
+  input: BlobUploadSource,
+  index: number,
+): NormalizedBlobUpload {
   const record = input instanceof Blob ? { blob: input } : input;
   const blob = record.blob;
   const mediaType = record.mediaType || blob.type || "application/octet-stream";
@@ -218,10 +228,7 @@ export class MobKitRuntime {
   private _rustHttpBase: string | null = null;
 
   /** @internal */
-  constructor(
-    config: MobKitBuilderConfig,
-    transport?: PersistentTransport,
-  ) {
+  constructor(config: MobKitBuilderConfig, transport?: PersistentTransport) {
     this._config = config;
     this._transport = transport ?? null;
   }
@@ -241,7 +248,9 @@ export class MobKitRuntime {
 
   private async _bootstrap(): Promise<void> {
     if (this._config.gatewayBin) {
-      this._transport = new PersistentTransport(this._config.gatewayBin);
+      this._transport = new PersistentTransport(this._config.gatewayBin, {
+        timeout: this._config.gatewayTimeoutMs ?? undefined,
+      });
 
       // Register builder FIRST — init may trigger callback/build_agent
       if (this._config.sessionBuilder) {
@@ -260,7 +269,9 @@ export class MobKitRuntime {
         this._dispatcher.registerRosterProvider(this._config.rosterProvider);
       }
       if (this._config.topologyProvider !== null) {
-        this._dispatcher.registerTopologyProvider(this._config.topologyProvider);
+        this._dispatcher.registerTopologyProvider(
+          this._config.topologyProvider,
+        );
       }
       if (this._config.agentCustomizer !== null) {
         this._dispatcher.registerAgentCustomizer(this._config.agentCustomizer);
@@ -286,9 +297,10 @@ export class MobKitRuntime {
           initResult !== null &&
           "http_base_url" in initResult
         ) {
-          this._rustHttpBase = String(
-            (initResult as Record<string, unknown>).http_base_url ?? "",
-          ) || null;
+          this._rustHttpBase =
+            String(
+              (initResult as Record<string, unknown>).http_base_url ?? "",
+            ) || null;
         }
       } catch (err) {
         // Pre-fix every error path here was rewritten to a generic
@@ -359,6 +371,9 @@ export class MobKitRuntime {
     if (this._config.implicitDelegateIdleRetireSecs !== undefined) {
       runtimeOptions.implicit_delegate_idle_retire_secs =
         this._config.implicitDelegateIdleRetireSecs;
+    }
+    if (this._config.maxSessions !== null) {
+      runtimeOptions.max_sessions = this._config.maxSessions;
     }
     params.runtime_options = runtimeOptions;
     if (this._config.persistentState) {
@@ -479,10 +494,7 @@ export class MobKitRuntime {
   }
 
   /** Dispatch structured input to an identity. */
-  async dispatch(
-    identity: string,
-    input: DispatchInput,
-  ): Promise<unknown> {
+  async dispatch(identity: string, input: DispatchInput): Promise<unknown> {
     return this._rpc("mobkit/dispatch", {
       identity,
       dispatch_input: dispatchInputToDict(input),
@@ -570,7 +582,10 @@ export class MobHandle {
 
   async spawn(spec: DiscoverySpec): Promise<SpawnResult> {
     return parseSpawnResult(
-      await this._runtime._rpc("mobkit/spawn_member", discoverySpecToDict(spec)),
+      await this._runtime._rpc(
+        "mobkit/spawn_member",
+        discoverySpecToDict(spec),
+      ),
     );
   }
 
@@ -725,7 +740,9 @@ export class MobHandle {
         await this._multipartRpc("mobkit/send_message", params, uploads),
       );
     }
-    return parseSendMessageResult(await this._runtime._rpc("mobkit/send_message", params));
+    return parseSendMessageResult(
+      await this._runtime._rpc("mobkit/send_message", params),
+    );
   }
 
   /** Alias for {@link send}. */
@@ -772,17 +789,24 @@ export class MobHandle {
     }
     const id = nextRequestId(method);
     const form = new FormData();
-    form.append("payload", JSON.stringify(buildJsonRpcRequest(id, method, params)));
+    form.append(
+      "payload",
+      JSON.stringify(buildJsonRpcRequest(id, method, params)),
+    );
     for (const upload of uploads) {
-      const blob = upload.blob.type === upload.mediaType
-        ? upload.blob
-        : upload.blob.slice(0, upload.blob.size, upload.mediaType);
+      const blob =
+        upload.blob.type === upload.mediaType
+          ? upload.blob
+          : upload.blob.slice(0, upload.blob.size, upload.mediaType);
       form.append(`file:${upload.uploadId}`, blob, upload.filename);
     }
-    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/console/rpc/multipart`, {
-      method: "POST",
-      body: form,
-    });
+    const response = await fetch(
+      `${baseUrl.replace(/\/$/, "")}/console/rpc/multipart`,
+      {
+        method: "POST",
+        body: form,
+      },
+    );
     const responseText = await response.text();
     let body: Record<string, unknown> | null = null;
     if (responseText.trim() !== "") {
@@ -943,9 +967,15 @@ export class MobHandle {
   }
 
   async flowStatus(runId: string): Promise<MobRunSnapshot | null> {
-    const raw = await this._runtime._rpc("mobkit/flow_status", { run_id: runId });
+    const raw = await this._runtime._rpc("mobkit/flow_status", {
+      run_id: runId,
+    });
     if (raw === null) return null;
-    if (typeof raw === "object" && raw !== null && (raw as Record<string, unknown>).status === "not_found") {
+    if (
+      typeof raw === "object" &&
+      raw !== null &&
+      (raw as Record<string, unknown>).status === "not_found"
+    ) {
       return null;
     }
     return parseMobRunSnapshot(raw);
@@ -1019,20 +1049,25 @@ export class MobHandle {
 
   async collectCompleted(): Promise<Array<[string, RichMemberSnapshot]>> {
     const raw = await this._runtime._rpc("mobkit/collect_completed");
-    const entries = typeof raw === "object" && raw !== null
-      ? (Array.isArray((raw as Record<string, unknown>).completed)
-        ? ((raw as Record<string, unknown>).completed as unknown[])
-        : [])
-      : Array.isArray(raw)
-        ? raw
-        : [];
+    const entries =
+      typeof raw === "object" && raw !== null
+        ? Array.isArray((raw as Record<string, unknown>).completed)
+          ? ((raw as Record<string, unknown>).completed as unknown[])
+          : []
+        : Array.isArray(raw)
+          ? raw
+          : [];
     const result: Array<[string, RichMemberSnapshot]> = [];
     for (const entry of entries) {
-      const record = typeof entry === "object" && entry !== null
-        ? (entry as Record<string, unknown>)
-        : {};
+      const record =
+        typeof entry === "object" && entry !== null
+          ? (entry as Record<string, unknown>)
+          : {};
       const memberId = String(record.member_id ?? "");
-      result.push([memberId, parseRichMemberSnapshot(record.snapshot ?? record)]);
+      result.push([
+        memberId,
+        parseRichMemberSnapshot(record.snapshot ?? record),
+      ]);
     }
     return result;
   }
@@ -1077,7 +1112,7 @@ export class MobHandle {
     const raw = await this._runtime._rpc("mobkit/routing/routes/list");
     const routes =
       typeof raw === "object" && raw !== null
-        ? ((raw as Record<string, unknown>).routes as unknown[]) ?? []
+        ? (((raw as Record<string, unknown>).routes as unknown[]) ?? [])
         : [];
     return (routes as unknown[]).map(parseRuntimeRouteResult);
   }
@@ -1099,7 +1134,7 @@ export class MobHandle {
     const raw = await this._runtime._rpc("mobkit/routing/routes/add", params);
     const routeData =
       typeof raw === "object" && raw !== null
-        ? (raw as Record<string, unknown>).route ?? raw
+        ? ((raw as Record<string, unknown>).route ?? raw)
         : raw;
     return parseRuntimeRouteResult(routeData);
   }
@@ -1110,7 +1145,7 @@ export class MobHandle {
     });
     const deletedData =
       typeof raw === "object" && raw !== null
-        ? (raw as Record<string, unknown>).deleted ?? raw
+        ? ((raw as Record<string, unknown>).deleted ?? raw)
         : raw;
     return parseRuntimeRouteResult(deletedData);
   }
@@ -1156,7 +1191,7 @@ export class MobHandle {
     const raw = await this._runtime._rpc("mobkit/memory/stores");
     const stores =
       typeof raw === "object" && raw !== null
-        ? ((raw as Record<string, unknown>).stores as unknown[]) ?? []
+        ? (((raw as Record<string, unknown>).stores as unknown[]) ?? [])
         : [];
     return (stores as unknown[]).map(parseMemoryStoreInfo);
   }
@@ -1195,7 +1230,9 @@ export class MobHandle {
     return new ToolCaller(this, moduleId);
   }
 
-  async sessionStoreBigQuery(options: Record<string, unknown>): Promise<unknown> {
+  async sessionStoreBigQuery(
+    options: Record<string, unknown>,
+  ): Promise<unknown> {
     return this._runtime._rpc("mobkit/session_store/bigquery", options);
   }
 
@@ -1219,7 +1256,7 @@ export class MobHandle {
     const raw = await this._runtime._rpc("mobkit/gating/pending");
     const entries =
       typeof raw === "object" && raw !== null
-        ? ((raw as Record<string, unknown>).pending as unknown[]) ?? []
+        ? (((raw as Record<string, unknown>).pending as unknown[]) ?? [])
         : [];
     return (entries as unknown[]).map(parseGatingPendingEntry);
   }
@@ -1244,7 +1281,7 @@ export class MobHandle {
     const raw = await this._runtime._rpc("mobkit/gating/audit", { limit });
     const entries =
       typeof raw === "object" && raw !== null
-        ? ((raw as Record<string, unknown>).entries as unknown[]) ?? []
+        ? (((raw as Record<string, unknown>).entries as unknown[]) ?? [])
         : [];
     return (entries as unknown[]).map(parseGatingAuditEntry);
   }
@@ -1273,11 +1310,12 @@ export class MobHandle {
 
   async listExternalMobs(): Promise<CrossMobContactEntry[]> {
     const raw = await this._runtime._rpc("mobkit/cross_mob/directory");
-    const mobs = typeof raw === "object" && raw !== null
-      ? (Array.isArray((raw as Record<string, unknown>).mobs)
-        ? ((raw as Record<string, unknown>).mobs as unknown[])
-        : [])
-      : [];
+    const mobs =
+      typeof raw === "object" && raw !== null
+        ? Array.isArray((raw as Record<string, unknown>).mobs)
+          ? ((raw as Record<string, unknown>).mobs as unknown[])
+          : []
+        : [];
     return mobs.map(parseCrossMobContactEntry);
   }
 
@@ -1397,9 +1435,14 @@ export class MobHandle {
     if (options?.role) helperOptions.role = options.role;
     if (options?.runtimeMode) helperOptions.runtime_mode = options.runtimeMode;
     if (options?.backend) helperOptions.backend = options.backend;
-    const params: Record<string, unknown> = { agent_identity: agentIdentity, task };
+    const params: Record<string, unknown> = {
+      agent_identity: agentIdentity,
+      task,
+    };
     if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
-    return parseHelperResult(await this._runtime._rpc("mobkit/spawn_helper", params));
+    return parseHelperResult(
+      await this._runtime._rpc("mobkit/spawn_helper", params),
+    );
   }
 
   async forkHelper(
@@ -1424,7 +1467,9 @@ export class MobHandle {
     };
     if (options?.forkContext) params.fork_context = options.forkContext;
     if (Object.keys(helperOptions).length > 0) params.options = helperOptions;
-    return parseHelperResult(await this._runtime._rpc("mobkit/fork_helper", params));
+    return parseHelperResult(
+      await this._runtime._rpc("mobkit/fork_helper", params),
+    );
   }
 
   async attachSession(
@@ -1523,15 +1568,8 @@ export class ToolCaller {
     private readonly _moduleId: string,
   ) {}
 
-  async call(
-    tool: string,
-    args?: Record<string, unknown>,
-  ): Promise<unknown> {
-    const result = await this._mobHandle.callTool(
-      this._moduleId,
-      tool,
-      args,
-    );
+  async call(tool: string, args?: Record<string, unknown>): Promise<unknown> {
+    const result = await this._mobHandle.callTool(this._moduleId, tool, args);
     return result.result;
   }
 }

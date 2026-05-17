@@ -32,8 +32,8 @@ use meerkat_mobkit::{
     MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, ModuleConfig, ObjectStoreBlobStore,
     PersistedEvent, PersistentMetadataStore, PreSpawnData, ReleaseMetadata, RestartPolicy,
     RuntimeDecisionState, RuntimeOpsPolicy, RuntimeOptions, RuntimeRoute, ScheduleDefinition,
-    SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime, handle_mobkit_rpc_json,
-    handle_unified_rpc_json, load_console_ui_config_from_path_for_realm,
+    SqliteConsoleLogStore, SqliteMetadataStore, TrustedOidcRuntimeConfig, UnifiedRuntime,
+    handle_mobkit_rpc_json, handle_unified_rpc_json, load_console_ui_config_from_path_for_realm,
     mob_handle_runtime::mob_definition_may_use_image_generation, start_mobkit_runtime,
 };
 use sha2::{Digest, Sha256};
@@ -58,9 +58,9 @@ struct GatewayGatingConfig {
     action_risk_tiers: HashMap<String, String>,
 }
 
-#[derive(Default)]
 struct GatewayRuntimeOptions {
     runtime_options: RuntimeOptions,
+    max_sessions: usize,
     routing_routes: Vec<RuntimeRoute>,
     schedules: Vec<ScheduleDefinition>,
     gating: GatewayGatingConfig,
@@ -69,6 +69,23 @@ struct GatewayRuntimeOptions {
     console_ui: ConsoleUiConfig,
     console_require_app_auth: Option<bool>,
     demo_llm: bool,
+}
+
+impl Default for GatewayRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            runtime_options: RuntimeOptions::default(),
+            max_sessions: 16,
+            routing_routes: Vec::new(),
+            schedules: Vec::new(),
+            gating: GatewayGatingConfig::default(),
+            event_log: None,
+            decisions: None,
+            console_ui: ConsoleUiConfig::default(),
+            console_require_app_auth: None,
+            demo_llm: false,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -408,6 +425,35 @@ group_by = ["labels.console_group", "group"]
 
         assert!(options.demo_llm);
     }
+
+    #[test]
+    fn gateway_runtime_options_parse_max_sessions() {
+        let params = json!({
+            "runtime_options": {
+                "max_sessions": 320
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert_eq!(options.max_sessions, 320);
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_zero_max_sessions() {
+        let params = json!({
+            "runtime_options": {
+                "max_sessions": 0
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, None) {
+            Ok(_) => panic!("zero should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("runtime_options.max_sessions"));
+    }
 }
 
 fn parse_gateway_runtime_options(
@@ -429,6 +475,7 @@ fn parse_gateway_runtime_options(
         "console_config_path",
         "console_require_app_auth",
         "demo_llm",
+        "max_sessions",
         "event_log",
         "implicit_delegate_idle_retire_secs",
         "implicit_delegate_idle_sweep_interval_ms",
@@ -486,6 +533,16 @@ fn parse_gateway_runtime_options(
         parsed.demo_llm = value
             .as_bool()
             .ok_or_else(|| "runtime_options.demo_llm must be a boolean".to_string())?;
+    }
+    if let Some(value) = runtime_options.get("max_sessions") {
+        let max_sessions = value
+            .as_u64()
+            .ok_or_else(|| "runtime_options.max_sessions must be a positive integer".to_string())?;
+        if max_sessions == 0 {
+            return Err("runtime_options.max_sessions must be greater than zero".to_string());
+        }
+        parsed.max_sessions = usize::try_from(max_sessions)
+            .map_err(|_| "runtime_options.max_sessions is too large".to_string())?;
     }
     if let Some(event_log) = runtime_options.get("event_log") {
         parsed.event_log = Some(parse_gateway_event_log_config(event_log)?);
@@ -1602,7 +1659,7 @@ external_addressable = true
         let session_service: Arc<dyn meerkat_mob::MobSessionService> =
             Arc::new(meerkat_session::PersistentSessionService::new(
                 callback_builder,
-                16,
+                gateway_options.max_sessions,
                 session_store,
                 Some(Arc::clone(&runtime_store)),
                 blob_store,
@@ -1662,7 +1719,10 @@ external_addressable = true
             has_session_builder,
             session_store: None,
         };
-        let session_service = Arc::new(EphemeralSessionService::new(callback_builder, 16));
+        let session_service = Arc::new(EphemeralSessionService::new(
+            callback_builder,
+            gateway_options.max_sessions,
+        ));
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_session_runtime_adapter(adapter.clone())
@@ -1742,6 +1802,22 @@ external_addressable = true
         let _ = stdout.flush();
         std::process::exit(1);
     });
+    if let Some(state_path) = persistent_state.as_ref() {
+        let console_log_path = state_path.join("mobkit_console.sqlite");
+        let console_log_store = Arc::new(
+            SqliteConsoleLogStore::open(&console_log_path).unwrap_or_else(|e| {
+                fail_init(
+                    &request_id,
+                    -32603,
+                    format!(
+                        "failed to open mobkit_console.sqlite at {}: {e}",
+                        console_log_path.display()
+                    ),
+                );
+            }),
+        );
+        runtime.set_console_log_store(console_log_store);
+    }
 
     for route in gateway_options.routing_routes.iter().cloned() {
         if let Err(err) = runtime.add_runtime_route(route).await {

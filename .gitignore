@@ -17,6 +17,9 @@ docs/rct/traceability.legacy-*.md
 .playwright-mcp/
 /output/playwright/
 
+# Example runtime state
+examples/*/.state/
+
 # Console build temp
 console/.tmp/
 

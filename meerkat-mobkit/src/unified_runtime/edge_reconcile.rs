@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use futures::stream::{self, StreamExt};
 use meerkat_mob::SpawnMemberSpec;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
@@ -19,6 +20,8 @@ use super::{
     ROSTER_ROUTE_CHANNEL, ROSTER_ROUTE_PREFIX, ROSTER_ROUTE_SINK, ROSTER_ROUTE_TARGET_MODULE,
     UnifiedRuntime,
 };
+
+const EDGE_RECONCILE_CONCURRENCY: usize = 64;
 
 impl UnifiedRuntime {
     pub async fn reconcile(
@@ -146,9 +149,8 @@ impl UnifiedRuntime {
             ..Default::default()
         };
 
-        // Write lock for managed_dynamic_edges — held across awaits
-        // because wire/unwire must be serialized with edge set mutations.
-        let mut managed_edges = self.managed_dynamic_edges.write().await;
+        let managed_snapshot = self.managed_dynamic_edges.read().await.clone();
+        let mut to_wire = Vec::new();
 
         // Classify desired edges
         for (a, b) in &desired {
@@ -160,7 +162,7 @@ impl UnifiedRuntime {
                 continue;
             }
             let key = (a.clone(), b.clone());
-            if managed_edges.contains(&key) {
+            if managed_snapshot.contains(&key) {
                 // Managed by us — check if the actual edge still exists in the
                 // mob graph. If an out-of-band unwire() removed it, re-wire.
                 if current_edges.contains(&key) {
@@ -168,25 +170,7 @@ impl UnifiedRuntime {
                         report.retained_edges.push(edge);
                     }
                 } else {
-                    // Managed edge disappeared from mob graph — heal it
-                    let mid_a = MeerkatId::from(a.as_str());
-                    let mid_b = MeerkatId::from(b.as_str());
-                    match self.mob_handle().wire(mid_a, mid_b).await {
-                        Ok(()) => {
-                            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                                report.wired_edges.push(edge);
-                            }
-                        }
-                        Err(err) => {
-                            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                                report.failures.push(EdgeReconcileFailure {
-                                    edge,
-                                    operation: "wire (heal)".into(),
-                                    error: format!("{err}"),
-                                });
-                            }
-                        }
-                    }
+                    to_wire.push((a.clone(), b.clone(), "wire (heal)"));
                 }
             } else if current_edges.contains(&key) {
                 // Exists but not managed by us (static or external) — don't claim
@@ -194,70 +178,103 @@ impl UnifiedRuntime {
                     report.preexisting_edges.push(edge);
                 }
             } else {
-                // New edge — wire it
-                let mid_a = MeerkatId::from(a.as_str());
-                let mid_b = MeerkatId::from(b.as_str());
-                match self.mob_handle().wire(mid_a, mid_b).await {
-                    Ok(()) => {
-                        managed_edges.insert(key);
-                        if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                            report.wired_edges.push(edge);
-                        }
-                    }
-                    Err(err) => {
-                        if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
-                            report.failures.push(EdgeReconcileFailure {
-                                edge,
-                                operation: "wire".into(),
-                                error: format!("{err}"),
-                            });
-                        }
-                    }
-                }
+                to_wire.push((a.clone(), b.clone(), "wire"));
             }
         }
 
         // Unwire managed edges that are no longer desired
-        let to_unwire: Vec<(String, String)> = managed_edges
+        let mut stale_pruned = Vec::new();
+        let mut to_unwire = Vec::new();
+        for (a, b) in managed_snapshot
             .iter()
             .filter(|key| !desired.contains(*key))
             .cloned()
-            .collect();
-
-        for (a, b) in to_unwire {
+        {
             let key = (a.clone(), b.clone());
             // If either endpoint is gone, just prune from managed set
             if !active_ids.contains(&a) || !active_ids.contains(&b) {
-                managed_edges.remove(&key);
-                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                    report.pruned_stale_managed_edges.push(edge);
-                }
+                stale_pruned.push((a, b));
                 continue;
             }
             // If the edge is already gone from the mob graph (out-of-band
             // unwire/reset), just drop ownership — don't attempt unwire.
             if !current_edges.contains(&key) {
-                managed_edges.remove(&key);
-                if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                    report.pruned_stale_managed_edges.push(edge);
-                }
+                stale_pruned.push((a, b));
                 continue;
             }
-            let mid_a = MeerkatId::from(a.as_str());
-            let mid_b = MeerkatId::from(b.as_str());
-            match self.mob_handle().unwire(mid_a, mid_b).await {
+            to_unwire.push((a, b));
+        }
+
+        let handle = self.mob_handle();
+        let wire_results = stream::iter(to_wire.into_iter().map(|(a, b, operation)| {
+            let handle = handle.clone();
+            async move {
+                let result = handle
+                    .wire(MeerkatId::from(a.as_str()), MeerkatId::from(b.as_str()))
+                    .await
+                    .map_err(|err| format!("{err}"));
+                (a, b, operation, result)
+            }
+        }))
+        .buffer_unordered(EDGE_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let handle = self.mob_handle();
+        let unwire_results = stream::iter(to_unwire.into_iter().map(|(a, b)| {
+            let handle = handle.clone();
+            async move {
+                let result = handle
+                    .unwire(MeerkatId::from(a.as_str()), MeerkatId::from(b.as_str()))
+                    .await
+                    .map_err(|err| format!("{err}"));
+                (a, b, result)
+            }
+        }))
+        .buffer_unordered(EDGE_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let mut managed_edges = self.managed_dynamic_edges.write().await;
+        for (a, b, operation, result) in wire_results {
+            match result {
                 Ok(()) => {
-                    managed_edges.remove(&key);
+                    managed_edges.insert((a.clone(), b.clone()));
+                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                        report.wired_edges.push(edge);
+                    }
+                }
+                Err(error) => {
+                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                        report.failures.push(EdgeReconcileFailure {
+                            edge,
+                            operation: operation.into(),
+                            error,
+                        });
+                    }
+                }
+            }
+        }
+        for (a, b) in stale_pruned {
+            managed_edges.remove(&(a.clone(), b.clone()));
+            if let Ok(edge) = DesiredPeerEdge::new(a, b) {
+                report.pruned_stale_managed_edges.push(edge);
+            }
+        }
+        for (a, b, result) in unwire_results {
+            match result {
+                Ok(()) => {
+                    managed_edges.remove(&(a.clone(), b.clone()));
                     if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                         report.unwired_edges.push(edge);
                     }
                 }
-                Err(err) => {
+                Err(error) => {
                     if let Ok(edge) = DesiredPeerEdge::new(a, b) {
                         report.failures.push(EdgeReconcileFailure {
                             edge,
                             operation: "unwire".into(),
-                            error: format!("{err}"),
+                            error,
                         });
                     }
                 }

@@ -5,7 +5,14 @@
 import { describe, it, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { MobKitRuntime, MobHandle, ToolCaller, NotConnectedError, RpcError, TransportError } from "../dist/index.js";
+import {
+  MobKitRuntime,
+  MobHandle,
+  ToolCaller,
+  NotConnectedError,
+  RpcError,
+  TransportError,
+} from "../dist/index.js";
 
 // ---------------------------------------------------------------------------
 // Mock RPC helper
@@ -20,7 +27,9 @@ function createMockRuntime(): {
   rt: MobKitRuntime;
   handle: MobHandle;
   calls: RpcCall[];
-  setResponse: (fn: (method: string, params?: Record<string, unknown>) => unknown) => void;
+  setResponse: (
+    fn: (method: string, params?: Record<string, unknown>) => unknown,
+  ) => void;
 } {
   const config = {
     mobConfigPath: null,
@@ -36,6 +45,8 @@ function createMockRuntime(): {
     memoryConfig: null,
     authConfig: null,
     implicitDelegateIdleRetireSecs: undefined,
+    maxSessions: null,
+    gatewayTimeoutMs: null,
     gatewayBin: null,
     modules: [],
     persistentState: null,
@@ -52,9 +63,15 @@ function createMockRuntime(): {
   (rt as any)._running = true;
 
   const calls: RpcCall[] = [];
-  let responseFn: (method: string, params?: Record<string, unknown>) => unknown = () => ({});
+  let responseFn: (
+    method: string,
+    params?: Record<string, unknown>,
+  ) => unknown = () => ({});
 
-  (rt as any)._rpc = async (method: string, params?: Record<string, unknown>) => {
+  (rt as any)._rpc = async (
+    method: string,
+    params?: Record<string, unknown>,
+  ) => {
     calls.push({ method, params });
     return responseFn(method, params);
   };
@@ -65,7 +82,9 @@ function createMockRuntime(): {
     rt,
     handle,
     calls,
-    setResponse: (fn) => { responseFn = fn; },
+    setResponse: (fn) => {
+      responseFn = fn;
+    },
   };
 }
 
@@ -142,9 +161,15 @@ describe("MobHandle Rust gateway parity wrappers", () => {
     await handle.schedulingDispatch([{ id: "daily" }], 5678);
 
     assert.equal(calls[0].method, "mobkit/scheduling/evaluate");
-    assert.deepEqual(calls[0].params, { schedules: [{ id: "daily" }], tick_ms: 1234 });
+    assert.deepEqual(calls[0].params, {
+      schedules: [{ id: "daily" }],
+      tick_ms: 1234,
+    });
     assert.equal(calls[1].method, "mobkit/scheduling/dispatch");
-    assert.deepEqual(calls[1].params, { schedules: [{ id: "daily" }], tick_ms: 5678 });
+    assert.deepEqual(calls[1].params, {
+      schedules: [{ id: "daily" }],
+      tick_ms: 5678,
+    });
   });
 
   it("sends session store BigQuery RPC name", async () => {
@@ -319,25 +344,41 @@ describe("MobHandle.send()", () => {
     rt.setRustHttpBase("http://127.0.0.1:8765");
     const originalFetch = globalThis.fetch;
     try {
-      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-        assert.equal(String(url), "http://127.0.0.1:8765/console/rpc/multipart");
+      globalThis.fetch = (async (
+        url: string | URL | Request,
+        init?: RequestInit,
+      ) => {
+        assert.equal(
+          String(url),
+          "http://127.0.0.1:8765/console/rpc/multipart",
+        );
         const form = init?.body as FormData;
-        const payload = JSON.parse(String(form.get("payload"))) as Record<string, any>;
+        const payload = JSON.parse(String(form.get("payload"))) as Record<
+          string,
+          any
+        >;
         assert.equal(payload.method, "mobkit/send_message");
         assert.deepEqual(payload.params, {
           member_id: "m-1",
           content: [
             { type: "text", text: "See attached" },
-            { type: "image_upload", upload_id: "upload-1", media_type: "image/png" },
+            {
+              type: "image_upload",
+              upload_id: "upload-1",
+              media_type: "image/png",
+            },
           ],
         });
         const file = form.get("file:upload-1") as Blob;
         assert.equal(file.type, "image/png");
-        return new Response(JSON.stringify({
-          jsonrpc: "2.0",
-          id: payload.id,
-          result: { accepted: true, member_id: "m-1", session_id: "sess-1" },
-        }), { headers: { "content-type": "application/json" } });
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { accepted: true, member_id: "m-1", session_id: "sess-1" },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
       }) as typeof fetch;
 
       const result = await handle.send("m-1", "See attached", {
@@ -355,29 +396,49 @@ describe("MobHandle.send()", () => {
     rt.setRustHttpBase("http://127.0.0.1:8765");
     const originalFetch = globalThis.fetch;
     try {
-      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      globalThis.fetch = (async (
+        _url: string | URL | Request,
+        init?: RequestInit,
+      ) => {
         const form = init?.body as FormData;
-        const payload = JSON.parse(String(form.get("payload"))) as Record<string, any>;
+        const payload = JSON.parse(String(form.get("payload"))) as Record<
+          string,
+          any
+        >;
         assert.equal(payload.params.handling_mode, "steer");
         assert.deepEqual(payload.params.content, [
           { type: "text", text: "first" },
-          { type: "image_upload", upload_id: "upload-1", media_type: "image/jpeg", alt: "photo" },
+          {
+            type: "image_upload",
+            upload_id: "upload-1",
+            media_type: "image/jpeg",
+            alt: "photo",
+          },
         ]);
-        return new Response(JSON.stringify({
-          jsonrpc: "2.0",
-          id: payload.id,
-          result: { accepted: true, member_id: "m-1", session_id: "sess-2" },
-        }), { headers: { "content-type": "application/json" } });
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { accepted: true, member_id: "m-1", session_id: "sess-2" },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
       }) as typeof fetch;
 
-      const result = await handle.send("m-1", [{ type: "text", text: "first" }], {
-        handlingMode: "steer",
-        attachments: [{
-          blob: new Blob(["jpg"], { type: "image/jpeg" }),
-          alt: "photo",
-          filename: "photo.jpg",
-        }],
-      });
+      const result = await handle.send(
+        "m-1",
+        [{ type: "text", text: "first" }],
+        {
+          handlingMode: "steer",
+          attachments: [
+            {
+              blob: new Blob(["jpg"], { type: "image/jpeg" }),
+              alt: "photo",
+              filename: "photo.jpg",
+            },
+          ],
+        },
+      );
       assert.equal(result.sessionId, "sess-2");
     } finally {
       globalThis.fetch = originalFetch;
@@ -387,7 +448,10 @@ describe("MobHandle.send()", () => {
   it("requires rustHttpBaseUrl before multipart send", async () => {
     const { handle } = createMockRuntime();
     await assert.rejects(
-      () => handle.send("m-1", "x", { attachments: [new Blob(["x"], { type: "image/png" })] }),
+      () =>
+        handle.send("m-1", "x", {
+          attachments: [new Blob(["x"], { type: "image/png" })],
+        }),
       NotConnectedError,
     );
   });
@@ -416,21 +480,40 @@ describe("MobHandle.uploadBlob()", () => {
     rt.setRustHttpBase("http://127.0.0.1:8765/");
     const originalFetch = globalThis.fetch;
     try {
-      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      globalThis.fetch = (async (
+        _url: string | URL | Request,
+        init?: RequestInit,
+      ) => {
         const form = init?.body as FormData;
-        const payload = JSON.parse(String(form.get("payload"))) as Record<string, any>;
+        const payload = JSON.parse(String(form.get("payload"))) as Record<
+          string,
+          any
+        >;
         assert.equal(payload.method, "mobkit/blob/upload");
         assert.deepEqual(payload.params, {
-          upload: { type: "image_upload", upload_id: "upload-1", media_type: "image/webp" },
+          upload: {
+            type: "image_upload",
+            upload_id: "upload-1",
+            media_type: "image/webp",
+          },
         });
-        return new Response(JSON.stringify({
-          jsonrpc: "2.0",
-          id: payload.id,
-          result: { blob_id: "sha256:abc", media_type: "image/webp", size: 3 },
-        }), { headers: { "content-type": "application/json" } });
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              blob_id: "sha256:abc",
+              media_type: "image/webp",
+              size: 3,
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
       }) as typeof fetch;
 
-      const result = await handle.uploadBlob(new Blob(["web"], { type: "image/webp" }));
+      const result = await handle.uploadBlob(
+        new Blob(["web"], { type: "image/webp" }),
+      );
       assert.equal(result.blobId, "sha256:abc");
       assert.equal(result.mediaType, "image/webp");
       assert.equal(result.size, 3);
@@ -445,13 +528,18 @@ describe("MobHandle.uploadBlob()", () => {
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = (async (_url: string | URL | Request) =>
-        new Response(JSON.stringify({
-          jsonrpc: "2.0",
-          id: "upload",
-          result: { blob_id: "sha256:def", media_type: "image/png", size: 1 },
-        }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: "upload",
+            result: { blob_id: "sha256:def", media_type: "image/png", size: 1 },
+          }),
+          { headers: { "content-type": "application/json" } },
+        )) as typeof fetch;
 
-      const result = await handle.upload_blob(new Blob(["x"], { type: "image/png" }));
+      const result = await handle.upload_blob(
+        new Blob(["x"], { type: "image/png" }),
+      );
       assert.equal(result.blobId, "sha256:def");
     } finally {
       globalThis.fetch = originalFetch;
@@ -464,21 +552,25 @@ describe("MobHandle.uploadBlob()", () => {
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = (async (_url: string | URL | Request) =>
-        new Response(JSON.stringify({
-          jsonrpc: "2.0",
-          id: "upload",
-          error: {
-            code: -32602,
-            message: "bad upload",
-            data: { reason: "test" },
-          },
-        }), { headers: { "content-type": "application/json" } })) as typeof fetch;
+        new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: "upload",
+            error: {
+              code: -32602,
+              message: "bad upload",
+              data: { reason: "test" },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        )) as typeof fetch;
 
       await assert.rejects(
         () => handle.uploadBlob(new Blob(["x"], { type: "image/png" })),
-        (err: unknown) => err instanceof RpcError
-          && err.code === -32602
-          && err.method === "mobkit/blob/upload",
+        (err: unknown) =>
+          err instanceof RpcError &&
+          err.code === -32602 &&
+          err.method === "mobkit/blob/upload",
       );
     } finally {
       globalThis.fetch = originalFetch;
@@ -499,9 +591,10 @@ describe("MobHandle.uploadBlob()", () => {
 
       await assert.rejects(
         () => handle.uploadBlob(new Blob(["x"], { type: "image/png" })),
-        (err: unknown) => err instanceof TransportError
-          && err.message.includes("status=413")
-          && err.message.includes("payload too large"),
+        (err: unknown) =>
+          err instanceof TransportError &&
+          err.message.includes("status=413") &&
+          err.message.includes("payload too large"),
       );
     } finally {
       globalThis.fetch = originalFetch;
@@ -571,13 +664,28 @@ describe("MobHandle.findMembers()", () => {
   it("sends mobkit/find_members and returns array", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => [
-      { agent_identity: "m-1", role: "a", state: "Active", wired_to: [], labels: {} },
-      { agent_identity: "m-2", role: "b", state: "Active", wired_to: [], labels: {} },
+      {
+        agent_identity: "m-1",
+        role: "a",
+        state: "Active",
+        wired_to: [],
+        labels: {},
+      },
+      {
+        agent_identity: "m-2",
+        role: "b",
+        state: "Active",
+        wired_to: [],
+        labels: {},
+      },
     ]);
 
     const result = await handle.findMembers("role", "helper");
     assert.equal(calls[0].method, "mobkit/find_members");
-    assert.deepEqual(calls[0].params, { label_key: "role", label_value: "helper" });
+    assert.deepEqual(calls[0].params, {
+      label_key: "role",
+      label_value: "helper",
+    });
     assert.equal(result.length, 2);
     assert.equal(result[0].agentIdentity, "m-1");
     assert.equal(result[1].agentIdentity, "m-2");
@@ -596,7 +704,13 @@ describe("MobHandle.listMembers()", () => {
   it("sends mobkit/list_members and returns array", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => [
-      { agent_identity: "m-1", role: "a", state: "Active", wired_to: [], labels: {} },
+      {
+        agent_identity: "m-1",
+        role: "a",
+        state: "Active",
+        wired_to: [],
+        labels: {},
+      },
     ]);
 
     const result = await handle.listMembers();
@@ -664,7 +778,9 @@ describe("MobHandle.resolveRouting()", () => {
       route: { sink: "email", target_module: "mailer" },
     }));
 
-    const result = await handle.resolveRouting("user@example.com", { hint: "email" });
+    const result = await handle.resolveRouting("user@example.com", {
+      hint: "email",
+    });
     assert.equal(calls[0].method, "mobkit/routing/resolve");
     assert.equal(calls[0].params!.recipient, "user@example.com");
     assert.equal(calls[0].params!.hint, "email");
@@ -720,7 +836,13 @@ describe("MobHandle.addRoute()", () => {
       },
     }));
 
-    const result = await handle.addRoute("rk-new", "alice", "webhook", "notifier", "slack");
+    const result = await handle.addRoute(
+      "rk-new",
+      "alice",
+      "webhook",
+      "notifier",
+      "slack",
+    );
     assert.equal(calls[0].method, "mobkit/routing/routes/add");
     assert.equal(calls[0].params!.route_key, "rk-new");
     assert.equal(calls[0].params!.recipient, "alice");
@@ -734,7 +856,13 @@ describe("MobHandle.addRoute()", () => {
   it("omits channel when not provided", async () => {
     const { handle, calls, setResponse } = createMockRuntime();
     setResponse(() => ({
-      route: { route_key: "rk", recipient: "r", channel: null, sink: "s", target_module: "tm" },
+      route: {
+        route_key: "rk",
+        recipient: "r",
+        channel: null,
+        sink: "s",
+        target_module: "tm",
+      },
     }));
 
     await handle.addRoute("rk", "r", "s", "tm");
@@ -771,7 +899,10 @@ describe("MobHandle.sendDelivery()", () => {
       delivery_id: "dlv-1",
     }));
 
-    const result = await handle.sendDelivery({ recipient: "alice", payload: "hi" });
+    const result = await handle.sendDelivery({
+      recipient: "alice",
+      payload: "hi",
+    });
     assert.equal(calls[0].method, "mobkit/delivery/send");
     assert.deepEqual(calls[0].params, { recipient: "alice", payload: "hi" });
     assert.equal(result.delivered, true);
@@ -848,7 +979,9 @@ describe("MobHandle.memoryIndex()", () => {
       assertion_id: "assert-1",
     }));
 
-    const result = await handle.memoryIndex("user-1", "preferences", "main", { extra: true });
+    const result = await handle.memoryIndex("user-1", "preferences", "main", {
+      extra: true,
+    });
     assert.equal(calls[0].method, "mobkit/memory/index");
     assert.equal(calls[0].params!.entity, "user-1");
     assert.equal(calls[0].params!.topic, "preferences");
@@ -870,7 +1003,9 @@ describe("MobHandle.callTool()", () => {
       result: { messages: ["msg-1"] },
     }));
 
-    const result = await handle.callTool("google-workspace", "gmail_search", { query: "is:unread" });
+    const result = await handle.callTool("google-workspace", "gmail_search", {
+      query: "is:unread",
+    });
     assert.equal(calls[0].method, "mobkit/call_tool");
     assert.equal(calls[0].params!.module_id, "google-workspace");
     assert.equal(calls[0].params!.tool, "gmail_search");
@@ -923,7 +1058,9 @@ describe("MobHandle.gatingEvaluate()", () => {
       pending_id: "pend-1",
     }));
 
-    const result = await handle.gatingEvaluate("delete_account", "user-1", { context: "admin" });
+    const result = await handle.gatingEvaluate("delete_account", "user-1", {
+      context: "admin",
+    });
     assert.equal(calls[0].method, "mobkit/gating/evaluate");
     assert.equal(calls[0].params!.action, "delete_account");
     assert.equal(calls[0].params!.actor_id, "user-1");
@@ -974,7 +1111,9 @@ describe("MobHandle.gatingDecide()", () => {
       decision: "approved",
     }));
 
-    const result = await handle.gatingDecide("p-1", "approved", "admin-1", { note: "looks good" });
+    const result = await handle.gatingDecide("p-1", "approved", "admin-1", {
+      note: "looks good",
+    });
     assert.equal(calls[0].method, "mobkit/gating/decide");
     assert.equal(calls[0].params!.pending_id, "p-1");
     assert.equal(calls[0].params!.decision, "approved");
@@ -1111,7 +1250,9 @@ describe("MobHandle.queryEvents()", () => {
         seq: 2,
         timestamp_ms: 6000,
         member_id: null,
-        event: { Module: { module: "mod-x", event_type: "loaded", payload: {} } },
+        event: {
+          Module: { module: "mod-x", event_type: "loaded", payload: {} },
+        },
       },
     ]);
 
@@ -1147,7 +1288,13 @@ describe("MobHandle.queryEvents()", () => {
           seq: 9,
           timestamp_ms: 9000,
           member_id: "m-9",
-          event: { Agent: { agent_id: "a-9", event_type: "text_delta", payload: { delta: "hi" } } },
+          event: {
+            Agent: {
+              agent_id: "a-9",
+              event_type: "text_delta",
+              payload: { delta: "hi" },
+            },
+          },
         },
       ],
     }));

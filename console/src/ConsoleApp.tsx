@@ -10,8 +10,16 @@ import {
   ConsoleWorkbench,
   useConsoleDockController,
 } from "@console-components";
-import type { ConversationTimelineEntry, IdentityInspectViewState, IdentityStatusRow } from "@console-core";
-import { normalizeIdentityInspectViewState } from "@console-core";
+import type {
+  ConsoleDockState,
+  ConversationTimelineEntry,
+  IdentityInspectViewState,
+  IdentityStatusRow,
+} from "@console-core";
+import {
+  normalizeConsoleDockState,
+  normalizeIdentityInspectViewState,
+} from "@console-core";
 
 import { normalizeAgents } from "./lib/agents";
 import {
@@ -47,7 +55,6 @@ import type {
   ConsoleGatingActionPayload,
   ConsoleModulesResponse,
   ConsoleTopologyNode,
-  IdentityStatusRow,
 } from "./types";
 import { TopologyPanel } from "./panels/TopologyPanel";
 import { TimelinePanel } from "./panels/TimelinePanel";
@@ -57,7 +64,11 @@ import { RoutingPanel } from "./panels/RoutingPanel";
 import { LogsPanel } from "./panels/LogsPanel";
 import { Topbar } from "./panels/Topbar";
 import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
-import { Sidebar as DesignSidebar, normalizeNavKind, type NavKind } from "./panels/Sidebar";
+import {
+  Sidebar as DesignSidebar,
+  normalizeNavKind,
+  type NavKind,
+} from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
 import { ChatPane, type StagedAttachment } from "./panels/ChatPane";
 import { MobKitDock } from "./panels/MobKitDock";
@@ -91,20 +102,36 @@ function normalizeConsoleTheme(value: unknown): ConsoleTheme | null {
   return value === "dark" || value === "light" ? value : null;
 }
 
-function normalizeConsoleVariant(value: unknown): "rams" | "terminal" | "graphite" | null {
-  return value === "rams" || value === "terminal" || value === "graphite" ? value : null;
+function normalizeConsoleVariant(
+  value: unknown,
+): "rams" | "terminal" | "graphite" | null {
+  return value === "rams" || value === "terminal" || value === "graphite"
+    ? value
+    : null;
 }
 
 function normalizeDockPreset(value: unknown): DockPresetId | null {
-  return value === "single" || value === "two_columns" || value === "two_rows" || value === "grid" ? value : null;
+  return value === "single" ||
+    value === "two_columns" ||
+    value === "two_rows" ||
+    value === "grid"
+    ? value
+    : null;
 }
 
-function actionLabel(actions: ConsoleActionsUiConfig | undefined, key: keyof ConsoleActionsUiConfig, fallback: string): string {
+function actionLabel(
+  actions: ConsoleActionsUiConfig | undefined,
+  key: keyof ConsoleActionsUiConfig,
+  fallback: string,
+): string {
   const value = actions?.[key];
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function actionVisible(actions: ConsoleActionsUiConfig | undefined, key: keyof ConsoleActionsUiConfig): boolean {
+function actionVisible(
+  actions: ConsoleActionsUiConfig | undefined,
+  key: keyof ConsoleActionsUiConfig,
+): boolean {
   return actions?.[key] !== false;
 }
 
@@ -120,21 +147,41 @@ function richBlockHasVisibleContent(block: unknown): boolean {
     typeof record.body === "string" ? record.body : "",
     typeof record.title === "string" ? record.title : "",
     typeof record.name === "string" ? record.name : "",
-  ].join(" ").trim();
+  ]
+    .join(" ")
+    .trim();
   if (scalarText.length > 0) return true;
   if (
-    record.type === "image"
-    && (typeof record.src === "string" || typeof record.blobId === "string")
-  ) return true;
-  if (Array.isArray(record.headers) && record.headers.some((v) => String(v || "").trim().length > 0)) return true;
-  if (Array.isArray(record.rows) && record.rows.some((row) => Array.isArray(row) && row.some((v) => String(v || "").trim().length > 0))) return true;
+    record.type === "image" &&
+    (typeof record.src === "string" || typeof record.blobId === "string")
+  )
+    return true;
+  if (
+    Array.isArray(record.headers) &&
+    record.headers.some((v) => String(v || "").trim().length > 0)
+  )
+    return true;
+  if (
+    Array.isArray(record.rows) &&
+    record.rows.some(
+      (row) =>
+        Array.isArray(row) &&
+        row.some((v) => String(v || "").trim().length > 0),
+    )
+  )
+    return true;
   return false;
 }
 
-function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): ConversationTimelineEntry[] {
+function sanitizeConversationEntries(
+  entries: ConversationTimelineEntry[],
+): ConversationTimelineEntry[] {
   const sanitized: ConversationTimelineEntry[] = [];
   for (const entry of entries) {
-    if (entry.kind !== "message") { sanitized.push(entry); continue; }
+    if (entry.kind !== "message") {
+      sanitized.push(entry);
+      continue;
+    }
     if (entry.variant === "rich" && Array.isArray(entry.blocks)) {
       const blocks = entry.blocks.filter(richBlockHasVisibleContent);
       if (!blocks.length) continue;
@@ -146,22 +193,30 @@ function sanitizeConversationEntries(entries: ConversationTimelineEntry[]): Conv
   return sanitized;
 }
 
-function normalizeConsoleInspectResult(value: unknown): IdentityInspectViewState | null {
+function normalizeConsoleInspectResult(
+  value: unknown,
+): IdentityInspectViewState | null {
   const direct = normalizeIdentityInspectViewState(value);
   if (direct) return direct;
-  const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const identityRecord = record.identity && typeof record.identity === "object"
-    ? record.identity as Record<string, unknown>
-    : null;
+  const record =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const identityRecord =
+    record.identity && typeof record.identity === "object"
+      ? (record.identity as Record<string, unknown>)
+      : null;
   if (!identityRecord) return null;
   return normalizeIdentityInspectViewState({
     identity: identityRecord.identity,
     display_name: identityRecord.display_name,
-    role: identityRecord.labels && typeof identityRecord.labels === "object"
-      ? (identityRecord.labels as Record<string, unknown>).role
-      : undefined,
+    role:
+      identityRecord.labels && typeof identityRecord.labels === "object"
+        ? (identityRecord.labels as Record<string, unknown>).role
+        : undefined,
     state: identityRecord.health,
-    addressability: identityRecord.addressable === true ? "addressable" : "internal_only",
+    addressability:
+      identityRecord.addressable === true ? "addressable" : "internal_only",
     session_id: identityRecord.session_id,
     labels: identityRecord.labels,
     continuity: {
@@ -174,16 +229,29 @@ function normalizeConsoleInspectResult(value: unknown): IdentityInspectViewState
 }
 
 const DEFAULT_APPROVER_ID = "console-ops-lead";
+const DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
 
 function createIdempotencyKey(): string {
   try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    if (
+      typeof crypto !== "undefined" &&
+      typeof crypto.randomUUID === "function"
+    ) {
       return crypto.randomUUID();
     }
   } catch {
     // Fall through to timestamp-based key.
   }
   return `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function dockLayoutStorageKey(
+  baseUrl: string,
+  experience: ConsoleExperience | null,
+): string {
+  const runtimeId = experience?.runtime_id?.trim();
+  const title = experience?.console_config?.title?.trim();
+  return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
 }
 
 function cursorSeq(cursor: string | undefined): number | null {
@@ -196,37 +264,76 @@ function cursorSeq(cursor: string | undefined): number | null {
 
 function isEndTurnFrame(frame: ConsoleFrame): boolean {
   if (frame.event !== "turn_completed") return false;
-  const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+  const data =
+    frame.data && typeof frame.data === "object"
+      ? (frame.data as Record<string, unknown>)
+      : {};
   return data.stop_reason === "end_turn";
 }
 
 // --- Event sets for the SSE handler ---
 const REFRESH_TRIGGER_EVENTS = new Set([
-  "interaction_complete", "interaction_failed", "state_changed",
-  "member_ready", "member_retired", "topology_updated", "gating_decision", "route_changed",
-  "tool_call_requested", "tool_call", "tool_result_received",
-  "tool_execution_started", "tool_execution_completed",
+  "interaction_complete",
+  "interaction_failed",
+  "state_changed",
+  "member_ready",
+  "member_retired",
+  "topology_updated",
+  "gating_decision",
+  "route_changed",
+  "tool_call_requested",
+  "tool_call",
+  "tool_result_received",
+  "tool_execution_started",
+  "tool_execution_completed",
 ]);
 const PANEL_ROUTABLE_EVENTS = new Set([
-  "user_input", "interaction_started", "interaction_complete", "interaction_failed",
-  "assistant_image", "assistant_image_appended",
-  "text_delta", "text_complete",
+  "user_input",
+  "interaction_started",
+  "interaction_complete",
+  "interaction_failed",
+  "assistant_image",
+  "assistant_image_appended",
+  "text_delta",
+  "text_complete",
   "turn_completed",
-  "tool_call_requested", "tool_call", "tool_result_received",
-  "tool_execution_started", "tool_execution_completed",
-  "run_started", "run_completed", "run_failed",
+  "tool_call_requested",
+  "tool_call",
+  "tool_result_received",
+  "tool_execution_started",
+  "tool_execution_completed",
+  "run_started",
+  "run_completed",
+  "run_failed",
   "message_delivery_failed",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([
-  "interaction_complete", "interaction_failed", "run_completed", "run_failed", "message_delivery_failed",
+  "interaction_complete",
+  "interaction_failed",
+  "run_completed",
+  "run_failed",
+  "message_delivery_failed",
 ]);
 // Events filtered from the activity rail — don't buffer them
 const ACTIVITY_SKIP_EVENTS = new Set([
-  "subscribed", "run_started", "run_completed", "turn_started", "turn_completed",
-  "text_complete", "reasoning_delta", "reasoning_complete",
-  "run_failed", "keep-alive", "tool_config_changed", "tool_scope_changed", "frame_updated",
-  "text_delta", "tool_call", "tool_execution_started",
-  "tool_result_received", "tool_execution_completed",
+  "subscribed",
+  "run_started",
+  "run_completed",
+  "turn_started",
+  "turn_completed",
+  "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
+  "run_failed",
+  "keep-alive",
+  "tool_config_changed",
+  "tool_scope_changed",
+  "frame_updated",
+  "text_delta",
+  "tool_call",
+  "tool_execution_started",
+  "tool_result_received",
+  "tool_execution_completed",
 ]);
 
 // ============================================================================
@@ -235,42 +342,89 @@ const ACTIVITY_SKIP_EVENTS = new Set([
 
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // --- Low-frequency React state (UI-driven) ---
-  const [experience, setExperience] = React.useState<ConsoleExperience | null>(null);
+  const [experience, setExperience] = React.useState<ConsoleExperience | null>(
+    null,
+  );
   const [agents, setAgents] = React.useState<ConsoleAgent[]>([]);
-  const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>({});
-  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] = React.useState<Record<string, StagedAttachment[]>>({});
-  const [sendingPanels, setSendingPanels] = React.useState<Set<string>>(new Set());
-  const [pinnedAgentIds, setPinnedAgentIds] = React.useState<Set<string>>(new Set());
-  const [inspectByIdentity, setInspectByIdentity] = React.useState<Record<string, IdentityInspectViewState | null>>({});
-  const [routingData, setRoutingData] = React.useState<RoutingPanelData>({ routes: [], deliveries: [] });
-  const [gatingData, setGatingData] = React.useState<GatingPanelData>({ pending: [], audit: [] });
-  const [activeActivityPresetId, setActiveActivityPresetId] = React.useState("");
-  const [selectedRosterMemberId, setSelectedRosterMemberId] = React.useState("");
+  const [draftByKey, setDraftByKey] = React.useState<Record<string, string>>(
+    {},
+  );
+  const [stagedAttachmentsByIdentity, setStagedAttachmentsByIdentity] =
+    React.useState<Record<string, StagedAttachment[]>>({});
+  const [sendingPanels, setSendingPanels] = React.useState<Set<string>>(
+    new Set(),
+  );
+  const [pinnedAgentIds, setPinnedAgentIds] = React.useState<Set<string>>(
+    new Set(),
+  );
+  const [inspectByIdentity, setInspectByIdentity] = React.useState<
+    Record<string, IdentityInspectViewState | null>
+  >({});
+  const [routingData, setRoutingData] = React.useState<RoutingPanelData>({
+    routes: [],
+    deliveries: [],
+  });
+  const [gatingData, setGatingData] = React.useState<GatingPanelData>({
+    pending: [],
+    audit: [],
+  });
+  const [activeActivityPresetId, setActiveActivityPresetId] =
+    React.useState("");
+  const [selectedRosterMemberId, setSelectedRosterMemberId] =
+    React.useState("");
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
   const [theme, setTheme] = React.useState<ConsoleTheme>(() => {
-    try { return (localStorage.getItem("mobkit-console-theme") as ConsoleTheme) || "light"; } catch { return "light"; }
+    try {
+      return (
+        (localStorage.getItem("mobkit-console-theme") as ConsoleTheme) ||
+        "light"
+      );
+    } catch {
+      return "light";
+    }
   });
   const [variant, setVariant] = useConsoleVariant();
 
-  const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(() => {
-    try { return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1"; } catch { return false; }
-  });
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(
+    () => {
+      try {
+        return localStorage.getItem("mobkit-console-sidebar-collapsed") === "1";
+      } catch {
+        return false;
+      }
+    },
+  );
   const toggleSidebarCollapsed = React.useCallback(() => {
     setSidebarCollapsed((c) => {
       const next = !c;
-      try { localStorage.setItem("mobkit-console-sidebar-collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+      try {
+        localStorage.setItem(
+          "mobkit-console-sidebar-collapsed",
+          next ? "1" : "0",
+        );
+      } catch {
+        /* ignore */
+      }
       return next;
     });
   }, []);
 
   const [railCollapsed, setRailCollapsed] = React.useState<boolean>(() => {
-    try { return localStorage.getItem("mobkit-console-rail-collapsed") === "1"; } catch { return false; }
+    try {
+      return localStorage.getItem("mobkit-console-rail-collapsed") === "1";
+    } catch {
+      return false;
+    }
   });
   const toggleRailCollapsed = React.useCallback(() => {
     setRailCollapsed((c) => {
       const next = !c;
-      try { localStorage.setItem("mobkit-console-rail-collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+      try {
+        localStorage.setItem("mobkit-console-rail-collapsed", next ? "1" : "0");
+      } catch {
+        /* ignore */
+      }
       return next;
     });
   }, []);
@@ -282,11 +436,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   React.useEffect(() => {
     stagedAttachmentsRef.current = stagedAttachmentsByIdentity;
   }, [stagedAttachmentsByIdentity]);
-  React.useEffect(() => () => {
-    for (const items of Object.values(stagedAttachmentsRef.current)) {
-      items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
-    }
-  }, []);
+  React.useEffect(
+    () => () => {
+      for (const items of Object.values(stagedAttachmentsRef.current)) {
+        items.forEach((item) => URL.revokeObjectURL(item.previewUrl));
+      }
+    },
+    [],
+  );
 
   function setStagedAttachmentsForIdentity(
     identity: string,
@@ -319,8 +476,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // wholesale replacement, no live-overlay wipe). The renderer makes
   // exactly one adapter pass over the merged log.
   const identityLogRef = React.useRef<Record<string, IdentityLog>>({});
-  const timelineFetchInFlightRef = React.useRef<Record<string, Promise<void>>>({});
-  const optimisticUserByPanelKeyRef = React.useRef<Record<string, OptimisticUserMessage>>({});
+  const timelineFetchInFlightRef = React.useRef<Record<string, Promise<void>>>(
+    {},
+  );
+  const optimisticUserByPanelKeyRef = React.useRef<
+    Record<string, OptimisticUserMessage>
+  >({});
 
   function getOrCreateLog(identity: string): IdentityLog {
     let log = identityLogRef.current[identity];
@@ -337,7 +498,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function clearOptimisticUserByInteraction(interactionId: string): void {
     const clearedPanelKeys: string[] = [];
-    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+    for (const [panelKey, optimistic] of Object.entries(
+      optimisticUserByPanelKeyRef.current,
+    )) {
       if (optimistic.interactionId !== interactionId) continue;
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       delete optimisticUserByPanelKeyRef.current[panelKey];
@@ -368,16 +531,30 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
   }
 
-  function clearOptimisticUserByContent(identity: string, frame: ConsoleFrame): void {
-    if (frame.event !== "interaction_started" && frame.event !== "user_input") return;
-    const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-    const content = typeof record.content === "string" ? record.content.trim() : "";
+  function clearOptimisticUserByContent(
+    identity: string,
+    frame: ConsoleFrame,
+  ): void {
+    if (frame.event !== "interaction_started" && frame.event !== "user_input")
+      return;
+    const record =
+      frame.data && typeof frame.data === "object"
+        ? (frame.data as Record<string, unknown>)
+        : {};
+    const content =
+      typeof record.content === "string" ? record.content.trim() : "";
     if (!content) return;
     const clearedPanelKeys: string[] = [];
-    for (const [panelKey, optimistic] of Object.entries(optimisticUserByPanelKeyRef.current)) {
+    for (const [panelKey, optimistic] of Object.entries(
+      optimisticUserByPanelKeyRef.current,
+    )) {
       if (!panelKey.endsWith(`:agent-chat:${identity}`)) continue;
       if (optimistic.interactionId) continue;
-      if (!("text" in optimistic.entry) || typeof optimistic.entry.text !== "string") continue;
+      if (
+        !("text" in optimistic.entry) ||
+        typeof optimistic.entry.text !== "string"
+      )
+        continue;
       if (optimistic.entry.text.trim() !== content) continue;
       optimistic.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
       delete optimisticUserByPanelKeyRef.current[panelKey];
@@ -411,15 +588,24 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   /// rendering the user turn itself.
   function appendFrame(identity: string, frame: ConsoleFrame): boolean {
     const log = getOrCreateLog(identity);
-    if (frame.event === "frame_updated" && frame.data && typeof frame.data === "object") {
-      const updated = (frame.data as Record<string, unknown>).frame as ConsoleFrame | undefined;
+    if (
+      frame.event === "frame_updated" &&
+      frame.data &&
+      typeof frame.data === "object"
+    ) {
+      const updated = (frame.data as Record<string, unknown>).frame as
+        | ConsoleFrame
+        | undefined;
       if (updated && updated.id) {
         const existingIndex = log.byKey.get(updated.id);
         if (existingIndex !== undefined && log.events[existingIndex]) {
           const existingVersion = log.events[existingIndex].frameVersion ?? 0;
           const updatedVersion = updated.frameVersion ?? existingVersion;
           if (updatedVersion < existingVersion) return false;
-          log.events[existingIndex] = { ...log.events[existingIndex], ...updated };
+          log.events[existingIndex] = {
+            ...log.events[existingIndex],
+            ...updated,
+          };
           return true;
         }
       }
@@ -430,8 +616,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
     if (
-      (frame.event === "interaction_started" || frame.event === "user_input")
-      && frame.interactionId
+      (frame.event === "interaction_started" || frame.event === "user_input") &&
+      frame.interactionId
     ) {
       clearOptimisticUserByInteraction(frame.interactionId);
     } else {
@@ -441,16 +627,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   function busyTransitionForFrame(frame: ConsoleFrame): boolean | null {
-    if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
+    if (
+      frame.event === "user_input" ||
+      frame.event === "interaction_started" ||
+      frame.event === "run_started"
+    ) {
       return true;
     }
     if (
-      frame.event === "interaction_complete"
-      || frame.event === "interaction_failed"
-      || frame.event === "run_completed"
-      || frame.event === "run_failed"
-      || frame.event === "message_delivery_failed"
-      || isEndTurnFrame(frame)
+      frame.event === "interaction_complete" ||
+      frame.event === "interaction_failed" ||
+      frame.event === "run_completed" ||
+      frame.event === "run_failed" ||
+      frame.event === "message_delivery_failed" ||
+      isEndTurnFrame(frame)
     ) {
       return false;
     }
@@ -475,7 +665,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
-  function updateBusyStateForFrame(identity: string, frame: ConsoleFrame): void {
+  function updateBusyStateForFrame(
+    identity: string,
+    frame: ConsoleFrame,
+  ): void {
     const transition = busyTransitionForFrame(frame);
     if (transition !== null) {
       applyBusyState(identity, transition);
@@ -525,7 +718,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     recomputeBusyStateFromLog(identity);
   }
 
-  async function queryIdentityTimeline(identity: string): Promise<{ frames: ConsoleFrame[]; available: boolean }> {
+  async function queryIdentityTimeline(
+    identity: string,
+  ): Promise<{ frames: ConsoleFrame[]; available: boolean }> {
     const frames: ConsoleFrame[] = [];
     let available = true;
     let after: string | undefined;
@@ -585,15 +780,24 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         const ca = cursorSeq(a.frame.cursor);
         const cb = cursorSeq(b.frame.cursor);
         if (ca !== null && cb !== null && ca !== cb) return ca - cb;
-        const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
-        const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
+        const ta =
+          typeof a.frame.timestampMs === "number"
+            ? a.frame.timestampMs
+            : Number.MAX_SAFE_INTEGER;
+        const tb =
+          typeof b.frame.timestampMs === "number"
+            ? b.frame.timestampMs
+            : Number.MAX_SAFE_INTEGER;
         if (ta !== tb) return ta - tb;
         return a.index - b.index;
       })
       .map((entry) => entry.frame);
   }
 
-  function framesVisibleInPanel(frames: ConsoleFrame[], panelId: string): ConsoleFrame[] {
+  function framesVisibleInPanel(
+    frames: ConsoleFrame[],
+    panelId: string,
+  ): ConsoleFrame[] {
     void panelId;
     // Panel ids are ephemeral UI instance ids. Persisted user_input frames
     // keep the original `console:<panel-id>` origin, so filtering by the
@@ -629,7 +833,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // ──────────────────────────────────────────────────────────────
   const pendingStackRef = React.useRef<Record<string, PendingItem[]>>({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
-  const stackKeyFor = (identity: string) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
+  const stackKeyFor = (identity: string) =>
+    `${PENDING_STACK_KEY_PREFIX}${identity}`;
 
   function loadPendingStack(identity: string): PendingItem[] {
     try {
@@ -641,10 +846,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         .filter((it): it is PendingItem => {
           if (!it || typeof it !== "object") return false;
           const r = it as Record<string, unknown>;
-          return typeof r.id === "string" && typeof r.text === "string" && typeof r.addedAt === "number";
+          return (
+            typeof r.id === "string" &&
+            typeof r.text === "string" &&
+            typeof r.addedAt === "number"
+          );
         })
         .map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
-    } catch { return []; }
+    } catch {
+      return [];
+    }
   }
 
   function persistPendingStack(identity: string, items: PendingItem[]) {
@@ -652,14 +863,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // Strip transient animation flags before persisting — the next
       // reload would otherwise paint a row mid-fade.
       const clean = items
-        .filter((it) => it.status !== "trashing" && it.status !== "draining" && it.status !== "promoting")
+        .filter(
+          (it) =>
+            it.status !== "trashing" &&
+            it.status !== "draining" &&
+            it.status !== "promoting",
+        )
         .map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
       if (clean.length === 0) {
         localStorage.removeItem(stackKeyFor(identity));
       } else {
         localStorage.setItem(stackKeyFor(identity), JSON.stringify(clean));
       }
-    } catch { /* quota / private mode — silently degrade */ }
+    } catch {
+      /* quota / private mode — silently degrade */
+    }
   }
 
   function getPendingStack(identity: string): PendingItem[] {
@@ -693,7 +911,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Per-identity busy state — driven by interaction lifecycle events on
@@ -701,11 +919,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // and to decide whether a fresh Send should bypass the stack
   // (idle + empty stack) or push to it (anything else).
   const identityBusyRef = React.useRef<Record<string, boolean>>({});
-  const isIdentityBusy = (identity: string) => identityBusyRef.current[identity] === true;
+  const isIdentityBusy = (identity: string) =>
+    identityBusyRef.current[identity] === true;
 
   // Phase tracking (per-panel, unchanged)
-  const phaseRef = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
-  const phaseValueByKey = React.useRef<Record<string, "waiting" | "tool-executing" | "generating" | null>>({});
+  const phaseRef = React.useRef<
+    Record<string, "waiting" | "tool-executing" | "generating" | null>
+  >({});
+  const phaseValueByKey = React.useRef<
+    Record<string, "waiting" | "tool-executing" | "generating" | null>
+  >({});
   const phaseSinceByKey = React.useRef<Record<string, number>>({});
   const phaseTimerByKey = React.useRef<Record<string, number>>({});
 
@@ -717,9 +940,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   // Stable agent ref for async callbacks
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
-  React.useEffect(() => { agentsRef.current = agents; }, [agents]);
+  React.useEffect(() => {
+    agentsRef.current = agents;
+  }, [agents]);
 
   const initialTargetOpened = React.useRef(false);
+  const dockLayoutHydrated = React.useRef(false);
+  const dockLayoutRestored = React.useRef(false);
+  const dockLayoutRestoring = React.useRef(false);
 
   // =========================================================================
   // DOCK CONTROLLER
@@ -732,6 +960,44 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       mode: "console" as const,
     }),
   });
+  const currentDockLayoutStorageKey = React.useMemo(
+    () => dockLayoutStorageKey(baseUrl, experience),
+    [baseUrl, experience?.runtime_id, experience?.console_config?.title],
+  );
+
+  React.useEffect(() => {
+    if (!experience || dockLayoutHydrated.current) return;
+    dockLayoutHydrated.current = true;
+    try {
+      const raw = localStorage.getItem(currentDockLayoutStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as ConsoleDockState<MobKitDockTarget>;
+      const restored = normalizeConsoleDockState(parsed);
+      if (restored.tabs.length === 0 || restored.panels.length === 0) return;
+      dockLayoutRestored.current = true;
+      dockLayoutRestoring.current = true;
+      dock.setState(restored);
+    } catch {
+      /* ignore corrupt saved layout */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentDockLayoutStorageKey, experience]);
+
+  React.useEffect(() => {
+    if (!experience || !dockLayoutHydrated.current) return;
+    if (dockLayoutRestoring.current) {
+      dockLayoutRestoring.current = false;
+      return;
+    }
+    try {
+      localStorage.setItem(
+        currentDockLayoutStorageKey,
+        JSON.stringify(dock.state),
+      );
+    } catch {
+      /* ignore storage failures */
+    }
+  }, [currentDockLayoutStorageKey, dock.state, experience]);
 
   // =========================================================================
   // PHASE TRACKING (unchanged logic)
@@ -739,17 +1005,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function clearPhaseTimer(panelKey: string) {
     const timer = phaseTimerByKey.current[panelKey];
-    if (timer !== undefined) { window.clearTimeout(timer); delete phaseTimerByKey.current[panelKey]; }
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      delete phaseTimerByKey.current[panelKey];
+    }
   }
 
-  function commitPanelPhase(panelKey: string, phase: "waiting" | "tool-executing" | "generating" | null) {
+  function commitPanelPhase(
+    panelKey: string,
+    phase: "waiting" | "tool-executing" | "generating" | null,
+  ) {
     clearPhaseTimer(panelKey);
     phaseValueByKey.current[panelKey] = phase;
     phaseSinceByKey.current[panelKey] = Date.now();
     phaseRef.current[panelKey] = phase;
   }
 
-  function schedulePanelPhase(panelKey: string, phase: "waiting" | "tool-executing" | "generating" | null, delayMs: number) {
+  function schedulePanelPhase(
+    panelKey: string,
+    phase: "waiting" | "tool-executing" | "generating" | null,
+    delayMs: number,
+  ) {
     clearPhaseTimer(panelKey);
     phaseTimerByKey.current[panelKey] = window.setTimeout(() => {
       delete phaseTimerByKey.current[panelKey];
@@ -765,25 +1041,49 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "interaction_started":
-        commitPanelPhase(panelKey, "waiting"); break;
-      case "tool_call_requested": case "tool_call": case "tool_execution_started":
-      case "tool_result_received": case "tool_execution_completed":
-        if (currentPhase === "waiting" && elapsedMs < 300) { schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs); break; }
-        commitPanelPhase(panelKey, "tool-executing"); break;
+        commitPanelPhase(panelKey, "waiting");
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        if (currentPhase === "waiting" && elapsedMs < 300) {
+          schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
+          break;
+        }
+        commitPanelPhase(panelKey, "tool-executing");
+        break;
       case "text_delta": {
-        if (currentPhase === "tool-executing") { const r = Math.max(0, 300 - elapsedMs); if (r > 0) { schedulePanelPhase(panelKey, "generating", r); break; } }
-        if (currentPhase === "waiting" && elapsedMs < 300) { schedulePanelPhase(panelKey, "generating", 300 - elapsedMs); break; }
-        commitPanelPhase(panelKey, "generating"); break;
+        if (currentPhase === "tool-executing") {
+          const r = Math.max(0, 300 - elapsedMs);
+          if (r > 0) {
+            schedulePanelPhase(panelKey, "generating", r);
+            break;
+          }
+        }
+        if (currentPhase === "waiting" && elapsedMs < 300) {
+          schedulePanelPhase(panelKey, "generating", 300 - elapsedMs);
+          break;
+        }
+        commitPanelPhase(panelKey, "generating");
+        break;
       }
       case "text_complete":
-      case "interaction_complete": case "interaction_failed": case "run_completed": case "run_failed":
-        commitPanelPhase(panelKey, null); break;
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        commitPanelPhase(panelKey, null);
+        break;
       case "turn_completed":
         if (isEndTurnFrame(frame)) commitPanelPhase(panelKey, null);
         break;
       case "message_delivery_failed":
-        commitPanelPhase(panelKey, null); break;
-      default: break;
+        commitPanelPhase(panelKey, null);
+        break;
+      default:
+        break;
     }
   }
 
@@ -803,7 +1103,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      updatePanelPhaseFromFrame(buildPanelConversationKey(panel.id, target), frame);
+      updatePanelPhaseFromFrame(
+        buildPanelConversationKey(panel.id, target),
+        frame,
+      );
     }
   }
 
@@ -826,23 +1129,36 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
       fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
     ]);
-    const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
+    const loadedModules = Array.isArray(modulesJson.modules)
+      ? modulesJson.modules.map(String)
+      : [];
     const nextAgents = normalizeAgents(experienceJson, loadedModules);
     setExperience(experienceJson);
     setAgents(nextAgents);
-    setActiveActivityPresetId((c) =>
-      c || experienceJson.console_config?.rail?.active_preset_id || experienceJson.activity_feed?.active_preset_id || "all",
+    setActiveActivityPresetId(
+      (c) =>
+        c ||
+        experienceJson.console_config?.rail?.active_preset_id ||
+        experienceJson.activity_feed?.active_preset_id ||
+        "all",
     );
     return nextAgents;
   }, [baseUrl]);
 
   React.useEffect(() => {
     let mounted = true;
-    setLoading(true); setError("");
+    setLoading(true);
+    setError("");
     void loadExperience()
-      .catch((e) => { if (mounted) setError(errorMessage(e)); })
-      .finally(() => { if (mounted) setLoading(false); });
-    return () => { mounted = false; };
+      .catch((e) => {
+        if (mounted) setError(errorMessage(e));
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+    return () => {
+      mounted = false;
+    };
   }, [loadExperience]);
 
   React.useEffect(() => {
@@ -858,15 +1174,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const configuredTheme = normalizeConsoleTheme(appearance.default_theme);
     if (configuredTheme) {
       try {
-        if (!localStorage.getItem("mobkit-console-theme")) setTheme(configuredTheme);
+        if (!localStorage.getItem("mobkit-console-theme"))
+          setTheme(configuredTheme);
       } catch {
         setTheme(configuredTheme);
       }
     }
-    const configuredVariant = normalizeConsoleVariant(appearance.default_variant);
+    const configuredVariant = normalizeConsoleVariant(
+      appearance.default_variant,
+    );
     if (configuredVariant) {
       try {
-        if (!localStorage.getItem("mobkit-console-variant")) setVariant(configuredVariant);
+        if (!localStorage.getItem("mobkit-console-variant"))
+          setVariant(configuredVariant);
       } catch {
         setVariant(configuredVariant);
       }
@@ -877,8 +1197,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const configured = experience?.console_config?.layout?.sidebar_collapsed;
     if (typeof configured !== "boolean") return;
     try {
-      if (localStorage.getItem("mobkit-console-sidebar-collapsed") !== null) return;
-    } catch { /* ignore */ }
+      if (localStorage.getItem("mobkit-console-sidebar-collapsed") !== null)
+        return;
+    } catch {
+      /* ignore */
+    }
     setSidebarCollapsed(configured);
   }, [experience?.console_config?.layout?.sidebar_collapsed]);
 
@@ -886,44 +1209,62 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const configured = experience?.console_config?.rail?.collapsed;
     if (typeof configured !== "boolean") return;
     try {
-      if (localStorage.getItem("mobkit-console-rail-collapsed") !== null) return;
-    } catch { /* ignore */ }
+      if (localStorage.getItem("mobkit-console-rail-collapsed") !== null)
+        return;
+    } catch {
+      /* ignore */
+    }
     setRailCollapsed(configured);
   }, [experience?.console_config?.rail?.collapsed]);
 
   const hasMobControlSurface = experience?.runtime_id !== "console-aggregator";
-  const visibleControls = React.useMemo<NavKind[]>(
-    () => {
-      const runtimeControls: NavKind[] = hasMobControlSurface
-        ? ["topology", "timeline", "gating", "roster", "routing", "logs", "health"]
-        : ["topology", "timeline", "roster", "logs", "health"];
-      const sidebarConfig = experience?.console_config?.sidebar;
-      const allowedByRuntime = new Set(runtimeControls);
-      const configuredVisible = (sidebarConfig?.visible_controls || [])
-        .map(normalizeNavKind)
-        .filter((kind): kind is NavKind => Boolean(kind) && allowedByRuntime.has(kind));
-      if (configuredVisible.length > 0) return configuredVisible;
-      const hidden = new Set(
-        (sidebarConfig?.hidden_controls || [])
-          .map(normalizeNavKind)
-          .filter((kind): kind is NavKind => Boolean(kind)),
+  const visibleControls = React.useMemo<NavKind[]>(() => {
+    const runtimeControls: NavKind[] = hasMobControlSurface
+      ? [
+          "topology",
+          "timeline",
+          "gating",
+          "roster",
+          "routing",
+          "logs",
+          "health",
+        ]
+      : ["topology", "timeline", "roster", "logs", "health"];
+    const sidebarConfig = experience?.console_config?.sidebar;
+    const allowedByRuntime = new Set(runtimeControls);
+    const configuredVisible = (sidebarConfig?.visible_controls || [])
+      .map(normalizeNavKind)
+      .filter(
+        (kind): kind is NavKind => Boolean(kind) && allowedByRuntime.has(kind),
       );
-      return runtimeControls.filter((kind) => !hidden.has(kind));
-    },
-    [experience?.console_config?.sidebar, hasMobControlSurface],
-  );
+    if (configuredVisible.length > 0) return configuredVisible;
+    const hidden = new Set(
+      (sidebarConfig?.hidden_controls || [])
+        .map(normalizeNavKind)
+        .filter((kind): kind is NavKind => Boolean(kind)),
+    );
+    return runtimeControls.filter((kind) => !hidden.has(kind));
+  }, [experience?.console_config?.sidebar, hasMobControlSurface]);
 
   // =========================================================================
   // OPEN INITIAL TARGET
   // =========================================================================
 
   React.useEffect(() => {
-    if (initialTargetOpened.current || dock.focusedTarget || !experience) return;
+    if (initialTargetOpened.current || dock.focusedTarget || !experience)
+      return;
+    if (!dockLayoutHydrated.current) return;
+    if (dockLayoutRestored.current) {
+      initialTargetOpened.current = true;
+      return;
+    }
     const layoutConfig = experience.console_config?.layout;
     let target: MobKitDockTarget | null = null;
     const configuredControl = normalizeNavKind(layoutConfig?.initial_control);
     if (configuredControl && visibleControls.includes(configuredControl)) {
-      target = buildControlTarget(configuredControl as Parameters<typeof buildControlTarget>[0]);
+      target = buildControlTarget(
+        configuredControl as Parameters<typeof buildControlTarget>[0],
+      );
     }
     const configuredAgent = layoutConfig?.initial_agent?.trim().toLowerCase();
     if (!target && configuredAgent) {
@@ -937,30 +1278,34 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       });
       if (match) target = buildDockTarget(match);
     }
-    if (!target && agents.length > 0) {
-      const first = agents.find((a) => a.addressable || a.affordances?.can_send_message) || agents[0];
-      if (first) target = buildDockTarget(first);
-    }
-    if (!target) return;
     initialTargetOpened.current = true;
+    if (!target) return;
     const preset = normalizeDockPreset(layoutConfig?.initial_preset);
     if (preset) dock.applyPreset(preset);
     dock.openTarget(target, "replace_focused");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, dock, experience, visibleControls]);
 
   React.useEffect(() => {
     const target = dock.focusedTarget;
     if (!target || target.kind !== "agent-chat" || agents.length === 0) return;
     const identity = target.identity || target.memberId;
-    if (agents.some((agent) => agent.identity === identity || agent.member_id === identity)) return;
-    const fallback = agents.find((agent) => agent.addressable || agent.affordances?.can_send_message) || agents[0];
+    if (
+      agents.some(
+        (agent) => agent.identity === identity || agent.member_id === identity,
+      )
+    )
+      return;
+    const fallback =
+      agents.find(
+        (agent) => agent.addressable || agent.affordances?.can_send_message,
+      ) || agents[0];
     if (fallback) {
       openAgentChat(fallback, "replace_focused");
     } else {
       dock.openTarget(buildControlTarget("roster"), "replace_focused");
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agents, dock.focusedTarget]);
 
   // =========================================================================
@@ -968,14 +1313,28 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // =========================================================================
 
   const refreshPanelData = React.useCallback(async () => {
-    const openPanels = dock.viewState.panels.map((p) => p.target).filter(Boolean) as MobKitDockTarget[];
-    const inspects = openPanels.filter((t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> => t.kind === "identity-inspect");
+    const openPanels = dock.viewState.panels
+      .map((p) => p.target)
+      .filter(Boolean) as MobKitDockTarget[];
+    const inspects = openPanels.filter(
+      (t): t is Extract<MobKitDockTarget, { kind: "identity-inspect" }> =>
+        t.kind === "identity-inspect",
+    );
     if (inspects.length) {
-      const entries = await Promise.all(inspects.map(async (t) => {
-        const r = await callConsoleRpc<unknown>(baseUrl, "mobkit/console/inspect_identity", { identity: t.identity })
-          .catch(() => callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity: t.identity }));
-        return [t.identity, normalizeConsoleInspectResult(r)] as const;
-      }));
+      const entries = await Promise.all(
+        inspects.map(async (t) => {
+          const r = await callConsoleRpc<unknown>(
+            baseUrl,
+            "mobkit/console/inspect_identity",
+            { identity: t.identity },
+          ).catch(() =>
+            callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", {
+              identity: t.identity,
+            }),
+          );
+          return [t.identity, normalizeConsoleInspectResult(r)] as const;
+        }),
+      );
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
@@ -983,18 +1342,39 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
         callConsoleRpc(baseUrl, "mobkit/delivery/history", {}),
       ]);
-      setRoutingData(buildRoutingSectionView({ routesResponse: routes, historyResponse: history }));
+      setRoutingData(
+        buildRoutingSectionView({
+          routesResponse: routes,
+          historyResponse: history,
+        }),
+      );
     }
-    if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating" || t.kind === "gates")) {
+    if (
+      hasMobControlSurface &&
+      openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
+    ) {
       const [p, a] = await Promise.all([
-        callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
-        callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
+        callConsoleRpc<{ pending?: unknown[] }>(
+          baseUrl,
+          "mobkit/gating/pending",
+          {},
+        ),
+        callConsoleRpc<{ entries?: unknown[] }>(
+          baseUrl,
+          "mobkit/gating/audit",
+          { limit: 50 },
+        ),
       ]);
-      setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
+      setGatingData({
+        pending: Array.isArray(p.pending) ? p.pending : [],
+        audit: Array.isArray(a.entries) ? a.entries : [],
+      });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
 
-  React.useEffect(() => { void refreshPanelData().catch(() => {}); }, [dock.viewState.panels, refreshPanelData]);
+  React.useEffect(() => {
+    void refreshPanelData().catch(() => {});
+  }, [dock.viewState.panels, refreshPanelData]);
 
   const scheduleExperienceRefresh = React.useCallback(() => {
     if (experienceTimerRef.current !== null) return;
@@ -1009,23 +1389,28 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // HISTORY REFRESH — server is the single source of truth
   // =========================================================================
 
-  const scheduleHistoryRefresh = React.useCallback((identity: string) => {
-    clearTimeout(refreshTimersRef.current[identity]);
-    refreshTimersRef.current[identity] = window.setTimeout(async () => {
-      const log = getOrCreateLog(identity);
-      // No event log on this runtime — SSE is the canonical source,
-      // there's nothing to backfill.
-      if (log.hasServerLog === false) {
-        clearPhaseForIdentity(identity);
-        forceRender();
-        return;
-      }
-      try {
-        await refreshIdentityTimelineNow(identity, { clearPhase: true });
-      } catch { /* silent — will retry on next terminal event */ }
-    }, 200);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl, forceRender]);
+  const scheduleHistoryRefresh = React.useCallback(
+    (identity: string) => {
+      clearTimeout(refreshTimersRef.current[identity]);
+      refreshTimersRef.current[identity] = window.setTimeout(async () => {
+        const log = getOrCreateLog(identity);
+        // No event log on this runtime — SSE is the canonical source,
+        // there's nothing to backfill.
+        if (log.hasServerLog === false) {
+          clearPhaseForIdentity(identity);
+          forceRender();
+          return;
+        }
+        try {
+          await refreshIdentityTimelineNow(identity, { clearPhase: true });
+        } catch {
+          /* silent — will retry on next terminal event */
+        }
+      }, 200);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [baseUrl, forceRender],
+  );
 
   // =========================================================================
   // PANEL OPEN / SWITCH — fetch history for new identities
@@ -1043,7 +1428,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (log.hasServerLog !== null) continue;
       void refreshIdentityTimelineNow(identity).catch(() => {});
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, dock.viewState.panels, forceRender]);
 
   React.useEffect(() => {
@@ -1076,7 +1461,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }, 2_000);
     void refreshOpenChatPanels();
     return () => window.clearInterval(timer);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl, dock.viewState.panels, forceRender]);
 
   // =========================================================================
@@ -1124,7 +1509,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
       // Identity log (single canonical store)
       const identity = frame.identity?.trim();
-      if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
+      if (
+        PANEL_ROUTABLE_EVENTS.has(frame.event) &&
+        identity &&
+        identity !== "_system"
+      ) {
         appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
 
@@ -1136,24 +1525,36 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // Terminal events → reconcile server backfill (idempotent — keys
       // already seen via SSE are skipped). If hasServerLog is false,
       // scheduleHistoryRefresh short-circuits.
-      if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) && identity && identity !== "_system") {
+      if (
+        (HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) &&
+        identity &&
+        identity !== "_system"
+      ) {
         scheduleHistoryRefreshRef.current(identity);
       }
-      if (REFRESH_TRIGGER_EVENTS.has(frame.event) || frame.event !== "keep-alive") {
+      if (
+        REFRESH_TRIGGER_EVENTS.has(frame.event) ||
+        frame.event !== "keep-alive"
+      ) {
         scheduleExperienceRefreshRef.current();
       }
     });
 
-    return () => { unsubscribe(); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      unsubscribe();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl]);
 
   // Timer cleanup on unmount
   React.useEffect(() => {
     return () => {
-      for (const timer of Object.values(phaseTimerByKey.current)) window.clearTimeout(timer);
-      for (const timer of Object.values(refreshTimersRef.current)) window.clearTimeout(timer);
-      if (experienceTimerRef.current !== null) window.clearTimeout(experienceTimerRef.current);
+      for (const timer of Object.values(phaseTimerByKey.current))
+        window.clearTimeout(timer);
+      for (const timer of Object.values(refreshTimersRef.current))
+        window.clearTimeout(timer);
+      if (experienceTimerRef.current !== null)
+        window.clearTimeout(experienceTimerRef.current);
     };
   }, []);
 
@@ -1161,20 +1562,42 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // AGENT SELECTION
   // =========================================================================
 
-  function openAgentChat(agent: ConsoleAgent, intent: "replace_focused" | "new_tab" | "split_right" | "split_down" = "replace_focused") {
+  function openAgentChat(
+    agent: ConsoleAgent,
+    intent:
+      | "replace_focused"
+      | "new_tab"
+      | "split_right"
+      | "split_down" = "replace_focused",
+  ) {
     const target = buildDockTarget(agent);
-    void refreshIdentityTimelineNow(target.identity || target.memberId).catch(() => {});
+    void refreshIdentityTimelineNow(target.identity || target.memberId).catch(
+      () => {},
+    );
     dock.openTarget(target, intent);
   }
 
-  function openDockTarget(target: MobKitDockTarget, intent: "replace_focused" | "new_tab" | "split_right" | "split_down" = "replace_focused") {
+  function openDockTarget(
+    target: MobKitDockTarget,
+    intent:
+      | "replace_focused"
+      | "new_tab"
+      | "split_right"
+      | "split_down" = "replace_focused",
+  ) {
     if (target.kind === "agent-chat") {
-      void refreshIdentityTimelineNow(target.identity || target.memberId).catch(() => {});
+      void refreshIdentityTimelineNow(target.identity || target.memberId).catch(
+        () => {},
+      );
     }
     dock.openTarget(target, intent);
   }
 
-  function onSelectAgent(_block: unknown, _section: unknown, item: { id: string }) {
+  function onSelectAgent(
+    _block: unknown,
+    _section: unknown,
+    item: { id: string },
+  ) {
     const agent = agents.find((c) => c.member_id === item.id);
     if (agent) openAgentChat(agent);
   }
@@ -1200,7 +1623,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
 
-    const optimisticObjectUrls = attachments.map((file) => URL.createObjectURL(file));
+    const optimisticObjectUrls = attachments.map((file) =>
+      URL.createObjectURL(file),
+    );
     const userEntry = createUserEntry(
       text,
       attachments.map((file, index) => ({
@@ -1242,10 +1667,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         if (optimisticUser) {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
+            (f) =>
+              (f.event === "interaction_started" || f.event === "user_input") &&
+              f.interactionId === result.interaction_id,
           );
           if (matched) {
-            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            optimisticUser.objectUrls?.forEach((url) =>
+              URL.revokeObjectURL(url),
+            );
             delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
@@ -1264,10 +1693,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           // The interaction_started frame may have arrived between
           // the send and the RPC response — reconcile retroactively.
           const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id,
+            (f) =>
+              (f.event === "interaction_started" || f.event === "user_input") &&
+              f.interactionId === result.interaction_id,
           );
           if (matched) {
-            optimisticUser.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+            optimisticUser.objectUrls?.forEach((url) =>
+              URL.revokeObjectURL(url),
+            );
             delete optimisticUserByPanelKeyRef.current[panelKey];
           }
         }
@@ -1276,7 +1709,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
       return true;
     } catch (submitError) {
-      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach((url) => URL.revokeObjectURL(url));
+      optimisticUserByPanelKeyRef.current[panelKey]?.objectUrls?.forEach(
+        (url) => URL.revokeObjectURL(url),
+      );
       delete optimisticUserByPanelKeyRef.current[panelKey];
       commitPanelPhase(panelKey, null);
       identityBusyRef.current[identity] = false;
@@ -1284,11 +1719,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       forceRender();
       return false;
     } finally {
-      setSendingPanels((c) => { const n = new Set(c); n.delete(panelKey); return n; });
+      setSendingPanels((c) => {
+        const n = new Set(c);
+        n.delete(panelKey);
+        return n;
+      });
     }
   }
 
-  async function onSendMessage(panelId: string, target: MobKitDockTarget | null, attachments: File[] = []): Promise<boolean> {
+  async function onSendMessage(
+    panelId: string,
+    target: MobKitDockTarget | null,
+    attachments: File[] = [],
+  ): Promise<boolean> {
     if (!target || target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
@@ -1300,7 +1743,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     if (!shouldQueue || attachments.length > 0) {
       // Idle + empty stack: bypass straight to the wire.
-      const sent = await submitMessageNow(panelId, target, text, "queue", attachments);
+      const sent = await submitMessageNow(
+        panelId,
+        target,
+        text,
+        "queue",
+        attachments,
+      );
       if (sent) setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
       return sent;
     }
@@ -1316,7 +1765,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
     window.setTimeout(() => {
       setPendingStack(identity, (prev) =>
-        prev.map((it) => (it.id === newId && it.status === "entering" ? { ...it, status: null } : it)),
+        prev.map((it) =>
+          it.id === newId && it.status === "entering"
+            ? { ...it, status: null }
+            : it,
+        ),
       );
     }, 240);
     return true;
@@ -1330,12 +1783,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // `submitMessageNow`. The animation timing matches `pending-stack.css`
   // (steer 360ms, drain 420ms, trash 320ms). `reduced-motion` collapses
   // these to 0 so the item leaves the DOM immediately.
-  const reducedMotion = typeof window !== "undefined"
-    ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
-    : false;
-  const animMs = (ms: number) => reducedMotion ? 0 : ms;
+  const reducedMotion =
+    typeof window !== "undefined"
+      ? (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
+        false)
+      : false;
+  const animMs = (ms: number) => (reducedMotion ? 0 : ms);
 
-  function findChatTargetFor(identity: string): { panelId: string; target: MobKitDockTarget } | null {
+  function findChatTargetFor(
+    identity: string,
+  ): { panelId: string; target: MobKitDockTarget } | null {
     // This is also called from the long-lived SSE subscription closure via
     // maybeDrainHead(); read the dock ref so pending queue auto-drain sees
     // panels opened after the first render.
@@ -1351,7 +1808,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function onStackSteer(identity: string, id: string) {
     setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === id ? { ...it, status: "promoting", editing: false } : it)),
+      prev.map((it) =>
+        it.id === id ? { ...it, status: "promoting", editing: false } : it,
+      ),
     );
     window.setTimeout(() => {
       const stack = getPendingStack(identity);
@@ -1360,14 +1819,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       setPendingStack(identity, (prev) => prev.filter((it) => it.id !== id));
       const target = findChatTargetFor(identity);
       if (target) {
-        void submitMessageNow(target.panelId, target.target, item.text, "steer");
+        void submitMessageNow(
+          target.panelId,
+          target.target,
+          item.text,
+          "steer",
+        );
       }
     }, animMs(360));
   }
 
   function onStackTrash(identity: string, id: string) {
     setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === id ? { ...it, status: "trashing", editing: false } : it)),
+      prev.map((it) =>
+        it.id === id ? { ...it, status: "trashing", editing: false } : it,
+      ),
     );
     window.setTimeout(() => {
       setPendingStack(identity, (prev) => prev.filter((it) => it.id !== id));
@@ -1376,7 +1842,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function onStackEdit(identity: string, id: string) {
     setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === id ? { ...it, editing: true } : { ...it, editing: false })),
+      prev.map((it) =>
+        it.id === id ? { ...it, editing: true } : { ...it, editing: false },
+      ),
     );
   }
 
@@ -1384,7 +1852,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const trimmed = text.trim();
     if (!trimmed) return;
     setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === id ? { ...it, text: trimmed, editing: false, addedAt: Date.now() } : it)),
+      prev.map((it) =>
+        it.id === id
+          ? { ...it, text: trimmed, editing: false, addedAt: Date.now() }
+          : it,
+      ),
     );
   }
 
@@ -1394,7 +1866,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
   }
 
-  function onStackReorder(identity: string, dragId: string, dropId: string, where: "above" | "below") {
+  function onStackReorder(
+    identity: string,
+    dragId: string,
+    dropId: string,
+    where: "above" | "below",
+  ) {
     setPendingStack(identity, (prev) => {
       const fromIdx = prev.findIndex((it) => it.id === dragId);
       const toIdx = prev.findIndex((it) => it.id === dropId);
@@ -1432,17 +1909,29 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
     // Only drain if no item is already mid-drain or mid-promotion.
-    if (stack.some((it) => it.status === "draining" || it.status === "promoting")) return;
+    if (
+      stack.some((it) => it.status === "draining" || it.status === "promoting")
+    )
+      return;
     const head = stack.find((it) => !it.status || it.status === "entering");
     if (!head) return;
     setPendingStack(identity, (prev) =>
-      prev.map((it) => (it.id === head.id ? { ...it, status: "draining" } : it)),
+      prev.map((it) =>
+        it.id === head.id ? { ...it, status: "draining" } : it,
+      ),
     );
     window.setTimeout(() => {
-      setPendingStack(identity, (prev) => prev.filter((it) => it.id !== head.id));
+      setPendingStack(identity, (prev) =>
+        prev.filter((it) => it.id !== head.id),
+      );
       const target = findChatTargetFor(identity);
       if (target) {
-        void submitMessageNow(target.panelId, target.target, head.text, "queue");
+        void submitMessageNow(
+          target.panelId,
+          target.target,
+          head.text,
+          "queue",
+        );
       }
     }, animMs(420));
   }
@@ -1451,13 +1940,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // LIFECYCLE ACTIONS
   // =========================================================================
 
-  async function onLifecycleAction(identity: string, method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset") {
+  async function onLifecycleAction(
+    identity: string,
+    method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset",
+  ) {
     await callConsoleRpc(baseUrl, method, { identity });
     const nextAgents = await loadExperience();
     if (method !== "mobkit/retire") return;
-    if (nextAgents.some((agent) => agent.identity === identity || agent.member_id === identity)) return;
-    const fallback = nextAgents.find((agent) => agent.addressable || agent.affordances?.can_send_message)
-      || nextAgents[0];
+    if (
+      nextAgents.some(
+        (agent) => agent.identity === identity || agent.member_id === identity,
+      )
+    )
+      return;
+    const fallback =
+      nextAgents.find(
+        (agent) => agent.addressable || agent.affordances?.can_send_message,
+      ) || nextAgents[0];
     if (fallback) {
       openAgentChat(fallback, "replace_focused");
     } else {
@@ -1465,71 +1964,147 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
-  async function onGatingDecision(pendingId: string, decision: "approve" | "reject" | "escalate") {
+  async function onGatingDecision(
+    pendingId: string,
+    decision: "approve" | "reject" | "escalate",
+  ) {
     await callConsoleRpc<unknown>(baseUrl, "mobkit/gating/decide", {
-      pending_id: pendingId, approver_id: DEFAULT_APPROVER_ID, decision, reason: `console_${decision}`,
+      pending_id: pendingId,
+      approver_id: DEFAULT_APPROVER_ID,
+      decision,
+      reason: `console_${decision}`,
     } as ConsoleGatingActionPayload);
     const [p, a] = await Promise.all([
-      callConsoleRpc<{ pending?: unknown[] }>(baseUrl, "mobkit/gating/pending", {}),
-      callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", { limit: 50 }),
+      callConsoleRpc<{ pending?: unknown[] }>(
+        baseUrl,
+        "mobkit/gating/pending",
+        {},
+      ),
+      callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", {
+        limit: 50,
+      }),
     ]);
-    setGatingData({ pending: Array.isArray(p.pending) ? p.pending : [], audit: Array.isArray(a.entries) ? a.entries : [] });
+    setGatingData({
+      pending: Array.isArray(p.pending) ? p.pending : [],
+      audit: Array.isArray(a.entries) ? a.entries : [],
+    });
   }
 
   // =========================================================================
   // RESIZE HANDLERS (unchanged)
   // =========================================================================
 
-  const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
+  const SIDEBAR_MIN = 180,
+    SIDEBAR_MAX = 420;
   function handleSidebarResize(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
     const root = findPaneResizeRoot(event.currentTarget);
     if (!root) return;
-    const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-sidebar-width") || "260", 10) || 260;
+    const startWidth =
+      parseInt(
+        getComputedStyle(root).getPropertyValue(
+          "--cc-workbench-sidebar-width",
+        ) || "260",
+        10,
+      ) || 260;
     const handle = event.currentTarget;
-    if ("setPointerCapture" in handle) handle.setPointerCapture(event.pointerId);
+    if ("setPointerCapture" in handle)
+      handle.setPointerCapture(event.pointerId);
     document.documentElement.setAttribute("data-cc-resizing", "true");
-    function onPointerMove(e: PointerEvent) { root!.style.setProperty("--cc-workbench-sidebar-width", `${Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)))}px`); }
-    function cleanup() { document.documentElement.removeAttribute("data-cc-resizing"); window.removeEventListener("pointermove", onPointerMove); window.removeEventListener("pointerup", cleanup); window.removeEventListener("pointercancel", cleanup); if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId); }
-    window.addEventListener("pointermove", onPointerMove); window.addEventListener("pointerup", cleanup); window.addEventListener("pointercancel", cleanup);
+    function onPointerMove(e: PointerEvent) {
+      root!.style.setProperty(
+        "--cc-workbench-sidebar-width",
+        `${Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startWidth + (e.clientX - startX)))}px`,
+      );
+    }
+    function cleanup() {
+      document.documentElement.removeAttribute("data-cc-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      if (
+        "hasPointerCapture" in handle &&
+        handle.hasPointerCapture(event.pointerId)
+      )
+        handle.releasePointerCapture(event.pointerId);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
   }
 
-  const ACTIVITY_MIN = 200, ACTIVITY_MAX = 480;
+  const ACTIVITY_MIN = 200,
+    ACTIVITY_MAX = 480;
   function handleActivityResize(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const startX = event.clientX;
     const root = findPaneResizeRoot(event.currentTarget);
     if (!root) return;
-    const startWidth = parseInt(getComputedStyle(root).getPropertyValue("--cc-workbench-activity-width") || "280", 10) || 280;
+    const startWidth =
+      parseInt(
+        getComputedStyle(root).getPropertyValue(
+          "--cc-workbench-activity-width",
+        ) || "280",
+        10,
+      ) || 280;
     const handle = event.currentTarget;
-    if ("setPointerCapture" in handle) handle.setPointerCapture(event.pointerId);
+    if ("setPointerCapture" in handle)
+      handle.setPointerCapture(event.pointerId);
     document.documentElement.setAttribute("data-cc-resizing", "true");
-    function onPointerMove(e: PointerEvent) { root!.style.setProperty("--cc-workbench-activity-width", `${Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)))}px`); }
-    function cleanup() { document.documentElement.removeAttribute("data-cc-resizing"); window.removeEventListener("pointermove", onPointerMove); window.removeEventListener("pointerup", cleanup); window.removeEventListener("pointercancel", cleanup); if ("hasPointerCapture" in handle && handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId); }
-    window.addEventListener("pointermove", onPointerMove); window.addEventListener("pointerup", cleanup); window.addEventListener("pointercancel", cleanup);
+    function onPointerMove(e: PointerEvent) {
+      root!.style.setProperty(
+        "--cc-workbench-activity-width",
+        `${Math.min(ACTIVITY_MAX, Math.max(ACTIVITY_MIN, startWidth - (e.clientX - startX)))}px`,
+      );
+    }
+    function cleanup() {
+      document.documentElement.removeAttribute("data-cc-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      if (
+        "hasPointerCapture" in handle &&
+        handle.hasPointerCapture(event.pointerId)
+      )
+        handle.releasePointerCapture(event.pointerId);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
   }
 
   // =========================================================================
   // RENDER GUARDS
   // =========================================================================
 
-  if (loading) return <div data-testid="console-loading">Loading console...</div>;
+  if (loading)
+    return <div data-testid="console-loading">Loading console...</div>;
   if (error) return <div data-testid="console-error">{error}</div>;
 
   // =========================================================================
   // BUILD VIEW STATES
   // =========================================================================
 
-  const focusedMemberId = dock.focusedTarget?.kind === "agent-chat"
-    ? dock.focusedTarget.memberId
-    : selectedRosterMemberId;
-  const sidebarVS = buildSidebarViewState({ agents, selectedMemberId: focusedMemberId, pinnedAgentIds });
+  const focusedMemberId =
+    dock.focusedTarget?.kind === "agent-chat"
+      ? dock.focusedTarget.memberId
+      : selectedRosterMemberId;
+  const sidebarVS = buildSidebarViewState({
+    agents,
+    selectedMemberId: focusedMemberId,
+    pinnedAgentIds,
+  });
   const activityVS = buildActivityRailViewState({
     agents,
     eventFrames: activityRef.current,
-    filterPresets: experience?.console_config?.rail?.filter_presets || experience?.activity_feed?.filter_presets,
-    activePresetId: activeActivityPresetId || experience?.console_config?.rail?.active_preset_id || "all",
+    filterPresets:
+      experience?.console_config?.rail?.filter_presets ||
+      experience?.activity_feed?.filter_presets,
+    activePresetId:
+      activeActivityPresetId ||
+      experience?.console_config?.rail?.active_preset_id ||
+      "all",
   });
   const actionConfig = experience?.console_config?.actions;
   const configuredActionLabels = {
@@ -1552,7 +2127,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // RENDER: CHAT PANEL — reads from 3 identity-keyed refs
   // =========================================================================
 
-  function renderChatPanel(panel: { id: string; target?: MobKitDockTarget | null }) {
+  function renderChatPanel(panel: {
+    id: string;
+    target?: MobKitDockTarget | null;
+  }) {
     const target = panel.target;
     if (!target || target.kind !== "agent-chat") return null;
     const panelKey = buildPanelConversationKey(panel.id, target);
@@ -1564,24 +2142,34 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // Text deltas are rendered as the interaction streams; the
     // adapter's `streamedText === terminalText` check suppresses the
     // duplicate when text_complete/interaction_complete arrives.
-    const sortedFrames = framesVisibleInPanel(getSortedFrames(identity), panel.id);
-    const conversationEntries = mapFramesToTimelineEntries(agent, sortedFrames, {
-      renderInteractionStartsAsUser: true,
-      renderTextDeltas: true,
-      blobBaseUrl: baseUrl,
-    });
+    const sortedFrames = framesVisibleInPanel(
+      getSortedFrames(identity),
+      panel.id,
+    );
+    const conversationEntries = mapFramesToTimelineEntries(
+      agent,
+      sortedFrames,
+      {
+        renderInteractionStartsAsUser: true,
+        renderTextDeltas: true,
+        blobBaseUrl: baseUrl,
+      },
+    );
 
     // Optimistic user message: rendered until an interaction_started
     // with the matching interaction_id is appended to the log (which
     // clears it via appendFrame). Until then, it sits at the tail of
     // the conversation as a synthetic entry.
-    const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey] ?? null;
+    const optimisticUser =
+      optimisticUserByPanelKeyRef.current[panelKey] ?? null;
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
 
-    const entries = sanitizeConversationEntries(sortConversationTimelineEntries([
-      ...conversationEntries,
-      ...(optimisticEntry ? [optimisticEntry] : []),
-    ]));
+    const entries = sanitizeConversationEntries(
+      sortConversationTimelineEntries([
+        ...conversationEntries,
+        ...(optimisticEntry ? [optimisticEntry] : []),
+      ]),
+    );
 
     const conversation = buildConversationViewState({
       memberId: target.memberId,
@@ -1592,29 +2180,39 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
-    const phase = Object.prototype.hasOwnProperty.call(phaseRef.current, panelKey)
+    const phase = Object.prototype.hasOwnProperty.call(
+      phaseRef.current,
+      panelKey,
+    )
       ? phaseRef.current[panelKey]
-      : agent?.response_phase ?? null;
-    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
-    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
+      : (agent?.response_phase ?? null);
+    const canRespawn =
+      configuredActionVisibility.respawn &&
+      agent?.affordances?.can_respawn === true;
+    const canRetire =
+      configuredActionVisibility.retire &&
+      agent?.affordances?.can_retire === true;
 
     const stackItems = getPendingStack(identity);
     const agentBusy = isIdentityBusy(identity);
-    const stackSlot = stackItems.length > 0 ? (
-      <PendingStack
-        items={stackItems}
-        agentBusy={agentBusy}
-        reducedMotion={reducedMotion}
-        onSteer={(itemId) => onStackSteer(identity, itemId)}
-        onTrash={(itemId) => onStackTrash(identity, itemId)}
-        onEdit={(itemId) => onStackEdit(identity, itemId)}
-        onCommitEdit={(itemId, t) => onStackCommitEdit(identity, itemId, t)}
-        onCancelEdit={(itemId) => onStackCancelEdit(identity, itemId)}
-        onReorder={(dragId, dropId, where) => onStackReorder(identity, dragId, dropId, where)}
-        onClearAll={() => onStackClearAll(identity)}
-        onToggleExpand={(itemId) => onStackToggleExpand(identity, itemId)}
-      />
-    ) : null;
+    const stackSlot =
+      stackItems.length > 0 ? (
+        <PendingStack
+          items={stackItems}
+          agentBusy={agentBusy}
+          reducedMotion={reducedMotion}
+          onSteer={(itemId) => onStackSteer(identity, itemId)}
+          onTrash={(itemId) => onStackTrash(identity, itemId)}
+          onEdit={(itemId) => onStackEdit(identity, itemId)}
+          onCommitEdit={(itemId, t) => onStackCommitEdit(identity, itemId, t)}
+          onCancelEdit={(itemId) => onStackCancelEdit(identity, itemId)}
+          onReorder={(dragId, dropId, where) =>
+            onStackReorder(identity, dragId, dropId, where)
+          }
+          onClearAll={() => onStackClearAll(identity)}
+          onToggleExpand={(itemId) => onStackToggleExpand(identity, itemId)}
+        />
+      ) : null;
 
     return (
       <ChatPane
@@ -1627,11 +2225,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         sending={isSending}
         staged={staged}
         onDraftChange={(v) => setDraftByKey((c) => ({ ...c, [panelKey]: v }))}
-        onStagedChange={(action) => setStagedAttachmentsForIdentity(identity, action)}
+        onStagedChange={(action) =>
+          setStagedAttachmentsForIdentity(identity, action)
+        }
         onSend={(attachments) => onSendMessage(panel.id, target, attachments)}
-        onInspect={configuredActionVisibility.inspect ? () => { if (agent) handleShowRosterDetails(agent); } : undefined}
-        onRespawn={canRespawn ? () => void onLifecycleAction(identity, "mobkit/respawn") : undefined}
-        onRetire={canRetire ? () => void onLifecycleAction(identity, "mobkit/retire") : undefined}
+        onInspect={
+          configuredActionVisibility.inspect
+            ? () => {
+                if (agent) handleShowRosterDetails(agent);
+              }
+            : undefined
+        }
+        onRespawn={
+          canRespawn
+            ? () => void onLifecycleAction(identity, "mobkit/respawn")
+            : undefined
+        }
+        onRetire={
+          canRetire
+            ? () => void onLifecycleAction(identity, "mobkit/retire")
+            : undefined
+        }
         inspectLabel={configuredActionLabels.inspect}
         respawnLabel={configuredActionLabels.respawn}
         retireLabel={configuredActionLabels.retire}
@@ -1645,34 +2259,93 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // RENDER: CONTROL PANELS (unchanged)
   // =========================================================================
 
-  function renderInspectPanel(target: Extract<MobKitDockTarget, { kind: "identity-inspect" }>) {
+  function renderInspectPanel(
+    target: Extract<MobKitDockTarget, { kind: "identity-inspect" }>,
+  ) {
     const inspect = inspectByIdentity[target.identity];
-    const agent = agents.find((candidate) => candidate.identity === target.identity || candidate.member_id === target.identity);
-    const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
-    const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
-    const canReset = configuredActionVisibility.reset && experience?.runtime_capabilities?.can_retire_members === true;
+    const agent = agents.find(
+      (candidate) =>
+        candidate.identity === target.identity ||
+        candidate.member_id === target.identity,
+    );
+    const canRespawn =
+      configuredActionVisibility.respawn &&
+      agent?.affordances?.can_respawn === true;
+    const canRetire =
+      configuredActionVisibility.retire &&
+      agent?.affordances?.can_retire === true;
+    const canReset =
+      configuredActionVisibility.reset &&
+      experience?.runtime_capabilities?.can_retire_members === true;
     return (
-      <div className="console-panel" data-testid={`inspect-panel:${target.identity}`}>
+      <div
+        className="console-panel"
+        data-testid={`inspect-panel:${target.identity}`}
+      >
         <div className="console-panel__header">
           <h3>{target.identity}</h3>
           <div className="console-panel__actions">
-            {canRespawn ? <button data-testid={`inspect-action:${target.identity}:respawn`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/respawn")}>{configuredActionLabels.respawn}</button> : null}
-            {canReset ? <button data-testid={`inspect-action:${target.identity}:reset`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/reset")}>{configuredActionLabels.reset}</button> : null}
-            {canRetire ? <button data-testid={`inspect-action:${target.identity}:retire`} type="button" onClick={() => void onLifecycleAction(target.identity, "mobkit/retire")}>{configuredActionLabels.retire}</button> : null}
+            {canRespawn ? (
+              <button
+                data-testid={`inspect-action:${target.identity}:respawn`}
+                type="button"
+                onClick={() =>
+                  void onLifecycleAction(target.identity, "mobkit/respawn")
+                }
+              >
+                {configuredActionLabels.respawn}
+              </button>
+            ) : null}
+            {canReset ? (
+              <button
+                data-testid={`inspect-action:${target.identity}:reset`}
+                type="button"
+                onClick={() =>
+                  void onLifecycleAction(target.identity, "mobkit/reset")
+                }
+              >
+                {configuredActionLabels.reset}
+              </button>
+            ) : null}
+            {canRetire ? (
+              <button
+                data-testid={`inspect-action:${target.identity}:retire`}
+                type="button"
+                onClick={() =>
+                  void onLifecycleAction(target.identity, "mobkit/retire")
+                }
+              >
+                {configuredActionLabels.retire}
+              </button>
+            ) : null}
           </div>
         </div>
-        {!inspect ? <p>Loading identity details…</p> : (
+        {!inspect ? (
+          <p>Loading identity details…</p>
+        ) : (
           <dl className="console-panel__grid">
-            <dt>State</dt><dd>{inspect.state}</dd>
-            <dt>Role</dt><dd>{inspect.role || "n/a"}</dd>
-            <dt>Addressability</dt><dd>{inspect.addressability}</dd>
-            <dt>Generation</dt><dd>{inspect.continuity?.generation ?? "n/a"}</dd>
-            <dt>Checkpoint</dt><dd>{inspect.continuity?.checkpoint_version ?? "n/a"}</dd>
-            <dt>Session</dt><dd>{inspect.continuity?.session_id || "n/a"}</dd>
-            <dt>Runtime</dt><dd>{inspect.continuity?.agent_runtime_id || "n/a"}</dd>
-            <dt>Lease Healthy</dt><dd>{String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false)}</dd>
-            <dt>Peers</dt><dd>{inspect.topology_peers?.join(", ") || "none"}</dd>
-            <dt>Output Preview</dt><dd>{inspect.output_preview || "n/a"}</dd>
+            <dt>State</dt>
+            <dd>{inspect.state}</dd>
+            <dt>Role</dt>
+            <dd>{inspect.role || "n/a"}</dd>
+            <dt>Addressability</dt>
+            <dd>{inspect.addressability}</dd>
+            <dt>Generation</dt>
+            <dd>{inspect.continuity?.generation ?? "n/a"}</dd>
+            <dt>Checkpoint</dt>
+            <dd>{inspect.continuity?.checkpoint_version ?? "n/a"}</dd>
+            <dt>Session</dt>
+            <dd>{inspect.continuity?.session_id || "n/a"}</dd>
+            <dt>Runtime</dt>
+            <dd>{inspect.continuity?.agent_runtime_id || "n/a"}</dd>
+            <dt>Lease Healthy</dt>
+            <dd>
+              {String(inspect.lease_healthy ?? inspect.lease?.healthy ?? false)}
+            </dd>
+            <dt>Peers</dt>
+            <dd>{inspect.topology_peers?.join(", ") || "none"}</dd>
+            <dt>Output Preview</dt>
+            <dd>{inspect.output_preview || "n/a"}</dd>
           </dl>
         )}
       </div>
@@ -1685,7 +2358,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         <ul className="console-panel__list">
           {identities.map((r) => (
             <li data-testid={`health-identity:${r.identity}`} key={r.identity}>
-              <strong>{r.display_name || r.identity}</strong> · {r.state} · {r.addressability}
+              <strong>{r.display_name || r.identity}</strong> · {r.state} ·{" "}
+              {r.addressability}
             </li>
           ))}
         </ul>
@@ -1694,8 +2368,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   async function refreshInspectIdentity(identity: string): Promise<void> {
-    const r = await callConsoleRpc<unknown>(baseUrl, "mobkit/console/inspect_identity", { identity })
-      .catch(() => callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity }));
+    const r = await callConsoleRpc<unknown>(
+      baseUrl,
+      "mobkit/console/inspect_identity",
+      { identity },
+    ).catch(() =>
+      callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity }),
+    );
     setInspectByIdentity((current) => ({
       ...current,
       [identity]: normalizeConsoleInspectResult(r),
@@ -1713,71 +2392,107 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // MAIN RENDER
   // =========================================================================
 
-  const mobName = experience?.console_config?.title || experience?.agent_sidebar?.title || "mob";
+  const mobName =
+    experience?.console_config?.title ||
+    experience?.agent_sidebar?.title ||
+    "mob";
   const brand = experience?.console_config?.brand;
-  const environmentLabel = experience?.console_config?.environment?.label || "dev";
+  const environmentLabel =
+    experience?.console_config?.environment?.label || "dev";
   const railConfig = experience?.console_config?.rail;
   const railVisible = railConfig?.visible !== false;
-  const watchedIdentities = new Set(agents
-    .filter((agent) => agent.watched)
-    .map((agent) => agent.identity || agent.member_id)
-    .filter((value): value is string => Boolean(value)));
-  const mobStatus = experience?.health_overview?.live_snapshot?.running === false ? "stopped" : "running";
+  const watchedIdentities = new Set(
+    agents
+      .filter((agent) => agent.watched)
+      .map((agent) => agent.identity || agent.member_id)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const mobStatus =
+    experience?.health_overview?.live_snapshot?.running === false
+      ? "stopped"
+      : "running";
 
   function toggleTheme() {
     const next: ConsoleTheme = theme === "dark" ? "light" : "dark";
     setTheme(next);
-    try { localStorage.setItem("mobkit-console-theme", next); } catch { /* ignore */ }
+    try {
+      localStorage.setItem("mobkit-console-theme", next);
+    } catch {
+      /* ignore */
+    }
   }
 
-  function renderPanelBody(panel: { id: string; target?: MobKitDockTarget | null }) {
+  function renderPanelBody(panel: {
+    id: string;
+    target?: MobKitDockTarget | null;
+  }) {
     const target = panel.target as MobKitDockTarget | null;
     if (!target) return <div className="console-panel">No panel target</div>;
     if (target.kind === "agent-chat") return renderChatPanel(panel);
     if (target.kind === "identity-inspect") {
       return renderInspectPanel(target);
     }
-    if ((target.kind === "routing" || target.kind === "gating" || target.kind === "gates") && !hasMobControlSurface) {
-      return <div className="console-panel">This view requires a mob runtime control surface.</div>;
+    if (
+      (target.kind === "routing" ||
+        target.kind === "gating" ||
+        target.kind === "gates") &&
+      !hasMobControlSurface
+    ) {
+      return (
+        <div className="console-panel">
+          This view requires a mob runtime control surface.
+        </div>
+      );
     }
     if (target.kind === "routing") return <RoutingPanel data={routingData} />;
-    if (target.kind === "gating") return (
-      <GatingInboxPanel
-        pending={gatingData.pending}
-        audit={gatingData.audit}
-        onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
-      />
-    );
-    if (target.kind === "topology") return (
-      <TopologyPanel
-        nodes={experience?.topology?.live_snapshot?.nodes || []}
-        agents={agents}
-        activity={liveFramesRef.current}
-      />
-    );
-    if (target.kind === "health") return renderHealthPanel(experience?.health_overview?.live_snapshot?.identities || []);
-    if (target.kind === "timeline") return <TimelinePanel frames={activityRef.current} />;
-    if (target.kind === "roster") return (
-      <RosterPanel
-        agents={agents}
-        selectedMemberId={selectedRosterMemberId}
-        onSelect={(a) => setSelectedRosterMemberId(a.member_id)}
-        onChat={(a) => openAgentChat(a)}
-        onDetails={(a) => handleShowRosterDetails(a)}
-        onLifecycle={(identity, method) => void onLifecycleAction(identity, method)}
-        canResetLifecycle={hasMobControlSurface}
-        actionLabels={configuredActionLabels}
-        actionVisibility={configuredActionVisibility}
-      />
-    );
-    if (target.kind === "gates") return (
-      <GatingInboxPanel
-        pending={gatingData.pending}
-        audit={gatingData.audit}
-        onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
-      />
-    );
-    if (target.kind === "logs") return <LogsPanel frames={activityRef.current} />;
+    if (target.kind === "gating")
+      return (
+        <GatingInboxPanel
+          pending={gatingData.pending}
+          audit={gatingData.audit}
+          onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
+        />
+      );
+    if (target.kind === "topology")
+      return (
+        <TopologyPanel
+          nodes={experience?.topology?.live_snapshot?.nodes || []}
+          agents={agents}
+          activity={liveFramesRef.current}
+        />
+      );
+    if (target.kind === "health")
+      return renderHealthPanel(
+        experience?.health_overview?.live_snapshot?.identities || [],
+      );
+    if (target.kind === "timeline")
+      return <TimelinePanel frames={activityRef.current} />;
+    if (target.kind === "roster")
+      return (
+        <RosterPanel
+          agents={agents}
+          selectedMemberId={selectedRosterMemberId}
+          onSelect={(a) => setSelectedRosterMemberId(a.member_id)}
+          onChat={(a) => openAgentChat(a)}
+          onDetails={(a) => handleShowRosterDetails(a)}
+          onLifecycle={(identity, method) =>
+            void onLifecycleAction(identity, method)
+          }
+          canResetLifecycle={hasMobControlSurface}
+          actionLabels={configuredActionLabels}
+          actionVisibility={configuredActionVisibility}
+        />
+      );
+    if (target.kind === "gates")
+      return (
+        <GatingInboxPanel
+          pending={gatingData.pending}
+          audit={gatingData.audit}
+          onDecide={(pid, decision) => void onGatingDecision(pid, decision)}
+        />
+      );
+    if (target.kind === "logs")
+      return <LogsPanel frames={activityRef.current} />;
     return <div className="console-panel">Unsupported panel</div>;
   }
 
@@ -1823,7 +2538,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             dock.openTarget(buildControlTarget(kind), "replace_focused");
           }}
         />
-        <div className="pane-resizer" aria-hidden="true" data-testid="resize:sidebar" onPointerDown={handleSidebarResize} />
+        <div
+          className="pane-resizer"
+          aria-hidden="true"
+          data-testid="resize:sidebar"
+          onPointerDown={handleSidebarResize}
+        />
         <div className="main">
           <MobKitDock
             viewState={dock.viewState}
@@ -1845,12 +2565,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         </div>
         {railVisible ? (
           <>
-            <div className="pane-resizer pane-resizer--activity" aria-hidden="true" data-testid="resize:activity" onPointerDown={handleActivityResize} />
+            <div
+              className="pane-resizer pane-resizer--activity"
+              aria-hidden="true"
+              data-testid="resize:activity"
+              onPointerDown={handleActivityResize}
+            />
             <SignalsRail
               frames={activityRef.current}
               collapsed={railCollapsed}
               filterPresets={railConfig?.filter_presets}
-              activePresetId={activeActivityPresetId || railConfig?.active_preset_id}
+              activePresetId={
+                activeActivityPresetId || railConfig?.active_preset_id
+              }
               emptyText={railConfig?.empty_text}
               watchedIdentities={watchedIdentities}
               onPresetChange={setActiveActivityPresetId}

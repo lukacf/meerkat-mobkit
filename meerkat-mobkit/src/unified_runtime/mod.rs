@@ -420,6 +420,10 @@ impl UnifiedRuntime {
         self.console_log_store.clone()
     }
 
+    pub fn set_console_log_store(&mut self, store: Arc<dyn ConsoleLogStore>) {
+        self.console_log_store = store;
+    }
+
     /// Query structural mob events from the meerkat ledger.
     ///
     /// Returns events filtered by [`EventQuery`] in cursor-ascending
