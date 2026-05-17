@@ -595,63 +595,16 @@ impl MobKitConsoleAggregator {
         .await
         .map_err(ConsoleSendError::Log)?;
 
-        match dispatch_message_to_resolved_member(&resolved, content, handling_mode).await {
-            Ok(delivered_session_id) => {
-                let _ = dispatching
-                    .apply(SendTransition::MarkDelivered)
-                    .map_err(ConsoleSendError::State)?;
-                update_frame_status_and_emit(
-                    &self.inner,
-                    &outcome.frame.id,
-                    ConsoleFrameStatus::Delivered,
-                )
-                .await
-                .map_err(ConsoleSendError::Log)?;
-                if accepted.session_id.is_none() && !delivered_session_id.is_empty() {
-                    return Ok(ConsoleInteractionAccepted {
-                        session_id: Some(delivered_session_id),
-                        ..accepted
-                    });
-                }
-                Ok(accepted)
-            }
-            Err(err) => {
-                let _ = dispatching
-                    .apply(SendTransition::MarkDeliveryFailed)
-                    .map_err(ConsoleSendError::State)?;
-                update_frame_status_and_emit(
-                    &self.inner,
-                    &outcome.frame.id,
-                    ConsoleFrameStatus::DeliveryFailed,
-                )
-                .await
-                .map_err(ConsoleSendError::Log)?;
-                let failure_frame = NewConsoleFrame {
-                    id: None,
-                    dedupe_key: format!("delivery-failed:{}", outcome.frame.id),
-                    timestamp_ms: current_time_ms(),
-                    runtime_key: resolved.entry.runtime_key,
-                    identity: request.identity,
-                    conversation_id: outcome.frame.conversation_id,
-                    session_id: outcome.frame.session_id,
-                    kind: "message_delivery_failed".to_string(),
-                    status: ConsoleFrameStatus::DeliveryFailed,
-                    payload: json!({ "reason": err.clone() }),
-                    source: ConsoleFrameSource {
-                        kind: ConsoleFrameSourceKind::Synthetic,
-                        source_cursor: None,
-                    },
-                    source_event_id: None,
-                    interaction_id: Some(interaction_id),
-                    turn_id: None,
-                    run_id: None,
-                    parent_frame_id: Some(outcome.frame.id.clone()),
-                    caused_by_frame_id: Some(outcome.frame.id),
-                };
-                let _ = append_and_emit(&self.inner, failure_frame).await;
-                Ok(accepted)
-            }
-        }
+        spawn_console_send_dispatch(
+            self.inner.clone(),
+            resolved,
+            content,
+            handling_mode,
+            dispatching,
+            outcome.frame,
+            interaction_id,
+        );
+        Ok(accepted)
     }
 
     pub async fn binary_blob_store_for_identity(
@@ -833,6 +786,81 @@ async fn dispatch_message_to_resolved_member(
         }
         Err(err) => Err(err.to_string()),
     }
+}
+
+fn spawn_console_send_dispatch(
+    inner: Arc<AggregatorInner>,
+    resolved: ResolvedConsoleMember,
+    content: ContentInput,
+    handling_mode: meerkat_core::types::HandlingMode,
+    dispatching: SendState,
+    user_frame: ConsoleFrame,
+    interaction_id: String,
+) {
+    tokio::spawn(async move {
+        match dispatch_message_to_resolved_member(&resolved, content, handling_mode).await {
+            Ok(_) => {
+                let _ = dispatching.apply(SendTransition::MarkDelivered);
+                if let Err(err) = update_frame_status_and_emit(
+                    &inner,
+                    &user_frame.id,
+                    ConsoleFrameStatus::Delivered,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        frame_id = %user_frame.id,
+                        error = %err,
+                        "failed to update console send delivery status"
+                    );
+                }
+            }
+            Err(err) => {
+                let _ = dispatching.apply(SendTransition::MarkDeliveryFailed);
+                if let Err(update_err) = update_frame_status_and_emit(
+                    &inner,
+                    &user_frame.id,
+                    ConsoleFrameStatus::DeliveryFailed,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        frame_id = %user_frame.id,
+                        error = %update_err,
+                        "failed to update console send failure status"
+                    );
+                }
+                let failure_frame = NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("delivery-failed:{}", user_frame.id),
+                    timestamp_ms: current_time_ms(),
+                    runtime_key: user_frame.runtime_key,
+                    identity: user_frame.identity,
+                    conversation_id: user_frame.conversation_id,
+                    session_id: user_frame.session_id,
+                    kind: "message_delivery_failed".to_string(),
+                    status: ConsoleFrameStatus::DeliveryFailed,
+                    payload: json!({ "reason": err }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::Synthetic,
+                        source_cursor: None,
+                    },
+                    source_event_id: None,
+                    interaction_id: Some(interaction_id),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: Some(user_frame.id.clone()),
+                    caused_by_frame_id: Some(user_frame.id),
+                };
+                if let Err(append_err) = append_and_emit(&inner, failure_frame).await {
+                    tracing::warn!(
+                        error = %append_err,
+                        "failed to append console send failure frame"
+                    );
+                }
+            }
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -1949,13 +1977,16 @@ mod tests {
     use std::time::Duration;
     use std::time::Instant;
 
+    use futures::StreamExt;
     use meerkat::{AgentFactory, Config, build_ephemeral_service};
-    use meerkat_client::TestClient;
+    use meerkat_client::types::LlmStream;
+    use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest, TestClient};
     use meerkat_core::{
         AppendSystemContextRequest, AppendSystemContextResult, CommsRuntime, EventStream,
         RunResult, SessionControlError, SessionError, SessionHistoryPage, SessionHistoryQuery,
         SessionId, SessionQuery, SessionService, SessionServiceCommsExt, SessionServiceControlExt,
-        SessionServiceHistoryExt, SessionSummary, SessionView, StartTurnRequest, StreamError,
+        SessionServiceHistoryExt, SessionSummary, SessionView, StartTurnRequest, StopReason,
+        StreamError,
     };
     use meerkat_mob::{MobDefinition, MobSessionService, MobStorage, SpawnMemberSpec};
     use serde_json::json;
@@ -1980,6 +2011,44 @@ mod tests {
 
         fn source_watermark_calls(&self) -> usize {
             self.source_watermark_calls.load(Ordering::SeqCst)
+        }
+    }
+
+    struct SlowTestClient {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for SlowTestClient {
+        fn project_replay_messages(&self, messages: &[Message]) -> Result<Vec<Message>, LlmError> {
+            Ok(messages.to_vec())
+        }
+
+        fn stream<'a>(&'a self, _request: &'a LlmRequest) -> LlmStream<'a> {
+            let delay = self.delay;
+            let delayed_text = futures::stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok(LlmEvent::TextDelta {
+                    delta: "slow ok".to_string(),
+                    meta: None,
+                })
+            });
+            let done = futures::stream::once(async {
+                Ok(LlmEvent::Done {
+                    outcome: LlmDoneOutcome::Success {
+                        stop_reason: StopReason::EndTurn,
+                    },
+                })
+            });
+            Box::pin(delayed_text.chain(done))
+        }
+
+        fn provider(&self) -> &'static str {
+            "slow-test"
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
         }
     }
 
@@ -2177,6 +2246,10 @@ mod tests {
     }
 
     async fn build_single_member_runtime() -> UnifiedRuntime {
+        build_single_member_runtime_with_client(Arc::new(TestClient::default())).await
+    }
+
+    async fn build_single_member_runtime_with_client(client: Arc<dyn LlmClient>) -> UnifiedRuntime {
         let definition = MobDefinition::from_toml(
             r#"
 [mob]
@@ -2193,7 +2266,7 @@ comms = true
         .expect("definition parses");
         let runtime = UnifiedRuntime::builder()
             .definition(definition)
-            .default_llm_client(Arc::new(TestClient::default()))
+            .default_llm_client(client)
             .build()
             .await
             .expect("runtime builds");
@@ -2418,6 +2491,55 @@ comms = true
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn console_send_returns_after_acceptance_without_waiting_for_turn_completion() {
+        let runtime = build_single_member_runtime_with_client(Arc::new(SlowTestClient {
+            delay: Duration::from_secs(2),
+        }))
+        .await;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", &runtime),
+            );
+
+        let start = Instant::now();
+        let accepted = tokio::time::timeout(
+            Duration::from_millis(300),
+            aggregator.send(ConsoleSendRequest {
+                identity: "test/agent-a".to_string(),
+                content: json!("hello slow agent"),
+                origin: "console:test".to_string(),
+                idempotency_key: "nonblocking-send".to_string(),
+                handling_mode: Some("queue".to_string()),
+            }),
+        )
+        .await
+        .expect("console send should return once the input is accepted")
+        .expect("send succeeds");
+
+        assert_eq!(accepted.status, ConsoleFrameStatus::Accepted);
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "console send should not wait for the delayed LLM turn"
+        );
+
+        wait_for_session_history_text(
+            &aggregator,
+            "test/agent-a",
+            "slow ok",
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("background dispatch should still complete and project history");
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn discovered_late_member_session_backfills_without_manual_refresh() -> Result<(), String>
     {
         let runtime = Arc::new(build_empty_runtime("console-aggregator-late-member-test").await);
@@ -2491,7 +2613,7 @@ comms = true
             observed = page.frames;
             if observed.iter().any(|frame| {
                 frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && frame.kind == "user_input"
+                    && (frame.kind == "user_input" || frame.kind == "interaction_complete")
                     && session_history_content_text(frame).as_deref() == Some(expected)
             }) {
                 return Ok(());
@@ -2505,6 +2627,12 @@ comms = true
     }
 
     fn session_history_content_text(frame: &ConsoleFrame) -> Option<String> {
+        if let Some(text) = frame.payload.get("text").and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
+        if let Some(text) = frame.payload.get("result").and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
         match frame.payload.get("content")? {
             Value::String(text) => Some(text.clone()),
             Value::Array(blocks) => Some(

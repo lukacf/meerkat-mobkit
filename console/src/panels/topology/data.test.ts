@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   buildGraph,
+  deriveTopologyActivity,
   graphStats,
   groupMatrix,
   groupSummaries,
   sampleEdges,
 } from "./data";
-import type { ConsoleAgent, ConsoleTopologyNode } from "../../types";
+import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "../../types";
 
 test("topology graph preserves group labels and computes scale stats", () => {
   const agents: ConsoleAgent[] = [
@@ -19,6 +20,7 @@ test("topology graph preserves group labels and computes scale stats", () => {
       kind: "agent",
       role: "coordinator",
       state: "active",
+      response_phase: "generating",
       wired_to: ["b", "c"],
       labels: { console_group: "Atlas" },
     },
@@ -51,6 +53,7 @@ test("topology graph preserves group labels and computes scale stats", () => {
   assert.equal(graph.edges.length, 2);
   assert.deepEqual(graph.groups, ["Atlas", "Borealis"]);
   assert.equal(graph.byId.get("a")?.group, "Atlas");
+  assert.equal(graph.byId.get("a")?.responsePhase, "generating");
 
   const stats = graphStats(graph);
   assert.equal(stats.nodeCount, 3);
@@ -109,4 +112,70 @@ test("edge sampling is deterministic and bounded", () => {
   ]);
   assert.equal(sampleEdges(edges, 20).length, 10);
   assert.equal(sampleEdges(edges, 0).length, 0);
+});
+
+test("topology activity derives working nodes and peer call pulses", () => {
+  const agents: ConsoleAgent[] = [
+    {
+      identity: "commander",
+      agent_id: "commander",
+      member_id: "commander-member",
+      label: "Commander",
+      kind: "agent",
+      role: "coordinator",
+      state: "active",
+      wired_to: ["scribe"],
+    },
+    {
+      identity: "scribe",
+      agent_id: "scribe",
+      member_id: "scribe-member",
+      label: "Scribe",
+      kind: "agent",
+      role: "worker",
+      state: "active",
+      wired_to: ["commander"],
+    },
+  ];
+  const graph = buildGraph([], agents);
+  const frames: ConsoleFrame[] = [
+    {
+      id: "send",
+      event: "tool_call_requested",
+      identity: "commander",
+      timestampMs: 1_100,
+      data: {
+        id: "call-send",
+        name: "send_message",
+        args: { peer_id: "peer-scribe" },
+      },
+    },
+    {
+      id: "peers",
+      event: "tool_execution_completed",
+      identity: "commander",
+      timestampMs: 1_000,
+      data: {
+        id: "call-peers",
+        name: "peers",
+        result: JSON.stringify({
+          peers: [{ peer_id: "peer-scribe", name: "mob/scribe" }],
+        }),
+      },
+    },
+    {
+      id: "started",
+      event: "interaction_started",
+      identity: "commander",
+      timestampMs: 900,
+      data: {},
+    },
+  ];
+
+  const activity = deriveTopologyActivity(frames, graph, 1_200, 1_000);
+  assert.equal(activity.busy.commander, true);
+  assert.equal(activity.active.commander, 1_100);
+  assert.equal(activity.calls.commander, 1_100);
+  assert.equal(activity.calls.scribe, 1_100);
+  assert.deepEqual(activity.pulses.map((p) => [p.from, p.to]), [["commander", "scribe"]]);
 });

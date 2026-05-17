@@ -1076,100 +1076,12 @@ svg[data-svg="fit"],
   color: var(--ink-muted);
   font: 10px var(--mono);
 }
-.topo__svg-board {
-  width: 100%; height: 100%;
-  display: block;
-  cursor: grab;
-  touch-action: none;
-}
-.topo__svg-board.is-panning { cursor: grabbing; }
 .topo__board {
   position: relative;
   width: 100%;
   height: 100%;
 }
-.topo__zoombar {
-  position: absolute;
-  top: 10px;
-  right: 14px;
-  z-index: 4;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px 4px 10px;
-  background: color-mix(in oklch, var(--bg-elev-1) 92%, transparent);
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--ink-muted);
-  backdrop-filter: blur(4px);
-}
-.topo__zoom-pct {
-  font-feature-settings: "tnum" 1;
-  letter-spacing: 0.02em;
-}
-.topo__zoom-reset {
-  border: 1px solid var(--line);
-  background: var(--bg);
-  color: var(--ink-muted);
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  padding: 2px 8px;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition: color 120ms ease, background 120ms ease;
-}
-.topo__zoom-reset:hover {
-  color: var(--ink);
-  background: var(--bg-elev-2);
-}
-.topo__ring-label {
-  font-family: var(--mono);
-  font-size: 10.5px;
-  fill: var(--ink-muted);
-  paint-order: stroke;
-  stroke: var(--bg);
-  stroke-width: 3px;
-  stroke-linejoin: round;
-}
-.topo__center-label {
-  font-family: var(--mono);
-  font-size: 13px;
-  font-weight: 600;
-  fill: var(--ink-muted);
-}
-.topo__node-label {
-  font-family: var(--disp);
-  font-size: 11px;
-  fill: var(--ink);
-  paint-order: stroke;
-  stroke: var(--bg);
-  stroke-width: 3px;
-  stroke-linejoin: round;
-}
-.topo__legend {
-  position: absolute; bottom: 12px; left: 18px;
-  display: flex; gap: 14px;
-  font-size: 11px; color: var(--ink-muted);
-  font-family: var(--disp);
-  flex-wrap: wrap;
-  pointer-events: none;
-}
-.topo__legend-item { display: flex; align-items: center; gap: 6px; }
-.topo__legend-dot { width: 8px; height: 8px; border-radius: 50%; }
-.topo__legend-count {
-  margin-left: 2px;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  color: var(--ink-faint);
-}
-[data-cc-variant="terminal"] .topo__legend-dot { border-radius: 0; }
 
-/* ── Labels-mode toggle: a second three-state segmented control
-   sitting before the view picker, only visible on graph layouts. */
 .topo__viewbar--labels {
   margin-left: auto;
   margin-right: 8px;
@@ -1187,98 +1099,6 @@ svg[data-svg="fit"],
   align-items: center;
   border-right: 1px solid var(--line);
   background: var(--bg-elev-1);
-}
-
-/* ── Topology nodes (graph layouts) ──────────────────────────── */
-/* Edges, ring guides, and pulses are decorative — they should never
-   intercept hover events that belong to a node. The node circle owns
-   pointer events; everything else stays out of the way. */
-.topo__svg-board line,
-.topo__svg-board > g > circle:not([class]) {
-  pointer-events: none;
-}
-.topo__node { cursor: default; outline: none; pointer-events: bounding-box; }
-.topo__node circle { pointer-events: auto; }
-.topo__node:focus-visible > circle:not(.topo__busy-ring) {
-  stroke: var(--focus);
-  stroke-width: 2px;
-}
-.topo__node.is-peer > circle:last-child {
-  stroke: color-mix(in oklch, var(--focus) 70%, var(--bg));
-}
-.topo__node.is-selected > circle:last-child {
-  stroke: var(--focus);
-  stroke-width: 2.5px;
-}
-
-/* Persistent "this agent is currently running a turn" ring.
-   Spinner-style: short dashed arc that rotates around the node.
-   Distinct from the soft activity halo so the two readings stack
-   instead of fight. Reduced-motion clients get a static dim ring. */
-@keyframes topo-busy-spin {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-.topo__busy-ring {
-  stroke-dasharray: 5 9;
-  stroke-linecap: round;
-  opacity: 0.85;
-  transform-origin: center;
-  transform-box: fill-box;
-  animation: topo-busy-spin 1.6s linear infinite;
-}
-.reduced-motion .topo__busy-ring {
-  animation: none;
-  stroke-dasharray: none;
-  opacity: 0.5;
-}
-@media (prefers-reduced-motion: reduce) {
-  .topo__busy-ring {
-    animation: none;
-    stroke-dasharray: none;
-    opacity: 0.5;
-  }
-}
-
-/* Hover-revealed label pill. Rendered via <foreignObject> so we get
-   real CSS box model + auto-sizing. The fade-in is intentionally
-   short so a sweep over many nodes doesn't strobe. */
-@keyframes topo-pill-in {
-  from { opacity: 0; transform: translateY(-2px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.topo__node-pill {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: stretch;
-  max-width: 180px;
-  margin: 0 auto;
-  padding: 4px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--bg-elev-1);
-  box-shadow: 0 4px 14px color-mix(in oklch, var(--bg) 70%, transparent);
-  font-family: var(--disp);
-  animation: topo-pill-in 90ms ease-out;
-}
-.topo__node-pill-label {
-  font-size: 11.5px;
-  font-weight: 500;
-  color: var(--ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 1.2;
-}
-.topo__node-pill-sub {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  color: var(--ink-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 1px;
 }
 
 /* ── Role tree (flat mob, agents grouped by role) ───────────── */

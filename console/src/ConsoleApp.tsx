@@ -306,6 +306,7 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "run_completed",
   "run_failed",
   "message_delivery_failed",
+  "frame_updated",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([
   "interaction_complete",
@@ -814,6 +815,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // lifecycle. The activity rail filters tool events out; this buffer
   // doesn't.
   const liveFramesRef = React.useRef<ConsoleFrame[]>([]);
+  const [liveFrames, setLiveFrames] = React.useState<ConsoleFrame[]>([]);
+  function commitLiveFrames(frames: ConsoleFrame[]): void {
+    liveFramesRef.current = frames;
+    setLiveFrames(frames);
+  }
 
   // ──────────────────────────────────────────────────────────────
   // Pending message stack (per-identity, persisted, cross-tab synced)
@@ -1490,6 +1496,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           filtered.push(frame);
         }
         activityRef.current = filtered.slice(-200).reverse();
+        commitLiveFrames(
+          frames
+            .filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event))
+            .slice(-300)
+            .reverse(),
+        );
         forceRender();
       })
       .catch(() => {});
@@ -1504,7 +1516,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // the activity rail filters out. Capped at 300; older frames roll
       // off naturally as live pulses age past their lifetime.
       if (PANEL_ROUTABLE_EVENTS.has(frame.event)) {
-        liveFramesRef.current = [frame, ...liveFramesRef.current].slice(0, 300);
+        commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300));
       }
 
       // Identity log (single canonical store)
@@ -1649,6 +1661,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // which we want anyway, but `currentPhase` would read undefined.
     commitPanelPhase(panelKey, "waiting");
     identityBusyRef.current[identity] = true;
+    commitLiveFrames([{
+      id: `optimistic-topology:${identity}:${Date.now()}`,
+      event: "interaction_started",
+      identity,
+      interactionId: "",
+      timestampMs: Date.now(),
+      data: {
+        origin: `console:${panelId}`,
+        handling_mode: handlingMode,
+      },
+    }, ...liveFramesRef.current].slice(0, 300));
     forceRender();
 
     try {
@@ -2458,7 +2481,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         <TopologyPanel
           nodes={experience?.topology?.live_snapshot?.nodes || []}
           agents={agents}
-          activity={liveFramesRef.current}
+          activity={liveFrames}
         />
       );
     if (target.kind === "health")
