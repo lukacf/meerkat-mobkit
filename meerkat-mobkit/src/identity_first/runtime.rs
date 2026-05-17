@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::stream::{self, StreamExt};
 use tokio::sync::{RwLock, broadcast};
 
 use super::bridge::SessionBridge;
@@ -20,6 +21,8 @@ use super::types::{
     DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo,
     ManagedPeerEdge, NotAddressable, SessionSnapshot,
 };
+
+const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -291,42 +294,76 @@ impl IdentityRuntime {
             .map(|edge| (edge.a().clone(), edge.b().clone()))
             .collect();
 
-        let mut managed = self.managed_peer_edges.write().await;
+        let managed_snapshot = self.managed_peer_edges.read().await.clone();
+        let to_wire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = desired
+            .iter()
+            .filter(|edge| !managed_snapshot.contains(*edge))
+            .filter_map(|(a, b)| {
+                let runtime_a = active_runtimes.get(a)?;
+                let runtime_b = active_runtimes.get(b)?;
+                Some((a.clone(), b.clone(), runtime_a.clone(), runtime_b.clone()))
+            })
+            .collect();
 
-        for (a, b) in &desired {
-            let (Some(runtime_a), Some(runtime_b)) =
-                (active_runtimes.get(a), active_runtimes.get(b))
-            else {
-                continue;
-            };
-
-            bridge
-                .wire_peer(runtime_a, runtime_b)
-                .await
-                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge wire_peer: {e}")))?;
-            managed.insert((a.clone(), b.clone()));
-        }
-
-        let stale: Vec<(AgentIdentity, AgentIdentity)> = managed
+        let stale: Vec<(AgentIdentity, AgentIdentity)> = managed_snapshot
             .iter()
             .filter(|edge| !desired.contains(*edge))
             .cloned()
             .collect();
+        let to_unwire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = stale
+            .iter()
+            .filter_map(|(a, b)| {
+                let runtime_a = active_runtimes.get(a)?;
+                let runtime_b = active_runtimes.get(b)?;
+                Some((a.clone(), b.clone(), runtime_a.clone(), runtime_b.clone()))
+            })
+            .collect();
+
+        let wire_results = stream::iter(to_wire.into_iter().map(|(a, b, runtime_a, runtime_b)| {
+            let bridge = bridge.clone();
+            async move {
+                let result = bridge
+                    .wire_peer(&runtime_a, &runtime_b)
+                    .await
+                    .map_err(|e| format!("{e}"));
+                (a, b, result)
+            }
+        }))
+        .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let unwire_results =
+            stream::iter(to_unwire.into_iter().map(|(a, b, runtime_a, runtime_b)| {
+                let bridge = bridge.clone();
+                async move {
+                    let result = bridge
+                        .unwire_peer(&runtime_a, &runtime_b)
+                        .await
+                        .map_err(|e| format!("{e}"));
+                    (a, b, result)
+                }
+            }))
+            .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+
+        let mut managed = self.managed_peer_edges.write().await;
+        for (a, b, result) in wire_results {
+            result.map_err(|e| IdentityRuntimeError::Internal(format!("bridge wire_peer: {e}")))?;
+            managed.insert((a, b));
+        }
 
         for (a, b) in stale {
             let key = (a.clone(), b.clone());
-            let (Some(runtime_a), Some(runtime_b)) =
-                (active_runtimes.get(&a), active_runtimes.get(&b))
-            else {
+            if !active_runtimes.contains_key(&a) || !active_runtimes.contains_key(&b) {
                 managed.remove(&key);
-                continue;
-            };
-
-            bridge
-                .unwire_peer(runtime_a, runtime_b)
-                .await
+            }
+        }
+        for (a, b, result) in unwire_results {
+            result
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge unwire_peer: {e}")))?;
-            managed.remove(&key);
+            managed.remove(&(a, b));
         }
 
         Ok(())

@@ -116,6 +116,36 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.demoLlm, false);
   });
 
+  it("maxSessions() sets maxSessions and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.maxSessions(320);
+    assert.equal(result, builder);
+    assert.equal(builder._config.maxSessions, 320);
+  });
+
+  it("maxSessions() rejects invalid capacities", () => {
+    assert.throws(() => MobKit.builder().maxSessions(0), /positive integer/);
+    assert.throws(() => MobKit.builder().maxSessions(1.5), /positive integer/);
+  });
+
+  it("gatewayTimeoutMs() sets gatewayTimeoutMs and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.gatewayTimeoutMs(300_000);
+    assert.equal(result, builder);
+    assert.equal(builder._config.gatewayTimeoutMs, 300_000);
+  });
+
+  it("gatewayTimeoutMs() rejects invalid timeouts", () => {
+    assert.throws(
+      () => MobKit.builder().gatewayTimeoutMs(0),
+      /positive integer/,
+    );
+    assert.throws(
+      () => MobKit.builder().gatewayTimeoutMs(1.5),
+      /positive integer/,
+    );
+  });
+
   it("routing() sets routingConfigPath and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.routing("deployment/routing.toml");
@@ -127,7 +157,10 @@ describe("MobKitBuilder chainable methods", () => {
     const builder = MobKit.builder();
     const result = builder.scheduling("sched1.toml", "sched2.toml");
     assert.equal(result, builder);
-    assert.deepEqual(builder._config.schedulingFiles, ["sched1.toml", "sched2.toml"]);
+    assert.deepEqual(builder._config.schedulingFiles, [
+      "sched1.toml",
+      "sched2.toml",
+    ]);
   });
 
   it("memory() sets memoryConfig with config object and returns this", () => {
@@ -207,6 +240,8 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.memoryConfig, null);
     assert.equal(cfg.authConfig, null);
     assert.equal(cfg.implicitDelegateIdleRetireSecs, undefined);
+    assert.equal(cfg.maxSessions, null);
+    assert.equal(cfg.gatewayTimeoutMs, null);
     assert.equal(cfg.gatewayBin, null);
     assert.deepEqual(cfg.modules, []);
   });
@@ -245,6 +280,8 @@ describe("MobKitBuilder method chaining", () => {
       .routing("routing.toml")
       .scheduling("s1.toml")
       .auth({ provider: "jwt" })
+      .maxSessions(320)
+      .gatewayTimeoutMs(300_000)
       .modules([{ id: "a" }]);
 
     assert.equal(builder._config.mobConfigPath, "mob.toml");
@@ -256,6 +293,8 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.routingConfigPath, "routing.toml");
     assert.deepEqual(builder._config.schedulingFiles, ["s1.toml"]);
     assert.deepEqual(builder._config.authConfig, { provider: "jwt" });
+    assert.equal(builder._config.maxSessions, 320);
+    assert.equal(builder._config.gatewayTimeoutMs, 300_000);
     assert.deepEqual(builder._config.modules, [{ id: "a" }]);
   });
 });

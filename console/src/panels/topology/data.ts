@@ -26,6 +26,9 @@ export interface TopoAgent {
   role: string;
   state: string;
   wiredTo: string[];
+  group: string;
+  subgroup?: string;
+  labels: Record<string, string>;
 }
 
 export interface TopoEdge {
@@ -39,6 +42,31 @@ export interface TopoGraph {
   edges: TopoEdge[];
   degree: Record<string, number>;
   roles: string[];
+  groups: string[];
+}
+
+export interface TopoGraphStats {
+  nodeCount: number;
+  edgeCount: number;
+  possibleEdges: number;
+  density: number;
+  minDegree: number;
+  maxDegree: number;
+  avgDegree: number;
+  isolatedCount: number;
+}
+
+export interface TopoGroupSummary {
+  group: string;
+  count: number;
+  internalEdges: number;
+  externalEdges: number;
+}
+
+export interface TopoGroupMatrixCell {
+  from: string;
+  to: string;
+  edges: number;
 }
 
 export interface TopoPulse {
@@ -106,6 +134,14 @@ export function buildGraph(
   nodes: ConsoleTopologyNode[],
   agents: ConsoleAgent[],
 ): TopoGraph {
+  const agentByIdentity = new Map<string, ConsoleAgent>();
+  for (const a of agents) {
+    const candidates = [a.identity, a.member_id, a.agent_id].filter(Boolean) as string[];
+    for (const id of candidates) {
+      if (!agentByIdentity.has(id)) agentByIdentity.set(id, a);
+    }
+  }
+
   const source: ConsoleTopologyNode[] = nodes.length > 0
     ? nodes
     : agents.map((a) => ({
@@ -114,6 +150,9 @@ export function buildGraph(
         role: a.role,
         state: a.state,
         wired_to: a.wired_to,
+        labels: a.labels,
+        group: a.group,
+        subgroup: a.subgroup,
       }));
 
   const byId = new Map<string, TopoAgent>();
@@ -121,12 +160,30 @@ export function buildGraph(
   for (const n of source) {
     const id = (n.identity || n.label || "").trim();
     if (!id || byId.has(id)) continue;
+    const registry = agentByIdentity.get(id);
+    const labels = {
+      ...(registry?.labels || {}),
+      ...(n.labels || {}),
+    };
+    const group = (
+      n.group
+      || registry?.group
+      || labels.console_group
+      || labels.group
+      || labels.swarm_mob
+      || n.role
+      || registry?.role
+      || "Agents"
+    ).trim();
     const agent: TopoAgent = {
       id,
-      label: (n.label || id).trim(),
-      role: (n.role || "agent").trim(),
-      state: (n.state || "").toLowerCase(),
+      label: (n.label || registry?.label || labels.display_name || id).trim(),
+      role: (n.role || registry?.role || labels.role || "agent").trim(),
+      state: (n.state || registry?.state || "").toLowerCase(),
       wiredTo: (n.wired_to || []).map((s) => s.trim()).filter(Boolean),
+      group,
+      subgroup: n.subgroup || registry?.subgroup || labels.shard || undefined,
+      labels,
     };
     byId.set(id, agent);
     list.push(agent);
@@ -160,8 +217,14 @@ export function buildGraph(
     if (ra !== rb) return ra - rb;
     return a.localeCompare(b);
   });
+  const groups = Array.from(new Set(list.map((a) => a.group))).sort((a, b) => {
+    const ca = list.filter((agent) => agent.group === a).length;
+    const cb = list.filter((agent) => agent.group === b).length;
+    if (ca !== cb) return cb - ca;
+    return a.localeCompare(b);
+  });
 
-  return { agents: list, byId, edges, degree, roles };
+  return { agents: list, byId, edges, degree, roles, groups };
 }
 
 export function roleIndexFor(roles: string[]): Record<string, number> {
@@ -303,4 +366,90 @@ export function useTopologyActivity(
 /// derivative. Useful for emphasising hot edges in any layout.
 export function edgeKey(a: string, b: string): string {
   return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+export function graphStats(graph: TopoGraph): TopoGraphStats {
+  const nodeCount = graph.agents.length;
+  const edgeCount = graph.edges.length;
+  const possibleEdges = nodeCount > 1 ? (nodeCount * (nodeCount - 1)) / 2 : 0;
+  const degrees = graph.agents.map((a) => graph.degree[a.id] || 0);
+  const minDegree = degrees.length ? Math.min(...degrees) : 0;
+  const maxDegree = degrees.length ? Math.max(...degrees) : 0;
+  const isolatedCount = degrees.filter((d) => d === 0).length;
+  return {
+    nodeCount,
+    edgeCount,
+    possibleEdges,
+    density: possibleEdges > 0 ? edgeCount / possibleEdges : 0,
+    minDegree,
+    maxDegree,
+    avgDegree: nodeCount > 0 ? (edgeCount * 2) / nodeCount : 0,
+    isolatedCount,
+  };
+}
+
+export function groupSummaries(graph: TopoGraph): TopoGroupSummary[] {
+  const byGroup = new Map<string, TopoGroupSummary>();
+  for (const group of graph.groups) {
+    byGroup.set(group, { group, count: 0, internalEdges: 0, externalEdges: 0 });
+  }
+  for (const agent of graph.agents) {
+    const summary = byGroup.get(agent.group);
+    if (summary) summary.count++;
+  }
+  for (const edge of graph.edges) {
+    const from = graph.byId.get(edge.from);
+    const to = graph.byId.get(edge.to);
+    if (!from || !to) continue;
+    if (from.group === to.group) {
+      const summary = byGroup.get(from.group);
+      if (summary) summary.internalEdges++;
+    } else {
+      const a = byGroup.get(from.group);
+      const b = byGroup.get(to.group);
+      if (a) a.externalEdges++;
+      if (b) b.externalEdges++;
+    }
+  }
+  return Array.from(byGroup.values()).sort((a, b) => {
+    if (a.count !== b.count) return b.count - a.count;
+    return a.group.localeCompare(b.group);
+  });
+}
+
+export function groupMatrix(graph: TopoGraph, maxGroups = 8): TopoGroupMatrixCell[] {
+  const allowed = new Set(groupSummaries(graph).slice(0, maxGroups).map((g) => g.group));
+  const keyFor = (group: string) => allowed.has(group) ? group : "Other";
+  const counts = new Map<string, number>();
+  for (const edge of graph.edges) {
+    const from = graph.byId.get(edge.from);
+    const to = graph.byId.get(edge.to);
+    if (!from || !to) continue;
+    const a = keyFor(from.group);
+    const b = keyFor(to.group);
+    const key = a <= b ? `${a}|${b}` : `${b}|${a}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([key, edges]) => {
+      const [from, to] = key.split("|");
+      return { from, to, edges };
+    })
+    .sort((a, b) => {
+      if (a.from !== b.from) return a.from.localeCompare(b.from);
+      return a.to.localeCompare(b.to);
+    });
+}
+
+export function sampleEdges(edges: TopoEdge[], limit: number): TopoEdge[] {
+  if (edges.length <= limit) return edges;
+  if (limit <= 0) return [];
+  const step = edges.length / limit;
+  const sampled: TopoEdge[] = [];
+  let cursor = 0;
+  while (sampled.length < limit && Math.floor(cursor) < edges.length) {
+    sampled.push(edges[Math.floor(cursor)]);
+    cursor += step;
+  }
+  return sampled;
 }

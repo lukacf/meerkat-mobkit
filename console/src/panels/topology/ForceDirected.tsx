@@ -11,6 +11,7 @@ import {
   colourForRole,
   edgeKey,
   roleIndexFor,
+  sampleEdges,
   useTopologyActivity,
   type TopoActivity,
 } from "./data";
@@ -70,6 +71,7 @@ export function ForceDirected({
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const liveActivity: TopoActivity = useTopologyActivity(activity, graph, { life: 900 });
   const scale = visualScale(graph.agents.length);
+  const visualEdges = React.useMemo(() => sampleEdges(graph.edges, 1500), [graph.edges]);
   const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   const zoom = useZoomPan(width, height);
@@ -79,7 +81,7 @@ export function ForceDirected({
   const simRef = React.useRef<{ nodes: SimNode[]; byId: Map<string, SimNode>; alpha: number; frame: number } | null>(null);
   const [, setTick] = React.useState(0);
   const fingerprint = React.useMemo(
-    () => `${graph.agents.map((a) => a.id).join(",")}|${graph.edges.map((e) => `${e.from}-${e.to}`).join(",")}|${width}x${height}`,
+    () => `${graph.agents.map((a) => a.id).join(",")}|${graph.edges.length}|${width}x${height}`,
     [graph, width, height],
   );
   const showLabelsInSim = labelMode === "on";
@@ -146,7 +148,7 @@ export function ForceDirected({
       }
       // Edge spring — ideal length scales with the graph so a small
       // graph spreads out and a dense one stays compact.
-      for (const e of graph.edges) {
+      for (const e of visualEdges) {
         const a = sim.byId.get(e.from);
         const b = sim.byId.get(e.to);
         if (!a || !b) continue;
@@ -217,7 +219,7 @@ export function ForceDirected({
       cancelAnimationFrame(raf);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fingerprint]);
+  }, [fingerprint, visualEdges]);
 
   const sim = simRef.current;
   const hotEdges = React.useMemo(() => {
@@ -275,7 +277,7 @@ export function ForceDirected({
           <g transform={viewportTransform(zoom.viewport)}>
             {/* 1. Edges */}
             <g>
-              {graph.edges.map((e, i) => {
+              {visualEdges.map((e, i) => {
                 const a = sim.byId.get(e.from);
                 const b = sim.byId.get(e.to);
                 if (!a || !b) return null;
