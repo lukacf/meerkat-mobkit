@@ -2656,25 +2656,34 @@ function parseToolResult(frame) {
   const record = frame.data && typeof frame.data === "object" ? frame.data : null;
   const isError = Boolean(record?.is_error) || frame.event === "interaction_failed";
   let result = "";
+  const toolName2 = typeof record?.name === "string" ? record.name : typeof record?.tool_name === "string" ? record.tool_name : void 0;
   if (typeof record?.result === "string") {
-    try {
-      const parsed = JSON.parse(record.result);
-      if (typeof parsed === "object" && parsed !== null) {
-        const clean = { ...parsed };
-        delete clean.source_event_type;
-        delete clean.type;
-        result = JSON.stringify(clean, null, 2);
-      } else {
+    const display = summarizeToolResultForDisplay(toolName2, record.result);
+    if (display) {
+      result = display;
+    } else {
+      try {
+        const parsed = JSON.parse(record.result);
+        if (typeof parsed === "object" && parsed !== null) {
+          const clean = { ...parsed };
+          delete clean.source_event_type;
+          delete clean.type;
+          result = JSON.stringify(clean, null, 2);
+        } else {
+          result = record.result;
+        }
+      } catch {
         result = record.result;
       }
-    } catch {
-      result = record.result;
     }
   } else if (typeof record?.result === "object" && record.result !== null) {
-    const clean = { ...record.result };
-    delete clean.source_event_type;
-    delete clean.type;
-    result = JSON.stringify(clean, null, 2);
+    result = summarizeToolResultForDisplay(toolName2, record.result) || "";
+    if (!result) {
+      const clean = { ...record.result };
+      delete clean.source_event_type;
+      delete clean.type;
+      result = JSON.stringify(clean, null, 2);
+    }
   }
   if (!result && frame.event === "tool_result_received") {
     return { status: isError ? "error" : "success" };
@@ -3121,7 +3130,75 @@ function contentToUserBlocks(content, blobBaseUrl) {
 function peerLastSegment(value) {
   return value.split("/").pop() || value;
 }
-function blockAssistantToolBlocks(blocks, peerRegistry) {
+function summarizePeersResult(result) {
+  let parsed = typeof result === "string" ? parseJsonPayload(result) : result && typeof result === "object" ? result : null;
+  if (typeof parsed === "string") {
+    parsed = parseJsonPayload(parsed);
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const peers = parsed.peers;
+  if (!Array.isArray(peers)) return null;
+  const roleCounts = /* @__PURE__ */ new Map();
+  const preview = [];
+  for (const peer of peers) {
+    if (!peer || typeof peer !== "object") continue;
+    const record = peer;
+    const rawName = typeof record.name === "string" && record.name.trim() ? record.name.trim() : typeof record.address?.endpoint === "string" ? String(record.address.endpoint).trim() : typeof record.peer_id === "string" ? record.peer_id.trim() : "";
+    if (!rawName) continue;
+    const parts = rawName.split("/").filter(Boolean);
+    const role = parts.length >= 2 ? parts[parts.length - 2] : "peer";
+    roleCounts.set(role, (roleCounts.get(role) || 0) + 1);
+    if (preview.length < 8) preview.push(peerLastSegment(rawName));
+  }
+  const roles = [...roleCounts.entries()].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])).slice(0, 5).map(([role, count]) => `${role} ${count}`).join(", ");
+  const lines = [`${peers.length} peers${roles ? ` \xB7 ${roles}` : ""}`];
+  if (preview.length > 0) {
+    lines.push(`First peers: ${preview.join(", ")}`);
+  }
+  return lines.join("\n");
+}
+function summarizeToolResultForDisplay(toolName2, result) {
+  if (toolName2 === "peers") {
+    const summary = summarizePeersResult(result);
+    if (summary) return summary;
+  }
+  return null;
+}
+function toolResultTextFromContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((block) => {
+    if (typeof block === "string") return block;
+    if (!block || typeof block !== "object") return "";
+    const record = block;
+    if (typeof record.text === "string") return record.text;
+    if (typeof record.content === "string") return record.content;
+    const data = record.data && typeof record.data === "object" ? record.data : null;
+    if (typeof data?.text === "string") return data.text;
+    if (typeof data?.content === "string") return data.content;
+    return "";
+  }).filter((value) => value.trim().length > 0).join("");
+}
+function historyToolResults(frames) {
+  const results = /* @__PURE__ */ new Map();
+  for (const frame of frames) {
+    if (frame.sourceKind !== "session_history" || frame.event !== "tool_execution_completed" && frame.event !== "tool_result_received") {
+      continue;
+    }
+    const data = frame.data && typeof frame.data === "object" ? frame.data : null;
+    const toolCallId = typeof data?.tool_call_id === "string" && data.tool_call_id.trim() ? data.tool_call_id.trim() : typeof data?.id === "string" && data.id.trim() ? data.id.trim() : "";
+    if (!toolCallId) continue;
+    const rawResult = data?.result ?? data?.content;
+    const result = rawResult !== void 0 ? summarizeToolResultForDisplay(void 0, rawResult) || toolResultTextFromContent(rawResult) : "";
+    const status = data?.is_error === true || data?.status === "error" ? "error" : "success";
+    results.set(toolCallId, {
+      status,
+      ...result.trim() ? { result } : {}
+    });
+  }
+  return results;
+}
+function blockAssistantToolBlocks(blocks, peerRegistry, toolResults) {
   const toolBlocks = [];
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
@@ -3139,12 +3216,15 @@ function blockAssistantToolBlocks(blocks, peerRegistry) {
     const rawPeerIntent = isPeerTool && typeof argsRecord?.intent === "string" ? argsRecord.intent : void 0;
     const peerIntent = displayPeerIntent(rawPeerIntent);
     const peerBody = isPeerTool ? extractPeerBodyFromArgs(argsRecord) : void 0;
+    const result = toolResults?.get(id);
+    const displayResult = result?.result ? summarizeToolResultForDisplay(name, result.result) || result.result : void 0;
     toolBlocks.push({
       type: "tool-call",
       toolCallId: id,
       name,
       arguments: argumentsText,
-      status: "success",
+      ...displayResult ? { result: displayResult } : {},
+      status: result?.status || "success",
       ...peerTarget2 ? { peerTarget: peerTarget2 } : {},
       ...peerIntent ? { peerIntent } : {},
       ...peerBody ? { peerBody } : {}
@@ -3238,7 +3318,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
   if (rich.length === 0 && bodyText) rich.push({ type: "paragraph", text: bodyText });
   return rich;
 }
-function historyMessageText(message, peerRegistry, blobBaseUrl) {
+function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults) {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
@@ -3258,7 +3338,7 @@ function historyMessageText(message, peerRegistry, blobBaseUrl) {
       return { role: "assistant", text: typeof record.content === "string" ? record.content : "" };
     case "block_assistant": {
       const blocks = Array.isArray(record.blocks) ? record.blocks : [];
-      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry);
+      const toolBlocks = blockAssistantToolBlocks(blocks, peerRegistry, toolResults);
       const text = blocks.map((block) => {
         if (!block || typeof block !== "object") return "";
         const item = block;
@@ -3281,7 +3361,12 @@ function historyMessageText(message, peerRegistry, blobBaseUrl) {
 function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = {}) {
   if (frame.sourceKind !== "session_history") return null;
   const record = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const parsed = historyMessageText(record.message, options.peerRegistry, options.blobBaseUrl);
+  const parsed = historyMessageText(
+    record.message,
+    options.peerRegistry,
+    options.blobBaseUrl,
+    options.toolResults
+  );
   const text = parsed.text.trim();
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   if (parsed.role === "meta") {
@@ -3354,6 +3439,7 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
   const entries = [];
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
+  const sessionToolResults = historyToolResults(orderedFrames);
   const emittedToolCalls = /* @__PURE__ */ new Set();
   const {
     liveToolCallIds,
@@ -3507,6 +3593,7 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
         peerRegistry,
         blobBaseUrl: options.blobBaseUrl,
+        toolResults: sessionToolResults,
         consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (historyEntry) {
@@ -3529,6 +3616,7 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
         const historyEntry = renderSessionHistoryTextCompleteEntry(agent, frame, entryId, {
           peerRegistry,
           blobBaseUrl: options.blobBaseUrl,
+          toolResults: sessionToolResults,
           consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
         });
         if (historyEntry) {
@@ -3619,6 +3707,42 @@ function sortConversationTimelineEntries(entries) {
     }
     return left.index - right.index;
   }).map(({ entry }) => entry);
+}
+function inferResponsePhaseFromFrames(frames, fallback = null) {
+  let phase = fallback;
+  for (const frame of frames) {
+    switch (frame.event) {
+      case "user_input":
+      case "interaction_started":
+        phase = "waiting";
+        break;
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+        phase = "tool-executing";
+        break;
+      case "text_delta":
+        phase = "generating";
+        break;
+      case "text_complete":
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+        phase = null;
+        break;
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        if (data.stop_reason === "end_turn") phase = null;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return phase;
 }
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
@@ -9504,6 +9628,7 @@ function ConsoleApp({ baseUrl }) {
       updatePhaseForIdentity(identity, frame);
     }
     recomputeBusyStateFromLog(identity);
+    recomputePhaseForIdentity(identity);
   }
   async function queryIdentityTimeline(identity) {
     const frames = [];
@@ -9706,6 +9831,7 @@ function ConsoleApp({ baseUrl }) {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
+      case "user_input":
       case "interaction_started":
         commitPanelPhase(panelKey, "waiting");
         break;
@@ -9771,6 +9897,18 @@ function ConsoleApp({ baseUrl }) {
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
       commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
+    }
+  }
+  function recomputePhaseForIdentity(identity) {
+    const frames = getSortedFrames(identity).filter(
+      (frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)
+    );
+    const phase = inferResponsePhaseFromFrames(frames, null);
+    for (const panel of dockRef.current.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      commitPanelPhase(buildPanelConversationKey(panel.id, target), phase);
     }
   }
   const loadExperience = import_react22.default.useCallback(() => {

@@ -369,6 +369,13 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
 test("inferResponsePhaseFromFrames clears working state on terminal text and end-turn frames", () => {
   assert.equal(
     inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "user_input", data: { content: "Hello" } },
+    ]),
+    "waiting",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
       { id: "evt-1", event: "text_delta", data: { delta: "Done." } },
       { id: "evt-2", event: "text_complete", data: { content: "Done." } },
     ]),
@@ -1041,6 +1048,63 @@ test("mapFramesToTimelineEntries renders session-history tool-use only assistant
   assert.equal(firstBlock?.type, "tool-call");
   assert.equal(firstBlock?.name, "delegate");
   assert.match(firstBlock?.arguments || "", /nested-ack-worker/);
+});
+
+test("mapFramesToTimelineEntries attaches session-history tool results to tool-use turns", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "stress-worker",
+      member_id: "stress-worker",
+      label: "stress-worker",
+      kind: "mob_agent",
+    },
+    [
+      {
+        id: "history-tool-use",
+        event: "interaction_complete",
+        identity: "stress-worker",
+        sourceKind: "session_history",
+        timestampMs: 10,
+        data: {
+          message: {
+            role: "block_assistant",
+            blocks: [
+              {
+                block_type: "tool_use",
+                data: { id: "call-peers", name: "peers", args: {} },
+              },
+            ],
+            stop_reason: "tool_use",
+          },
+          text: "",
+          result: "",
+        },
+      },
+      {
+        id: "history-tool-result",
+        event: "tool_execution_completed",
+        identity: "stress-worker",
+        sourceKind: "session_history",
+        timestampMs: 11,
+        data: {
+          id: "call-peers",
+          tool_call_id: "call-peers",
+          result: JSON.stringify("{\"peers\":[{\"peer_id\":\"peer-1\",\"name\":\"mob/worker/peer-1\"}]}"),
+          is_error: false,
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.name, "peers");
+  assert.equal(
+    block?.type === "tool-call" ? block.result : "",
+    "1 peers · worker 1\nFirst peers: peer-1",
+  );
+  assert.equal(block?.type === "tool-call" ? block.status : "", "success");
 });
 
 test("mapFramesToTimelineEntries drops session-history tool-use blocks already rendered live", () => {

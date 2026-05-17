@@ -32,6 +32,7 @@ import {
   buildRoutingSectionView,
   buildSidebarViewState,
   createUserEntry,
+  inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   sortConversationTimelineEntries,
   type MobKitDockTarget,
@@ -717,6 +718,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       updatePhaseForIdentity(identity, frame);
     }
     recomputeBusyStateFromLog(identity);
+    recomputePhaseForIdentity(identity);
   }
 
   async function queryIdentityTimeline(
@@ -1049,6 +1051,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
+      case "user_input":
       case "interaction_started":
         commitPanelPhase(panelKey, "waiting");
         break;
@@ -1126,6 +1129,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
       commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
+    }
+  }
+
+  function recomputePhaseForIdentity(identity: string) {
+    const frames = getSortedFrames(identity).filter((frame) =>
+      PANEL_ROUTABLE_EVENTS.has(frame.event)
+    );
+    const phase = inferResponsePhaseFromFrames(frames, null);
+    for (const panel of dockRef.current.viewState.panels) {
+      const target = panel.target as MobKitDockTarget | null;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      commitPanelPhase(buildPanelConversationKey(panel.id, target), phase);
     }
   }
 
