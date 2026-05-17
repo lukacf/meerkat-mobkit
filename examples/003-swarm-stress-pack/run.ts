@@ -47,6 +47,26 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function countUndirectedWires(members: readonly MemberSnapshot[]): number {
+  const active = new Set(members.map((member) => member.agentIdentity));
+  const edges = new Set<string>();
+  for (const member of members) {
+    for (const peer of member.wiredTo) {
+      if (!active.has(peer)) continue;
+      const [a, b] =
+        member.agentIdentity <= peer
+          ? [member.agentIdentity, peer]
+          : [peer, member.agentIdentity];
+      edges.add(`${a}\u0000${b}`);
+    }
+  }
+  return edges.size;
+}
+
+const DENSE_RESTORE_EDGE_FLOOR = Math.floor(
+  (BASE_TOTAL * PEER_FANOUT_PER_PARENT) / 2,
+);
+
 function repoCargoEnv(): Record<string, string> {
   const script = join(repoRoot, "scripts/repo-cargo");
   const result = spawnSync(script, ["--print-env"], {
@@ -412,23 +432,43 @@ async function main() {
 
   try {
     const handle = runtime.mobHandle();
-    const shouldApplyDense = !skipDense;
+    let members = await handle.listMembers();
+    const restoredEdgeCount = countUndirectedWires(members);
+    const shouldApplyDense =
+      !skipDense &&
+      !(
+        keepState &&
+        hadPersistentState &&
+        restoredEdgeCount >= DENSE_RESTORE_EDGE_FLOOR
+      );
+    let deferredDenseApply: (() => Promise<unknown>) | null = null;
     if (shouldApplyDense) {
       topologyProvider.enableDenseBase();
-      console.log(
-        `[swarm-stress] applying dense baseline topology (${BASE_TOTAL} agents x ${PEER_FANOUT_PER_PARENT} peers)`,
-      );
-      const identityReport = (await runtime.reconcileIdentity()) as Record<
-        string,
-        unknown
-      >;
-      console.log(
-        `[swarm-stress] dense topology managed_edges=${identityReport.managed_edges ?? "unknown"}`,
-      );
+      const applyDense = async () => {
+        console.log(
+          `[swarm-stress] applying dense baseline topology (${BASE_TOTAL} agents x ${PEER_FANOUT_PER_PARENT} peers)`,
+        );
+        const identityReport = (await runtime.reconcileIdentity()) as Record<
+          string,
+          unknown
+        >;
+        console.log(
+          `[swarm-stress] dense topology managed_edges=${identityReport.managed_edges ?? "unknown"}`,
+        );
+      };
+      if (keepState && hadPersistentState) {
+        console.log(
+          `[swarm-stress] will apply dense baseline topology in background; restored ${restoredEdgeCount} edges before reapply`,
+        );
+        deferredDenseApply = applyDense;
+      } else {
+        await applyDense();
+      }
     } else {
-      console.log(
-        "[swarm-stress] skipping dense topology reapply; live topology may be empty unless the runtime restored wires",
-      );
+      const reason = skipDense
+        ? "requested by MOBKIT_SWARM_SKIP_DENSE"
+        : `restored ${restoredEdgeCount} existing topology edges`;
+      console.log(`[swarm-stress] skipping dense topology reapply (${reason})`);
     }
     await handle.setMobLabels({
       example_pack: "003-swarm-stress",
@@ -438,7 +478,7 @@ async function main() {
       max_sessions: String(MAX_SESSIONS),
     });
 
-    const members = await handle.listMembers();
+    members = await handle.listMembers();
     const baseUrl = runtime.rustHttpBaseUrl;
     console.log(`[swarm-stress] bootstrap seated ${members.length} agents`);
     if (restoreBurst) {
@@ -465,6 +505,15 @@ async function main() {
       console.log(`[swarm-stress] console title: ${config?.title ?? "stock"}`);
     }
 
+    const denseApply = deferredDenseApply?.().catch((error: unknown) => {
+      console.error("[swarm-stress] dense topology background apply failed", error);
+      process.exitCode = 1;
+    }) ?? null;
+
+    if (denseApply && (autoBurst || kickoff)) {
+      await denseApply;
+    }
+
     if (autoBurst) {
       await runBurstyParentActions(handle);
       console.log("[swarm-stress] autoburst completed");
@@ -485,6 +534,8 @@ async function main() {
         process.once("SIGINT", resolveWait);
         process.once("SIGTERM", resolveWait);
       });
+    } else if (denseApply) {
+      await denseApply;
     }
   } finally {
     await runtime.shutdown();

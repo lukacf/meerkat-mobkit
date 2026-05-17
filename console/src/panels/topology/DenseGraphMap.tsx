@@ -49,6 +49,8 @@ interface Viewport {
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const EMPTY_ACTIVITY: TopoActivity = { active: {}, busy: {}, calls: {}, pulses: [] };
 const ACTIVITY_LIFE_MS = 8000;
+const SMALL_GRAPH_NODE_LIMIT = 16;
+const SMALL_GRAPH_EDGE_LIMIT = 80;
 
 function hash(value: string): number {
   let h = 2166136261;
@@ -130,35 +132,58 @@ function fitLayout(nodes: LayoutNode[], groups: GroupAnchor[], width: number, he
   }
 }
 
+function isSmallGraph(graph: TopoGraph): boolean {
+  return graph.agents.length <= SMALL_GRAPH_NODE_LIMIT && graph.edges.length <= SMALL_GRAPH_EDGE_LIMIT;
+}
+
 function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   const groupIndex = new Map<string, number>();
   graph.groups.forEach((group, index) => groupIndex.set(group, index));
   const cx = width / 2;
   const cy = height / 2;
   const groupCount = Math.max(1, graph.groups.length);
-  const marginX = Math.max(155, width * 0.23);
-  const marginY = Math.max(150, height * 0.3);
-  const explicitAnchors: Array<{ x: number; y: number }> =
-    groupCount === 1
-      ? [{ x: cx, y: cy }]
-      : groupCount === 2
-        ? [{ x: marginX, y: cy }, { x: width - marginX, y: cy }]
-        : groupCount === 3
-          ? [
-              { x: cx, y: marginY },
-              { x: width - marginX, y: height - marginY },
-              { x: marginX, y: height - marginY },
-            ]
-          : groupCount === 4
-            ? [
-                { x: marginX, y: marginY },
-                { x: width - marginX, y: marginY },
-                { x: marginX, y: height - marginY },
-                { x: width - marginX, y: height - marginY },
-              ]
-            : [];
-  const rx = Math.max(180, width * 0.34);
-  const ry = Math.max(130, height * 0.31);
+  const smallGraph = isSmallGraph(graph);
+  const marginX = smallGraph ? Math.max(82, width * 0.12) : Math.max(155, width * 0.23);
+  const marginY = smallGraph ? Math.max(76, height * 0.13) : Math.max(150, height * 0.3);
+  const compactR = Math.max(72, Math.min(width, height) * 0.18);
+  let explicitAnchors: Array<{ x: number; y: number }> = [];
+  if (smallGraph && groupCount === 1) {
+    explicitAnchors = [{ x: cx, y: cy }];
+  } else if (smallGraph && groupCount === 2) {
+    explicitAnchors = [{ x: cx - compactR, y: cy }, { x: cx + compactR, y: cy }];
+  } else if (smallGraph && groupCount === 3) {
+    explicitAnchors = [
+      { x: cx, y: cy - compactR * 0.72 },
+      { x: cx + compactR * 0.86, y: cy + compactR * 0.56 },
+      { x: cx - compactR * 0.86, y: cy + compactR * 0.56 },
+    ];
+  } else if (smallGraph && groupCount === 4) {
+    explicitAnchors = [
+      { x: cx - compactR * 0.72, y: cy - compactR * 0.62 },
+      { x: cx + compactR * 0.72, y: cy - compactR * 0.62 },
+      { x: cx - compactR * 0.72, y: cy + compactR * 0.62 },
+      { x: cx + compactR * 0.72, y: cy + compactR * 0.62 },
+    ];
+  } else if (groupCount === 1) {
+    explicitAnchors = [{ x: cx, y: cy }];
+  } else if (groupCount === 2) {
+    explicitAnchors = [{ x: marginX, y: cy }, { x: width - marginX, y: cy }];
+  } else if (groupCount === 3) {
+    explicitAnchors = [
+      { x: cx, y: marginY },
+      { x: width - marginX, y: height - marginY },
+      { x: marginX, y: height - marginY },
+    ];
+  } else if (groupCount === 4) {
+    explicitAnchors = [
+      { x: marginX, y: marginY },
+      { x: width - marginX, y: marginY },
+      { x: marginX, y: height - marginY },
+      { x: width - marginX, y: height - marginY },
+    ];
+  }
+  const rx = smallGraph ? compactR : Math.max(180, width * 0.34);
+  const ry = smallGraph ? compactR * 0.78 : Math.max(130, height * 0.31);
   const groups = graph.groups.map((name, index) => {
     const fallbackT = (index / groupCount) * Math.PI * 2 - Math.PI / 2;
     const anchor = explicitAnchors[index] || {
@@ -194,10 +219,12 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   for (const [gi, entry] of groupedAgents.entries()) {
     const anchor = groups[gi] || { x: cx, y: cy, count: entry.length };
     const count = Math.max(1, entry.length);
-    const clusterRadius = Math.min(
-      Math.max(74, Math.sqrt(count) * 11.8),
-      Math.min(width, height) * (groupCount <= 4 ? 0.175 : 0.13),
-    );
+    const clusterRadius = smallGraph
+      ? Math.min(Math.max(22, Math.sqrt(count) * 15), Math.min(width, height) * 0.08)
+      : Math.min(
+          Math.max(74, Math.sqrt(count) * 11.8),
+          Math.min(width, height) * (groupCount <= 4 ? 0.175 : 0.13),
+        );
     const twist = ((hash(anchor.name) % 1000) / 1000) * Math.PI * 2;
     entry.forEach((agent, index) => {
       const seed = hash(agent.id);
@@ -343,6 +370,9 @@ function drawBundledCurve(ctx: CanvasRenderingContext2D, a: LayoutNode, b: Layou
 }
 
 function nodeRadius(graph: TopoGraph, id: string): number {
+  if (isSmallGraph(graph)) {
+    return Math.min(14, 5.6 + Math.sqrt(graph.degree[id] || 0) * 1.55);
+  }
   return Math.min(8.5, 2.1 + Math.sqrt(graph.degree[id] || 0) * 0.48);
 }
 
@@ -398,8 +428,8 @@ export function DenseGraphMap({
       const rect = entries[0]?.contentRect;
       if (!rect) return;
       setSize({
-        width: Math.max(420, Math.floor(rect.width)),
-        height: Math.max(320, Math.floor(rect.height)),
+        width: Math.max(1, Math.floor(rect.width)),
+        height: Math.max(1, Math.floor(rect.height)),
       });
     });
     ro.observe(el);
@@ -419,7 +449,8 @@ export function DenseGraphMap({
     ctx.clearRect(0, 0, layout.width, layout.height);
 
     const faint = cssVar(host, "--ink-faint", "rgba(148, 163, 184, 1)");
-    const edgeAlpha = graph.edges.length > 18000 ? 0.105 : graph.edges.length > 6000 ? 0.135 : 0.18;
+    const smallGraph = isSmallGraph(graph);
+    const edgeAlpha = smallGraph ? 0.72 : graph.edges.length > 18000 ? 0.105 : graph.edges.length > 6000 ? 0.135 : 0.18;
 
     for (const group of layout.groups) {
       const grad = ctx.createRadialGradient(group.x, group.y, 10, group.x, group.y, Math.max(110, group.count * 2.1));
@@ -433,7 +464,22 @@ export function DenseGraphMap({
       ctx.fill();
     }
 
-    if (edgeMode === "all") {
+    if (smallGraph) {
+      ctx.lineCap = "round";
+      ctx.lineWidth = 1.35;
+      for (const edge of graph.edges) {
+        const a = layout.byId.get(edge.from);
+        const b = layout.byId.get(edge.to);
+        if (!a || !b) continue;
+        const sameGroup = a.groupIndex === b.groupIndex;
+        const seed = hash(edgeKey(a.id, b.id));
+        ctx.strokeStyle = sameGroup ? (layout.groups[a.groupIndex]?.colour || faint) : faint;
+        ctx.globalAlpha = sameGroup ? edgeAlpha * 0.92 : edgeAlpha * 0.68;
+        ctx.beginPath();
+        drawCurve(ctx, a, b, sameGroup ? (seed % 13) - 6 : (seed % 2 === 0 ? 1 : -1) * (8 + (seed % 14)));
+        ctx.stroke();
+      }
+    } else if (edgeMode === "all") {
       ctx.lineWidth = graph.edges.length > 12000 ? 0.48 : 0.68;
       ctx.strokeStyle = faint;
       ctx.globalAlpha = edgeAlpha * 0.92;
@@ -675,6 +721,7 @@ export function DenseGraphMap({
   const hover = hoverId ? graph.byId.get(hoverId) : null;
   const hoverBusy = hoverId ? activity.busy[hoverId] || layout.byId.get(hoverId)?.agent.responsePhase != null : false;
   const hoverCalls = hoverId ? activity.pulses.filter((pulse) => pulse.from === hoverId || pulse.to === hoverId).length : 0;
+  const showNodeLabels = graph.agents.length <= 12;
 
   return (
     <div
@@ -723,6 +770,19 @@ export function DenseGraphMap({
           >
             <strong>{g.name}</strong>
             <span>{g.count} agents</span>
+          </div>
+        ))}
+        {showNodeLabels && layout.nodes.map((node) => (
+          <div
+            key={node.id}
+            className="topo-dense__node-label"
+            style={{
+              left: `${(node.x || 0) * viewport.scale + viewport.x}px`,
+              top: `${(node.y || 0) * viewport.scale + viewport.y + node.radius + 8}px`,
+              borderColor: layout.groups[node.groupIndex]?.colour || colourForRole(node.agent.role, roleIndex),
+            }}
+          >
+            {node.agent.label}
           </div>
         ))}
       </div>

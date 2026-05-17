@@ -4692,6 +4692,8 @@ var import_jsx_runtime18 = require("react/jsx-runtime");
 var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 var EMPTY_ACTIVITY = { active: {}, busy: {}, calls: {}, pulses: [] };
 var ACTIVITY_LIFE_MS = 8e3;
+var SMALL_GRAPH_NODE_LIMIT = 16;
+var SMALL_GRAPH_EDGE_LIMIT = 80;
 function hash(value) {
   let h = 2166136261;
   for (let i = 0; i < value.length; i++) {
@@ -4766,26 +4768,57 @@ function fitLayout(nodes, groups, width, height) {
     groups[index].y = entry.y / entry.count;
   }
 }
+function isSmallGraph(graph) {
+  return graph.agents.length <= SMALL_GRAPH_NODE_LIMIT && graph.edges.length <= SMALL_GRAPH_EDGE_LIMIT;
+}
 function buildLayout(graph, width, height) {
   const groupIndex = /* @__PURE__ */ new Map();
   graph.groups.forEach((group, index) => groupIndex.set(group, index));
   const cx = width / 2;
   const cy = height / 2;
   const groupCount = Math.max(1, graph.groups.length);
-  const marginX = Math.max(155, width * 0.23);
-  const marginY = Math.max(150, height * 0.3);
-  const explicitAnchors = groupCount === 1 ? [{ x: cx, y: cy }] : groupCount === 2 ? [{ x: marginX, y: cy }, { x: width - marginX, y: cy }] : groupCount === 3 ? [
-    { x: cx, y: marginY },
-    { x: width - marginX, y: height - marginY },
-    { x: marginX, y: height - marginY }
-  ] : groupCount === 4 ? [
-    { x: marginX, y: marginY },
-    { x: width - marginX, y: marginY },
-    { x: marginX, y: height - marginY },
-    { x: width - marginX, y: height - marginY }
-  ] : [];
-  const rx = Math.max(180, width * 0.34);
-  const ry = Math.max(130, height * 0.31);
+  const smallGraph = isSmallGraph(graph);
+  const marginX = smallGraph ? Math.max(82, width * 0.12) : Math.max(155, width * 0.23);
+  const marginY = smallGraph ? Math.max(76, height * 0.13) : Math.max(150, height * 0.3);
+  const compactR = Math.max(72, Math.min(width, height) * 0.18);
+  let explicitAnchors = [];
+  if (smallGraph && groupCount === 1) {
+    explicitAnchors = [{ x: cx, y: cy }];
+  } else if (smallGraph && groupCount === 2) {
+    explicitAnchors = [{ x: cx - compactR, y: cy }, { x: cx + compactR, y: cy }];
+  } else if (smallGraph && groupCount === 3) {
+    explicitAnchors = [
+      { x: cx, y: cy - compactR * 0.72 },
+      { x: cx + compactR * 0.86, y: cy + compactR * 0.56 },
+      { x: cx - compactR * 0.86, y: cy + compactR * 0.56 }
+    ];
+  } else if (smallGraph && groupCount === 4) {
+    explicitAnchors = [
+      { x: cx - compactR * 0.72, y: cy - compactR * 0.62 },
+      { x: cx + compactR * 0.72, y: cy - compactR * 0.62 },
+      { x: cx - compactR * 0.72, y: cy + compactR * 0.62 },
+      { x: cx + compactR * 0.72, y: cy + compactR * 0.62 }
+    ];
+  } else if (groupCount === 1) {
+    explicitAnchors = [{ x: cx, y: cy }];
+  } else if (groupCount === 2) {
+    explicitAnchors = [{ x: marginX, y: cy }, { x: width - marginX, y: cy }];
+  } else if (groupCount === 3) {
+    explicitAnchors = [
+      { x: cx, y: marginY },
+      { x: width - marginX, y: height - marginY },
+      { x: marginX, y: height - marginY }
+    ];
+  } else if (groupCount === 4) {
+    explicitAnchors = [
+      { x: marginX, y: marginY },
+      { x: width - marginX, y: marginY },
+      { x: marginX, y: height - marginY },
+      { x: width - marginX, y: height - marginY }
+    ];
+  }
+  const rx = smallGraph ? compactR : Math.max(180, width * 0.34);
+  const ry = smallGraph ? compactR * 0.78 : Math.max(130, height * 0.31);
   const groups = graph.groups.map((name, index) => {
     const fallbackT = index / groupCount * Math.PI * 2 - Math.PI / 2;
     const anchor = explicitAnchors[index] || {
@@ -4819,7 +4852,7 @@ function buildLayout(graph, width, height) {
   for (const [gi, entry] of groupedAgents.entries()) {
     const anchor = groups[gi] || { x: cx, y: cy, count: entry.length };
     const count = Math.max(1, entry.length);
-    const clusterRadius = Math.min(
+    const clusterRadius = smallGraph ? Math.min(Math.max(22, Math.sqrt(count) * 15), Math.min(width, height) * 0.08) : Math.min(
       Math.max(74, Math.sqrt(count) * 11.8),
       Math.min(width, height) * (groupCount <= 4 ? 0.175 : 0.13)
     );
@@ -4953,6 +4986,9 @@ function drawBundledCurve(ctx, a, b, groups) {
   ctx.bezierCurveTo(c1x, c1y, c2x, c2y, bx, by);
 }
 function nodeRadius(graph, id) {
+  if (isSmallGraph(graph)) {
+    return Math.min(14, 5.6 + Math.sqrt(graph.degree[id] || 0) * 1.55);
+  }
   return Math.min(8.5, 2.1 + Math.sqrt(graph.degree[id] || 0) * 0.48);
 }
 function DenseGraphMap({
@@ -5004,8 +5040,8 @@ function DenseGraphMap({
       const rect = entries[0]?.contentRect;
       if (!rect) return;
       setSize({
-        width: Math.max(420, Math.floor(rect.width)),
-        height: Math.max(320, Math.floor(rect.height))
+        width: Math.max(1, Math.floor(rect.width)),
+        height: Math.max(1, Math.floor(rect.height))
       });
     });
     ro.observe(el);
@@ -5023,7 +5059,8 @@ function DenseGraphMap({
     ctx.scale(dpr, dpr);
     ctx.clearRect(0, 0, layout.width, layout.height);
     const faint = cssVar(host, "--ink-faint", "rgba(148, 163, 184, 1)");
-    const edgeAlpha = graph.edges.length > 18e3 ? 0.105 : graph.edges.length > 6e3 ? 0.135 : 0.18;
+    const smallGraph = isSmallGraph(graph);
+    const edgeAlpha = smallGraph ? 0.72 : graph.edges.length > 18e3 ? 0.105 : graph.edges.length > 6e3 ? 0.135 : 0.18;
     for (const group of layout.groups) {
       const grad = ctx.createRadialGradient(group.x, group.y, 10, group.x, group.y, Math.max(110, group.count * 2.1));
       grad.addColorStop(0, group.colour);
@@ -5035,7 +5072,22 @@ function DenseGraphMap({
       ctx.arc(group.x, group.y, Math.max(110, group.count * 2.1), 0, Math.PI * 2);
       ctx.fill();
     }
-    if (edgeMode === "all") {
+    if (smallGraph) {
+      ctx.lineCap = "round";
+      ctx.lineWidth = 1.35;
+      for (const edge of graph.edges) {
+        const a = layout.byId.get(edge.from);
+        const b = layout.byId.get(edge.to);
+        if (!a || !b) continue;
+        const sameGroup = a.groupIndex === b.groupIndex;
+        const seed = hash(edgeKey(a.id, b.id));
+        ctx.strokeStyle = sameGroup ? layout.groups[a.groupIndex]?.colour || faint : faint;
+        ctx.globalAlpha = sameGroup ? edgeAlpha * 0.92 : edgeAlpha * 0.68;
+        ctx.beginPath();
+        drawCurve(ctx, a, b, sameGroup ? seed % 13 - 6 : (seed % 2 === 0 ? 1 : -1) * (8 + seed % 14));
+        ctx.stroke();
+      }
+    } else if (edgeMode === "all") {
       ctx.lineWidth = graph.edges.length > 12e3 ? 0.48 : 0.68;
       ctx.strokeStyle = faint;
       ctx.globalAlpha = edgeAlpha * 0.92;
@@ -5256,6 +5308,7 @@ function DenseGraphMap({
   const hover = hoverId ? graph.byId.get(hoverId) : null;
   const hoverBusy = hoverId ? activity.busy[hoverId] || layout.byId.get(hoverId)?.agent.responsePhase != null : false;
   const hoverCalls = hoverId ? activity.pulses.filter((pulse) => pulse.from === hoverId || pulse.to === hoverId).length : 0;
+  const showNodeLabels = graph.agents.length <= 12;
   return /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(
     "div",
     {
@@ -5291,25 +5344,40 @@ function DenseGraphMap({
       onPointerLeave: () => setHoverId(null),
       children: [
         /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("canvas", { ref: canvasRef, className: "topo-dense__canvas", "aria-label": "Dense topology graph" }),
-        /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("div", { className: "topo-dense__labels", "aria-hidden": "true", children: layout.groups.map((g) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(
-          "div",
-          {
-            className: "topo-dense__group-label",
-            style: {
-              left: `${g.x * viewport.scale + viewport.x}px`,
-              top: `${g.y * viewport.scale + viewport.y + 18}px`,
-              borderColor: g.colour
+        /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("div", { className: "topo-dense__labels", "aria-hidden": "true", children: [
+          layout.groups.map((g) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(
+            "div",
+            {
+              className: "topo-dense__group-label",
+              style: {
+                left: `${g.x * viewport.scale + viewport.x}px`,
+                top: `${g.y * viewport.scale + viewport.y + 18}px`,
+                borderColor: g.colour
+              },
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: g.name }),
+                /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
+                  g.count,
+                  " agents"
+                ] })
+              ]
             },
-            children: [
-              /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("strong", { children: g.name }),
-              /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)("span", { children: [
-                g.count,
-                " agents"
-              ] })
-            ]
-          },
-          g.name
-        )) }),
+            g.name
+          )),
+          showNodeLabels && layout.nodes.map((node) => /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(
+            "div",
+            {
+              className: "topo-dense__node-label",
+              style: {
+                left: `${(node.x || 0) * viewport.scale + viewport.x}px`,
+                top: `${(node.y || 0) * viewport.scale + viewport.y + node.radius + 8}px`,
+                borderColor: layout.groups[node.groupIndex]?.colour || colourForRole(node.agent.role, roleIndex)
+              },
+              children: node.agent.label
+            },
+            node.id
+          ))
+        ] }),
         hover && /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(import_jsx_runtime18.Fragment, { children: [
           /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(
             "div",

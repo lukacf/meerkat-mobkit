@@ -1409,6 +1409,7 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
     struct RecordingBridge {
         wires: tokio::sync::Mutex<Vec<(String, String)>>,
         unwires: tokio::sync::Mutex<Vec<(String, String)>>,
+        current_wires: tokio::sync::Mutex<Vec<(String, String)>>,
     }
 
     #[async_trait]
@@ -1467,6 +1468,20 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
             Ok(())
         }
 
+        async fn wire_peers_batch(
+            &self,
+            edges: &[(AgentRuntimeId, AgentRuntimeId)],
+        ) -> Result<(), BridgeError> {
+            for (a, b) in edges {
+                self.wire_peer(a, b).await?;
+                self.current_wires
+                    .lock()
+                    .await
+                    .push((a.as_str().to_string(), b.as_str().to_string()));
+            }
+            Ok(())
+        }
+
         async fn unwire_peer(
             &self,
             a: &AgentRuntimeId,
@@ -1477,6 +1492,23 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
                 .await
                 .push((a.as_str().to_string(), b.as_str().to_string()));
             Ok(())
+        }
+
+        async fn current_member_wires(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            Ok(self
+                .current_wires
+                .lock()
+                .await
+                .iter()
+                .filter_map(|(a, b)| {
+                    Some((
+                        AgentRuntimeId::parse(a).ok()?,
+                        AgentRuntimeId::parse(b).ok()?,
+                    ))
+                })
+                .collect())
         }
     }
 
@@ -1547,6 +1579,163 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
             ("rt:b:main:0".to_string(), "rt:c:main:0".to_string()),
         ]
     );
+    assert_eq!(
+        bridge.unwires.lock().await.as_slice(),
+        &[("rt:a:main:0".to_string(), "rt:b:main:0".to_string())]
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_topology_claims_persisted_wires_without_rebatching() {
+    #[derive(Default)]
+    struct RecordingBridge {
+        wires: tokio::sync::Mutex<Vec<(String, String)>>,
+        unwires: tokio::sync::Mutex<Vec<(String, String)>>,
+        current_wires: tokio::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    #[async_trait]
+    impl SessionBridge for RecordingBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(meerkat_core::types::SessionId::new())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(meerkat_core::types::SessionId::new())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Ok(SessionSnapshot { data: Vec::new() })
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+
+        async fn wire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.wires
+                .lock()
+                .await
+                .push((a.as_str().to_string(), b.as_str().to_string()));
+            Ok(())
+        }
+
+        async fn unwire_peer(
+            &self,
+            a: &AgentRuntimeId,
+            b: &AgentRuntimeId,
+        ) -> Result<(), BridgeError> {
+            self.unwires
+                .lock()
+                .await
+                .push((a.as_str().to_string(), b.as_str().to_string()));
+            Ok(())
+        }
+
+        async fn current_member_wires(
+            &self,
+        ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+            Ok(self
+                .current_wires
+                .lock()
+                .await
+                .iter()
+                .filter_map(|(a, b)| {
+                    Some((
+                        AgentRuntimeId::parse(a).ok()?,
+                        AgentRuntimeId::parse(b).ok()?,
+                    ))
+                })
+                .collect())
+        }
+    }
+
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|e| TopologyError::InvalidEdge(format!("{e}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_provider = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(RecordingBridge::default());
+    bridge
+        .current_wires
+        .lock()
+        .await
+        .push(("rt:a:main:0".to_string(), "rt:b:main:0".to_string()));
+    let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: store,
+        lease_provider,
+        runtime_instance_id: "test-runtime".to_string(),
+        has_runtime_store: false,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(bridge.clone()),
+        default_timeout: None,
+    });
+    let roster = vec![make_spec("a:main"), make_spec("b:main")];
+
+    restore_flow(
+        &runtime,
+        &roster,
+        Some(&StaticTopology(vec![("a:main", "b:main")])),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        bridge.wires.lock().await.is_empty(),
+        "persisted wires should be claimed as managed without re-sending a batch"
+    );
+
+    restore_flow(&runtime, &roster, Some(&StaticTopology(Vec::new())), None)
+        .await
+        .unwrap();
+
     assert_eq!(
         bridge.unwires.lock().await.as_slice(),
         &[("rt:a:main:0".to_string(), "rt:b:main:0".to_string())]
