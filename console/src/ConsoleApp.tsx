@@ -943,6 +943,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   // Experience refresh debounce
   const experienceTimerRef = React.useRef<number | null>(null);
+  const experienceLoadInFlightRef = React.useRef<Promise<ConsoleAgent[]> | null>(
+    null,
+  );
 
   // Stable agent ref for async callbacks
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
@@ -1130,25 +1133,39 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // LOAD EXPERIENCE
   // =========================================================================
 
-  const loadExperience = React.useCallback(async () => {
-    const [experienceJson, modulesJson] = await Promise.all([
-      fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
-      fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
-    ]);
-    const loadedModules = Array.isArray(modulesJson.modules)
-      ? modulesJson.modules.map(String)
-      : [];
-    const nextAgents = normalizeAgents(experienceJson, loadedModules);
-    setExperience(experienceJson);
-    setAgents(nextAgents);
-    setActiveActivityPresetId(
-      (c) =>
-        c ||
-        experienceJson.console_config?.rail?.active_preset_id ||
-        experienceJson.activity_feed?.active_preset_id ||
-        "all",
-    );
-    return nextAgents;
+  const loadExperience = React.useCallback(() => {
+    if (experienceLoadInFlightRef.current) {
+      return experienceLoadInFlightRef.current;
+    }
+
+    let request: Promise<ConsoleAgent[]>;
+    request = (async () => {
+      const [experienceJson, modulesJson] = await Promise.all([
+        fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
+        fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
+      ]);
+      const loadedModules = Array.isArray(modulesJson.modules)
+        ? modulesJson.modules.map(String)
+        : [];
+      const nextAgents = normalizeAgents(experienceJson, loadedModules);
+      setExperience(experienceJson);
+      setAgents(nextAgents);
+      setActiveActivityPresetId(
+        (c) =>
+          c ||
+          experienceJson.console_config?.rail?.active_preset_id ||
+          experienceJson.activity_feed?.active_preset_id ||
+          "all",
+      );
+      return nextAgents;
+    })().finally(() => {
+      if (experienceLoadInFlightRef.current === request) {
+        experienceLoadInFlightRef.current = null;
+      }
+    });
+
+    experienceLoadInFlightRef.current = request;
+    return request;
   }, [baseUrl]);
 
   React.useEffect(() => {
@@ -1170,7 +1187,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   React.useEffect(() => {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {});
-    }, 1_000);
+    }, 15_000);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
 
@@ -1484,29 +1501,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // Seed activity with recent history (only on mount) — apply same
     // filter as SSE. The activity rail is its own concern; it doesn't
     // share state with the per-identity logs.
-    void queryTimeline(baseUrl, {}, 200)
-      .then(({ frames }) => {
-        const seen = new Set<string>();
-        const filtered: ConsoleFrame[] = [];
-        for (const frame of frames) {
-          if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
-          const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          filtered.push(frame);
-        }
-        activityRef.current = filtered.slice(-200).reverse();
-        commitLiveFrames(
-          frames
-            .filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event))
-            .slice(-300)
-            .reverse(),
-        );
-        forceRender();
-      })
-      .catch(() => {});
-
-    const unsubscribe = subscribeTimelineEvents(baseUrl, {}, (frame) => {
+    const handleLiveFrame = (frame: ConsoleFrame) => {
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
@@ -1544,16 +1539,45 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ) {
         scheduleHistoryRefreshRef.current(identity);
       }
-      if (
-        REFRESH_TRIGGER_EVENTS.has(frame.event) ||
-        frame.event !== "keep-alive"
-      ) {
+      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
         scheduleExperienceRefreshRef.current();
       }
-    });
+    };
+
+    let stopped = false;
+    let unsubscribe: (() => void) | null = null;
+
+    void queryTimeline(baseUrl, {}, 200)
+      .then(({ frames, nextCursor }) => {
+        if (stopped) return;
+        const seen = new Set<string>();
+        const filtered: ConsoleFrame[] = [];
+        for (const frame of frames) {
+          if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
+          const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          filtered.push(frame);
+        }
+        activityRef.current = filtered.slice(-200).reverse();
+        commitLiveFrames(
+          frames
+            .filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event))
+            .slice(-300)
+            .reverse(),
+        );
+        forceRender();
+
+        const after = nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
+        unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
+      })
+      .catch(() => {
+        if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
+      });
 
     return () => {
-      unsubscribe();
+      stopped = true;
+      unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseUrl]);
@@ -1758,7 +1782,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (!target || target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
-    const text = (draftByKey[panelKey] || "").trim();
+    const rawDraft = draftByKey[panelKey] || "";
+    const text = rawDraft.trim();
     if (!text && attachments.length === 0) return false;
 
     const stack = getPendingStack(identity);
@@ -1766,6 +1791,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     if (!shouldQueue || attachments.length > 0) {
       // Idle + empty stack: bypass straight to the wire.
+      // Clear the text before awaiting the RPC so a busy runtime cannot
+      // freeze the visible composer with the just-submitted draft still in it.
+      if (attachments.length === 0) {
+        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      }
       const sent = await submitMessageNow(
         panelId,
         target,
@@ -1773,7 +1803,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         "queue",
         attachments,
       );
-      if (sent) setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      if (sent) {
+        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      } else if (attachments.length === 0) {
+        setDraftByKey((c) => ({ ...c, [panelKey]: rawDraft }));
+      }
       return sent;
     }
 

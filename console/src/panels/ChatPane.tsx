@@ -740,7 +740,6 @@ export function ChatPane({
             value={draft}
             onChange={(e) => onDraftChange(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitComposer(); } }}
-            disabled={sending}
             rows={2}
             data-testid={`chat-composer:${identity}`}
           />
@@ -752,7 +751,7 @@ export function ChatPane({
               disabled={
                 (!draft.trim() && staged.length === 0)
                 || (staged.length > 0 && !canAttachImages)
-                || sending
+                || (staged.length > 0 && sending)
               }
               onClick={submitComposer}
               data-testid={`chat-send:${identity}`}

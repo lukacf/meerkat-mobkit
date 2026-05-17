@@ -183,13 +183,25 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
   return frames;
 }
 
-export async function fetchJson<T>(baseUrl: string, path: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
+export async function fetchJson<T>(
+  baseUrl: string,
+  path: string,
+  timeoutMs = 10_000,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
+    }
+    return response.json() as Promise<T>;
+  } finally {
+    globalThis.clearTimeout(timer);
   }
-  return response.json() as Promise<T>;
 }
 
 async function rpc<T>(
