@@ -116,6 +116,13 @@ pub trait SessionBridge: Send + Sync {
         Ok(())
     }
 
+    /// Return currently materialized same-mob member wires by concrete runtime IDs.
+    async fn current_member_wires(
+        &self,
+    ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+        Ok(Vec::new())
+    }
+
     /// Unwire two active same-mob members by their concrete runtime IDs.
     async fn unwire_peer(
         &self,
@@ -440,6 +447,41 @@ impl SessionBridge for MobSessionBridge {
             .await
             .map(|_| ())
             .map_err(|e| BridgeError::Mob(e.to_string()))
+    }
+
+    async fn current_member_wires(
+        &self,
+    ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+        let members = self.handle.list_members_including_retiring().await;
+        let active_ids = members
+            .iter()
+            .map(|member| member.agent_identity.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut edges = std::collections::BTreeSet::new();
+        for member in &members {
+            let a = member.agent_identity.to_string();
+            for peer in &member.wired_to {
+                let b = peer.to_string();
+                if !active_ids.contains(&b) {
+                    continue;
+                }
+                let key = if a <= b {
+                    (a.clone(), b)
+                } else {
+                    (b, a.clone())
+                };
+                edges.insert(key);
+            }
+        }
+        Ok(edges
+            .into_iter()
+            .filter_map(|(a, b)| {
+                Some((
+                    AgentRuntimeId::parse(&a).ok()?,
+                    AgentRuntimeId::parse(&b).ok()?,
+                ))
+            })
+            .collect())
     }
 
     async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {

@@ -288,6 +288,29 @@ impl IdentityRuntime {
                 })
                 .collect()
         };
+        let runtime_identities: BTreeMap<AgentRuntimeId, AgentIdentity> = active_runtimes
+            .iter()
+            .map(|(identity, runtime_id)| (runtime_id.clone(), identity.clone()))
+            .collect();
+        let current_runtime_edges = bridge.current_member_wires().await.unwrap_or_else(|err| {
+            tracing::debug!(
+                error = %err,
+                "identity-first topology reconcile could not inspect current member wires"
+            );
+            Vec::new()
+        });
+        let current_logical_edges: BTreeSet<(AgentIdentity, AgentIdentity)> = current_runtime_edges
+            .iter()
+            .filter_map(|(runtime_a, runtime_b)| {
+                let a = runtime_identities.get(runtime_a)?;
+                let b = runtime_identities.get(runtime_b)?;
+                if a <= b {
+                    Some((a.clone(), b.clone()))
+                } else {
+                    Some((b.clone(), a.clone()))
+                }
+            })
+            .collect();
 
         let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired_edges
             .iter()
@@ -295,9 +318,17 @@ impl IdentityRuntime {
             .collect();
 
         let managed_snapshot = self.managed_peer_edges.read().await.clone();
+        let retained_logical_edges: Vec<(AgentIdentity, AgentIdentity)> = desired
+            .iter()
+            .filter(|edge| !managed_snapshot.contains(*edge))
+            .filter(|edge| current_logical_edges.contains(*edge))
+            .filter(|(a, b)| active_runtimes.contains_key(a) && active_runtimes.contains_key(b))
+            .cloned()
+            .collect();
         let to_wire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = desired
             .iter()
             .filter(|edge| !managed_snapshot.contains(*edge))
+            .filter(|edge| !current_logical_edges.contains(*edge))
             .filter_map(|(a, b)| {
                 let runtime_a = active_runtimes.get(a)?;
                 let runtime_b = active_runtimes.get(b)?;
@@ -315,6 +346,11 @@ impl IdentityRuntime {
             .filter_map(|(a, b)| {
                 let runtime_a = active_runtimes.get(a)?;
                 let runtime_b = active_runtimes.get(b)?;
+                if !current_logical_edges.is_empty()
+                    && !current_logical_edges.contains(&(a.clone(), b.clone()))
+                {
+                    return None;
+                }
                 Some((a.clone(), b.clone(), runtime_a.clone(), runtime_b.clone()))
             })
             .collect();
@@ -352,6 +388,9 @@ impl IdentityRuntime {
             .await;
 
         let mut managed = self.managed_peer_edges.write().await;
+        for (a, b) in retained_logical_edges {
+            managed.insert((a, b));
+        }
         for (a, b) in wire_logical_edges {
             managed.insert((a, b));
         }

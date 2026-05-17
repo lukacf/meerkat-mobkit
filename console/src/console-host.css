@@ -1003,6 +1003,20 @@ svg[data-svg="fit"],
   font-size: 10px;
   color: var(--ink-muted);
 }
+.topo-dense__node-label {
+  position: absolute;
+  transform: translate(-50%, 0);
+  max-width: 150px;
+  padding: 3px 6px;
+  border-top: 2px solid var(--line);
+  color: var(--ink);
+  text-align: center;
+  text-shadow: 0 1px 2px var(--bg);
+  font: 600 11px var(--disp);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .topo-dense__inspector {
   position: absolute;
   left: 12px;
