@@ -4,12 +4,14 @@ import {
   edgeKey,
   roleIndexFor,
   type TopoAgent,
+  type TopoActivity,
   type TopoGraph,
 } from "./data";
 
 interface DenseGraphMapProps {
   graph: TopoGraph;
   edgeMode?: "all" | "focus";
+  activity?: TopoActivity;
 }
 
 interface LayoutNode {
@@ -45,6 +47,8 @@ interface Viewport {
 }
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
+const EMPTY_ACTIVITY: TopoActivity = { active: {}, busy: {}, calls: {}, pulses: [] };
+const ACTIVITY_LIFE_MS = 8000;
 
 function hash(value: string): number {
   let h = 2166136261;
@@ -256,6 +260,68 @@ function drawCurve(ctx: CanvasRenderingContext2D, a: LayoutNode, b: LayoutNode, 
   ctx.quadraticCurveTo(mx + nx * bend, my + ny * bend, bx, by);
 }
 
+function curvePoint(a: LayoutNode, b: LayoutNode, bend: number, t: number): { x: number; y: number } {
+  const ax = a.x || 0;
+  const ay = a.y || 0;
+  const bx = b.x || 0;
+  const by = b.y || 0;
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const cx = mx + (-dy / len) * bend;
+  const cy = my + (dx / len) * bend;
+  const mt = 1 - t;
+  return {
+    x: mt * mt * ax + 2 * mt * t * cx + t * t * bx,
+    y: mt * mt * ay + 2 * mt * t * cy + t * t * by,
+  };
+}
+
+function curveTangent(a: LayoutNode, b: LayoutNode, bend: number, t: number): { x: number; y: number } {
+  const ax = a.x || 0;
+  const ay = a.y || 0;
+  const bx = b.x || 0;
+  const by = b.y || 0;
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const cx = mx + (-dy / len) * bend;
+  const cy = my + (dx / len) * bend;
+  return {
+    x: 2 * (1 - t) * (cx - ax) + 2 * t * (bx - cx),
+    y: 2 * (1 - t) * (cy - ay) + 2 * t * (by - cy),
+  };
+}
+
+function pulseBend(a: LayoutNode, b: LayoutNode): number {
+  const seed = hash(edgeKey(a.id, b.id));
+  if (a.groupIndex === b.groupIndex) return (seed % 17) - 8;
+  return (seed % 2 === 0 ? 1 : -1) * (22 + (seed % 34));
+}
+
+function drawArrowHead(
+  ctx: CanvasRenderingContext2D,
+  point: { x: number; y: number },
+  tangent: { x: number; y: number },
+  size: number,
+): void {
+  const angle = Math.atan2(tangent.y, tangent.x);
+  ctx.moveTo(point.x, point.y);
+  ctx.lineTo(
+    point.x - Math.cos(angle - Math.PI / 6) * size,
+    point.y - Math.sin(angle - Math.PI / 6) * size,
+  );
+  ctx.moveTo(point.x, point.y);
+  ctx.lineTo(
+    point.x - Math.cos(angle + Math.PI / 6) * size,
+    point.y - Math.sin(angle + Math.PI / 6) * size,
+  );
+}
+
 function drawBundledCurve(ctx: CanvasRenderingContext2D, a: LayoutNode, b: LayoutNode, groups: GroupAnchor[]): void {
   if (a.groupIndex === b.groupIndex) {
     const seed = hash(edgeKey(a.id, b.id));
@@ -283,6 +349,7 @@ function nodeRadius(graph: TopoGraph, id: string): number {
 export function DenseGraphMap({
   graph,
   edgeMode = "all",
+  activity = EMPTY_ACTIVITY,
 }: DenseGraphMapProps): React.JSX.Element {
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
   const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -461,6 +528,76 @@ export function DenseGraphMap({
     const focus = cssVar(host, "--focus", "rgb(90, 160, 255)");
     const ink = cssVar(host, "--ink", "rgb(235, 238, 245)");
     const selected = layout.byId.get(hoverId || "");
+    const ok = cssVar(host, "--ok", "rgb(72, 200, 150)");
+    const warn = cssVar(host, "--warn", "rgb(245, 178, 76)");
+    const now = Date.now();
+
+    if (activity.pulses.length > 0) {
+      ctx.lineCap = "round";
+      for (const pulse of activity.pulses) {
+        const a = layout.byId.get(pulse.from);
+        const b = layout.byId.get(pulse.to);
+        if (!a || !b) continue;
+        const age = Math.max(0, Math.min(1, (now - pulse.ts) / ACTIVITY_LIFE_MS));
+        const alpha = Math.max(0, 1 - age);
+        const bend = pulseBend(a, b);
+        const t = 0.1 + age * 0.78;
+        const bead = curvePoint(a, b, bend, t);
+        const tangent = curveTangent(a, b, bend, t);
+        ctx.globalAlpha = 0.24 + alpha * 0.5;
+        ctx.strokeStyle = warn;
+        ctx.lineWidth = Math.max(1.1, 2.2 / Math.sqrt(viewport.scale));
+        ctx.beginPath();
+        drawCurve(ctx, a, b, bend);
+        ctx.stroke();
+        ctx.globalAlpha = 0.75 + alpha * 0.25;
+        ctx.fillStyle = warn;
+        ctx.shadowColor = warn;
+        ctx.shadowBlur = 14 / Math.sqrt(viewport.scale);
+        ctx.beginPath();
+        ctx.arc(bead.x, bead.y, Math.max(3.2, 4.8 / Math.sqrt(viewport.scale)), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.globalAlpha = 0.72 + alpha * 0.22;
+        ctx.beginPath();
+        drawArrowHead(ctx, bead, tangent, Math.max(5, 7 / Math.sqrt(viewport.scale)));
+        ctx.stroke();
+      }
+    }
+
+    for (const node of layout.nodes) {
+      const activeTs = activity.active[node.id] || activity.calls[node.id] || 0;
+      const isBusy = activity.busy[node.id] || node.agent.responsePhase != null;
+      if (!activeTs && !isBusy) continue;
+      const age = activeTs ? Math.max(0, Math.min(1, (now - activeTs) / ACTIVITY_LIFE_MS)) : 0;
+      const alpha = activeTs ? Math.max(0.15, 1 - age) : 0.34;
+      const x = node.x || 0;
+      const y = node.y || 0;
+      const r = nodeRadius(graph, node.id);
+      if (activeTs) {
+        ctx.globalAlpha = 0.22 * alpha;
+        ctx.fillStyle = activity.calls[node.id] ? warn : ok;
+        ctx.beginPath();
+        ctx.arc(x, y, r + 9 + (1 - alpha) * 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (isBusy) {
+        ctx.globalAlpha = 0.96;
+        ctx.strokeStyle = warn;
+        ctx.lineWidth = Math.max(1.4, 2.2 / Math.sqrt(viewport.scale));
+        ctx.setLineDash([Math.max(3, 4 / viewport.scale), Math.max(3, 5 / viewport.scale)]);
+        ctx.beginPath();
+        ctx.arc(x, y, r + 5.8, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 0.7;
+        ctx.strokeStyle = ok;
+        ctx.lineWidth = Math.max(0.8, 1.1 / Math.sqrt(viewport.scale));
+        ctx.beginPath();
+        ctx.arc(x, y, r + 9.2, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
 
     if (selected) {
       const selectedEdges = layout.edgeById.get(selected.id) || [];
@@ -513,7 +650,7 @@ export function DenseGraphMap({
   // `graph` is keyed through drawFingerprint so equivalent polling payloads
   // do not restart expensive work.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawStatic, drawFingerprint, hoverId, layout, viewport]);
+  }, [activity, drawStatic, drawFingerprint, hoverId, layout, viewport]);
 
   React.useEffect(() => {
     drawFrame();
@@ -536,6 +673,8 @@ export function DenseGraphMap({
   }, [layout, viewport]);
 
   const hover = hoverId ? graph.byId.get(hoverId) : null;
+  const hoverBusy = hoverId ? activity.busy[hoverId] || layout.byId.get(hoverId)?.agent.responsePhase != null : false;
+  const hoverCalls = hoverId ? activity.pulses.filter((pulse) => pulse.from === hoverId || pulse.to === hoverId).length : 0;
 
   return (
     <div
@@ -597,12 +736,14 @@ export function DenseGraphMap({
           }}
         >
           <strong>{hover.label}</strong>
-          <span>{hover.role}</span>
+          <span>{hoverBusy ? "working" : hover.role}</span>
         </div>
         <div className="topo-dense__inspector">
           <strong>{hover.label}</strong>
           <span>{hover.group}</span>
           <span>{layout.edgeById.get(hover.id)?.length || 0} peers</span>
+          {hoverBusy && <span>working</span>}
+          {hoverCalls > 0 && <span>{hoverCalls} live calls</span>}
         </div>
         </>
       )}

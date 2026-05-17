@@ -105,6 +105,17 @@ pub trait SessionBridge: Send + Sync {
         Err(BridgeError::Mob("peer wiring not supported".to_string()))
     }
 
+    /// Wire many active same-mob member pairs by their concrete runtime IDs.
+    async fn wire_peers_batch(
+        &self,
+        edges: &[(AgentRuntimeId, AgentRuntimeId)],
+    ) -> Result<(), BridgeError> {
+        for (a, b) in edges {
+            self.wire_peer(a, b).await?;
+        }
+        Ok(())
+    }
+
     /// Unwire two active same-mob members by their concrete runtime IDs.
     async fn unwire_peer(
         &self,
@@ -412,6 +423,22 @@ impl SessionBridge for MobSessionBridge {
                 MeerkatId::from(b.as_str()),
             )
             .await
+            .map_err(|e| BridgeError::Mob(e.to_string()))
+    }
+
+    async fn wire_peers_batch(
+        &self,
+        edges: &[(AgentRuntimeId, AgentRuntimeId)],
+    ) -> Result<(), BridgeError> {
+        self.handle
+            .wire_members_batch(edges.iter().map(|(a, b)| {
+                (
+                    meerkat_mob::AgentIdentity::from(a.as_str()),
+                    meerkat_mob::AgentIdentity::from(b.as_str()),
+                )
+            }))
+            .await
+            .map(|_| ())
             .map_err(|e| BridgeError::Mob(e.to_string()))
     }
 

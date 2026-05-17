@@ -1,9 +1,8 @@
 import React from "react";
 import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "../types";
-import { Bullseye } from "./topology/Bullseye";
 import { RoleTree } from "./topology/RoleTree";
 import { DenseGraphMap } from "./topology/DenseGraphMap";
-import { buildGraph, useTopologyActivity, colourForRole, roleIndexFor } from "./topology/data";
+import { buildGraph, useTopologyActivity } from "./topology/data";
 
 interface TopologyPanelProps {
   nodes: ConsoleTopologyNode[];
@@ -11,80 +10,37 @@ interface TopologyPanelProps {
   activity: ConsoleFrame[];
 }
 
-type View = "graph" | "bullseye" | "roles";
-type LabelsMode = "auto" | "on" | "off";
+type View = "graph" | "roles";
 type EdgeMode = "all" | "focus";
 const VIEW_STORAGE = "mobkit-console-topology-view";
-const LABELS_STORAGE = "mobkit-console-topology-labels";
 const EDGE_STORAGE = "mobkit-console-topology-edges";
 const VIEWS: Array<{ id: View; label: string; help: string }> = [
   { id: "graph", label: "Graph", help: "Dense canvas graph with every node in one view" },
-  { id: "bullseye", label: "Bullseye", help: "Degree-ranked rings · hubs at centre" },
   { id: "roles", label: "Roles", help: "Flat mob · agents grouped by role" },
-];
-const LABEL_MODES: Array<{ id: LabelsMode; label: string; help: string }> = [
-  { id: "auto", label: "Auto",  help: "Always-on for ≤20 agents · hover for denser graphs" },
-  { id: "on",   label: "All",   help: "Show labels regardless of density" },
-  { id: "off",  label: "Hover", help: "Hidden until hovered or focused" },
 ];
 const EDGE_MODES: Array<{ id: EdgeMode; label: string; help: string }> = [
   { id: "all", label: "All", help: "Draw all graph edges persistently" },
   { id: "focus", label: "Focus", help: "Show only hovered-agent edges" },
 ];
 
-function useElementSize<T extends HTMLElement>(fallback: { width: number; height: number }) {
-  const ref = React.useRef<T | null>(null);
-  const [size, setSize] = React.useState(fallback);
-  React.useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const apply = (rect: DOMRectReadOnly) => {
-      setSize({
-        width: Math.max(360, Math.floor(rect.width)),
-        height: Math.max(300, Math.floor(rect.height)),
-      });
-    };
-    apply(el.getBoundingClientRect());
-    const ro = new ResizeObserver((entries) => {
-      const rect = entries[0]?.contentRect;
-      if (rect) apply(rect);
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-  return [ref, size] as const;
-}
-
 export function TopologyPanel({
   nodes,
   agents,
   activity,
 }: TopologyPanelProps): React.JSX.Element {
-  const [bodyRef, bodySize] = useElementSize<HTMLDivElement>({ width: 980, height: 580 });
   const [view, setView] = React.useState<View>(() => {
     try {
       const stored = localStorage.getItem(VIEW_STORAGE);
       if (stored === "summary") return "graph";
       if (stored === "force") return "graph";
-      if (stored === "graph" || stored === "bullseye" || stored === "roles") return stored;
+      if (stored === "bullseye") return "graph";
+      if (stored === "graph" || stored === "roles") return stored;
     } catch { /* ignore */ }
     return "graph";
   });
   const pickView = (next: View) => {
     setView(next);
     try { localStorage.setItem(VIEW_STORAGE, next); } catch { /* ignore */ }
-  };
-
-  const [labelsMode, setLabelsMode] = React.useState<LabelsMode>(() => {
-    try {
-      const stored = localStorage.getItem(LABELS_STORAGE);
-      if (stored === "auto" || stored === "on" || stored === "off") return stored;
-    } catch { /* ignore */ }
-    return "auto";
-  });
-  const pickLabelsMode = (next: LabelsMode) => {
-    setLabelsMode(next);
-    try { localStorage.setItem(LABELS_STORAGE, next); } catch { /* ignore */ }
   };
 
   const [edgeMode, setEdgeMode] = React.useState<EdgeMode>(() => {
@@ -100,13 +56,18 @@ export function TopologyPanel({
   };
 
   const graph = React.useMemo(() => buildGraph(nodes, agents), [nodes, agents]);
-  const live = useTopologyActivity(activity, graph, { life: 1500 });
-  const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
+  const live = useTopologyActivity(activity, graph, { life: 8000 });
   const liveCount = Object.keys(live.active).length;
   const busyCount = Object.values(live.busy).filter(Boolean).length;
 
   return (
-    <div className="topo" data-testid="topology-panel">
+    <div
+      className="topo"
+      data-testid="topology-panel"
+      data-activity-count={activity.length}
+      data-busy-count={busyCount}
+      data-live-count={liveCount}
+    >
       <div className="topo__head">
         <h2>Topology</h2>
         <span className="topo__head-meta">
@@ -131,23 +92,6 @@ export function TopologyPanel({
             ))}
           </div>
         )}
-        {view === "bullseye" && (
-          <div className="topo__viewbar topo__viewbar--labels" role="group" aria-label="Labels">
-            <span className="topo__viewbar-tag">Labels</span>
-            {LABEL_MODES.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                className={`topo__viewbtn ${labelsMode === m.id ? "is-active" : ""}`}
-                onClick={() => pickLabelsMode(m.id)}
-                title={m.help}
-                data-testid={`topology-labels:${m.id}`}
-              >
-                {m.label}
-              </button>
-            ))}
-          </div>
-        )}
         <div className="topo__viewbar">
           {VIEWS.map((v) => (
             <button
@@ -163,18 +107,8 @@ export function TopologyPanel({
           ))}
         </div>
       </div>
-      <div className="topo__body" ref={bodyRef}>
-        {view === "graph" && <DenseGraphMap graph={graph} edgeMode={edgeMode} />}
-        {view === "bullseye" && (
-          <Bullseye
-            nodes={nodes}
-            agents={agents}
-            activity={activity}
-            width={bodySize.width}
-            height={bodySize.height}
-            labelsMode={labelsMode}
-          />
-        )}
+      <div className="topo__body">
+        {view === "graph" && <DenseGraphMap graph={graph} edgeMode={edgeMode} activity={live} />}
         {view === "roles" && (
           <RoleTree
             nodes={nodes}
@@ -183,23 +117,6 @@ export function TopologyPanel({
           />
         )}
       </div>
-      {view === "bullseye" && graph.roles.length > 0 && (
-        <div className="topo__legend">
-          {graph.roles.map((role) => {
-            const count = graph.agents.filter((a) => a.role === role).length;
-            return (
-              <div key={role} className="topo__legend-item">
-                <span
-                  className="topo__legend-dot"
-                  style={{ background: colourForRole(role, roleIndex) }}
-                />
-                {role}
-                <span className="topo__legend-count">{count}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
     </div>
   );
 }

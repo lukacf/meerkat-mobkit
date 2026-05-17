@@ -432,6 +432,7 @@ fn event_kind_label(kind: &MobEventKind) -> &'static str {
         MobEventKind::MemberReset { .. } => "member_reset",
         MobEventKind::MemberKickoffUpdated { .. } => "member_kickoff_updated",
         MobEventKind::MembersWired { .. } => "members_wired",
+        MobEventKind::MembersWiredBatch { .. } => "members_wired_batch",
         MobEventKind::MembersUnwired { .. } => "members_unwired",
         MobEventKind::ExternalPeerWired { .. } => "external_peer_wired",
         MobEventKind::ExternalPeerUnwired { .. } => "external_peer_unwired",
@@ -525,6 +526,7 @@ pub(crate) fn extract_structural_fields(
         | MobEventKind::MobDestroyStorageFinalizing
         | MobEventKind::MobReset
         | MobEventKind::MembersWired { .. }
+        | MobEventKind::MembersWiredBatch { .. }
         | MobEventKind::MembersUnwired { .. }
         | MobEventKind::TopologyViolation { .. }
         | MobEventKind::OperatorActionRecorded { .. } => (None, None, None),
@@ -536,7 +538,7 @@ pub(crate) fn extract_structural_fields(
 mod tests {
     use super::*;
     use chrono::Utc;
-    use meerkat_mob::event::MemberSpawnedEvent;
+    use meerkat_mob::event::{MemberSpawnedEvent, MemberWireEdge};
     use meerkat_mob::ids::{
         AgentIdentity, AgentRuntimeId, FenceToken, FlowId, Generation, MobId, ProfileName, RunId,
         StepId,
@@ -619,6 +621,26 @@ mod tests {
             .await;
         assert_eq!(envelope.kind, "member_spawned");
         assert_eq!(envelope.agent_identity.as_deref(), Some("researcher"));
+    }
+
+    #[tokio::test]
+    async fn projects_members_wired_batch_as_compact_structural_event() {
+        let store = MobEventsStore::new();
+        let envelope = store
+            .project_mob_event(&mob_event(
+                8,
+                MobEventKind::MembersWiredBatch {
+                    edges: vec![MemberWireEdge {
+                        a: AgentIdentity::from("alpha"),
+                        b: AgentIdentity::from("beta"),
+                    }],
+                },
+            ))
+            .await;
+        assert_eq!(envelope.kind, "members_wired_batch");
+        assert_eq!(envelope.agent_identity, None);
+        assert_eq!(envelope.data["edges"][0]["a"], serde_json::json!("alpha"));
+        assert_eq!(envelope.data["edges"][0]["b"], serde_json::json!("beta"));
     }
 
     #[tokio::test]

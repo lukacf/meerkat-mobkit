@@ -319,19 +319,22 @@ impl IdentityRuntime {
             })
             .collect();
 
-        let wire_results = stream::iter(to_wire.into_iter().map(|(a, b, runtime_a, runtime_b)| {
-            let bridge = bridge.clone();
-            async move {
-                let result = bridge
-                    .wire_peer(&runtime_a, &runtime_b)
-                    .await
-                    .map_err(|e| format!("{e}"));
-                (a, b, result)
-            }
-        }))
-        .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
+        let wire_logical_edges = to_wire
+            .iter()
+            .map(|(a, b, _, _)| (a.clone(), b.clone()))
+            .collect::<Vec<_>>();
+        let wire_runtime_edges = to_wire
+            .iter()
+            .map(|(_, _, runtime_a, runtime_b)| (runtime_a.clone(), runtime_b.clone()))
+            .collect::<Vec<_>>();
+        if !wire_runtime_edges.is_empty() {
+            bridge
+                .wire_peers_batch(&wire_runtime_edges)
+                .await
+                .map_err(|e| {
+                    IdentityRuntimeError::Internal(format!("bridge wire_peers_batch: {e}"))
+                })?;
+        }
 
         let unwire_results =
             stream::iter(to_unwire.into_iter().map(|(a, b, runtime_a, runtime_b)| {
@@ -349,8 +352,7 @@ impl IdentityRuntime {
             .await;
 
         let mut managed = self.managed_peer_edges.write().await;
-        for (a, b, result) in wire_results {
-            result.map_err(|e| IdentityRuntimeError::Internal(format!("bridge wire_peer: {e}")))?;
+        for (a, b) in wire_logical_edges {
             managed.insert((a, b));
         }
 

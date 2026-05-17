@@ -18,6 +18,7 @@
 // No synthetic event bus, no fabricated traffic.
 
 import React from "react";
+import type { ResponsePhase } from "@console-core";
 import type { ConsoleAgent, ConsoleFrame, ConsoleTopologyNode } from "../../types";
 
 export interface TopoAgent {
@@ -29,6 +30,8 @@ export interface TopoAgent {
   group: string;
   subgroup?: string;
   labels: Record<string, string>;
+  memberId?: string;
+  responsePhase?: ResponsePhase;
 }
 
 export interface TopoEdge {
@@ -86,9 +89,80 @@ export interface TopoActivity {
   /// `interaction_complete`/`interaction_failed`/`run_completed`/`run_failed`/
   /// `run_canceled`. Drives the persistent "working" spinner ring.
   busy: Record<string, boolean>;
+  calls: Record<string, number>;
 }
 
 const PEER_TOOL_NAMES = new Set(["send_request", "send_message", "send_response"]);
+
+function frameData(frame: ConsoleFrame): Record<string, unknown> | null {
+  return frame.data && typeof frame.data === "object"
+    ? frame.data as Record<string, unknown>
+    : null;
+}
+
+function toolName(data: Record<string, unknown> | null): string {
+  if (!data) return "";
+  if (typeof data.name === "string") return data.name;
+  if (typeof data.tool_name === "string") return data.tool_name;
+  return "";
+}
+
+function resultText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object") return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return "";
+  }
+}
+
+function peerLastSegment(value: string): string {
+  return value.split("/").filter(Boolean).pop() || value;
+}
+
+function capturePeerRegistry(peerRegistry: Map<string, string>, rawResult: unknown): void {
+  const raw = resultText(rawResult);
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
+    if (!Array.isArray(parsed.peers)) return;
+    for (const peer of parsed.peers) {
+      if (typeof peer.peer_id === "string" && typeof peer.name === "string") {
+        peerRegistry.set(peer.peer_id, peer.name);
+      }
+    }
+  } catch {
+    // Ignore non-JSON peers payloads.
+  }
+}
+
+function resolvePeerTarget(
+  args: Record<string, unknown> | null,
+  peerRegistry: Map<string, string>,
+  graph: TopoGraph,
+): string | null {
+  const candidates: string[] = [];
+  const peerId = typeof args?.peer_id === "string" ? args.peer_id.trim() : "";
+  const registryName = peerId ? peerRegistry.get(peerId) : "";
+  if (registryName) candidates.push(registryName, peerLastSegment(registryName));
+  for (const key of ["identity", "target_identity", "recipient", "to", "display_name"]) {
+    const value = typeof args?.[key] === "string" ? args[key].trim() : "";
+    if (value) candidates.push(value, peerLastSegment(value));
+  }
+  if (peerId) candidates.push(peerId);
+
+  for (const candidate of candidates) {
+    if (graph.byId.has(candidate)) return candidate;
+    const match = graph.agents.find((agent) =>
+      agent.id === candidate ||
+      agent.label === candidate ||
+      agent.memberId === candidate
+    );
+    if (match) return match.id;
+  }
+  return null;
+}
 
 const ROLE_ORDER_HINT = [
   "user",
@@ -184,6 +258,8 @@ export function buildGraph(
       group,
       subgroup: n.subgroup || registry?.subgroup || labels.shard || undefined,
       labels,
+      memberId: registry?.member_id,
+      responsePhase: registry?.response_phase,
     };
     byId.set(id, agent);
     list.push(agent);
@@ -272,94 +348,80 @@ export function useTopologyActivity(
   }, []);
 
   return React.useMemo(() => {
-    const active: Record<string, number> = {};
-    const pulses: TopoPulse[] = [];
-    const peerRegistry = new Map<string, string>();
-    const busy: Record<string, boolean> = {};
-
-    // Walk frames oldest → newest so the peers-tool registry is populated
-    // before any send_* call that depends on it. The activity buffer is
-    // maintained newest-first by ConsoleApp, so reverse a shallow copy.
-    const ordered = frames.slice().reverse();
-    for (const frame of ordered) {
-      const ts = frame.timestampMs || 0;
-      if (!ts) continue;
-
-      const identity = frame.identity?.trim();
-      if (identity && graph.byId.has(identity)) {
-        if ((active[identity] || 0) < ts) active[identity] = ts;
-        // Sticky busy: flip true on interaction/run start, false on any
-        // terminal lifecycle event. Same signal that drives the
-        // pending-stack auto-drain in ConsoleApp.
-        if (frame.event === "interaction_started" || frame.event === "run_started") {
-          busy[identity] = true;
-        } else if (
-          frame.event === "interaction_complete"
-          || frame.event === "interaction_failed"
-          || frame.event === "run_completed"
-          || frame.event === "run_failed"
-          || frame.event === "run_canceled"
-        ) {
-          busy[identity] = false;
-        }
-      }
-
-      const data = frame.data as Record<string, unknown> | undefined;
-      const name = data && typeof data.name === "string" ? data.name : "";
-
-      // Build peer-id → identity registry from `peers` tool results.
-      if (name === "peers" && (frame.event === "tool_execution_completed" || frame.event === "tool_result_received")) {
-        const raw = typeof data?.result === "string" ? data.result : null;
-        if (raw) {
-          try {
-            const parsed = JSON.parse(raw) as { peers?: Array<{ peer_id?: unknown; name?: unknown }> };
-            for (const p of parsed.peers || []) {
-              if (typeof p.peer_id === "string" && typeof p.name === "string") {
-                // Registry value is the LAST path segment so the resolved
-                // identity matches what the topology snapshot uses
-                // (e.g. `incident-command-center/scribe/scribe` → `scribe`).
-                const lastSeg = p.name.split("/").pop() || p.name;
-                peerRegistry.set(p.peer_id, lastSeg);
-              }
-            }
-          } catch { /* ignore non-JSON */ }
-        }
-      }
-
-      // Real pulse: a peer-comms tool call whose recipient resolves to a
-      // known identity. Anything else (UUID we haven't learnt yet,
-      // identity not in the topology) is dropped — better to render fewer
-      // truthful pulses than guess directions.
-      if (
-        PEER_TOOL_NAMES.has(name)
-        && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started")
-        && identity
-        && graph.byId.has(identity)
-      ) {
-        const args = data && typeof data.args === "object" ? data.args as Record<string, unknown> : null;
-        const peerId = typeof args?.peer_id === "string" ? args.peer_id : null;
-        const recipient = peerId ? peerRegistry.get(peerId) : null;
-        if (recipient && graph.byId.has(recipient) && recipient !== identity) {
-          pulses.push({
-            id: typeof data?.id === "string" ? data.id : `${frame.id || ts}-${pulses.length}`,
-            from: identity,
-            to: recipient,
-            ts,
-          });
-        }
-      }
-    }
-
-    // Drop expired entries.
-    const cutoff = now - life;
-    for (const [k, v] of Object.entries(active)) {
-      if (v < cutoff) delete active[k];
-    }
-    const live = pulses.filter((p) => p.ts >= cutoff);
-
-    return { active, pulses: live, busy };
+    return deriveTopologyActivity(frames, graph, now, life);
   // `now` triggers re-fade; `frames`/`graph` trigger re-derivation.
   }, [frames, graph, life, now]);
+}
+
+export function deriveTopologyActivity(
+  frames: ConsoleFrame[],
+  graph: TopoGraph,
+  now: number,
+  life = 1500,
+): TopoActivity {
+  const active: Record<string, number> = {};
+  const pulses: TopoPulse[] = [];
+  const peerRegistry = new Map<string, string>();
+  const busy: Record<string, boolean> = {};
+  const calls: Record<string, number> = {};
+
+  const ordered = frames.slice().reverse();
+  for (const frame of ordered) {
+    const ts = frame.timestampMs || 0;
+    if (!ts) continue;
+
+    const identity = frame.identity?.trim();
+    if (identity && graph.byId.has(identity)) {
+      if ((active[identity] || 0) < ts) active[identity] = ts;
+      if (frame.event === "interaction_started" || frame.event === "run_started") {
+        busy[identity] = true;
+      } else if (
+        frame.event === "interaction_complete"
+        || frame.event === "interaction_failed"
+        || frame.event === "run_completed"
+        || frame.event === "run_failed"
+        || frame.event === "run_canceled"
+      ) {
+        busy[identity] = false;
+      }
+    }
+
+    const data = frameData(frame);
+    const name = toolName(data);
+    if (name === "peers" && (frame.event === "tool_execution_completed" || frame.event === "tool_result_received")) {
+      capturePeerRegistry(peerRegistry, data?.result);
+    }
+
+    if (
+      PEER_TOOL_NAMES.has(name)
+      && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started")
+      && identity
+      && graph.byId.has(identity)
+    ) {
+      const args = data && typeof data.args === "object" ? data.args as Record<string, unknown> : null;
+      const recipient = resolvePeerTarget(args, peerRegistry, graph);
+      if (recipient && recipient !== identity) {
+        pulses.push({
+          id: typeof data?.id === "string" ? data.id : `${frame.id || ts}-${pulses.length}`,
+          from: identity,
+          to: recipient,
+          ts,
+        });
+        calls[identity] = Math.max(calls[identity] || 0, ts);
+        calls[recipient] = Math.max(calls[recipient] || 0, ts);
+      }
+    }
+  }
+
+  const cutoff = now - life;
+  for (const [k, v] of Object.entries(active)) {
+    if (v < cutoff) delete active[k];
+  }
+  for (const [k, v] of Object.entries(calls)) {
+    if (v < cutoff) delete calls[k];
+  }
+
+  return { active, pulses: pulses.filter((p) => p.ts >= cutoff), busy, calls };
 }
 
 /// Convenience: per-edge "is this edge currently carrying a pulse?"

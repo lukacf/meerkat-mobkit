@@ -263,6 +263,7 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
 
 pub struct SqliteConsoleLogStore {
     conn: Arc<Mutex<Connection>>,
+    watermarks: Arc<Mutex<HashMap<(String, String), String>>>,
 }
 
 impl SqliteConsoleLogStore {
@@ -278,8 +279,10 @@ impl SqliteConsoleLogStore {
 
     fn from_connection(conn: Connection) -> ConsoleLogResult<Self> {
         initialize_schema(&conn)?;
+        let watermarks = load_source_watermarks(&conn)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
+            watermarks: Arc::new(Mutex::new(watermarks)),
         })
     }
 }
@@ -479,6 +482,13 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             ],
         )
         .map_err(into_boxed)?;
+        self.watermarks
+            .lock()
+            .map_err(|_| boxed_error("console watermark lock poisoned"))?
+            .insert(
+                (runtime_key.to_string(), source_kind.as_str().to_string()),
+                source_cursor.to_string(),
+            );
         Ok(())
     }
 
@@ -487,19 +497,39 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         runtime_key: &str,
         source_kind: ConsoleFrameSourceKind,
     ) -> ConsoleLogResult<Option<String>> {
-        let conn = self
-            .conn
+        let watermarks = self
+            .watermarks
             .lock()
-            .map_err(|_| boxed_error("console log lock poisoned"))?;
-        conn.query_row(
-            "SELECT source_cursor FROM console_source_watermarks
-             WHERE runtime_key = ?1 AND source_kind = ?2",
-            params![runtime_key, source_kind.as_str()],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(into_boxed)
+            .map_err(|_| boxed_error("console watermark lock poisoned"))?;
+        Ok(watermarks
+            .get(&(runtime_key.to_string(), source_kind.as_str().to_string()))
+            .cloned())
     }
+}
+
+fn load_source_watermarks(
+    conn: &Connection,
+) -> ConsoleLogResult<HashMap<(String, String), String>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT runtime_key, source_kind, source_cursor
+             FROM console_source_watermarks",
+        )
+        .map_err(into_boxed)?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(into_boxed)?;
+    let mut watermarks = HashMap::new();
+    for row in rows {
+        let (key, cursor) = row.map_err(into_boxed)?;
+        watermarks.insert(key, cursor);
+    }
+    Ok(watermarks)
 }
 
 fn initialize_schema(conn: &Connection) -> ConsoleLogResult<()> {

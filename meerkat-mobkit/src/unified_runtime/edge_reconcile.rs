@@ -1,6 +1,6 @@
 //! Edge topology reconciliation for distributed runtime nodes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use futures::stream::{self, StreamExt};
 use meerkat_mob::SpawnMemberSpec;
@@ -206,19 +206,50 @@ impl UnifiedRuntime {
         }
 
         let handle = self.mob_handle();
-        let wire_results = stream::iter(to_wire.into_iter().map(|(a, b, operation)| {
-            let handle = handle.clone();
-            async move {
-                let result = handle
-                    .wire(MeerkatId::from(a.as_str()), MeerkatId::from(b.as_str()))
-                    .await
-                    .map_err(|err| format!("{err}"));
-                (a, b, operation, result)
+        let wire_operations = to_wire
+            .iter()
+            .map(|(a, b, operation)| ((a.clone(), b.clone()), (*operation).to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let mut wire_successes = Vec::new();
+        let mut wire_failures = Vec::new();
+        if !to_wire.is_empty() {
+            let batch_edges = to_wire
+                .iter()
+                .map(|(a, b, _)| (MeerkatId::from(a.as_str()), MeerkatId::from(b.as_str())))
+                .collect::<Vec<_>>();
+            match handle.wire_members_batch(batch_edges).await {
+                Ok(batch_report) => {
+                    let mut seen = BTreeSet::new();
+                    for edge in batch_report.wired {
+                        let key = (edge.a.to_string(), edge.b.to_string());
+                        seen.insert(key.clone());
+                        wire_successes.push((key.0, key.1, true));
+                    }
+                    for edge in batch_report.already_wired {
+                        let key = (edge.a.to_string(), edge.b.to_string());
+                        seen.insert(key.clone());
+                        wire_successes.push((key.0, key.1, false));
+                    }
+                    for (a, b, operation) in to_wire {
+                        let key = if a <= b { (a, b) } else { (b, a) };
+                        if !seen.contains(&key) {
+                            wire_failures.push((
+                                key.0,
+                                key.1,
+                                operation.to_string(),
+                                "wire_members_batch omitted edge from report".to_string(),
+                            ));
+                        }
+                    }
+                }
+                Err(err) => {
+                    let error = err.to_string();
+                    for (a, b, operation) in to_wire {
+                        wire_failures.push((a, b, operation.to_string(), error.clone()));
+                    }
+                }
             }
-        }))
-        .buffer_unordered(EDGE_RECONCILE_CONCURRENCY)
-        .collect::<Vec<_>>()
-        .await;
+        }
 
         let handle = self.mob_handle();
         let unwire_results = stream::iter(to_unwire.into_iter().map(|(a, b)| {
@@ -236,23 +267,23 @@ impl UnifiedRuntime {
         .await;
 
         let mut managed_edges = self.managed_dynamic_edges.write().await;
-        for (a, b, operation, result) in wire_results {
-            match result {
-                Ok(()) => {
-                    managed_edges.insert((a.clone(), b.clone()));
-                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                        report.wired_edges.push(edge);
-                    }
+        for (a, b, newly_wired) in wire_successes {
+            managed_edges.insert((a.clone(), b.clone()));
+            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                if newly_wired {
+                    report.wired_edges.push(edge);
+                } else {
+                    report.retained_edges.push(edge);
                 }
-                Err(error) => {
-                    if let Ok(edge) = DesiredPeerEdge::new(a, b) {
-                        report.failures.push(EdgeReconcileFailure {
-                            edge,
-                            operation: operation.into(),
-                            error,
-                        });
-                    }
-                }
+            }
+        }
+        for (a, b, operation, error) in wire_failures {
+            if let Ok(edge) = DesiredPeerEdge::new(a.clone(), b.clone()) {
+                report.failures.push(EdgeReconcileFailure {
+                    edge,
+                    operation: wire_operations.get(&(a, b)).cloned().unwrap_or(operation),
+                    error,
+                });
             }
         }
         for (a, b) in stale_pruned {
