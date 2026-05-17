@@ -73,6 +73,21 @@ interface AgentRow {
   subgroup?: string | null;
 }
 
+type SidebarVirtualRow =
+  | { kind: "section"; key: string; bucket: string; count: number; collapsed: boolean }
+  | { kind: "empty"; key: string; bucket: string; sectionConfig: ReturnType<typeof sectionConfigFor> }
+  | { kind: "subgroup"; key: string; bucket: string; label: string }
+  | { kind: "agent"; key: string; bucket: string; row: AgentRow };
+
+const SIDEBAR_ROW_HEIGHT = {
+  section: 36,
+  empty: 58,
+  subgroup: 28,
+  agent: 72,
+} as const;
+
+const SIDEBAR_OVERSCAN_PX = 360;
+
 function isWorkerish(a: ConsoleAgent): boolean {
   const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
   return (
@@ -429,6 +444,104 @@ function pulseSamples(activity: ConsoleFrame[], identity: string): number[] {
   return bucket;
 }
 
+function virtualRowHeight(row: SidebarVirtualRow): number {
+  return SIDEBAR_ROW_HEIGHT[row.kind];
+}
+
+function lowerBound(values: number[], needle: number): number {
+  let lo = 0;
+  let hi = values.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (values[mid] < needle) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function useMeasuredHeight<T extends HTMLElement>(): [React.RefObject<T>, number] {
+  const ref = React.useRef<T>(null);
+  const [height, setHeight] = React.useState(0);
+  React.useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    const update = () => setHeight(element.clientHeight);
+    update();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      setHeight(box ? box.height : element.clientHeight);
+    });
+    ro.observe(element);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, height];
+}
+
+function renderAgentRow(
+  row: AgentRow,
+  selectedMemberId: string,
+  recentActivity: ConsoleFrame[],
+  grouping: ConsoleAgentListConfig | undefined,
+  onSelect: (agent: ConsoleAgent) => void,
+): React.JSX.Element {
+  const { agent, childOfHost, depth } = row;
+  const stateAttr = deriveStateAttr(agent);
+  const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
+  const inbox = inboxCount(agent);
+  const badges = configuredAgentBadges(agent, grouping);
+  return (
+    <div
+      className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
+      data-state={stateAttr}
+      data-child-of-host={childOfHost ? "true" : undefined}
+      data-depth={childOfHost ? String(Math.min(depth, 3)) : undefined}
+      data-testid={`sidebar-agent:${agent.member_id}`}
+      onClick={() => onSelect(agent)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(agent);
+        }
+      }}
+      role="button"
+      tabIndex={0}
+    >
+      <span className="agent__dot" />
+      <span className="agent__body">
+        <span className="agent__name">{agent.label}</span>
+        <span className="agent__id">{agent.identity || agent.member_id}</span>
+        {badges.length > 0 ? (
+          <span className="agent__badges">
+            {badges.map((badge) => (
+              <span
+                className="agent__badge"
+                data-tone={badge.tone || "neutral"}
+                key={badge.id}
+                title={`${badge.label}: ${badge.value}`}
+              >
+                <span>{badge.label}</span>
+                <strong>{badge.value}</strong>
+              </span>
+            ))}
+          </span>
+        ) : null}
+      </span>
+      <span className="agent__meta">
+        <span className="agent__pulse">
+          {pulse.map((v, i) => (
+            <span key={i} style={{ height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` }} />
+          ))}
+        </span>
+        {inbox > 0 && <span className="agent__inbox">{inbox}</span>}
+      </span>
+    </div>
+  );
+}
+
 function inboxCount(agent: ConsoleAgent): number {
   const n = Number(agent.labels?.console_inbox_count ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -482,6 +595,81 @@ export function Sidebar({
   const customSidebarButtons = React.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons],
+  );
+  const virtualRows = React.useMemo<SidebarVirtualRow[]>(() => {
+    const rows: SidebarVirtualRow[] = [];
+    for (const bucket of sectionNames) {
+      const list = grouped.get(bucket) || [];
+      const sectionConfig = sectionConfigFor(bucket, grouping);
+      if (list.length === 0 && !sectionConfig) continue;
+      const collapsedSection = collapsedSections.has(bucket);
+      rows.push({
+        kind: "section",
+        key: `section:${bucket}`,
+        bucket,
+        count: list.length,
+        collapsed: collapsedSection,
+      });
+      if (collapsedSection) continue;
+      if (list.length === 0) {
+        rows.push({
+          kind: "empty",
+          key: `empty:${bucket}`,
+          bucket,
+          sectionConfig,
+        });
+        continue;
+      }
+      const subgroups = new Set(list.map((row) => row.subgroup).filter((value): value is string => Boolean(value)));
+      const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0
+        && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
+      let lastSubgroup: string | null = null;
+      for (const row of list) {
+        if (showSubgroups && row.subgroup && row.subgroup !== lastSubgroup) {
+          lastSubgroup = row.subgroup;
+          rows.push({
+            kind: "subgroup",
+            key: `subgroup:${bucket}:${row.subgroup}`,
+            bucket,
+            label: row.subgroup,
+          });
+        }
+        rows.push({
+          kind: "agent",
+          key: `agent:${row.agent.member_id}`,
+          bucket,
+          row,
+        });
+      }
+    }
+    return rows;
+  }, [sectionNames, grouped, grouping, collapsedSections]);
+  const virtualOffsets = React.useMemo(() => {
+    const offsets: number[] = [];
+    let total = 0;
+    for (const row of virtualRows) {
+      offsets.push(total);
+      total += virtualRowHeight(row);
+    }
+    return { offsets, total };
+  }, [virtualRows]);
+  const [listRef, listHeight] = useMeasuredHeight<HTMLDivElement>();
+  const [scrollTop, setScrollTop] = React.useState(0);
+  React.useEffect(() => {
+    setScrollTop(0);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [q, grouping, listRef]);
+  const visibleRange = React.useMemo(() => {
+    if (virtualRows.length === 0) return { start: 0, end: 0 };
+    const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
+    const endNeedle = Math.min(virtualOffsets.total, scrollTop + Math.max(1, listHeight) + SIDEBAR_OVERSCAN_PX);
+    const start = Math.max(0, lowerBound(virtualOffsets.offsets, startNeedle) - 1);
+    const end = Math.min(virtualRows.length, lowerBound(virtualOffsets.offsets, endNeedle) + 1);
+    return { start, end };
+  }, [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
+  const visibleRows = React.useMemo(
+    () => virtualRows.slice(visibleRange.start, visibleRange.end),
+    [virtualRows, visibleRange],
   );
 
   if (collapsed) {
@@ -565,103 +753,60 @@ export function Sidebar({
         </div>
       )}
 
-      {sectionNames.map((bucket) => {
-        const list = grouped.get(bucket) || [];
-        const sectionConfig = sectionConfigFor(bucket, grouping);
-        if (list.length === 0 && !sectionConfig) return null;
-        const subgroups = new Set(list.map((row) => row.subgroup).filter((value): value is string => Boolean(value)));
-        const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0
-          && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
-        let lastSubgroup: string | null = null;
-        const collapsedSection = collapsedSections.has(bucket);
-        return (
-          <div className="sidebar__section" key={bucket} data-collapsed={collapsedSection ? "true" : undefined}>
-            <button
-              type="button"
-              className="sidebar__sec-head sidebar__sec-head--button"
-              onClick={() => {
-                setCollapsedSections((current) => {
-                  const next = new Set(current);
-                  if (next.has(bucket)) next.delete(bucket);
-                  else next.add(bucket);
-                  return next;
-                });
-              }}
-              data-testid={`sidebar-section-toggle:${bucket}`}
-            >
-              <span className="sidebar__sec-label">{bucket}</span>
-              <span className="sidebar__sec-spacer" />
-              <span className="sidebar__sec-count">{list.length}</span>
-            </button>
-            {list.length === 0 && !collapsedSection ? (
-              <div className="sidebar__empty" data-testid={`sidebar-section-empty:${bucket}`}>
-                {sectionConfig?.empty_title ? <span className="sidebar__empty-title">{sectionConfig.empty_title}</span> : null}
-                <span>{sectionConfig?.empty_text || "No agents in this section."}</span>
-              </div>
-            ) : null}
-            {!collapsedSection && list.map(({ agent, childOfHost, depth, subgroup }) => {
-              const stateAttr = deriveStateAttr(agent);
-              const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
-              const inbox = inboxCount(agent);
-              const badges = configuredAgentBadges(agent, grouping);
-              const subgroupHeader = showSubgroups && subgroup && subgroup !== lastSubgroup
-                ? (() => {
-                    lastSubgroup = subgroup;
-                    return (
-                      <div className="sidebar__subgroup" key={`${bucket}:${subgroup}`}>
-                        <span>{subgroup}</span>
-                      </div>
-                    );
-                  })()
-                : null;
-              return (
-                <React.Fragment key={agent.member_id}>
-                  {subgroupHeader}
-                  <div
-                    className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
-                    data-state={stateAttr}
-                    data-child-of-host={childOfHost ? "true" : undefined}
-                    data-depth={childOfHost ? String(Math.min(depth, 3)) : undefined}
-                    data-testid={`sidebar-agent:${agent.member_id}`}
-                    onClick={() => onSelect(agent)}
-                    role="button"
-                    tabIndex={0}
-                  >
-                    <span className="agent__dot" />
-                    <span className="agent__body">
-                      <span className="agent__name">{agent.label}</span>
-                      <span className="agent__id">{agent.identity || agent.member_id}</span>
-                      {badges.length > 0 ? (
-                        <span className="agent__badges">
-                          {badges.map((badge) => (
-                            <span
-                              className="agent__badge"
-                              data-tone={badge.tone || "neutral"}
-                              key={badge.id}
-                              title={`${badge.label}: ${badge.value}`}
-                            >
-                              <span>{badge.label}</span>
-                              <strong>{badge.value}</strong>
-                            </span>
-                          ))}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="agent__meta">
-                      <span className="agent__pulse">
-                        {pulse.map((v, i) => (
-                          <span key={i} style={{ height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` }} />
-                        ))}
-                      </span>
-                      {inbox > 0 && <span className="agent__inbox">{inbox}</span>}
-                    </span>
+      <div
+        className="sidebar__virtual-list"
+        ref={listRef}
+        onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+        data-testid="sidebar-agent-list"
+      >
+        <div className="sidebar__virtual-space" style={{ height: `${virtualOffsets.total}px` }}>
+          {visibleRows.map((row, index) => {
+            const rowIndex = visibleRange.start + index;
+            const top = virtualOffsets.offsets[rowIndex] || 0;
+            const height = virtualRowHeight(row);
+            return (
+              <div
+                className={`sidebar__virtual-row sidebar__virtual-row--${row.kind}`}
+                key={row.key}
+                style={{ transform: `translateY(${top}px)`, height: `${height}px` }}
+              >
+                {row.kind === "section" ? (
+                  <div className="sidebar__section" data-collapsed={row.collapsed ? "true" : undefined}>
+                    <button
+                      type="button"
+                      className="sidebar__sec-head sidebar__sec-head--button"
+                      onClick={() => {
+                        setCollapsedSections((current) => {
+                          const next = new Set(current);
+                          if (next.has(row.bucket)) next.delete(row.bucket);
+                          else next.add(row.bucket);
+                          return next;
+                        });
+                      }}
+                      data-testid={`sidebar-section-toggle:${row.bucket}`}
+                    >
+                      <span className="sidebar__sec-label">{row.bucket}</span>
+                      <span className="sidebar__sec-spacer" />
+                      <span className="sidebar__sec-count">{row.count}</span>
+                    </button>
                   </div>
-                </React.Fragment>
-              );
-            })}
-          </div>
-        );
-      })}
+                ) : row.kind === "empty" ? (
+                  <div className="sidebar__empty" data-testid={`sidebar-section-empty:${row.bucket}`}>
+                    {row.sectionConfig?.empty_title ? <span className="sidebar__empty-title">{row.sectionConfig.empty_title}</span> : null}
+                    <span>{row.sectionConfig?.empty_text || "No agents in this section."}</span>
+                  </div>
+                ) : row.kind === "subgroup" ? (
+                  <div className="sidebar__subgroup">
+                    <span>{row.label}</span>
+                  </div>
+                ) : (
+                  renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, onSelect)
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </aside>
   );
 }

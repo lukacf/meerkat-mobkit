@@ -285,6 +285,7 @@ svg[data-svg="fit"],
 .sidebar__section--nav {
   display: flex; flex-direction: column; gap: 1px;
   padding: 10px 0 6px;
+  flex: none;
 }
 .sidebar__navitem {
   display: flex; align-items: center;
@@ -1581,11 +1582,14 @@ svg[data-svg="fit"],
 .sidebar {
   background: var(--bg-sunken);
   border-right: 1px solid var(--line);
-  overflow-y: auto;
+  overflow: hidden;
   font-family: var(--sans);
-  padding-bottom: 30px;
+  padding-bottom: 0;
   min-width: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 .sidebar__mast {
   padding: 14px 14px 10px;
@@ -1593,6 +1597,7 @@ svg[data-svg="fit"],
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex: none;
 }
 .sidebar__mast-title {
   color: var(--ink);
@@ -1630,6 +1635,7 @@ svg[data-svg="fit"],
 .sidebar__search {
   padding: 12px;
   border-bottom: 1px solid var(--line);
+  flex: none;
 }
 .sidebar__search input {
   width: 100%;
@@ -1681,6 +1687,60 @@ svg[data-svg="fit"],
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   padding: 0 10px 4px;
+}
+
+.sidebar__virtual-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  contain: strict;
+}
+
+.sidebar__virtual-space {
+  position: relative;
+  min-height: 100%;
+}
+
+.sidebar__virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  overflow: hidden;
+  will-change: transform;
+}
+
+.sidebar__virtual-row--section {
+  border-top: 1px solid var(--line);
+}
+
+.sidebar__virtual-row--section .sidebar__section {
+  padding: 10px 0 0;
+  border-bottom: none;
+}
+
+.sidebar__virtual-row--agent .agent {
+  height: 72px;
+}
+
+.sidebar__virtual-row--agent .agent__badges {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.sidebar__virtual-row--agent .agent__badge {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.sidebar__virtual-row--agent .agent__badge span,
+.sidebar__virtual-row--agent .agent__badge strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar__subgroup {

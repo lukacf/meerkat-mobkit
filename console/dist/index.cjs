@@ -3842,13 +3842,21 @@ function parseSseFrames(rawText) {
   }
   return frames;
 }
-async function fetchJson(baseUrl, path) {
-  const response = await fetch(`${baseUrl}${path}`);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
+async function fetchJson(baseUrl, path, timeoutMs = 1e4) {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
+    }
+    return response.json();
+  } finally {
+    globalThis.clearTimeout(timer);
   }
-  return response.json();
 }
 async function rpc(baseUrl, method, params) {
   const response = await fetch(`${baseUrl}/console/rpc`, {
@@ -6603,6 +6611,13 @@ function visibleNavKinds() {
   if (hide.size > 0) return ALL_NAV.filter((k) => !hide.has(k));
   return ALL_NAV;
 }
+var SIDEBAR_ROW_HEIGHT = {
+  section: 36,
+  empty: 58,
+  subgroup: 28,
+  agent: 72
+};
+var SIDEBAR_OVERSCAN_PX = 360;
 function isWorkerish(a) {
   const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
   return haystack.includes("worker") || haystack.includes("delegate") || haystack.includes("helper");
@@ -6889,6 +6904,90 @@ function pulseSamples(activity, identity) {
   }
   return bucket;
 }
+function virtualRowHeight(row) {
+  return SIDEBAR_ROW_HEIGHT[row.kind];
+}
+function lowerBound(values, needle) {
+  let lo = 0;
+  let hi = values.length;
+  while (lo < hi) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (values[mid] < needle) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+function useMeasuredHeight() {
+  const ref = import_react17.default.useRef(null);
+  const [height, setHeight] = import_react17.default.useState(0);
+  import_react17.default.useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return void 0;
+    const update = () => setHeight(element.clientHeight);
+    update();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", update);
+      return () => window.removeEventListener("resize", update);
+    }
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      setHeight(box ? box.height : element.clientHeight);
+    });
+    ro.observe(element);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, height];
+}
+function renderAgentRow(row, selectedMemberId, recentActivity, grouping, onSelect) {
+  const { agent, childOfHost, depth } = row;
+  const stateAttr = deriveStateAttr(agent);
+  const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
+  const inbox = inboxCount(agent);
+  const badges = configuredAgentBadges(agent, grouping);
+  return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+    "div",
+    {
+      className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
+      "data-state": stateAttr,
+      "data-child-of-host": childOfHost ? "true" : void 0,
+      "data-depth": childOfHost ? String(Math.min(depth, 3)) : void 0,
+      "data-testid": `sidebar-agent:${agent.member_id}`,
+      onClick: () => onSelect(agent),
+      onKeyDown: (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(agent);
+        }
+      },
+      role: "button",
+      tabIndex: 0,
+      children: [
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__dot" }),
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__body", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__name", children: agent.label }),
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
+          badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+            "span",
+            {
+              className: "agent__badge",
+              "data-tone": badge.tone || "neutral",
+              title: `${badge.label}: ${badge.value}`,
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: badge.label }),
+                /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("strong", { children: badge.value })
+              ]
+            },
+            badge.id
+          )) }) : null
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__meta", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
+          inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__inbox", children: inbox })
+        ] })
+      ]
+    }
+  );
+}
 function inboxCount(agent) {
   const n = Number(agent.labels?.console_inbox_count ?? 0);
   return Number.isFinite(n) ? n : 0;
@@ -6935,6 +7034,80 @@ function Sidebar({
   const customSidebarButtons = import_react17.default.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
+  );
+  const virtualRows = import_react17.default.useMemo(() => {
+    const rows = [];
+    for (const bucket of sectionNames) {
+      const list = grouped.get(bucket) || [];
+      const sectionConfig = sectionConfigFor(bucket, grouping);
+      if (list.length === 0 && !sectionConfig) continue;
+      const collapsedSection = collapsedSections.has(bucket);
+      rows.push({
+        kind: "section",
+        key: `section:${bucket}`,
+        bucket,
+        count: list.length,
+        collapsed: collapsedSection
+      });
+      if (collapsedSection) continue;
+      if (list.length === 0) {
+        rows.push({
+          kind: "empty",
+          key: `empty:${bucket}`,
+          bucket,
+          sectionConfig
+        });
+        continue;
+      }
+      const subgroups = new Set(list.map((row) => row.subgroup).filter((value) => Boolean(value)));
+      const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0 && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
+      let lastSubgroup = null;
+      for (const row of list) {
+        if (showSubgroups && row.subgroup && row.subgroup !== lastSubgroup) {
+          lastSubgroup = row.subgroup;
+          rows.push({
+            kind: "subgroup",
+            key: `subgroup:${bucket}:${row.subgroup}`,
+            bucket,
+            label: row.subgroup
+          });
+        }
+        rows.push({
+          kind: "agent",
+          key: `agent:${row.agent.member_id}`,
+          bucket,
+          row
+        });
+      }
+    }
+    return rows;
+  }, [sectionNames, grouped, grouping, collapsedSections]);
+  const virtualOffsets = import_react17.default.useMemo(() => {
+    const offsets = [];
+    let total = 0;
+    for (const row of virtualRows) {
+      offsets.push(total);
+      total += virtualRowHeight(row);
+    }
+    return { offsets, total };
+  }, [virtualRows]);
+  const [listRef, listHeight] = useMeasuredHeight();
+  const [scrollTop, setScrollTop] = import_react17.default.useState(0);
+  import_react17.default.useEffect(() => {
+    setScrollTop(0);
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [q, grouping, listRef]);
+  const visibleRange = import_react17.default.useMemo(() => {
+    if (virtualRows.length === 0) return { start: 0, end: 0 };
+    const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
+    const endNeedle = Math.min(virtualOffsets.total, scrollTop + Math.max(1, listHeight) + SIDEBAR_OVERSCAN_PX);
+    const start = Math.max(0, lowerBound(virtualOffsets.offsets, startNeedle) - 1);
+    const end = Math.min(virtualRows.length, lowerBound(virtualOffsets.offsets, endNeedle) + 1);
+    return { start, end };
+  }, [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
+  const visibleRows = import_react17.default.useMemo(
+    () => virtualRows.slice(visibleRange.start, visibleRange.end),
+    [virtualRows, visibleRange]
   );
   if (collapsed) {
     return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
@@ -7011,92 +7184,52 @@ function Sidebar({
         })
       ] })
     ] }),
-    sectionNames.map((bucket) => {
-      const list = grouped.get(bucket) || [];
-      const sectionConfig = sectionConfigFor(bucket, grouping);
-      if (list.length === 0 && !sectionConfig) return null;
-      const subgroups = new Set(list.map((row) => row.subgroup).filter((value) => Boolean(value)));
-      const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0 && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
-      let lastSubgroup = null;
-      const collapsedSection = collapsedSections.has(bucket);
-      return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__section", "data-collapsed": collapsedSection ? "true" : void 0, children: [
-        /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
-          "button",
-          {
-            type: "button",
-            className: "sidebar__sec-head sidebar__sec-head--button",
-            onClick: () => {
-              setCollapsedSections((current) => {
-                const next = new Set(current);
-                if (next.has(bucket)) next.delete(bucket);
-                else next.add(bucket);
-                return next;
-              });
+    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+      "div",
+      {
+        className: "sidebar__virtual-list",
+        ref: listRef,
+        onScroll: (event) => setScrollTop(event.currentTarget.scrollTop),
+        "data-testid": "sidebar-agent-list",
+        children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__virtual-space", style: { height: `${virtualOffsets.total}px` }, children: visibleRows.map((row, index) => {
+          const rowIndex = visibleRange.start + index;
+          const top = virtualOffsets.offsets[rowIndex] || 0;
+          const height = virtualRowHeight(row);
+          return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+            "div",
+            {
+              className: `sidebar__virtual-row sidebar__virtual-row--${row.kind}`,
+              style: { transform: `translateY(${top}px)`, height: `${height}px` },
+              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__section", "data-collapsed": row.collapsed ? "true" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+                "button",
+                {
+                  type: "button",
+                  className: "sidebar__sec-head sidebar__sec-head--button",
+                  onClick: () => {
+                    setCollapsedSections((current) => {
+                      const next = new Set(current);
+                      if (next.has(row.bucket)) next.delete(row.bucket);
+                      else next.add(row.bucket);
+                      return next;
+                    });
+                  },
+                  "data-testid": `sidebar-section-toggle:${row.bucket}`,
+                  children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                  ]
+                }
+              ) }) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
+                row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
+                /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
+              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__subgroup", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.label }) }) : renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, onSelect)
             },
-            "data-testid": `sidebar-section-toggle:${bucket}`,
-            children: [
-              /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: bucket }),
-              /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
-              /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: list.length })
-            ]
-          }
-        ),
-        list.length === 0 && !collapsedSection ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${bucket}`, children: [
-          sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__empty-title", children: sectionConfig.empty_title }) : null,
-          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: sectionConfig?.empty_text || "No agents in this section." })
-        ] }) : null,
-        !collapsedSection && list.map(({ agent, childOfHost, depth, subgroup }) => {
-          const stateAttr = deriveStateAttr(agent);
-          const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
-          const inbox = inboxCount(agent);
-          const badges = configuredAgentBadges(agent, grouping);
-          const subgroupHeader = showSubgroups && subgroup && subgroup !== lastSubgroup ? (() => {
-            lastSubgroup = subgroup;
-            return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__subgroup", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: subgroup }) }, `${bucket}:${subgroup}`);
-          })() : null;
-          return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(import_react17.default.Fragment, { children: [
-            subgroupHeader,
-            /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
-              "div",
-              {
-                className: `agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`,
-                "data-state": stateAttr,
-                "data-child-of-host": childOfHost ? "true" : void 0,
-                "data-depth": childOfHost ? String(Math.min(depth, 3)) : void 0,
-                "data-testid": `sidebar-agent:${agent.member_id}`,
-                onClick: () => onSelect(agent),
-                role: "button",
-                tabIndex: 0,
-                children: [
-                  /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__dot" }),
-                  /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__body", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__name", children: agent.label }),
-                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__id", children: agent.identity || agent.member_id }),
-                    badges.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__badges", children: badges.map((badge) => /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
-                      "span",
-                      {
-                        className: "agent__badge",
-                        "data-tone": badge.tone || "neutral",
-                        title: `${badge.label}: ${badge.value}`,
-                        children: [
-                          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: badge.label }),
-                          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("strong", { children: badge.value })
-                        ]
-                      },
-                      badge.id
-                    )) }) : null
-                  ] }),
-                  /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__meta", children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
-                    inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__inbox", children: inbox })
-                  ] })
-                ]
-              }
-            )
-          ] }, agent.member_id);
-        })
-      ] }, bucket);
-    })
+            row.key
+          );
+        }) })
+      }
+    )
   ] });
 }
 
@@ -8203,7 +8336,6 @@ function ChatPane({
                     submitComposer();
                   }
                 },
-                disabled: sending,
                 rows: 2,
                 "data-testid": `chat-composer:${identity}`
               }
@@ -8215,7 +8347,7 @@ function ChatPane({
                 "button",
                 {
                   className: "composer__send",
-                  disabled: !draft.trim() && staged.length === 0 || staged.length > 0 && !canAttachImages || sending,
+                  disabled: !draft.trim() && staged.length === 0 || staged.length > 0 && !canAttachImages || staged.length > 0 && sending,
                   onClick: submitComposer,
                   "data-testid": `chat-send:${identity}`,
                   children: [
@@ -9496,6 +9628,9 @@ function ConsoleApp({ baseUrl }) {
   const phaseTimerByKey = import_react22.default.useRef({});
   const refreshTimersRef = import_react22.default.useRef({});
   const experienceTimerRef = import_react22.default.useRef(null);
+  const experienceLoadInFlightRef = import_react22.default.useRef(
+    null
+  );
   const agentsRef = import_react22.default.useRef([]);
   import_react22.default.useEffect(() => {
     agentsRef.current = agents;
@@ -9638,19 +9773,31 @@ function ConsoleApp({ baseUrl }) {
       commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
     }
   }
-  const loadExperience = import_react22.default.useCallback(async () => {
-    const [experienceJson, modulesJson] = await Promise.all([
-      fetchJson(baseUrl, "/console/experience"),
-      fetchJson(baseUrl, "/console/modules")
-    ]);
-    const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
-    const nextAgents = normalizeAgents(experienceJson, loadedModules);
-    setExperience(experienceJson);
-    setAgents(nextAgents);
-    setActiveActivityPresetId(
-      (c) => c || experienceJson.console_config?.rail?.active_preset_id || experienceJson.activity_feed?.active_preset_id || "all"
-    );
-    return nextAgents;
+  const loadExperience = import_react22.default.useCallback(() => {
+    if (experienceLoadInFlightRef.current) {
+      return experienceLoadInFlightRef.current;
+    }
+    let request;
+    request = (async () => {
+      const [experienceJson, modulesJson] = await Promise.all([
+        fetchJson(baseUrl, "/console/experience"),
+        fetchJson(baseUrl, "/console/modules")
+      ]);
+      const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
+      const nextAgents = normalizeAgents(experienceJson, loadedModules);
+      setExperience(experienceJson);
+      setAgents(nextAgents);
+      setActiveActivityPresetId(
+        (c) => c || experienceJson.console_config?.rail?.active_preset_id || experienceJson.activity_feed?.active_preset_id || "all"
+      );
+      return nextAgents;
+    })().finally(() => {
+      if (experienceLoadInFlightRef.current === request) {
+        experienceLoadInFlightRef.current = null;
+      }
+    });
+    experienceLoadInFlightRef.current = request;
+    return request;
   }, [baseUrl]);
   import_react22.default.useEffect(() => {
     let mounted = true;
@@ -9669,7 +9816,7 @@ function ConsoleApp({ baseUrl }) {
     const timer = window.setInterval(() => {
       void loadExperience().catch(() => {
       });
-    }, 1e3);
+    }, 15e3);
     return () => window.clearInterval(timer);
   }, [loadExperience]);
   import_react22.default.useEffect(() => {
@@ -9919,24 +10066,7 @@ function ConsoleApp({ baseUrl }) {
   const scheduleExperienceRefreshRef = import_react22.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
   import_react22.default.useEffect(() => {
-    void queryTimeline(baseUrl, {}, 200).then(({ frames }) => {
-      const seen = /* @__PURE__ */ new Set();
-      const filtered = [];
-      for (const frame of frames) {
-        if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
-        const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        filtered.push(frame);
-      }
-      activityRef.current = filtered.slice(-200).reverse();
-      commitLiveFrames(
-        frames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)).slice(-300).reverse()
-      );
-      forceRender();
-    }).catch(() => {
-    });
-    const unsubscribe = subscribeTimelineEvents(baseUrl, {}, (frame) => {
+    const handleLiveFrame = (frame) => {
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
       }
@@ -9953,12 +10083,36 @@ function ConsoleApp({ baseUrl }) {
       if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }
-      if (REFRESH_TRIGGER_EVENTS.has(frame.event) || frame.event !== "keep-alive") {
+      if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
         scheduleExperienceRefreshRef.current();
       }
+    };
+    let stopped = false;
+    let unsubscribe = null;
+    void queryTimeline(baseUrl, {}, 200).then(({ frames, nextCursor }) => {
+      if (stopped) return;
+      const seen = /* @__PURE__ */ new Set();
+      const filtered = [];
+      for (const frame of frames) {
+        if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
+        const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        filtered.push(frame);
+      }
+      activityRef.current = filtered.slice(-200).reverse();
+      commitLiveFrames(
+        frames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)).slice(-300).reverse()
+      );
+      forceRender();
+      const after = nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
+      unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
+    }).catch(() => {
+      if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
     });
     return () => {
-      unsubscribe();
+      stopped = true;
+      unsubscribe?.();
     };
   }, [baseUrl]);
   import_react22.default.useEffect(() => {
@@ -10102,11 +10256,15 @@ function ConsoleApp({ baseUrl }) {
     if (!target || target.kind !== "agent-chat") return false;
     const panelKey = buildPanelConversationKey(panelId, target);
     const identity = target.identity || target.memberId;
-    const text = (draftByKey[panelKey] || "").trim();
+    const rawDraft = draftByKey[panelKey] || "";
+    const text = rawDraft.trim();
     if (!text && attachments.length === 0) return false;
     const stack = getPendingStack(identity);
     const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
     if (!shouldQueue || attachments.length > 0) {
+      if (attachments.length === 0) {
+        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      }
       const sent = await submitMessageNow(
         panelId,
         target,
@@ -10114,7 +10272,11 @@ function ConsoleApp({ baseUrl }) {
         "queue",
         attachments
       );
-      if (sent) setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      if (sent) {
+        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+      } else if (attachments.length === 0) {
+        setDraftByKey((c) => ({ ...c, [panelKey]: rawDraft }));
+      }
       return sent;
     }
     const newId = `pmsg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
