@@ -29,14 +29,23 @@ interface BullseyeProps {
   labelsMode?: LabelsMode;
 }
 
-const RINGS = 5;
+const RINGS = 6;
 
-interface Pos { x: number; y: number; ringIdx: number }
+interface Pos { x: number; y: number; ringIdx: number; groupIndex: number }
 
 interface VisualScale {
   nodeMin: number;
   nodeMax: number;
   edgeWidth: number;
+}
+
+function hash(value: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
 }
 
 function visualScale(N: number): VisualScale {
@@ -54,6 +63,8 @@ function resolveLabelMode(N: number, mode: LabelsMode): "on" | "hover" {
 function layout(graph: ReturnType<typeof buildGraph>, width: number, height: number) {
   const cx = width / 2;
   const cy = height / 2;
+  const groupIndex = new Map<string, number>();
+  graph.groups.forEach((group, index) => groupIndex.set(group, index));
   const sorted = graph.agents.slice().sort((a, b) =>
     (graph.degree[b.id] || 0) - (graph.degree[a.id] || 0)
   );
@@ -68,20 +79,36 @@ function layout(graph: ReturnType<typeof buildGraph>, width: number, height: num
     const ringIdx = Math.min(RINGS - 1, Math.floor((1 - Math.pow(t, 0.6)) * RINGS));
     buckets[ringIdx].push(a);
   }
-  const minR = Math.min(width, height) * 0.10;
-  const maxR = Math.min(width, height) * 0.44;
+  const minDim = Math.min(width, height);
+  const minR = Math.max(34, minDim * 0.075);
+  const maxR = Math.max(minR + 80, minDim * 0.385);
   const ringR = (i: number) => minR + (i / Math.max(1, RINGS - 1)) * (maxR - minR);
   const pos: Record<string, Pos> = {};
   buckets.forEach((list, ri) => {
-    list.sort((a, b) => a.role.localeCompare(b.role) || a.id.localeCompare(b.id));
+    const byGroup = new Map<number, TopoAgent[]>();
+    for (const agent of list) {
+      const gi = groupIndex.get(agent.group) ?? 0;
+      const group = byGroup.get(gi) || [];
+      group.push(agent);
+      byGroup.set(gi, group);
+    }
     const r = ringR(ri);
-    list.forEach((a, i) => {
-      // Slight angular offset per ring so adjacent rings don't align
-      // their first node at exactly 12 o'clock.
-      const offset = (ri / RINGS) * (Math.PI / 6);
-      const t = (i / Math.max(1, list.length)) * Math.PI * 2 - Math.PI / 2 + offset;
-      pos[a.id] = { x: cx + Math.cos(t) * r, y: cy + Math.sin(t) * r, ringIdx: ri };
-    });
+    const groupCount = Math.max(1, graph.groups.length);
+    const sector = (Math.PI * 2) / groupCount;
+    for (let gi = 0; gi < groupCount; gi += 1) {
+      const groupList = byGroup.get(gi) || [];
+      groupList.sort((a, b) => a.role.localeCompare(b.role) || a.label.localeCompare(b.label));
+      const pad = Math.min(0.12, sector * 0.12);
+      const start = -Math.PI / 2 + gi * sector + pad;
+      const span = Math.max(0.01, sector - pad * 2);
+      groupList.forEach((a, i) => {
+        const seed = (hash(a.id) % 1000) / 1000;
+        const t = start + ((i + 0.5) / Math.max(1, groupList.length)) * span + (ri % 2 ? 0.025 : -0.025);
+        const jitter = (seed - 0.5) * Math.min(12, (maxR - minR) / RINGS * 0.16);
+        const rr = Math.max(minR * 0.62, r + jitter);
+        pos[a.id] = { x: cx + Math.cos(t) * rr, y: cy + Math.sin(t) * rr, ringIdx: ri, groupIndex: gi };
+      });
+    }
   });
   return { pos, ringR, cx, cy, buckets };
 }
@@ -98,7 +125,10 @@ export function Bullseye({
   const roleIndex = React.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const live = useTopologyActivity(activity, graph, { life: 1100 });
   const scale = visualScale(graph.agents.length);
-  const visualEdges = React.useMemo(() => sampleEdges(graph.edges, 1500), [graph.edges]);
+  const visualEdges = React.useMemo(
+    () => graph.edges.length <= 35000 ? graph.edges : sampleEdges(graph.edges, 35000),
+    [graph.edges],
+  );
   const labelMode = resolveLabelMode(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = React.useState<string | null>(null);
   const zoom = useZoomPan(width, height);
@@ -112,6 +142,16 @@ export function Bullseye({
     for (const p of live.pulses) set.add(edgeKey(p.from, p.to));
     return set;
   }, [live.pulses]);
+  const focusEdges = React.useMemo(
+    () => (hoverId ? graph.edges.filter((e) => e.from === hoverId || e.to === hoverId) : []),
+    [graph.edges, hoverId],
+  );
+  const focusPeers = React.useMemo(() => {
+    const peers = new Set<string>();
+    for (const edge of focusEdges) peers.add(edge.from === hoverId ? edge.to : edge.from);
+    return peers;
+  }, [focusEdges, hoverId]);
+  const showRingLabels = graph.agents.length <= 250;
 
   const radiusOf = (deg: number): number => {
     const t = Math.sqrt(deg) / 4; // gentle 0..1-ish curve
@@ -141,6 +181,8 @@ export function Bullseye({
       isHot: !!live.active[agent.id],
       isBusy: !!live.busy[agent.id],
       colour: colourForRole(agent.role, roleIndex),
+      isSelected: hoverId === agent.id,
+      isPeer: focusPeers.has(agent.id),
     }];
   });
   const showInlineLabel = labelMode === "on";
@@ -192,6 +234,7 @@ export function Bullseye({
       {/* Ring labels: anchored to the right horizontal axis with a small
           background-stroke halo so they read across rings. Hidden for
           empty rings. */}
+      {showRingLabels && (
       <g>
         {buckets.map((list, i) => {
           if (list.length === 0) return null;
@@ -209,6 +252,7 @@ export function Bullseye({
           );
         })}
       </g>
+      )}
 
       {/* Centre disk: shows total agent count. Reads as the visual
           anchor that the rings radiate from. */}
@@ -245,11 +289,31 @@ export function Bullseye({
               x2={b.x} y2={b.y}
               stroke={hot ? "var(--ok)" : "var(--ink-faint)"}
               strokeWidth={hot ? scale.edgeWidth + 0.5 : scale.edgeWidth}
-              opacity={hot ? 0.85 : 0.5}
+              opacity={hot ? 0.85 : graph.agents.length > 250 ? 0.19 : 0.42}
             />
           );
         })}
       </g>
+
+      {hoverId && focusEdges.length > 0 && (
+        <g style={{ pointerEvents: "none" }}>
+          {focusEdges.map((e, i) => {
+            const a = pos[e.from];
+            const b = pos[e.to];
+            if (!a || !b) return null;
+            return (
+              <line
+                key={`${e.from}:${e.to}:${i}`}
+                x1={a.x} y1={a.y}
+                x2={b.x} y2={b.y}
+                stroke="var(--focus)"
+                strokeWidth={Math.max(1.2, scale.edgeWidth + 1.0)}
+                opacity="0.82"
+              />
+            );
+          })}
+        </g>
+      )}
 
       {/* Live pulses (real activity only). */}
       <g>
@@ -276,11 +340,11 @@ export function Bullseye({
       {/* Nodes (circles, halos, busy rings) — labels live in the
           trailing layer below so they sit above all circles. */}
       <g>
-        {renderItems.map(({ agent, p, r, isHot, isBusy, colour }) => (
+        {renderItems.map(({ agent, p, r, isHot, isBusy, isPeer, isSelected, colour }) => (
           <g
             key={agent.id}
             data-testid={`topology-node:${agent.id}`}
-            className={`topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}`}
+            className={`topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}${isPeer ? " is-peer" : ""}${isSelected ? " is-selected" : ""}`}
             onMouseEnter={() => setHoverId(agent.id)}
             onMouseLeave={() => setHoverId((cur) => (cur === agent.id ? null : cur))}
             onFocus={() => setHoverId(agent.id)}
@@ -306,6 +370,17 @@ export function Bullseye({
                 stroke={colour}
                 strokeWidth="1"
                 opacity="0.35"
+                style={{ pointerEvents: "none" }}
+              />
+            )}
+            {(isPeer || isSelected) && (
+              <circle
+                cx={p.x} cy={p.y}
+                r={r + (isSelected ? 6 : 3)}
+                fill="none"
+                stroke={isSelected ? "var(--focus)" : colour}
+                strokeWidth={isSelected ? "2.4" : "1.5"}
+                opacity={isSelected ? "0.95" : "0.65"}
                 style={{ pointerEvents: "none" }}
               />
             )}
@@ -341,7 +416,7 @@ export function Bullseye({
           x={hoveredItem.p.x}
           y={hoveredItem.p.y + hoveredItem.r + 8}
           text={hoveredItem.agent.label}
-          sub={`${hoveredItem.agent.role}${hoveredItem.agent.state ? " · " + hoveredItem.agent.state : ""}${hoveredItem.isBusy ? " · working" : ""}`}
+          sub={`${hoveredItem.agent.group} · ${focusEdges.length} peers${hoveredItem.isBusy ? " · working" : ""}`}
         />
       )}
         </g>

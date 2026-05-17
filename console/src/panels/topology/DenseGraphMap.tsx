@@ -18,6 +18,7 @@ interface LayoutNode {
   groupIndex: number;
   x: number;
   y: number;
+  radius: number;
 }
 
 interface GroupAnchor {
@@ -32,6 +33,7 @@ interface Layout {
   nodes: LayoutNode[];
   byId: Map<string, LayoutNode>;
   groups: GroupAnchor[];
+  edgeById: Map<string, TopoGraph["edges"][number][]>;
   width: number;
   height: number;
 }
@@ -86,15 +88,21 @@ function fitLayout(nodes: LayoutNode[], groups: GroupAnchor[], width: number, he
   for (const node of nodes) {
     const x = node.x || 0;
     const y = node.y || 0;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
+    const outer = Math.max(14, node.radius + 12);
+    minX = Math.min(minX, x - outer);
+    minY = Math.min(minY, y - outer - 30);
+    maxX = Math.max(maxX, x + outer);
+    maxY = Math.max(maxY, y + outer + 34);
   }
-  const pad = Math.max(36, Math.min(width, height) * 0.08);
+  const padX = Math.max(54, Math.min(width, height) * 0.085);
+  const padY = Math.max(62, Math.min(width, height) * 0.115);
   const graphW = Math.max(1, maxX - minX);
   const graphH = Math.max(1, maxY - minY);
-  const scale = Math.min((width - pad * 2) / graphW, (height - pad * 2) / graphH);
+  const scale = Math.min(
+    (width - padX * 2) / graphW,
+    (height - padY * 2) / graphH,
+    1,
+  );
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
   for (const node of nodes) {
@@ -125,7 +133,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   const cy = height / 2;
   const groupCount = Math.max(1, graph.groups.length);
   const marginX = Math.max(155, width * 0.23);
-  const marginY = Math.max(135, height * 0.24);
+  const marginY = Math.max(150, height * 0.3);
   const explicitAnchors: Array<{ x: number; y: number }> =
     groupCount === 1
       ? [{ x: cx, y: cy }]
@@ -184,7 +192,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
     const count = Math.max(1, entry.length);
     const clusterRadius = Math.min(
       Math.max(74, Math.sqrt(count) * 11.8),
-      Math.min(width, height) * (groupCount <= 4 ? 0.205 : 0.145),
+      Math.min(width, height) * (groupCount <= 4 ? 0.175 : 0.13),
     );
     const twist = ((hash(anchor.name) % 1000) / 1000) * Math.PI * 2;
     entry.forEach((agent, index) => {
@@ -197,6 +205,7 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
         id: agent.id,
         agent,
         groupIndex: gi,
+        radius: nodeRadius(graph, agent.id),
         x: anchor.x + Math.cos(theta) * radial * spiralBias,
         y: anchor.y + Math.sin(theta) * radial * (1.02 - ((seed % 11) / 120)),
       });
@@ -205,7 +214,17 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   fitLayout(nodes, groups, width, height);
 
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  return { nodes, byId, groups, width, height };
+  const edgeById = new Map<string, TopoGraph["edges"][number][]>();
+  for (const edge of graph.edges) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    const from = edgeById.get(edge.from) || [];
+    from.push(edge);
+    edgeById.set(edge.from, from);
+    const to = edgeById.get(edge.to) || [];
+    to.push(edge);
+    edgeById.set(edge.to, to);
+  }
+  return { nodes, byId, edgeById, groups, width, height };
 }
 
 function screenToGraph(clientX: number, clientY: number, canvas: HTMLCanvasElement, viewport: Viewport): { x: number; y: number } {
@@ -235,6 +254,26 @@ function drawCurve(ctx: CanvasRenderingContext2D, a: LayoutNode, b: LayoutNode, 
   const ny = dx / len;
   ctx.moveTo(ax, ay);
   ctx.quadraticCurveTo(mx + nx * bend, my + ny * bend, bx, by);
+}
+
+function drawBundledCurve(ctx: CanvasRenderingContext2D, a: LayoutNode, b: LayoutNode, groups: GroupAnchor[]): void {
+  if (a.groupIndex === b.groupIndex) {
+    const seed = hash(edgeKey(a.id, b.id));
+    drawCurve(ctx, a, b, (seed % 15) - 7);
+    return;
+  }
+  const ax = a.x || 0;
+  const ay = a.y || 0;
+  const bx = b.x || 0;
+  const by = b.y || 0;
+  const ga = groups[a.groupIndex];
+  const gb = groups[b.groupIndex];
+  const c1x = ga ? ga.x + (gb.x - ga.x) * 0.36 : (ax + bx) / 2;
+  const c1y = ga ? ga.y + (gb.y - ga.y) * 0.36 : (ay + by) / 2;
+  const c2x = gb ? gb.x + (ga.x - gb.x) * 0.36 : (ax + bx) / 2;
+  const c2y = gb ? gb.y + (ga.y - gb.y) * 0.36 : (ay + by) / 2;
+  ctx.moveTo(ax, ay);
+  ctx.bezierCurveTo(c1x, c1y, c2x, c2y, bx, by);
 }
 
 function nodeRadius(graph: TopoGraph, id: string): number {
@@ -268,7 +307,7 @@ export function DenseGraphMap({
   );
   const layout = React.useMemo(
     () => buildLayout(graph, size.width, size.height),
-    // `graph` is rebuilt every console poll. The expensive force layout
+    // `graph` is rebuilt every console poll. The dense layout
     // should only rerun when graph shape changes, not when an equivalent
     // REST payload is normalized into fresh object identities.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -278,6 +317,12 @@ export function DenseGraphMap({
   React.useEffect(() => {
     viewportRef.current = viewport;
   }, [viewport]);
+
+  React.useEffect(() => {
+    dragRef.current = null;
+    setHoverId(null);
+    setViewport({ scale: 1, x: 0, y: 0 });
+  }, [layoutFingerprint, size.width, size.height]);
 
   React.useEffect(() => {
     const el = wrapRef.current;
@@ -331,9 +376,7 @@ export function DenseGraphMap({
         const b = layout.byId.get(edge.to);
         if (!a || !b) continue;
         if (a.agent.group === b.agent.group) continue;
-        const seed = hash(edgeKey(edge.from, edge.to));
-        const bend = (seed % 2 === 0 ? 1 : -1) * (18 + (seed % 42));
-        drawCurve(ctx, a, b, bend);
+        drawBundledCurve(ctx, a, b, layout.groups);
       }
       ctx.stroke();
 
@@ -345,8 +388,7 @@ export function DenseGraphMap({
           const a = layout.byId.get(edge.from);
           const b = layout.byId.get(edge.to);
           if (!a || !b || a.groupIndex !== gi || b.groupIndex !== gi) continue;
-          const seed = hash(edgeKey(edge.from, edge.to));
-          drawCurve(ctx, a, b, (seed % 13) - 6);
+          drawBundledCurve(ctx, a, b, layout.groups);
         }
         ctx.stroke();
       }
@@ -408,8 +450,6 @@ export function DenseGraphMap({
     if (canvas.width !== targetW || canvas.height !== targetH) {
       canvas.width = targetW;
       canvas.height = targetH;
-      canvas.style.width = `${layout.width}px`;
-      canvas.style.height = `${layout.height}px`;
     }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, layout.width, layout.height);
@@ -423,38 +463,51 @@ export function DenseGraphMap({
     const selected = layout.byId.get(hoverId || "");
 
     if (selected) {
-      const peerSet = new Set(selected.agent.wiredTo);
-      ctx.globalAlpha = 0.9;
-      ctx.lineWidth = 1.3 / Math.sqrt(viewport.scale);
+      const selectedEdges = layout.edgeById.get(selected.id) || [];
+      const peerSet = new Set<string>();
+      for (const edge of selectedEdges) peerSet.add(edge.from === selected.id ? edge.to : edge.from);
+      ctx.globalAlpha = edgeMode === "all" ? 0.52 : 0.78;
+      ctx.lineWidth = Math.max(0.72, 1.08 / Math.sqrt(viewport.scale));
       ctx.strokeStyle = focus;
       ctx.beginPath();
-      for (const peerId of peerSet) {
+      for (const edge of selectedEdges) {
+        const peerId = edge.from === selected.id ? edge.to : edge.from;
         const peer = layout.byId.get(peerId);
         if (!peer) continue;
-        drawCurve(ctx, selected, peer, selected.agent.group === peer.agent.group ? 8 : 28);
+        const seed = hash(edgeKey(selected.id, peer.id));
+        const bend = selected.groupIndex === peer.groupIndex
+          ? ((seed % 15) - 7)
+          : ((seed % 2 === 0 ? 1 : -1) * (18 + (seed % 26)));
+        drawCurve(ctx, selected, peer, bend);
       }
       ctx.stroke();
       for (const peerId of peerSet) {
         const peer = layout.byId.get(peerId);
         if (!peer) continue;
-        ctx.globalAlpha = 0.98;
-        ctx.fillStyle = focus;
+        ctx.globalAlpha = 0.84;
+        ctx.fillStyle = layout.groups[peer.groupIndex]?.colour || focus;
+        ctx.strokeStyle = focus;
+        ctx.lineWidth = Math.max(0.8, 1.1 / Math.sqrt(viewport.scale));
         ctx.beginPath();
-        ctx.arc(peer.x || 0, peer.y || 0, 3.1 / Math.sqrt(viewport.scale), 0, Math.PI * 2);
+        ctx.arc(peer.x || 0, peer.y || 0, Math.max(2.8, nodeRadius(graph, peer.id) + 0.9), 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
       }
     }
 
     if (selected) {
-      const r = nodeRadius(graph, selected.id) + 3.6 / Math.sqrt(viewport.scale);
+      const r = nodeRadius(graph, selected.id) + 6.2 / Math.sqrt(viewport.scale);
       ctx.globalAlpha = 1;
-      ctx.fillStyle = ink;
+      ctx.shadowColor = focus;
+      ctx.shadowBlur = 18 / Math.sqrt(viewport.scale);
+      ctx.fillStyle = layout.groups[selected.groupIndex]?.colour || ink;
       ctx.strokeStyle = focus;
-      ctx.lineWidth = 2.4 / Math.sqrt(viewport.scale);
+      ctx.lineWidth = 3.1 / Math.sqrt(viewport.scale);
       ctx.beginPath();
       ctx.arc(selected.x || 0, selected.y || 0, r, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.shadowBlur = 0;
     }
     ctx.restore();
   // `graph` is keyed through drawFingerprint so equivalent polling payloads
@@ -508,6 +561,7 @@ export function DenseGraphMap({
       }}
       onPointerUp={(event) => {
         dragRef.current = null;
+        setHoverId(nearestId(event.clientX, event.clientY));
         event.currentTarget.releasePointerCapture(event.pointerId);
       }}
       onPointerCancel={(event) => {
@@ -516,11 +570,7 @@ export function DenseGraphMap({
       }}
       onPointerLeave={() => setHoverId(null)}
     >
-      <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology force graph" />
-      <div className="topo-dense__status">
-        <strong>{graph.agents.length}</strong> nodes
-        <span>{graph.edges.length} edges</span>
-      </div>
+      <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology graph" />
       <div className="topo-dense__labels" aria-hidden="true">
         {layout.groups.map((g) => (
           <div
@@ -538,11 +588,23 @@ export function DenseGraphMap({
         ))}
       </div>
       {hover && (
+        <>
+        <div
+          className="topo-dense__hover-label"
+          style={{
+            left: `${((layout.byId.get(hover.id)?.x || 0) * viewport.scale) + viewport.x}px`,
+            top: `${((layout.byId.get(hover.id)?.y || 0) * viewport.scale) + viewport.y}px`,
+          }}
+        >
+          <strong>{hover.label}</strong>
+          <span>{hover.role}</span>
+        </div>
         <div className="topo-dense__inspector">
           <strong>{hover.label}</strong>
           <span>{hover.group}</span>
-          <span>{hover.wiredTo.length} peers</span>
+          <span>{layout.edgeById.get(hover.id)?.length || 0} peers</span>
         </div>
+        </>
       )}
     </div>
   );
