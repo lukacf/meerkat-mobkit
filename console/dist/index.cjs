@@ -4936,7 +4936,15 @@ function NodeLabelPill({ x, y, text, sub }) {
 // src/panels/topology/Bullseye.tsx
 var import_react10 = __toESM(require("react"));
 var import_jsx_runtime18 = require("react/jsx-runtime");
-var RINGS = 5;
+var RINGS = 6;
+function hash(value) {
+  let h = 2166136261;
+  for (let i = 0; i < value.length; i++) {
+    h ^= value.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
 function visualScale2(N) {
   if (N <= 20) return { nodeMin: 5, nodeMax: 12, edgeWidth: 1 };
   if (N <= 80) return { nodeMin: 3.5, nodeMax: 9, edgeWidth: 0.7 };
@@ -4950,6 +4958,8 @@ function resolveLabelMode2(N, mode) {
 function layout(graph, width, height) {
   const cx = width / 2;
   const cy = height / 2;
+  const groupIndex = /* @__PURE__ */ new Map();
+  graph.groups.forEach((group, index) => groupIndex.set(group, index));
   const sorted = graph.agents.slice().sort(
     (a, b) => (graph.degree[b.id] || 0) - (graph.degree[a.id] || 0)
   );
@@ -4961,18 +4971,35 @@ function layout(graph, width, height) {
     const ringIdx = Math.min(RINGS - 1, Math.floor((1 - Math.pow(t, 0.6)) * RINGS));
     buckets[ringIdx].push(a);
   }
-  const minR = Math.min(width, height) * 0.1;
-  const maxR = Math.min(width, height) * 0.44;
+  const minR = Math.min(width, height) * 0.085;
+  const maxR = Math.min(width, height) * 0.445;
   const ringR = (i) => minR + i / Math.max(1, RINGS - 1) * (maxR - minR);
   const pos = {};
   buckets.forEach((list, ri) => {
-    list.sort((a, b) => a.role.localeCompare(b.role) || a.id.localeCompare(b.id));
+    const byGroup = /* @__PURE__ */ new Map();
+    for (const agent of list) {
+      const gi = groupIndex.get(agent.group) ?? 0;
+      const group = byGroup.get(gi) || [];
+      group.push(agent);
+      byGroup.set(gi, group);
+    }
     const r2 = ringR(ri);
-    list.forEach((a, i) => {
-      const offset = ri / RINGS * (Math.PI / 6);
-      const t = i / Math.max(1, list.length) * Math.PI * 2 - Math.PI / 2 + offset;
-      pos[a.id] = { x: cx + Math.cos(t) * r2, y: cy + Math.sin(t) * r2, ringIdx: ri };
-    });
+    const groupCount = Math.max(1, graph.groups.length);
+    const sector = Math.PI * 2 / groupCount;
+    for (let gi = 0; gi < groupCount; gi += 1) {
+      const groupList = byGroup.get(gi) || [];
+      groupList.sort((a, b) => a.role.localeCompare(b.role) || a.label.localeCompare(b.label));
+      const pad = Math.min(0.12, sector * 0.12);
+      const start = -Math.PI / 2 + gi * sector + pad;
+      const span = Math.max(0.01, sector - pad * 2);
+      groupList.forEach((a, i) => {
+        const seed = hash(a.id) % 1e3 / 1e3;
+        const t = start + (i + 0.5) / Math.max(1, groupList.length) * span + (ri % 2 ? 0.025 : -0.025);
+        const jitter = (seed - 0.5) * Math.min(12, (maxR - minR) / RINGS * 0.16);
+        const rr = Math.max(minR * 0.62, r2 + jitter);
+        pos[a.id] = { x: cx + Math.cos(t) * rr, y: cy + Math.sin(t) * rr, ringIdx: ri, groupIndex: gi };
+      });
+    }
   });
   return { pos, ringR, cx, cy, buckets };
 }
@@ -4988,7 +5015,7 @@ function Bullseye({
   const roleIndex = import_react10.default.useMemo(() => roleIndexFor(graph.roles), [graph.roles]);
   const live = useTopologyActivity(activity, graph, { life: 1100 });
   const scale = visualScale2(graph.agents.length);
-  const visualEdges = import_react10.default.useMemo(() => sampleEdges(graph.edges, 1500), [graph.edges]);
+  const visualEdges = import_react10.default.useMemo(() => sampleEdges(graph.edges, 6e3), [graph.edges]);
   const labelMode = resolveLabelMode2(graph.agents.length, labelsMode);
   const [hoverId, setHoverId] = import_react10.default.useState(null);
   const zoom = useZoomPan(width, height);
@@ -5001,6 +5028,15 @@ function Bullseye({
     for (const p of live.pulses) set.add(edgeKey(p.from, p.to));
     return set;
   }, [live.pulses]);
+  const focusEdges = import_react10.default.useMemo(
+    () => hoverId ? graph.edges.filter((e) => e.from === hoverId || e.to === hoverId) : [],
+    [graph.edges, hoverId]
+  );
+  const focusPeers = import_react10.default.useMemo(() => {
+    const peers = /* @__PURE__ */ new Set();
+    for (const edge of focusEdges) peers.add(edge.from === hoverId ? edge.to : edge.from);
+    return peers;
+  }, [focusEdges, hoverId]);
   const radiusOf = (deg) => {
     const t = Math.sqrt(deg) / 4;
     return scale.nodeMin + Math.min(1, t) * (scale.nodeMax - scale.nodeMin);
@@ -5028,7 +5064,9 @@ function Bullseye({
       anchor,
       isHot: !!live.active[agent.id],
       isBusy: !!live.busy[agent.id],
-      colour: colourForRole(agent.role, roleIndex)
+      colour: colourForRole(agent.role, roleIndex),
+      isSelected: hoverId === agent.id,
+      isPeer: focusPeers.has(agent.id)
     }];
   });
   const showInlineLabel = labelMode === "on";
@@ -5133,9 +5171,27 @@ function Bullseye({
                 y2: b.y,
                 stroke: hot ? "var(--ok)" : "var(--ink-faint)",
                 strokeWidth: hot ? scale.edgeWidth + 0.5 : scale.edgeWidth,
-                opacity: hot ? 0.85 : 0.5
+                opacity: hot ? 0.85 : graph.agents.length > 250 ? 0.24 : 0.42
               },
               i
+            );
+          }) }),
+          hoverId && focusEdges.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("g", { style: { pointerEvents: "none" }, children: focusEdges.map((e, i) => {
+            const a = pos[e.from];
+            const b = pos[e.to];
+            if (!a || !b) return null;
+            return /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(
+              "line",
+              {
+                x1: a.x,
+                y1: a.y,
+                x2: b.x,
+                y2: b.y,
+                stroke: "var(--focus)",
+                strokeWidth: Math.max(1.2, scale.edgeWidth + 1),
+                opacity: "0.82"
+              },
+              `${e.from}:${e.to}:${i}`
             );
           }) }),
           /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("g", { children: live.pulses.map((p) => {
@@ -5159,11 +5215,11 @@ function Bullseye({
               p.id
             );
           }) }),
-          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("g", { children: renderItems.map(({ agent, p, r: r2, isHot, isBusy, colour }) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(
+          /* @__PURE__ */ (0, import_jsx_runtime18.jsx)("g", { children: renderItems.map(({ agent, p, r: r2, isHot, isBusy, isPeer, isSelected, colour }) => /* @__PURE__ */ (0, import_jsx_runtime18.jsxs)(
             "g",
             {
               "data-testid": `topology-node:${agent.id}`,
-              className: `topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}`,
+              className: `topo__node${isBusy ? " is-busy" : ""}${isHot ? " is-hot" : ""}${isPeer ? " is-peer" : ""}${isSelected ? " is-selected" : ""}`,
               onMouseEnter: () => setHoverId(agent.id),
               onMouseLeave: () => setHoverId((cur) => cur === agent.id ? null : cur),
               onFocus: () => setHoverId(agent.id),
@@ -5193,6 +5249,19 @@ function Bullseye({
                     stroke: colour,
                     strokeWidth: "1",
                     opacity: "0.35",
+                    style: { pointerEvents: "none" }
+                  }
+                ),
+                (isPeer || isSelected) && /* @__PURE__ */ (0, import_jsx_runtime18.jsx)(
+                  "circle",
+                  {
+                    cx: p.x,
+                    cy: p.y,
+                    r: r2 + (isSelected ? 6 : 3),
+                    fill: "none",
+                    stroke: isSelected ? "var(--focus)" : colour,
+                    strokeWidth: isSelected ? "2.4" : "1.5",
+                    opacity: isSelected ? "0.95" : "0.65",
                     style: { pointerEvents: "none" }
                   }
                 ),
@@ -5228,7 +5297,7 @@ function Bullseye({
               x: hoveredItem.p.x,
               y: hoveredItem.p.y + hoveredItem.r + 8,
               text: hoveredItem.agent.label,
-              sub: `${hoveredItem.agent.role}${hoveredItem.agent.state ? " \xB7 " + hoveredItem.agent.state : ""}${hoveredItem.isBusy ? " \xB7 working" : ""}`
+              sub: `${hoveredItem.agent.group} \xB7 ${focusEdges.length} peers${hoveredItem.isBusy ? " \xB7 working" : ""}`
             }
           )
         ] })
@@ -5388,7 +5457,7 @@ function RoleTree({
 var import_react12 = __toESM(require("react"));
 var import_jsx_runtime20 = require("react/jsx-runtime");
 var GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-function hash(value) {
+function hash2(value) {
   let h = 2166136261;
   for (let i = 0; i < value.length; i++) {
     h ^= value.charCodeAt(i);
@@ -5513,9 +5582,9 @@ function buildLayout(graph, width, height) {
       Math.max(74, Math.sqrt(count) * 11.8),
       Math.min(width, height) * (groupCount <= 4 ? 0.205 : 0.145)
     );
-    const twist = hash(anchor.name) % 1e3 / 1e3 * Math.PI * 2;
+    const twist = hash2(anchor.name) % 1e3 / 1e3 * Math.PI * 2;
     entry.forEach((agent, index) => {
-      const seed = hash(agent.id);
+      const seed = hash2(agent.id);
       const normalized = Math.sqrt((index + 0.45) / count);
       const theta = twist + index * GOLDEN_ANGLE + seed % 37 / 37 * 0.18;
       const radial = clusterRadius * normalized;
@@ -5531,7 +5600,17 @@ function buildLayout(graph, width, height) {
   }
   fitLayout(nodes, groups, width, height);
   const byId = new Map(nodes.map((node) => [node.id, node]));
-  return { nodes, byId, groups, width, height };
+  const edgeById = /* @__PURE__ */ new Map();
+  for (const edge of graph.edges) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+    const from = edgeById.get(edge.from) || [];
+    from.push(edge);
+    edgeById.set(edge.from, from);
+    const to = edgeById.get(edge.to) || [];
+    to.push(edge);
+    edgeById.set(edge.to, to);
+  }
+  return { nodes, byId, edgeById, groups, width, height };
 }
 function screenToGraph(clientX, clientY, canvas, viewport) {
   const rect = canvas.getBoundingClientRect();
@@ -5558,6 +5637,25 @@ function drawCurve(ctx, a, b, bend) {
   const ny = dx / len;
   ctx.moveTo(ax, ay);
   ctx.quadraticCurveTo(mx + nx * bend, my + ny * bend, bx, by);
+}
+function drawBundledCurve(ctx, a, b, groups) {
+  if (a.groupIndex === b.groupIndex) {
+    const seed = hash2(edgeKey(a.id, b.id));
+    drawCurve(ctx, a, b, seed % 15 - 7);
+    return;
+  }
+  const ax = a.x || 0;
+  const ay = a.y || 0;
+  const bx = b.x || 0;
+  const by = b.y || 0;
+  const ga = groups[a.groupIndex];
+  const gb = groups[b.groupIndex];
+  const c1x = ga ? ga.x + (gb.x - ga.x) * 0.36 : (ax + bx) / 2;
+  const c1y = ga ? ga.y + (gb.y - ga.y) * 0.36 : (ay + by) / 2;
+  const c2x = gb ? gb.x + (ga.x - gb.x) * 0.36 : (ax + bx) / 2;
+  const c2y = gb ? gb.y + (ga.y - gb.y) * 0.36 : (ay + by) / 2;
+  ctx.moveTo(ax, ay);
+  ctx.bezierCurveTo(c1x, c1y, c2x, c2y, bx, by);
 }
 function nodeRadius(graph, id) {
   return Math.min(8.5, 2.1 + Math.sqrt(graph.degree[id] || 0) * 0.48);
@@ -5646,9 +5744,7 @@ function DenseGraphMap({
         const b = layout2.byId.get(edge.to);
         if (!a || !b) continue;
         if (a.agent.group === b.agent.group) continue;
-        const seed = hash(edgeKey(edge.from, edge.to));
-        const bend = (seed % 2 === 0 ? 1 : -1) * (18 + seed % 42);
-        drawCurve(ctx, a, b, bend);
+        drawBundledCurve(ctx, a, b, layout2.groups);
       }
       ctx.stroke();
       ctx.globalAlpha = Math.min(0.42, edgeAlpha * 1.8);
@@ -5659,8 +5755,7 @@ function DenseGraphMap({
           const a = layout2.byId.get(edge.from);
           const b = layout2.byId.get(edge.to);
           if (!a || !b || a.groupIndex !== gi || b.groupIndex !== gi) continue;
-          const seed = hash(edgeKey(edge.from, edge.to));
-          drawCurve(ctx, a, b, seed % 13 - 6);
+          drawBundledCurve(ctx, a, b, layout2.groups);
         }
         ctx.stroke();
       }
@@ -5728,37 +5823,48 @@ function DenseGraphMap({
     const ink = cssVar(host, "--ink", "rgb(235, 238, 245)");
     const selected = layout2.byId.get(hoverId || "");
     if (selected) {
-      const peerSet = new Set(selected.agent.wiredTo);
-      ctx.globalAlpha = 0.9;
-      ctx.lineWidth = 1.3 / Math.sqrt(viewport.scale);
+      const selectedEdges = layout2.edgeById.get(selected.id) || [];
+      const peerSet = /* @__PURE__ */ new Set();
+      for (const edge of selectedEdges) peerSet.add(edge.from === selected.id ? edge.to : edge.from);
+      ctx.globalAlpha = edgeMode === "all" ? 0.52 : 0.78;
+      ctx.lineWidth = Math.max(0.72, 1.08 / Math.sqrt(viewport.scale));
       ctx.strokeStyle = focus;
       ctx.beginPath();
-      for (const peerId of peerSet) {
+      for (const edge of selectedEdges) {
+        const peerId = edge.from === selected.id ? edge.to : edge.from;
         const peer = layout2.byId.get(peerId);
         if (!peer) continue;
-        drawCurve(ctx, selected, peer, selected.agent.group === peer.agent.group ? 8 : 28);
+        const seed = hash2(edgeKey(selected.id, peer.id));
+        const bend = selected.groupIndex === peer.groupIndex ? seed % 15 - 7 : (seed % 2 === 0 ? 1 : -1) * (18 + seed % 26);
+        drawCurve(ctx, selected, peer, bend);
       }
       ctx.stroke();
       for (const peerId of peerSet) {
         const peer = layout2.byId.get(peerId);
         if (!peer) continue;
-        ctx.globalAlpha = 0.98;
-        ctx.fillStyle = focus;
+        ctx.globalAlpha = 0.84;
+        ctx.fillStyle = layout2.groups[peer.groupIndex]?.colour || focus;
+        ctx.strokeStyle = focus;
+        ctx.lineWidth = Math.max(0.8, 1.1 / Math.sqrt(viewport.scale));
         ctx.beginPath();
-        ctx.arc(peer.x || 0, peer.y || 0, 3.1 / Math.sqrt(viewport.scale), 0, Math.PI * 2);
+        ctx.arc(peer.x || 0, peer.y || 0, Math.max(2.8, nodeRadius(graph, peer.id) + 0.9), 0, Math.PI * 2);
         ctx.fill();
+        ctx.stroke();
       }
     }
     if (selected) {
-      const r2 = nodeRadius(graph, selected.id) + 3.6 / Math.sqrt(viewport.scale);
+      const r2 = nodeRadius(graph, selected.id) + 6.2 / Math.sqrt(viewport.scale);
       ctx.globalAlpha = 1;
-      ctx.fillStyle = ink;
+      ctx.shadowColor = focus;
+      ctx.shadowBlur = 18 / Math.sqrt(viewport.scale);
+      ctx.fillStyle = layout2.groups[selected.groupIndex]?.colour || ink;
       ctx.strokeStyle = focus;
-      ctx.lineWidth = 2.4 / Math.sqrt(viewport.scale);
+      ctx.lineWidth = 3.1 / Math.sqrt(viewport.scale);
       ctx.beginPath();
       ctx.arc(selected.x || 0, selected.y || 0, r2, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+      ctx.shadowBlur = 0;
     }
     ctx.restore();
   }, [drawStatic, drawFingerprint, hoverId, layout2, viewport]);
@@ -5806,6 +5912,7 @@ function DenseGraphMap({
       },
       onPointerUp: (event) => {
         dragRef.current = null;
+        setHoverId(nearestId(event.clientX, event.clientY));
         event.currentTarget.releasePointerCapture(event.pointerId);
       },
       onPointerCancel: (event) => {
@@ -5842,12 +5949,28 @@ function DenseGraphMap({
           },
           g.name
         )) }),
-        hover && /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-dense__inspector", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: hover.label }),
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: hover.group }),
-          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { children: [
-            hover.wiredTo.length,
-            " peers"
+        hover && /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(import_jsx_runtime20.Fragment, { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)(
+            "div",
+            {
+              className: "topo-dense__hover-label",
+              style: {
+                left: `${(layout2.byId.get(hover.id)?.x || 0) * viewport.scale + viewport.x}px`,
+                top: `${(layout2.byId.get(hover.id)?.y || 0) * viewport.scale + viewport.y}px`
+              },
+              children: [
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: hover.label }),
+                /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: hover.role })
+              ]
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("div", { className: "topo-dense__inspector", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("strong", { children: hover.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsx)("span", { children: hover.group }),
+            /* @__PURE__ */ (0, import_jsx_runtime20.jsxs)("span", { children: [
+              layout2.edgeById.get(hover.id)?.length || 0,
+              " peers"
+            ] })
           ] })
         ] })
       ]
