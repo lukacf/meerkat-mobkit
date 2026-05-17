@@ -1005,14 +1005,19 @@ svg[data-svg="fit"],
 }
 .topo-dense__node-label {
   position: absolute;
-  transform: translate(-50%, 0);
+  transform: translate(-50%, -50%);
   max-width: 150px;
-  padding: 3px 6px;
+  padding: 4px 7px;
+  border: 1px solid color-mix(in oklch, var(--line) 72%, transparent);
   border-top: 2px solid var(--line);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--bg-elev-1) 82%, transparent);
   color: var(--ink);
   text-align: center;
   text-shadow: 0 1px 2px var(--bg);
   font: 600 11px var(--disp);
+  box-shadow: 0 6px 16px color-mix(in oklch, var(--bg) 36%, transparent);
+  backdrop-filter: blur(6px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -216,6 +216,45 @@ function buildLayout(graph: TopoGraph, width: number, height: number): Layout {
   }
 
   const nodes: LayoutNode[] = [];
+  if (smallGraph) {
+    const ordered = graph.groups.flatMap((groupName) => {
+      const gi = groupIndex.get(groupName) ?? 0;
+      return (groupedAgents.get(gi) || []).map((agent) => ({ agent, groupIndex: gi }));
+    });
+    const count = Math.max(1, ordered.length);
+    const ringX = Math.max(86, Math.min(width * 0.34, Math.min(width, height) * 0.34));
+    const ringY = Math.max(76, Math.min(height * 0.31, Math.min(width, height) * 0.3));
+    ordered.forEach(({ agent, groupIndex: gi }, index) => {
+      const theta = count === 1
+        ? -Math.PI / 2
+        : -Math.PI / 2 + (index / count) * Math.PI * 2;
+      const degree = graph.degree[agent.id] || 0;
+      const emphasis = degree > 1 ? 1.03 : 1;
+      nodes.push({
+        id: agent.id,
+        agent,
+        groupIndex: gi,
+        radius: nodeRadius(graph, agent.id),
+        x: count === 1 ? cx : cx + Math.cos(theta) * ringX * emphasis,
+        y: count === 1 ? cy : cy + Math.sin(theta) * ringY * emphasis,
+      });
+    });
+    fitLayout(nodes, groups, width, height);
+
+    const byId = new Map(nodes.map((node) => [node.id, node]));
+    const edgeById = new Map<string, TopoGraph["edges"][number][]>();
+    for (const edge of graph.edges) {
+      if (!byId.has(edge.from) || !byId.has(edge.to)) continue;
+      const from = edgeById.get(edge.from) || [];
+      from.push(edge);
+      edgeById.set(edge.from, from);
+      const to = edgeById.get(edge.to) || [];
+      to.push(edge);
+      edgeById.set(edge.to, to);
+    }
+    return { nodes, byId, edgeById, groups, width, height };
+  }
+
   for (const [gi, entry] of groupedAgents.entries()) {
     const anchor = groups[gi] || { x: cx, y: cy, count: entry.length };
     const count = Math.max(1, entry.length);
@@ -722,6 +761,8 @@ export function DenseGraphMap({
   const hoverBusy = hoverId ? activity.busy[hoverId] || layout.byId.get(hoverId)?.agent.responsePhase != null : false;
   const hoverCalls = hoverId ? activity.pulses.filter((pulse) => pulse.from === hoverId || pulse.to === hoverId).length : 0;
   const showNodeLabels = graph.agents.length <= 12;
+  const showGroupLabels = !showNodeLabels;
+  const labelCenter = { x: layout.width / 2, y: layout.height / 2 };
 
   return (
     <div
@@ -758,7 +799,7 @@ export function DenseGraphMap({
     >
       <canvas ref={canvasRef} className="topo-dense__canvas" aria-label="Dense topology graph" />
       <div className="topo-dense__labels" aria-hidden="true">
-        {layout.groups.map((g) => (
+        {showGroupLabels && layout.groups.map((g) => (
           <div
             key={g.name}
             className="topo-dense__group-label"
@@ -772,19 +813,25 @@ export function DenseGraphMap({
             <span>{g.count} agents</span>
           </div>
         ))}
-        {showNodeLabels && layout.nodes.map((node) => (
-          <div
-            key={node.id}
-            className="topo-dense__node-label"
-            style={{
-              left: `${(node.x || 0) * viewport.scale + viewport.x}px`,
-              top: `${(node.y || 0) * viewport.scale + viewport.y + node.radius + 8}px`,
-              borderColor: layout.groups[node.groupIndex]?.colour || colourForRole(node.agent.role, roleIndex),
-            }}
-          >
-            {node.agent.label}
-          </div>
-        ))}
+        {showNodeLabels && layout.nodes.map((node) => {
+          const x = node.x || 0;
+          const y = node.y || 0;
+          const angle = Math.atan2(y - labelCenter.y, x - labelCenter.x);
+          const offset = node.radius + 34;
+          return (
+            <div
+              key={node.id}
+              className="topo-dense__node-label"
+              style={{
+                left: `${(x + Math.cos(angle) * offset) * viewport.scale + viewport.x}px`,
+                top: `${(y + Math.sin(angle) * offset) * viewport.scale + viewport.y}px`,
+                borderColor: layout.groups[node.groupIndex]?.colour || colourForRole(node.agent.role, roleIndex),
+              }}
+            >
+              {node.agent.label}
+            </div>
+          );
+        })}
       </div>
       {hover && (
         <>
