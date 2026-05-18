@@ -642,9 +642,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       frame.event === "interaction_failed" ||
       frame.event === "run_completed" ||
       frame.event === "run_failed" ||
-      frame.event === "message_delivery_failed" ||
-      isTerminalTurnCompletedFrame(frame)
+      frame.event === "message_delivery_failed"
     ) {
+      // Queue draining follows run-level terminals so server-side
+      // interaction correlation advances before the next send leaves.
       return false;
     }
     return null;
