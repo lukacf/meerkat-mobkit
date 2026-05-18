@@ -1064,13 +1064,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
           return true;
         }
         return commitPanelPhase(panelKey, "tool-executing");
+      case "tool_result_received":
+      case "tool_execution_completed":
+        // Tool has just finished — no tool is currently executing. Clear
+        // the phase; the next event (text_delta or another tool_call_*)
+        // will set the right one. Without this, a run that ends on a tool
+        // call leaves the indicator stuck at "tool-executing" indefinitely
+        // when no run_completed frame follows.
+        return commitPanelPhase(panelKey, null);
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r = Math.max(0, 300 - elapsedMs);
