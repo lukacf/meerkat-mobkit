@@ -2174,9 +2174,15 @@ export function inferResponsePhaseFromFrames(
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
+        phase = "tool-executing";
+        break;
       case "tool_result_received":
       case "tool_execution_completed":
-        phase = "tool-executing";
+        // Tool has just finished — no tool is currently executing.
+        // The next event (text_delta or another tool_call_requested) will
+        // set the appropriate phase. If nothing follows, the indicator
+        // correctly resolves to idle even when no run_completed arrives.
+        phase = null;
         break;
       case "text_delta":
         phase = "generating";
