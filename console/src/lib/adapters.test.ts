@@ -366,7 +366,7 @@ test("mapFramesToTimelineEntries ignores hidden turn markers before terminal com
   );
 });
 
-test("inferResponsePhaseFromFrames clears working state on terminal text and end-turn frames", () => {
+test("inferResponsePhaseFromFrames clears working state on terminal text and terminal turn-completed frames", () => {
   assert.equal(
     inferResponsePhaseFromFrames([
       { id: "evt-1", event: "user_input", data: { content: "Hello" } },
@@ -396,6 +396,22 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and end
       { id: "evt-2", event: "turn_completed", data: { stop_reason: "tool_use" } },
     ]),
     "tool-executing",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "text_delta", data: { delta: "Partial." } },
+      { id: "evt-2", event: "turn_completed", data: { stop_reason: "max_tokens" } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "text_delta", data: { delta: "Stopped." } },
+      { id: "evt-2", event: "turn_completed", data: { stop_reason: "stop_sequence" } },
+    ]),
+    null,
   );
 });
 

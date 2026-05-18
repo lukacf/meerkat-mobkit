@@ -4,6 +4,7 @@ import {
   dedupeComposerImageFiles,
   consoleBlobReferencesFromText,
   normalizeConsoleBlobUrl,
+  selectImageTransferFiles,
   stripConsoleBlobReferencesFromText,
 } from "./composer-attachment-text";
 
@@ -62,5 +63,19 @@ test("dedupeComposerImageFiles collapses duplicate drag/drop file surfaces", () 
   assert.deepEqual(
     dedupeComposerImageFiles([file, duplicate, other]),
     [file, other],
+  );
+});
+
+test("selectImageTransferFiles prefers direct clipboard files over item duplicates", () => {
+  const direct = { name: "image.png", type: "image/png", size: 42, lastModified: 1 };
+  const sameClipboardItem = { name: "pasted-image.png", type: "image/png", size: 42, lastModified: 2 };
+
+  assert.deepEqual(
+    selectImageTransferFiles([direct], [sameClipboardItem]),
+    [direct],
+  );
+  assert.deepEqual(
+    selectImageTransferFiles([], [sameClipboardItem]),
+    [sameClipboardItem],
   );
 });

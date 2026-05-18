@@ -31,6 +31,16 @@ export function dedupeComposerImageFiles<T extends ComposerImageFileLike>(files:
   return deduped;
 }
 
+export function selectImageTransferFiles<T extends ComposerImageFileLike>(
+  directFiles: readonly T[],
+  itemFiles: readonly T[],
+): T[] {
+  // Browsers can expose the same pasted image through both
+  // DataTransfer.files and DataTransfer.items. Prefer the direct file list
+  // when present; it is the canonical browser surface for file transfers.
+  return dedupeComposerImageFiles(directFiles.length > 0 ? directFiles : itemFiles);
+}
+
 function defaultBaseHref(): string {
   if (typeof window !== "undefined") return window.location.href;
   return "http://localhost/";

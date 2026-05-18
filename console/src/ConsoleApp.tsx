@@ -263,13 +263,14 @@ function cursorSeq(cursor: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function isEndTurnFrame(frame: ConsoleFrame): boolean {
+function isTerminalTurnCompletedFrame(frame: ConsoleFrame): boolean {
   if (frame.event !== "turn_completed") return false;
   const data =
     frame.data && typeof frame.data === "object"
       ? (frame.data as Record<string, unknown>)
       : {};
-  return data.stop_reason === "end_turn";
+  const stopReason = data.stop_reason ?? data.stopReason;
+  return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
 
 // --- Event sets for the SSE handler ---
@@ -642,7 +643,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       frame.event === "run_completed" ||
       frame.event === "run_failed" ||
       frame.event === "message_delivery_failed" ||
-      isEndTurnFrame(frame)
+      isTerminalTurnCompletedFrame(frame)
     ) {
       return false;
     }
@@ -1090,7 +1091,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "run_failed":
         return commitPanelPhase(panelKey, null);
       case "turn_completed":
-        if (isEndTurnFrame(frame)) return commitPanelPhase(panelKey, null);
+        if (isTerminalTurnCompletedFrame(frame)) return commitPanelPhase(panelKey, null);
         return false;
       case "message_delivery_failed":
         return commitPanelPhase(panelKey, null);
@@ -1557,7 +1558,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       // already seen via SSE are skipped). If hasServerLog is false,
       // scheduleHistoryRefresh short-circuits.
       if (
-        (HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) &&
+        (HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame)) &&
         identity &&
         identity !== "_system"
       ) {

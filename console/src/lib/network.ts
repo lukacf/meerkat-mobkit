@@ -296,6 +296,7 @@ const TERMINAL_SSE_EVENTS = new Set([
   "run_completed",
   "interaction_failed",
   "run_failed",
+  "turn_completed",
 ]);
 
 interface TerminalCorrelation {
@@ -336,6 +337,18 @@ function matchesCorrelation(
   return false;
 }
 
+function isTerminalTurnCompletedData(data: unknown): boolean {
+  const record = data && typeof data === "object" ? data as Record<string, unknown> : {};
+  const stopReason = record.stop_reason ?? record.stopReason;
+  return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+}
+
+function isTerminalSseFrame(frame: ConsoleFrame): boolean {
+  if (!TERMINAL_SSE_EVENTS.has(frame.event || "")) return false;
+  if (frame.event !== "turn_completed") return true;
+  return isTerminalTurnCompletedData(frame.data);
+}
+
 /**
  * Scan complete SSE blocks (delimited by double-newline) for a terminal
  * event: line.  The last block is skipped because it may be incomplete.
@@ -356,13 +369,15 @@ function hasMatchingTerminalEvent(rawText: string, correlation?: TerminalCorrela
       else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
     }
     if (!TERMINAL_SSE_EVENTS.has(eventName)) continue;
-    if (!correlation?.sessionId && !correlation?.interactionId) return true;
+    let data: Record<string, unknown> | null = null;
     try {
-      const data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
-      if (matchesCorrelation(data, correlation, false)) return true;
+      data = JSON.parse(dataLines.join("\n")) as Record<string, unknown>;
     } catch {
-      // unparseable data — treat as unmatched
+      data = null;
     }
+    if (eventName === "turn_completed" && !isTerminalTurnCompletedData(data)) continue;
+    if (!correlation?.sessionId && !correlation?.interactionId) return true;
+    if (data && matchesCorrelation(data, correlation, false)) return true;
   }
   return false;
 }
@@ -428,7 +443,7 @@ async function streamFramesFromResponse(
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
-          if (stopOnTerminal && TERMINAL_SSE_EVENTS.has(frame.event || "")) {
+          if (stopOnTerminal && isTerminalSseFrame(frame)) {
             sawTerminal = true;
           }
         }
