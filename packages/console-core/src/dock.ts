@@ -530,28 +530,34 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
   suggestTargets,
 }: BuildConsoleDockPresetStateOptions<TTarget>): ConsoleDockPresetState<TTarget> {
   const requestedCount = presetId === "grid" ? 4 : presetId === "single" ? 1 : 2;
-  const [firstTarget, secondTarget, thirdTarget, fourthTarget] = suggestDockTargets({
+  const [firstTarget, ...remainingTargets] = suggestDockTargets({
     count: requestedCount,
     preferred: preferredTarget,
     excludedIds: [],
     suggestTargets,
   });
+  const [secondTarget, thirdTarget, fourthTarget] = remainingTargets.filter(
+    (target): target is TTarget => Boolean(target),
+  );
 
   const primary = createPanelState({
     target: preferredPanel ? (preferredTarget ?? preferredPanel.target) : (firstTarget || null),
     sourcePanel: preferredPanel || null,
   });
 
+  const singlePanelState = (): ConsoleDockPresetState<TTarget> => ({
+    presetId: "single",
+    layout: panelNode(primary.id),
+    panels: [primary],
+    focusedPanelId: primary.id,
+  });
+
   if (presetId === "single") {
-    return {
-      presetId,
-      layout: panelNode(primary.id),
-      panels: [primary],
-      focusedPanelId: primary.id,
-    };
+    return singlePanelState();
   }
 
   if (presetId === "two_columns") {
+    if (!secondTarget) return singlePanelState();
     const right = createPanelState({ target: secondTarget || null, sourcePanel: preferredPanel || primary });
     return {
       presetId,
@@ -569,6 +575,7 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
   }
 
   if (presetId === "two_rows") {
+    if (!secondTarget) return singlePanelState();
     const bottom = createPanelState({ target: secondTarget || null, sourcePanel: preferredPanel || primary });
     return {
       presetId,
@@ -585,9 +592,52 @@ export function buildConsoleDockPresetState<TTarget extends ConsoleDockTarget>({
     };
   }
 
+  if (!secondTarget && !thirdTarget && !fourthTarget) {
+    return singlePanelState();
+  }
+
   const rightTop = createPanelState({ target: secondTarget || null, sourcePanel: preferredPanel || primary });
-  const leftBottom = createPanelState({ target: thirdTarget || null, sourcePanel: preferredPanel || primary });
-  const rightBottom = createPanelState({ target: fourthTarget || null, sourcePanel: preferredPanel || primary });
+  if (!thirdTarget) {
+    return {
+      presetId: "two_columns",
+      layout: {
+        kind: "split",
+        id: createSplitId(),
+        direction: "horizontal",
+        ratio: 0.5,
+        first: panelNode(primary.id),
+        second: panelNode(rightTop.id),
+      },
+      panels: [primary, rightTop],
+      focusedPanelId: primary.id,
+    };
+  }
+
+  const leftBottom = createPanelState({ target: thirdTarget, sourcePanel: preferredPanel || primary });
+  if (!fourthTarget) {
+    return {
+      presetId,
+      layout: {
+        kind: "split",
+        id: createSplitId(),
+        direction: "horizontal",
+        ratio: 0.5,
+        first: panelNode(primary.id),
+        second: {
+          kind: "split",
+          id: createSplitId(),
+          direction: "vertical",
+          ratio: 0.5,
+          first: panelNode(rightTop.id),
+          second: panelNode(leftBottom.id),
+        },
+      },
+      panels: [primary, rightTop, leftBottom],
+      focusedPanelId: primary.id,
+    };
+  }
+
+  const rightBottom = createPanelState({ target: fourthTarget, sourcePanel: preferredPanel || primary });
 
   return {
     presetId,
@@ -638,7 +688,7 @@ export function createConsoleDockState<TTarget extends ConsoleDockTarget>({
   return {
     tabs: [{
       id: firstTabId,
-      presetId: initialPresetId,
+      presetId: initial.presetId,
       layout: initial.layout,
     }],
     panels: initial.panels,
@@ -1011,7 +1061,7 @@ export function applyConsoleDockPreset<TTarget extends ConsoleDockTarget>(
       tab.id === activeTab.id
         ? {
             ...tab,
-            presetId: options.presetId,
+            presetId: presetState.presetId,
             layout: presetState.layout,
           }
         : tab
