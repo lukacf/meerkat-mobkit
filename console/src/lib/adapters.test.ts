@@ -413,6 +413,39 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
     ]),
     null,
   );
+
+  // Tool-completion events should not claim "tool-executing" — at that
+  // instant no tool is running. Without this, a stream that ends on
+  // tool_execution_completed (e.g., agent finishes by saving a result and
+  // no subsequent run_completed event fires) leaves the indicator stuck
+  // at "...working" indefinitely.
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "text_delta", data: { delta: "Done." } },
+      { id: "evt-2", event: "text_complete", data: { content: "Done." } },
+      { id: "evt-3", event: "tool_call_requested", data: { name: "save_investigation_result" } },
+      { id: "evt-4", event: "tool_execution_started", data: {} },
+      { id: "evt-5", event: "tool_execution_completed", data: {} },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "tool_call_requested", data: { name: "save_investigation_result" } },
+      { id: "evt-2", event: "tool_result_received", data: {} },
+    ]),
+    null,
+  );
+
+  // A new tool call after a completed one should re-arm the indicator.
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "tool_execution_completed", data: {} },
+      { id: "evt-2", event: "tool_call_requested", data: { name: "next_tool" } },
+    ]),
+    "tool-executing",
+  );
 });
 
 test("mapFramesToTimelineEntries renders terminal completion without streamed deltas", () => {
