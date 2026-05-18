@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, broadcast};
 
 use crate::blob_store::BinaryBlobStore;
+use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
 use crate::mob_handle_runtime::{
     MobRuntime, assert_member_accepts_images, send_message_on_mob_with_mode,
 };
@@ -68,6 +69,7 @@ struct AggregatorInner {
     runtimes: RwLock<BTreeMap<String, RuntimeEntry>>,
     event_tx: broadcast::Sender<ConsoleTimelineEvent>,
     active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
+    opportunistic_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     session_backfill_permits: Arc<Semaphore>,
     options: ConsoleAggregatorOptions,
 }
@@ -165,6 +167,7 @@ impl MobKitConsoleAggregator {
                 runtimes: RwLock::new(BTreeMap::new()),
                 event_tx,
                 active_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
+                opportunistic_session_backfills: tokio::sync::Mutex::new(BTreeSet::new()),
                 session_backfill_permits: Arc::new(Semaphore::new(
                     options.max_concurrent_session_backfills,
                 )),
@@ -377,6 +380,11 @@ impl MobKitConsoleAggregator {
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let explicit_identity = query.identity.clone();
         let mut page = self.inner.store.query_frames(query).await?;
+        if page.frames.is_empty()
+            && let Some(identity) = explicit_identity.clone()
+        {
+            spawn_session_history_backfill_for_identity(self.inner.clone(), identity, false);
+        }
         let mut visible_frames = Vec::with_capacity(page.frames.len());
         let mut identity_visibility_cache = HashMap::new();
         for frame in page.frames {
@@ -1230,6 +1238,31 @@ fn spawn_session_history_backfill_for_identity(
     });
 }
 
+fn spawn_opportunistic_session_history_backfill_for_identity(
+    inner: Arc<AggregatorInner>,
+    identity: String,
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    tokio::spawn(async move {
+        let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
+            return;
+        };
+        let active_key = format!(
+            "{}:session-history:{}",
+            target.entry.runtime_key, target.session_id
+        );
+        {
+            let mut seen = inner.opportunistic_session_backfills.lock().await;
+            if !seen.insert(active_key) {
+                return;
+            }
+        }
+        spawn_session_history_backfill_target(inner, target, false);
+    });
+}
+
 async fn session_backfill_target_for_identity(
     inner: &AggregatorInner,
     identity: &str,
@@ -1412,6 +1445,13 @@ async fn project_console_event(
     } else {
         None
     };
+    let opportunistic_refresh_identity = if refresh_identity.is_none()
+        && console_event_should_start_session_history_backfill(&frame)
+    {
+        Some(frame.identity.clone())
+    } else {
+        None
+    };
     append_and_emit(&inner, frame).await?;
     inner
         .store
@@ -1423,6 +1463,8 @@ async fn project_console_event(
         .await?;
     if let Some(identity) = refresh_identity {
         spawn_session_history_backfill_for_identity(inner.clone(), identity, true);
+    } else if let Some(identity) = opportunistic_refresh_identity {
+        spawn_opportunistic_session_history_backfill_for_identity(inner.clone(), identity);
     }
     Ok(())
 }
@@ -1432,6 +1474,23 @@ fn console_event_should_refresh_session_history(frame: &NewConsoleFrame) -> bool
         frame.kind.as_str(),
         "interaction_complete" | "interaction_failed" | "message_delivery_failed"
     ) || frame.session_id.is_some()
+}
+
+fn console_event_should_start_session_history_backfill(frame: &NewConsoleFrame) -> bool {
+    if frame.identity == SYSTEM_EVENT_IDENTITY {
+        return false;
+    }
+    matches!(
+        frame.kind.as_str(),
+        "turn_started"
+            | "run_started"
+            | "reasoning_complete"
+            | "tool_call_requested"
+            | "tool_call"
+            | "tool_execution_started"
+            | "text_delta"
+            | "system_notice"
+    )
 }
 
 async fn append_and_emit(

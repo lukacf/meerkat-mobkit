@@ -179,3 +179,63 @@ test("topology activity derives working nodes and peer call pulses", () => {
   assert.equal(activity.calls.scribe, 1_100);
   assert.deepEqual(activity.pulses.map((p) => [p.from, p.to]), [["commander", "scribe"]]);
 });
+
+test("topology activity derives pulses from typed incoming comms notices", () => {
+  const agents: ConsoleAgent[] = [
+    {
+      identity: "review:singleton",
+      agent_id: "review:singleton",
+      member_id: "review:singleton",
+      label: "Review Agent",
+      kind: "agent",
+      role: "review",
+      state: "active",
+      wired_to: ["review-worker-daily-candy"],
+    },
+    {
+      identity: "review-worker-daily-candy",
+      agent_id: "review-worker-daily-candy",
+      member_id: "review-worker-daily-candy",
+      label: "Daily Candy Worker",
+      kind: "agent",
+      role: "review-worker",
+      state: "active",
+      wired_to: ["review:singleton"],
+    },
+  ];
+  const graph = buildGraph([], agents);
+  const frames: ConsoleFrame[] = [
+    {
+      id: "typed-comms",
+      event: "system_notice",
+      identity: "review:singleton",
+      timestampMs: 2_000,
+      data: {
+        message: {
+          role: "system_notice",
+          kind: "comms",
+          body: "Received worker result",
+          blocks: [{
+            type: "comms",
+            kind: "message",
+            direction: "incoming",
+            peer: {
+              id: "ob3/review-worker/review-worker-daily-candy",
+              display_name: "ob3/review-worker/review-worker-daily-candy",
+            },
+            request_id: "peer-result-1",
+            content: [{ type: "text", text: "Worker result" }],
+          }],
+        },
+      },
+    },
+  ];
+
+  const activity = deriveTopologyActivity(frames, graph, 2_050, 1_000);
+  assert.deepEqual(
+    activity.pulses.map((p) => [p.from, p.to]),
+    [["review-worker-daily-candy", "review:singleton"]],
+  );
+  assert.equal(activity.calls["review-worker-daily-candy"], 2_000);
+  assert.equal(activity.calls["review:singleton"], 2_000);
+});
