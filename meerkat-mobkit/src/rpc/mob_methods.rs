@@ -19,6 +19,9 @@ use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
     (error.contains("ArchiveSession failed")
         && error.contains("NotFound for registered runtime session"))
+        || (error.contains("disposal completed but ArchiveSession failed")
+            && error.contains("cancel-before-retire failed")
+            && error.contains("Runtime not ready: running"))
         || error.contains("previous member cleanup ambiguous")
 }
 
@@ -2139,5 +2142,14 @@ mod tests {
 
         assert!(err.contains("invalid content"), "unexpected error: {err}");
         Ok(())
+    }
+
+    #[test]
+    fn lifecycle_archive_cleanup_completed_accepts_post_disposal_cancel_race() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: runtime cancel-before-retire failed \
+            for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
+
+        assert!(lifecycle_archive_cleanup_completed(error));
     }
 }

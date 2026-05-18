@@ -21,6 +21,9 @@ fn is_missing_event_injector_error(error: &str) -> bool {
 fn is_archive_not_found_cleanup_error(error: &str) -> bool {
     (error.contains("ArchiveSession failed")
         && error.contains("NotFound for registered runtime session"))
+        || (error.contains("disposal completed but ArchiveSession failed")
+            && error.contains("cancel-before-retire failed")
+            && error.contains("Runtime not ready: running"))
         || error.contains("previous member cleanup ambiguous")
 }
 
