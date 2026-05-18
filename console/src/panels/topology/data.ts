@@ -107,6 +107,46 @@ function toolName(data: Record<string, unknown> | null): string {
   return "";
 }
 
+interface TopologyToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown> | null;
+}
+
+function toolCallsFromFrameData(data: Record<string, unknown> | null): TopologyToolCall[] {
+  if (!data) return [];
+  const calls: TopologyToolCall[] = [];
+  const directName = toolName(data);
+  if (directName) {
+    calls.push({
+      id: textFromUnknown(data.id),
+      name: directName,
+      args: data.args && typeof data.args === "object" ? data.args as Record<string, unknown> : null,
+    });
+  }
+
+  const message = data.message && typeof data.message === "object"
+    ? data.message as Record<string, unknown>
+    : null;
+  const blocks = Array.isArray(message?.blocks) ? message.blocks : [];
+  for (const block of blocks) {
+    if (!block || typeof block !== "object") continue;
+    const blockRecord = block as Record<string, unknown>;
+    if (textFromUnknown(blockRecord.block_type) !== "tool_use") continue;
+    const toolData = blockRecord.data && typeof blockRecord.data === "object"
+      ? blockRecord.data as Record<string, unknown>
+      : null;
+    const name = toolName(toolData);
+    if (!name) continue;
+    calls.push({
+      id: textFromUnknown(toolData?.id),
+      name,
+      args: toolData?.args && typeof toolData.args === "object" ? toolData.args as Record<string, unknown> : null,
+    });
+  }
+  return calls;
+}
+
 function resultText(value: unknown): string {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object") return "";
@@ -479,23 +519,25 @@ export function deriveTopologyActivity(
       calls[typedCommsPulse.to] = Math.max(calls[typedCommsPulse.to] || 0, typedCommsPulse.ts);
     }
 
-    if (
-      PEER_TOOL_NAMES.has(name)
-      && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started")
-      && identity
-      && graph.byId.has(identity)
-    ) {
-      const args = data && typeof data.args === "object" ? data.args as Record<string, unknown> : null;
-      const recipient = resolvePeerTarget(args, peerRegistry, graph);
-      if (recipient && recipient !== identity) {
-        pulses.push({
-          id: typeof data?.id === "string" ? data.id : `${frame.id || ts}-${pulses.length}`,
-          from: identity,
-          to: recipient,
-          ts,
-        });
-        calls[identity] = Math.max(calls[identity] || 0, ts);
-        calls[recipient] = Math.max(calls[recipient] || 0, ts);
+    const shouldReadPeerToolCalls =
+      frame.event === "tool_call_requested"
+      || frame.event === "tool_call"
+      || frame.event === "tool_execution_started"
+      || frame.event === "interaction_complete";
+    if (shouldReadPeerToolCalls && identity && graph.byId.has(identity)) {
+      for (const call of toolCallsFromFrameData(data).filter((candidate) => PEER_TOOL_NAMES.has(candidate.name))) {
+        const args = call.args;
+        const recipient = resolvePeerTarget(args, peerRegistry, graph);
+        if (recipient && recipient !== identity) {
+          pulses.push({
+            id: call.id || `${frame.id || ts}-${pulses.length}`,
+            from: identity,
+            to: recipient,
+            ts,
+          });
+          calls[identity] = Math.max(calls[identity] || 0, ts);
+          calls[recipient] = Math.max(calls[recipient] || 0, ts);
+        }
       }
     }
   }
