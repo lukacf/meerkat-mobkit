@@ -121,6 +121,10 @@ function peerLastSegment(value: string): string {
   return value.split("/").filter(Boolean).pop() || value;
 }
 
+function textFromUnknown(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function capturePeerRegistry(peerRegistry: Map<string, string>, rawResult: unknown): void {
   const raw = resultText(rawResult);
   if (!raw) return;
@@ -160,6 +164,82 @@ function resolvePeerTarget(
       agent.memberId === candidate
     );
     if (match) return match.id;
+  }
+  return null;
+}
+
+function resolveGraphIdentity(value: string, graph: TopoGraph): string | null {
+  const raw = value.trim();
+  if (!raw) return null;
+  const candidates = [raw, peerLastSegment(raw)];
+  for (const candidate of candidates) {
+    if (graph.byId.has(candidate)) return candidate;
+    const match = graph.agents.find((agent) =>
+      agent.id === candidate ||
+      agent.label === candidate ||
+      agent.memberId === candidate
+    );
+    if (match) return match.id;
+  }
+  return null;
+}
+
+function commsBlocksFromFrameData(data: Record<string, unknown> | null): Array<Record<string, unknown>> {
+  const candidates: unknown[] = [];
+  if (data) {
+    candidates.push(data);
+    if (data.message && typeof data.message === "object") candidates.push(data.message);
+  }
+  const blocks: Array<Record<string, unknown>> = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const record = candidate as Record<string, unknown>;
+    const recordKind = textFromUnknown(record.kind);
+    if (recordKind === "comms") blocks.push(record);
+    if (!Array.isArray(record.blocks)) continue;
+    for (const block of record.blocks) {
+      if (!block || typeof block !== "object") continue;
+      const blockRecord = block as Record<string, unknown>;
+      if (textFromUnknown(blockRecord.type) === "comms") blocks.push(blockRecord);
+    }
+  }
+  return blocks;
+}
+
+function typedCommsPulseFromFrame(
+  frame: ConsoleFrame,
+  data: Record<string, unknown> | null,
+  graph: TopoGraph,
+): TopoPulse | null {
+  if (frame.event !== "system_notice") return null;
+  const receiver = frame.identity ? resolveGraphIdentity(frame.identity, graph) : null;
+  if (!receiver) return null;
+  const blocks = commsBlocksFromFrameData(data);
+  for (const block of blocks) {
+    const peer = block.peer && typeof block.peer === "object"
+      ? block.peer as Record<string, unknown>
+      : {};
+    const peerIdentity = resolveGraphIdentity(
+      textFromUnknown(peer.display_name) || textFromUnknown(peer.id),
+      graph,
+    );
+    if (!peerIdentity || peerIdentity === receiver) continue;
+    const direction = textFromUnknown(block.direction) || "incoming";
+    const requestId = textFromUnknown(block.request_id);
+    if (direction === "outgoing") {
+      return {
+        id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
+        from: receiver,
+        to: peerIdentity,
+        ts: frame.timestampMs || 0,
+      };
+    }
+    return {
+      id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
+      from: peerIdentity,
+      to: receiver,
+      ts: frame.timestampMs || 0,
+    };
   }
   return null;
 }
@@ -390,6 +470,13 @@ export function deriveTopologyActivity(
     const name = toolName(data);
     if (name === "peers" && (frame.event === "tool_execution_completed" || frame.event === "tool_result_received")) {
       capturePeerRegistry(peerRegistry, data?.result);
+    }
+
+    const typedCommsPulse = typedCommsPulseFromFrame(frame, data, graph);
+    if (typedCommsPulse && typedCommsPulse.ts) {
+      pulses.push(typedCommsPulse);
+      calls[typedCommsPulse.from] = Math.max(calls[typedCommsPulse.from] || 0, typedCommsPulse.ts);
+      calls[typedCommsPulse.to] = Math.max(calls[typedCommsPulse.to] || 0, typedCommsPulse.ts);
     }
 
     if (

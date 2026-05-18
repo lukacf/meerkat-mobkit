@@ -4468,6 +4468,9 @@ function resultText(value) {
 function peerLastSegment2(value) {
   return value.split("/").filter(Boolean).pop() || value;
 }
+function textFromUnknown2(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
 function capturePeerRegistry(peerRegistry, rawResult) {
   const raw = resultText(rawResult);
   if (!raw) return;
@@ -4498,6 +4501,71 @@ function resolvePeerTarget(args, peerRegistry, graph) {
       (agent) => agent.id === candidate || agent.label === candidate || agent.memberId === candidate
     );
     if (match) return match.id;
+  }
+  return null;
+}
+function resolveGraphIdentity(value, graph) {
+  const raw = value.trim();
+  if (!raw) return null;
+  const candidates = [raw, peerLastSegment2(raw)];
+  for (const candidate of candidates) {
+    if (graph.byId.has(candidate)) return candidate;
+    const match = graph.agents.find(
+      (agent) => agent.id === candidate || agent.label === candidate || agent.memberId === candidate
+    );
+    if (match) return match.id;
+  }
+  return null;
+}
+function commsBlocksFromFrameData(data) {
+  const candidates = [];
+  if (data) {
+    candidates.push(data);
+    if (data.message && typeof data.message === "object") candidates.push(data.message);
+  }
+  const blocks = [];
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const record = candidate;
+    const recordKind = textFromUnknown2(record.kind);
+    if (recordKind === "comms") blocks.push(record);
+    if (!Array.isArray(record.blocks)) continue;
+    for (const block of record.blocks) {
+      if (!block || typeof block !== "object") continue;
+      const blockRecord = block;
+      if (textFromUnknown2(blockRecord.type) === "comms") blocks.push(blockRecord);
+    }
+  }
+  return blocks;
+}
+function typedCommsPulseFromFrame(frame, data, graph) {
+  if (frame.event !== "system_notice") return null;
+  const receiver = frame.identity ? resolveGraphIdentity(frame.identity, graph) : null;
+  if (!receiver) return null;
+  const blocks = commsBlocksFromFrameData(data);
+  for (const block of blocks) {
+    const peer = block.peer && typeof block.peer === "object" ? block.peer : {};
+    const peerIdentity = resolveGraphIdentity(
+      textFromUnknown2(peer.display_name) || textFromUnknown2(peer.id),
+      graph
+    );
+    if (!peerIdentity || peerIdentity === receiver) continue;
+    const direction = textFromUnknown2(block.direction) || "incoming";
+    const requestId = textFromUnknown2(block.request_id);
+    if (direction === "outgoing") {
+      return {
+        id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
+        from: receiver,
+        to: peerIdentity,
+        ts: frame.timestampMs || 0
+      };
+    }
+    return {
+      id: requestId || `${frame.id || frame.timestampMs}-typed-comms`,
+      from: peerIdentity,
+      to: receiver,
+      ts: frame.timestampMs || 0
+    };
   }
   return null;
 }
@@ -4661,6 +4729,12 @@ function deriveTopologyActivity(frames, graph, now, life = 1500) {
     const name = toolName(data);
     if (name === "peers" && (frame.event === "tool_execution_completed" || frame.event === "tool_result_received")) {
       capturePeerRegistry(peerRegistry, data?.result);
+    }
+    const typedCommsPulse = typedCommsPulseFromFrame(frame, data, graph);
+    if (typedCommsPulse && typedCommsPulse.ts) {
+      pulses.push(typedCommsPulse);
+      calls[typedCommsPulse.from] = Math.max(calls[typedCommsPulse.from] || 0, typedCommsPulse.ts);
+      calls[typedCommsPulse.to] = Math.max(calls[typedCommsPulse.to] || 0, typedCommsPulse.ts);
     }
     if (PEER_TOOL_NAMES2.has(name) && (frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started") && identity && graph.byId.has(identity)) {
       const args = data && typeof data.args === "object" ? data.args : null;
