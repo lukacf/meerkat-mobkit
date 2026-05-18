@@ -13,7 +13,7 @@ use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Semaphore, broadcast};
+use tokio::sync::{Semaphore, broadcast, oneshot};
 
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
@@ -42,7 +42,9 @@ pub use types::{
 const TIMELINE_CHANNEL_CAP: usize = 1024;
 const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
 const SESSION_HISTORY_REFRESH_TTL_MS: u64 = 30_000;
+const SESSION_HISTORY_GROWING_REFRESH_TTL_MS: u64 = 2_000;
 const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
+const EXPLICIT_IDENTITY_BACKFILL_WAIT: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
 pub struct MobKitConsoleAggregator {
@@ -379,11 +381,12 @@ impl MobKitConsoleAggregator {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let explicit_identity = query.identity.clone();
-        let mut page = self.inner.store.query_frames(query).await?;
+        let mut page = self.inner.store.query_frames(query.clone()).await?;
         if page.frames.is_empty()
             && let Some(identity) = explicit_identity.clone()
         {
-            spawn_session_history_backfill_for_identity(self.inner.clone(), identity, false);
+            backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
+            page = self.inner.store.query_frames(query).await?;
         }
         let mut visible_frames = Vec::with_capacity(page.frames.len());
         let mut identity_visibility_cache = HashMap::new();
@@ -1029,9 +1032,9 @@ async fn backfill_one_session_history(
         .and_then(|watermark| parse_session_history_watermark(watermark, &session_id))
         .unwrap_or(0);
     if !force_refresh
-        && watermark
-            .as_deref()
-            .is_some_and(|watermark| session_history_watermark_is_fresh(watermark, now_ms))
+        && watermark.as_deref().is_some_and(|watermark| {
+            session_history_watermark_is_fresh(watermark, &session_id, now_ms)
+        })
     {
         return Ok(());
     }
@@ -1198,20 +1201,9 @@ fn spawn_session_history_backfill_target(
         return;
     }
     tokio::spawn(async move {
-        let active_key = format!(
-            "{}:session-history:{}",
-            target.entry.runtime_key, target.session_id
-        );
-        {
-            let mut active = inner.active_session_backfills.lock().await;
-            if !active.insert(active_key.clone()) {
-                return;
-            }
-        }
-        let result = backfill_one_session_history(inner.clone(), target, force_refresh).await;
-        let mut active = inner.active_session_backfills.lock().await;
-        active.remove(&active_key);
-        drop(active);
+        let active_key = targeted_session_history_active_key(&target, force_refresh);
+        let result =
+            run_targeted_session_history_backfill(inner.clone(), target, force_refresh).await;
         if let Err(err) = result {
             tracing::warn!(
                 active_key = %active_key,
@@ -1220,6 +1212,35 @@ fn spawn_session_history_backfill_target(
             );
         }
     });
+}
+
+async fn run_targeted_session_history_backfill(
+    inner: Arc<AggregatorInner>,
+    target: SessionBackfillTarget,
+    force_refresh: bool,
+) -> ConsoleLogResult<()> {
+    let active_key = targeted_session_history_active_key(&target, force_refresh);
+    {
+        let mut active = inner.active_session_backfills.lock().await;
+        if !active.insert(active_key.clone()) {
+            return Ok(());
+        }
+    }
+    let result = backfill_one_session_history(inner.clone(), target, force_refresh).await;
+    let mut active = inner.active_session_backfills.lock().await;
+    active.remove(&active_key);
+    result
+}
+
+fn targeted_session_history_active_key(
+    target: &SessionBackfillTarget,
+    force_refresh: bool,
+) -> String {
+    let mode = if force_refresh { "force" } else { "refresh" };
+    format!(
+        "{}:session-history:{}:{mode}",
+        target.entry.runtime_key, target.session_id
+    )
 }
 
 fn spawn_session_history_backfill_for_identity(
@@ -1236,6 +1257,32 @@ fn spawn_session_history_backfill_for_identity(
         };
         spawn_session_history_backfill_target(inner, target, force_refresh);
     });
+}
+
+async fn backfill_identity_for_explicit_query(inner: Arc<AggregatorInner>, identity: String) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
+        return;
+    };
+    let (tx, rx) = oneshot::channel();
+    tokio::spawn(async move {
+        let result = run_targeted_session_history_backfill(inner, target, true)
+            .await
+            .map_err(|err| err.to_string());
+        let _ = tx.send(result);
+    });
+    match tokio::time::timeout(EXPLICIT_IDENTITY_BACKFILL_WAIT, rx).await {
+        Ok(Ok(Ok(())) | Err(_)) | Err(_) => {}
+        Ok(Ok(Err(err))) => {
+            tracing::warn!(
+                identity = %identity,
+                error = %err,
+                "console explicit identity session-history refresh failed"
+            );
+        }
+    }
 }
 
 fn spawn_opportunistic_session_history_backfill_for_identity(
@@ -1747,14 +1794,20 @@ fn format_session_history_watermark(session_id: &str, offset: usize, checked_at_
     format!("{session_id}:{offset}:{checked_at_ms}")
 }
 
-fn session_history_watermark_is_fresh(watermark: &str, now_ms: u64) -> bool {
+fn session_history_watermark_is_fresh(watermark: &str, session_id: &str, now_ms: u64) -> bool {
     let Some(checked_at_ms) = watermark
         .rsplit_once(':')
         .and_then(|(_, checked_at_ms)| checked_at_ms.parse::<u64>().ok())
     else {
         return false;
     };
-    now_ms.saturating_sub(checked_at_ms) < SESSION_HISTORY_REFRESH_TTL_MS
+    let offset = parse_session_history_watermark(watermark, session_id).unwrap_or(0);
+    let ttl_ms = if offset > 0 {
+        SESSION_HISTORY_GROWING_REFRESH_TTL_MS
+    } else {
+        SESSION_HISTORY_REFRESH_TTL_MS
+    };
+    now_ms.saturating_sub(checked_at_ms) < ttl_ms
 }
 
 async fn history_frame_has_existing_counterpart(
@@ -2762,6 +2815,64 @@ comms = true
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_empty_identity_query_force_refreshes_past_fresh_watermark()
+    -> Result<(), String> {
+        let runtime = build_single_member_runtime().await;
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        let resolved = member_sources_for_entry(&entry)
+            .await
+            .into_iter()
+            .find(|candidate| candidate.member.agent_identity.as_str() == "agent-a")
+            .expect("agent-a member exists");
+        let record = identity_record_for_member(&entry, &resolved.handle, &resolved.member)
+            .await
+            .expect("identity record exists");
+        let session_id = record.session_id.expect("agent-a has a session");
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+        let watermark_key = session_history_watermark_runtime_key("runtime-a", &session_id);
+        aggregator
+            .store()
+            .record_source_watermark(
+                &watermark_key,
+                ConsoleFrameSourceKind::SessionHistory,
+                &format_session_history_watermark(&session_id, 0, current_time_ms()),
+            )
+            .await
+            .expect("record fresh empty watermark");
+
+        let page = tokio::time::timeout(
+            Duration::from_secs(2),
+            aggregator.query_timeline(ConsoleTimelineQuery {
+                identity: Some("test/agent-a".to_string()),
+                limit: 20,
+                ..ConsoleTimelineQuery::default()
+            }),
+        )
+        .await
+        .expect("explicit identity query should not stall")
+        .expect("query succeeds");
+
+        assert!(
+            page.frames.iter().any(|frame| {
+                frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                    && frame.kind == "user_input"
+                    && session_history_content_text(frame).as_deref() == Some("You are agent-a.")
+            }),
+            "explicit identity query should force-refresh stale/fresh empty watermarks; frames: {:#?}",
+            page.frames
+        );
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
     async fn wait_for_session_history_text(
         aggregator: &MobKitConsoleAggregator,
         identity: &str,
@@ -3356,6 +3467,7 @@ comms = true
     fn session_history_watermarks_are_cursor_and_ttl_aware() {
         let legacy = "session:with:colon:42";
         let checked = format_session_history_watermark("session:with:colon", 43, 1_000);
+        let empty_checked = format_session_history_watermark("session:with:colon", 0, 1_000);
 
         assert_eq!(
             parse_session_history_watermark(legacy, "session:with:colon"),
@@ -3365,9 +3477,24 @@ comms = true
             parse_session_history_watermark(&checked, "session:with:colon"),
             Some(43)
         );
-        assert!(session_history_watermark_is_fresh(&checked, 1_500));
+        assert!(session_history_watermark_is_fresh(
+            &checked,
+            "session:with:colon",
+            1_500
+        ));
         assert!(!session_history_watermark_is_fresh(
             &checked,
+            "session:with:colon",
+            1_000 + SESSION_HISTORY_GROWING_REFRESH_TTL_MS + 1
+        ));
+        assert!(session_history_watermark_is_fresh(
+            &empty_checked,
+            "session:with:colon",
+            1_500
+        ));
+        assert!(!session_history_watermark_is_fresh(
+            &empty_checked,
+            "session:with:colon",
             1_000 + SESSION_HISTORY_REFRESH_TTL_MS + 1
         ));
     }

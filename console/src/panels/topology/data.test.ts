@@ -180,6 +180,61 @@ test("topology activity derives working nodes and peer call pulses", () => {
   assert.deepEqual(activity.pulses.map((p) => [p.from, p.to]), [["commander", "scribe"]]);
 });
 
+test("topology activity derives peer call pulses from session-history assistant tool-use blocks", () => {
+  const agents: ConsoleAgent[] = [
+    {
+      identity: "review-worker-1",
+      agent_id: "review-worker-1",
+      member_id: "review-worker-1",
+      label: "Review Worker 1",
+      kind: "agent",
+      role: "delegate",
+      state: "active",
+      wired_to: ["initiative:daily-candy"],
+    },
+    {
+      identity: "initiative:daily-candy",
+      agent_id: "initiative:daily-candy",
+      member_id: "initiative:daily-candy",
+      label: "Daily Candy",
+      kind: "agent",
+      role: "initiative",
+      state: "active",
+      wired_to: ["review-worker-1"],
+    },
+  ];
+  const graph = buildGraph([], agents);
+  const frames: ConsoleFrame[] = [
+    {
+      id: "history-send",
+      event: "interaction_complete",
+      identity: "review-worker-1",
+      timestampMs: 2_000,
+      data: {
+        message: {
+          blocks: [
+            {
+              block_type: "tool_use",
+              data: {
+                id: "call-send",
+                name: "send_message",
+                args: { target_identity: "initiative:daily-candy" },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ];
+
+  const activity = deriveTopologyActivity(frames, graph, 2_100, 1_000);
+  assert.deepEqual(activity.pulses.map((p) => [p.from, p.to]), [
+    ["review-worker-1", "initiative:daily-candy"],
+  ]);
+  assert.equal(activity.calls["review-worker-1"], 2_000);
+  assert.equal(activity.calls["initiative:daily-candy"], 2_000);
+});
+
 test("topology activity derives pulses from typed incoming comms notices", () => {
   const agents: ConsoleAgent[] = [
     {
