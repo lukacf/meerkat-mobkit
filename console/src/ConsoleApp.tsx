@@ -710,15 +710,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     frames: ConsoleFrame[],
     available: boolean,
-  ): void {
+  ): boolean {
     const log = getOrCreateLog(identity);
     log.hasServerLog = available;
+    let changed = false;
     for (const frame of frames) {
       if (!appendFrame(identity, frame)) continue;
-      updatePhaseForIdentity(identity, frame);
+      changed = true;
+      if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
     recomputeBusyStateFromLog(identity);
-    recomputePhaseForIdentity(identity);
+    if (recomputePhaseForIdentity(identity)) changed = true;
+    return changed;
   }
 
   async function queryIdentityTimeline(
@@ -1025,11 +1028,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   function commitPanelPhase(
     panelKey: string,
     phase: "waiting" | "tool-executing" | "generating" | null,
-  ) {
+  ): boolean {
+    const previous = phaseValueByKey.current[panelKey] ?? null;
     clearPhaseTimer(panelKey);
     phaseValueByKey.current[panelKey] = phase;
     phaseSinceByKey.current[panelKey] = Date.now();
     phaseRef.current[panelKey] = phase;
+    return previous !== phase;
   }
 
   function schedulePanelPhase(
@@ -1047,14 +1052,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }, delayMs);
   }
 
-  function updatePanelPhaseFromFrame(panelKey: string, frame: ConsoleFrame) {
+  function updatePanelPhaseFromFrame(panelKey: string, frame: ConsoleFrame): boolean {
     const currentPhase = phaseValueByKey.current[panelKey] ?? null;
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
       case "interaction_started":
-        commitPanelPhase(panelKey, "waiting");
-        break;
+        return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
@@ -1062,40 +1066,36 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "tool_execution_completed":
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
-          break;
+          return true;
         }
-        commitPanelPhase(panelKey, "tool-executing");
-        break;
+        return commitPanelPhase(panelKey, "tool-executing");
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r = Math.max(0, 300 - elapsedMs);
           if (r > 0) {
             schedulePanelPhase(panelKey, "generating", r);
-            break;
+            return true;
           }
         }
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "generating", 300 - elapsedMs);
-          break;
+          return true;
         }
-        commitPanelPhase(panelKey, "generating");
-        break;
+        return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
       case "interaction_complete":
       case "interaction_failed":
       case "run_completed":
       case "run_failed":
-        commitPanelPhase(panelKey, null);
-        break;
+        return commitPanelPhase(panelKey, null);
       case "turn_completed":
-        if (isEndTurnFrame(frame)) commitPanelPhase(panelKey, null);
-        break;
+        if (isEndTurnFrame(frame)) return commitPanelPhase(panelKey, null);
+        return false;
       case "message_delivery_failed":
-        commitPanelPhase(panelKey, null);
-        break;
+        return commitPanelPhase(panelKey, null);
       default:
-        break;
+        return false;
     }
   }
 
@@ -1110,39 +1110,49 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   dockRef.current = dock;
 
   // Helper: update phase for ALL panels showing a given identity
-  function updatePhaseForIdentity(identity: string, frame: ConsoleFrame) {
+  function updatePhaseForIdentity(identity: string, frame: ConsoleFrame): boolean {
+    let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      updatePanelPhaseFromFrame(
+      if (updatePanelPhaseFromFrame(
         buildPanelConversationKey(panel.id, target),
         frame,
-      );
+      )) changed = true;
     }
+    return changed;
   }
 
   // Helper: clear phase for all panels showing a given identity
-  function clearPhaseForIdentity(identity: string) {
+  function clearPhaseForIdentity(identity: string): boolean {
+    let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
+      if (commitPanelPhase(buildPanelConversationKey(panel.id, target), null)) {
+        changed = true;
+      }
     }
+    return changed;
   }
 
-  function recomputePhaseForIdentity(identity: string) {
+  function recomputePhaseForIdentity(identity: string): boolean {
     const frames = getSortedFrames(identity).filter((frame) =>
       PANEL_ROUTABLE_EVENTS.has(frame.event)
     );
     const phase = inferResponsePhaseFromFrames(frames, null);
+    let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target as MobKitDockTarget | null;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      commitPanelPhase(buildPanelConversationKey(panel.id, target), phase);
+      if (commitPanelPhase(buildPanelConversationKey(panel.id, target), phase)) {
+        changed = true;
+      }
     }
+    return changed;
   }
 
   // =========================================================================
@@ -1485,9 +1495,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         if (log.hasServerLog === false) continue;
         try {
           const { frames, available } = await queryIdentityTimeline(identity);
-          const before = log.events.length;
-          reconcileServerLog(identity, frames, available);
-          if (log.events.length !== before) changed = true;
+          if (reconcileServerLog(identity, frames, available)) changed = true;
         } catch {
           // Keep the panel usable; the next refresh will retry.
         }

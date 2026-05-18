@@ -312,6 +312,55 @@ describe("dock helpers", () => {
     expect(state.panels.map((panel) => panel.target?.id)).toEqual(["thread:alpha", "thread:alpha"]);
   });
 
+  test("presets do not create empty panels when there are no suggested targets", () => {
+    type TestTarget = ConsoleDockTarget & {
+      kind: "thread";
+      threadId: string;
+    };
+
+    const alpha: TestTarget = {
+      id: "thread:alpha",
+      kind: "thread",
+      title: "Alpha",
+      threadId: "alpha",
+    };
+
+    let panelIdCounter = 0;
+    let splitIdCounter = 0;
+    let tabIdCounter = 0;
+
+    const createPanelState = ({ target }: { target: TestTarget | null }): ConsoleDockPanelState<TestTarget> => ({
+      id: `panel-${++panelIdCounter}`,
+      target,
+      mode: "console",
+    });
+    const suggestTargets = ({ preferred }: { preferred: TestTarget | null }) => [preferred];
+
+    let state = createConsoleDockState<TestTarget>({
+      initialTarget: alpha,
+      initialPresetId: "two_columns",
+      createPanelState,
+      createSplitId: () => `split-${++splitIdCounter}`,
+      createTabId: () => `tab-${++tabIdCounter}`,
+      suggestTargets,
+    });
+
+    expect(state.panels).toHaveLength(1);
+    expect(state.panels[0]?.target?.id).toBe("thread:alpha");
+    expect(state.tabs[0]?.presetId).toBe("single");
+
+    state = applyConsoleDockPreset(state, {
+      presetId: "grid",
+      createPanelState,
+      createSplitId: () => `split-${++splitIdCounter}`,
+      suggestTargets,
+    });
+
+    expect(state.panels).toHaveLength(1);
+    expect(state.panels.every((panel) => panel.target)).toBe(true);
+    expect(state.tabs[0]?.presetId).toBe("single");
+  });
+
   test("builds dock view state from host resolvers instead of baked-in chrome", () => {
     type TestTarget = ConsoleDockTarget & {
       kind: "agent";

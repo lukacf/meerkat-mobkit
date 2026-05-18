@@ -951,25 +951,30 @@ function buildConsoleDockPresetState({
   suggestTargets
 }) {
   const requestedCount = presetId === "grid" ? 4 : presetId === "single" ? 1 : 2;
-  const [firstTarget, secondTarget, thirdTarget, fourthTarget] = suggestDockTargets({
+  const [firstTarget, ...remainingTargets] = suggestDockTargets({
     count: requestedCount,
     preferred: preferredTarget,
     excludedIds: [],
     suggestTargets
   });
+  const [secondTarget, thirdTarget, fourthTarget] = remainingTargets.filter(
+    (target) => Boolean(target)
+  );
   const primary = createPanelState({
     target: preferredPanel ? preferredTarget ?? preferredPanel.target : firstTarget || null,
     sourcePanel: preferredPanel || null
   });
+  const singlePanelState = () => ({
+    presetId: "single",
+    layout: panelNode(primary.id),
+    panels: [primary],
+    focusedPanelId: primary.id
+  });
   if (presetId === "single") {
-    return {
-      presetId,
-      layout: panelNode(primary.id),
-      panels: [primary],
-      focusedPanelId: primary.id
-    };
+    return singlePanelState();
   }
   if (presetId === "two_columns") {
+    if (!secondTarget) return singlePanelState();
     const right = createPanelState({ target: secondTarget || null, sourcePanel: preferredPanel || primary });
     return {
       presetId,
@@ -986,6 +991,7 @@ function buildConsoleDockPresetState({
     };
   }
   if (presetId === "two_rows") {
+    if (!secondTarget) return singlePanelState();
     const bottom = createPanelState({ target: secondTarget || null, sourcePanel: preferredPanel || primary });
     return {
       presetId,
@@ -1001,9 +1007,49 @@ function buildConsoleDockPresetState({
       focusedPanelId: primary.id
     };
   }
+  if (!secondTarget && !thirdTarget && !fourthTarget) {
+    return singlePanelState();
+  }
   const rightTop = createPanelState({ target: secondTarget || null, sourcePanel: preferredPanel || primary });
-  const leftBottom = createPanelState({ target: thirdTarget || null, sourcePanel: preferredPanel || primary });
-  const rightBottom = createPanelState({ target: fourthTarget || null, sourcePanel: preferredPanel || primary });
+  if (!thirdTarget) {
+    return {
+      presetId: "two_columns",
+      layout: {
+        kind: "split",
+        id: createSplitId(),
+        direction: "horizontal",
+        ratio: 0.5,
+        first: panelNode(primary.id),
+        second: panelNode(rightTop.id)
+      },
+      panels: [primary, rightTop],
+      focusedPanelId: primary.id
+    };
+  }
+  const leftBottom = createPanelState({ target: thirdTarget, sourcePanel: preferredPanel || primary });
+  if (!fourthTarget) {
+    return {
+      presetId,
+      layout: {
+        kind: "split",
+        id: createSplitId(),
+        direction: "horizontal",
+        ratio: 0.5,
+        first: panelNode(primary.id),
+        second: {
+          kind: "split",
+          id: createSplitId(),
+          direction: "vertical",
+          ratio: 0.5,
+          first: panelNode(rightTop.id),
+          second: panelNode(leftBottom.id)
+        }
+      },
+      panels: [primary, rightTop, leftBottom],
+      focusedPanelId: primary.id
+    };
+  }
+  const rightBottom = createPanelState({ target: fourthTarget, sourcePanel: preferredPanel || primary });
   return {
     presetId,
     layout: {
@@ -1051,7 +1097,7 @@ function createConsoleDockState({
   return {
     tabs: [{
       id: firstTabId,
-      presetId: initialPresetId,
+      presetId: initial.presetId,
       layout: initial.layout
     }],
     panels: initial.panels,
@@ -1312,7 +1358,7 @@ function applyConsoleDockPreset(state, options) {
     ...normalized,
     tabs: normalized.tabs.map((tab) => tab.id === activeTab.id ? {
       ...tab,
-      presetId: options.presetId,
+      presetId: presetState.presetId,
       layout: presetState.layout
     } : tab),
     panels: replacePanelStates(
@@ -9728,12 +9774,15 @@ function ConsoleApp({ baseUrl }) {
   function reconcileServerLog(identity, frames, available) {
     const log = getOrCreateLog(identity);
     log.hasServerLog = available;
+    let changed = false;
     for (const frame of frames) {
       if (!appendFrame(identity, frame)) continue;
-      updatePhaseForIdentity(identity, frame);
+      changed = true;
+      if (updatePhaseForIdentity(identity, frame)) changed = true;
     }
     recomputeBusyStateFromLog(identity);
-    recomputePhaseForIdentity(identity);
+    if (recomputePhaseForIdentity(identity)) changed = true;
+    return changed;
   }
   async function queryIdentityTimeline(identity) {
     const frames = [];
@@ -9917,10 +9966,12 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   function commitPanelPhase(panelKey, phase) {
+    const previous = phaseValueByKey.current[panelKey] ?? null;
     clearPhaseTimer(panelKey);
     phaseValueByKey.current[panelKey] = phase;
     phaseSinceByKey.current[panelKey] = Date.now();
     phaseRef.current[panelKey] = phase;
+    return previous !== phase;
   }
   function schedulePanelPhase(panelKey, phase, delayMs) {
     clearPhaseTimer(panelKey);
@@ -9938,8 +9989,7 @@ function ConsoleApp({ baseUrl }) {
     switch (frame.event) {
       case "user_input":
       case "interaction_started":
-        commitPanelPhase(panelKey, "waiting");
-        break;
+        return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
@@ -9947,74 +9997,80 @@ function ConsoleApp({ baseUrl }) {
       case "tool_execution_completed":
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
-          break;
+          return true;
         }
-        commitPanelPhase(panelKey, "tool-executing");
-        break;
+        return commitPanelPhase(panelKey, "tool-executing");
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r2 = Math.max(0, 300 - elapsedMs);
           if (r2 > 0) {
             schedulePanelPhase(panelKey, "generating", r2);
-            break;
+            return true;
           }
         }
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "generating", 300 - elapsedMs);
-          break;
+          return true;
         }
-        commitPanelPhase(panelKey, "generating");
-        break;
+        return commitPanelPhase(panelKey, "generating");
       }
       case "text_complete":
       case "interaction_complete":
       case "interaction_failed":
       case "run_completed":
       case "run_failed":
-        commitPanelPhase(panelKey, null);
-        break;
+        return commitPanelPhase(panelKey, null);
       case "turn_completed":
-        if (isEndTurnFrame(frame)) commitPanelPhase(panelKey, null);
-        break;
+        if (isEndTurnFrame(frame)) return commitPanelPhase(panelKey, null);
+        return false;
       case "message_delivery_failed":
-        commitPanelPhase(panelKey, null);
-        break;
+        return commitPanelPhase(panelKey, null);
       default:
-        break;
+        return false;
     }
   }
   const dockRef = import_react22.default.useRef(dock);
   dockRef.current = dock;
   function updatePhaseForIdentity(identity, frame) {
+    let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      updatePanelPhaseFromFrame(
+      if (updatePanelPhaseFromFrame(
         buildPanelConversationKey(panel.id, target),
         frame
-      );
+      )) changed = true;
     }
+    return changed;
   }
   function clearPhaseForIdentity(identity) {
+    let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      commitPanelPhase(buildPanelConversationKey(panel.id, target), null);
+      if (commitPanelPhase(buildPanelConversationKey(panel.id, target), null)) {
+        changed = true;
+      }
     }
+    return changed;
   }
   function recomputePhaseForIdentity(identity) {
     const frames = getSortedFrames(identity).filter(
       (frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)
     );
     const phase = inferResponsePhaseFromFrames(frames, null);
+    let changed = false;
     for (const panel of dockRef.current.viewState.panels) {
       const target = panel.target;
       if (!target || target.kind !== "agent-chat") continue;
       if ((target.identity || target.memberId) !== identity) continue;
-      commitPanelPhase(buildPanelConversationKey(panel.id, target), phase);
+      if (commitPanelPhase(buildPanelConversationKey(panel.id, target), phase)) {
+        changed = true;
+      }
     }
+    return changed;
   }
   const loadExperience = import_react22.default.useCallback(() => {
     if (experienceLoadInFlightRef.current) {
@@ -10290,9 +10346,7 @@ function ConsoleApp({ baseUrl }) {
         if (log.hasServerLog === false) continue;
         try {
           const { frames, available } = await queryIdentityTimeline(identity);
-          const before = log.events.length;
-          reconcileServerLog(identity, frames, available);
-          if (log.events.length !== before) changed = true;
+          if (reconcileServerLog(identity, frames, available)) changed = true;
         } catch {
         }
       }

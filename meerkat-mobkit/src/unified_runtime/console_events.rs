@@ -267,7 +267,7 @@ impl ConsoleEventStore {
                 .cloned()
                 .or_else(|| derive_identity_from_runtime_id(agent_id));
             let Some(identity) = identity else {
-                tracing::debug!(
+                tracing::warn!(
                     agent_id = %agent_id,
                     event_type = %event_type,
                     "dropping agent event: runtime id did not resolve to a registered identity"
