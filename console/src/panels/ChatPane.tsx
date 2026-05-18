@@ -13,6 +13,7 @@ import {
   consoleBlobReferencesFromText,
   consoleBlobUrlsFromText,
   dedupeComposerImageFiles,
+  selectImageTransferFiles,
   stripConsoleBlobReferencesFromText,
 } from "../lib/composer-attachment-text";
 
@@ -265,7 +266,7 @@ function collectImageTransferPayload(data: DataTransfer): ImageTransferPayload {
     data.getData("text/uri-list"),
     data.getData("text/plain"),
   ].filter(Boolean);
-  return { files: dedupeComposerImageFiles([...directFiles, ...itemFiles]), textPayloads };
+  return { files: selectImageTransferFiles(directFiles, itemFiles), textPayloads };
 }
 
 function imageTransferPayloadHasImage(payload: ImageTransferPayload): boolean {

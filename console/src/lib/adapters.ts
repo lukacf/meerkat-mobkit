@@ -2190,7 +2190,8 @@ export function inferResponsePhaseFromFrames(
         break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
-        if (data.stop_reason === "end_turn") phase = null;
+        const stopReason = data.stop_reason ?? data.stopReason;
+        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) phase = null;
         break;
       }
       default:

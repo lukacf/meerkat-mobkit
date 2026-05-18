@@ -331,6 +331,7 @@ impl ConsoleEventStore {
             }
         }
 
+        let terminal_turn_completed = is_terminal_turn_completed_event(event_type, &projected_data);
         {
             let mut state = self.state.write().await;
             match event_type.as_str() {
@@ -345,6 +346,11 @@ impl ConsoleEventStore {
                         .insert(identity.clone(), Some("generating".to_string()));
                 }
                 "run_completed" | "run_failed" => {
+                    state
+                        .response_phase_by_identity
+                        .insert(identity.clone(), None);
+                }
+                "turn_completed" if terminal_turn_completed => {
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), None);
@@ -378,6 +384,17 @@ impl ConsoleEventStore {
             .cloned()
             .flatten()
     }
+}
+
+fn is_terminal_turn_completed_event(event_type: &str, payload: &Value) -> bool {
+    if event_type != "turn_completed" {
+        return false;
+    }
+    let stop_reason = payload
+        .get("stop_reason")
+        .or_else(|| payload.get("stopReason"))
+        .and_then(Value::as_str);
+    !matches!(stop_reason, Some("tool_use"))
 }
 
 fn parse_generate_image_tool_result(
@@ -510,6 +527,145 @@ mod tests {
             replay.first().and_then(|event| event.data["idx"].as_u64()),
             Some(8)
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_turn_completed_clears_phase_without_stealing_run_correlation() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "turn-1",
+                "console",
+                json!({}),
+            )
+            .await
+            .expect("reserve first interaction");
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-1".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 1,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "text_delta".to_string(),
+                    payload: Some(json!({ "delta": "working" })),
+                },
+            })
+            .await;
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some("generating")
+        );
+
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-2".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 2,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "turn_completed".to_string(),
+                    payload: Some(json!({ "stop_reason": "max_tokens" })),
+                },
+            })
+            .await;
+        assert_eq!(store.response_phase_for_identity("worker").await, None);
+
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-3".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 3,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "run_completed".to_string(),
+                    payload: Some(json!({ "result": "done" })),
+                },
+            })
+            .await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let run_completed = replay
+            .iter()
+            .find(|event| event.event_id == "evt-3")
+            .expect("run completion should be replayed");
+        assert_eq!(run_completed.interaction_id.as_deref(), Some("turn-1"));
+    }
+
+    #[tokio::test]
+    async fn tool_use_turn_completed_keeps_phase_and_pending_interaction() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "turn-1",
+                "console",
+                json!({}),
+            )
+            .await
+            .expect("reserve interaction");
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-1".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 1,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "tool_call".to_string(),
+                    payload: Some(json!({ "name": "inspect" })),
+                },
+            })
+            .await;
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-2".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 2,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "turn_completed".to_string(),
+                    payload: Some(json!({ "stop_reason": "tool_use" })),
+                },
+            })
+            .await;
+        assert_eq!(
+            store.response_phase_for_identity("worker").await.as_deref(),
+            Some("tool-executing")
+        );
+
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-3".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 3,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "text_delta".to_string(),
+                    payload: Some(json!({ "delta": "after tool" })),
+                },
+            })
+            .await;
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let after_tool_delta = replay
+            .iter()
+            .find(|event| event.event_id == "evt-3")
+            .expect("after-tool delta should be replayed");
+        assert_eq!(after_tool_delta.interaction_id.as_deref(), Some("turn-1"));
     }
 
     #[test]
