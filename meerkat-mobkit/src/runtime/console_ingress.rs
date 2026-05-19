@@ -5,8 +5,8 @@ use crate::rpc::MOBKIT_CONTRACT_VERSION;
 
 /// Console-facing view of a single mob member.
 ///
-/// Narrow projection of meerkat's `MobMemberListEntry` enriched with the
-/// current bridge session id (which meerkat doesn't carry on the entry).
+/// Narrow projection of meerkat's roster enriched with cached diagnostics
+/// such as the current bridge session id when the console read model has one.
 /// Wire field names match the console JSON — `agent_identity`, `role`,
 /// `state` — so the admin UI reads them unchanged from the live snapshot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

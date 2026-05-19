@@ -16,7 +16,9 @@ use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
-use crate::mob_handle_runtime::{member_entry_to_json, model_capabilities_for_member_entry};
+use crate::mob_handle_runtime::{
+    member_entry_to_json, model_capabilities_for_member_entry, model_capabilities_for_role,
+};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
@@ -62,6 +64,41 @@ pub struct ConsoleJsonState {
     pub(crate) mob_events: Option<MobEventsStore>,
     pub(crate) metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     pub(crate) visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
+    pub(crate) snapshot_read_model: ConsoleSnapshotReadModel,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ConsoleSnapshotReadModel {
+    inner: Arc<tokio::sync::RwLock<ConsoleSnapshotReadModelState>>,
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[derive(Clone, Default)]
+struct ConsoleSnapshotReadModelState {
+    running: Option<bool>,
+    session_id_by_identity: BTreeMap<String, String>,
+    session_owner_by_id: BTreeMap<String, String>,
+}
+
+impl ConsoleSnapshotReadModel {
+    async fn snapshot(&self) -> ConsoleSnapshotReadModelState {
+        self.inner.read().await.clone()
+    }
+
+    fn refresh_soon(&self, runtime: MobRuntime) {
+        let Ok(runtime_handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let Ok(guard) = self.refresh_lock.clone().try_lock_owned() else {
+            return;
+        };
+        let inner = Arc::clone(&self.inner);
+        runtime_handle.spawn(async move {
+            let _guard = guard;
+            let refreshed = collect_console_snapshot_read_model(&runtime).await;
+            *inner.write().await = refreshed;
+        });
+    }
 }
 
 const CONSOLE_FRONTEND_INDEX_HTML: &str = include_str!("../console-dist/index.html");
@@ -85,6 +122,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         mob_events: None,
         metadata_table: None,
         visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
+        snapshot_read_model: ConsoleSnapshotReadModel::default(),
     })
 }
 
@@ -104,6 +142,7 @@ pub fn console_json_router_with_aggregator(
         mob_events: None,
         metadata_table: None,
         visibility_policy: Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
+        snapshot_read_model: ConsoleSnapshotReadModel::default(),
     })
 }
 
@@ -192,6 +231,8 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
             aggregator
         }
     });
+    let snapshot_read_model = ConsoleSnapshotReadModel::default();
+    snapshot_read_model.refresh_soon(runtime.clone());
     console_json_router_with_state(ConsoleJsonState {
         decisions,
         runtime: Some(runtime),
@@ -204,6 +245,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         mob_events,
         metadata_table,
         visibility_policy,
+        snapshot_read_model,
     })
 }
 
@@ -287,15 +329,19 @@ pub async fn console_json_handler(
         .map(|m| m.id.clone())
         .collect();
     let live_snapshot = match &state.runtime {
-        Some(runtime) => Some(
-            build_live_snapshot(
-                runtime,
-                &config_module_ids,
-                state.console_events.as_ref(),
-                state.visibility_policy.as_ref(),
+        Some(runtime) => {
+            state.snapshot_read_model.refresh_soon(runtime.clone());
+            Some(
+                build_live_snapshot(
+                    runtime,
+                    &config_module_ids,
+                    state.console_events.as_ref(),
+                    state.visibility_policy.as_ref(),
+                    &state.snapshot_read_model,
+                )
+                .await,
             )
-            .await,
-        ),
+        }
         None => match &state.console_aggregator {
             Some(aggregator) => build_aggregator_live_snapshot(aggregator, &config_module_ids)
                 .await
@@ -3273,17 +3319,21 @@ async fn build_live_snapshot(
     config_module_ids: &[String],
     console_events: Option<&ConsoleEventStore>,
     visibility_policy: &dyn ConsoleVisibilityPolicy,
+    read_model: &ConsoleSnapshotReadModel,
 ) -> ConsoleLiveSnapshot {
     let handle = runtime.handle();
-    let running = matches!(
-        handle.status().await.ok(),
-        Some(MobState::Creating | MobState::Running)
-    );
+    let read_model_state = read_model.snapshot().await;
+    let running = read_model_state.running.unwrap_or(true);
     let (mut members, mut session_owner_by_id) =
-        project_console_members_from_handle(&handle, None, None).await;
+        project_console_members_from_handle(&handle, None, None, &read_model_state).await;
     if visibility_policy.include_implicit_delegate_members() {
-        append_bridge_session_delegate_members(runtime, &mut members, &mut session_owner_by_id)
-            .await;
+        append_bridge_session_delegate_members(
+            runtime,
+            &mut members,
+            &mut session_owner_by_id,
+            &read_model_state,
+        )
+        .await;
     }
     dedupe_console_members_by_identity(&mut members);
 
@@ -3364,6 +3414,72 @@ async fn build_live_snapshot(
     )
 }
 
+async fn collect_console_snapshot_read_model(
+    runtime: &MobRuntime,
+) -> ConsoleSnapshotReadModelState {
+    let handle = runtime.handle();
+    let mut state = ConsoleSnapshotReadModelState {
+        running: Some(matches!(
+            handle.status().await.ok(),
+            Some(MobState::Creating | MobState::Running)
+        )),
+        ..ConsoleSnapshotReadModelState::default()
+    };
+    collect_console_session_index_for_handle(&handle, &mut state).await;
+
+    let Some(mcp_state) = runtime.agent_mob_mcp_state() else {
+        return state;
+    };
+    let primary_mob_id = handle.mob_id().to_string();
+    let mut processed = BTreeSet::from([primary_mob_id]);
+    loop {
+        let mut progressed = false;
+        for (mob_id, _mob_state) in mcp_state.mob_list().await {
+            if processed.contains(mob_id.as_str()) {
+                continue;
+            }
+            let Ok(handle) = mcp_state.handle_for(&mob_id).await else {
+                continue;
+            };
+            let Some(owner_session_id) = handle.definition().owner_bridge_session_index() else {
+                processed.insert(mob_id.to_string());
+                continue;
+            };
+            if !state.session_owner_by_id.contains_key(owner_session_id) {
+                continue;
+            }
+            collect_console_session_index_for_handle(&handle, &mut state).await;
+            processed.insert(mob_id.to_string());
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
+    }
+    state
+}
+
+async fn collect_console_session_index_for_handle(
+    handle: &MobHandle,
+    state: &mut ConsoleSnapshotReadModelState,
+) {
+    for entry in handle.list_members_including_retiring().await {
+        let identity = entry.agent_identity.to_string();
+        let Some(session_id) = handle
+            .resolve_bridge_session_id(&entry.agent_identity)
+            .await
+            .map(|session_id| session_id.to_string())
+        else {
+            state.session_id_by_identity.remove(&identity);
+            continue;
+        };
+        state
+            .session_owner_by_id
+            .insert(session_id.clone(), identity.clone());
+        state.session_id_by_identity.insert(identity, session_id);
+    }
+}
+
 fn apply_console_visibility_policy(
     snapshot: &mut ConsoleLiveSnapshot,
     visibility_policy: &dyn ConsoleVisibilityPolicy,
@@ -3389,11 +3505,14 @@ async fn reset_all_live_console_agents(
     console_events: Option<&ConsoleEventStore>,
     console_aggregator: Option<&MobKitConsoleAggregator>,
 ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+    let read_model = ConsoleSnapshotReadModel::default();
+    *read_model.inner.write().await = collect_console_snapshot_read_model(runtime).await;
     let snapshot = build_live_snapshot(
         runtime,
         &[],
         console_events,
         &AllowAllConsoleVisibilityPolicy,
+        &read_model,
     )
     .await;
     let mut main_identities = BTreeSet::new();
@@ -3622,19 +3741,19 @@ async fn project_console_members_from_handle(
     handle: &MobHandle,
     host_identity: Option<&str>,
     source_mob_id: Option<&str>,
+    read_model: &ConsoleSnapshotReadModelState,
 ) -> (Vec<ConsoleMember>, BTreeMap<String, String>) {
-    let entries = handle.list_members_including_retiring().await;
+    let entries = handle.list_all_members().await;
     let mut members = Vec::with_capacity(entries.len());
     let mut session_owner_by_id = BTreeMap::new();
     for entry in &entries {
-        let session_id = handle
-            .resolve_bridge_session_id(&entry.agent_identity)
-            .await
-            .map(|s| s.to_string());
+        let identity = entry.agent_identity.to_string();
+        let session_id = read_model.session_id_by_identity.get(&identity).cloned();
         if let Some(session_id) = session_id.as_ref() {
-            session_owner_by_id.insert(session_id.clone(), entry.agent_identity.to_string());
+            session_owner_by_id.insert(session_id.clone(), identity.clone());
         }
-        let model_capabilities = model_capabilities_for_member_entry(handle.definition(), entry);
+        let model_capabilities =
+            model_capabilities_for_role(handle.definition(), entry.role.as_str());
         let mut labels = entry.labels.clone();
         if let Some(host_identity) = host_identity {
             labels
@@ -3656,7 +3775,7 @@ async fn project_console_members_from_handle(
             wired_to.push(host_identity.to_string());
         }
         members.push(ConsoleMember {
-            agent_identity: entry.agent_identity.to_string(),
+            agent_identity: identity,
             role: entry.role.to_string(),
             state: match entry.state {
                 meerkat_mob::MemberState::Active => MEMBER_STATE_ACTIVE.to_string(),
@@ -3676,6 +3795,7 @@ async fn append_bridge_session_delegate_members(
     runtime: &MobRuntime,
     members: &mut Vec<ConsoleMember>,
     session_owner_by_id: &mut BTreeMap<String, String>,
+    read_model: &ConsoleSnapshotReadModelState,
 ) {
     let Some(state) = runtime.agent_mob_mcp_state() else {
         return;
@@ -3703,6 +3823,7 @@ async fn append_bridge_session_delegate_members(
                     &handle,
                     Some(&host_identity),
                     Some(mob_id.as_str()),
+                    read_model,
                 )
                 .await;
             session_owner_by_id.extend(delegate_session_owner_by_id);
@@ -3829,10 +3950,11 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload,
-        apply_console_visibility_policy, cursor_is_after, dedupe_console_members_by_identity,
-        externalize_image_upload_placeholders, externalize_single_image_upload,
-        project_console_members_from_handle, query_timeline_snapshot,
+        ConsoleSnapshotReadModelState, MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES,
+        MultipartImageUpload, apply_console_visibility_policy, collect_console_snapshot_read_model,
+        cursor_is_after, dedupe_console_members_by_identity, externalize_image_upload_placeholders,
+        externalize_single_image_upload, project_console_members_from_handle,
+        query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::HideImplicitDelegateMembersConsoleVisibilityPolicy;
@@ -4055,11 +4177,24 @@ comms = true
             ))
             .await?;
 
+        let empty_read_model = ConsoleSnapshotReadModelState::default();
         let (members, session_owner_by_id) =
-            project_console_members_from_handle(&runtime.handle(), None, None).await;
+            project_console_members_from_handle(&runtime.handle(), None, None, &empty_read_model)
+                .await;
 
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].model_capabilities, expected);
+        assert_eq!(members[0].session_id, None);
+        assert!(session_owner_by_id.is_empty());
+
+        let refreshed_read_model = collect_console_snapshot_read_model(&runtime).await;
+        let (members, session_owner_by_id) = project_console_members_from_handle(
+            &runtime.handle(),
+            None,
+            None,
+            &refreshed_read_model,
+        )
+        .await;
         assert_eq!(
             members[0].session_id.as_ref(),
             session_owner_by_id.keys().next()
