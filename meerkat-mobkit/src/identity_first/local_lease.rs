@@ -20,7 +20,11 @@ use super::types::{
 };
 
 /// Default TTL returned by the local lease provider.
-const LOCAL_LEASE_TTL: Duration = Duration::from_mins(5);
+///
+/// The provider is single-process and does not expire records internally, so
+/// this is a generous local ownership window rather than a distributed lease
+/// deadline. External lease providers should return their real coordination TTL.
+const LOCAL_LEASE_TTL: Duration = Duration::from_hours(24);
 
 struct LeaseRecord {
     fencing_token: FencingToken,

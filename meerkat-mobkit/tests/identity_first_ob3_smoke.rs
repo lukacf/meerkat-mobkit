@@ -22,7 +22,10 @@ use async_trait::async_trait;
 use tokio::time::sleep;
 
 use meerkat_mob::definition::WiringRules;
-use meerkat_mob::{MobDefinition, MobId, MobRuntimeMode, Profile, ProfileName, ToolConfig};
+use meerkat_mob::ids::MeerkatId;
+use meerkat_mob::{
+    MobDefinition, MobId, MobRuntimeMode, Profile, ProfileBinding, ProfileName, ToolConfig,
+};
 
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::identity_first::contracts::{AgentCustomizer, LeaseProvider, TopologyProvider};
@@ -86,7 +89,7 @@ fn ob3_definition(model: &str) -> MobDefinition {
 
     profiles.insert(
         ProfileName::from("personal"),
-        Profile {
+        ProfileBinding::Inline(Profile {
             model: model.to_string(),
             skills: vec![],
             tools: ToolConfig {
@@ -100,12 +103,12 @@ fn ob3_definition(model: &str) -> MobDefinition {
             max_inline_peer_notifications: None,
             output_schema: None,
             provider_params: None,
-        },
+        }),
     );
 
     profiles.insert(
         ProfileName::from("review"),
-        Profile {
+        ProfileBinding::Inline(Profile {
             model: model.to_string(),
             skills: vec![],
             tools: ToolConfig {
@@ -119,27 +122,16 @@ fn ob3_definition(model: &str) -> MobDefinition {
             max_inline_peer_notifications: None,
             output_schema: None,
             provider_params: None,
-        },
+        }),
     );
 
-    MobDefinition {
-        id: MobId::from("ob3-smoke"),
-        orchestrator: None,
-        profiles,
-        mcp_servers: BTreeMap::new(),
-        wiring: WiringRules {
-            auto_wire_orchestrator: false,
-            role_wiring: vec![],
-        },
-        skills: BTreeMap::new(),
-        backend: Default::default(),
-        flows: Default::default(),
-        topology: None,
-        supervisor: None,
-        limits: None,
-        spawn_policy: None,
-        event_router: None,
-    }
+    let mut definition = MobDefinition::explicit(MobId::from("ob3-smoke"));
+    definition.profiles = profiles;
+    definition.wiring = WiringRules {
+        auto_wire_orchestrator: false,
+        role_wiring: vec![],
+    };
+    definition
 }
 
 // History reading functions removed — we verify LLM response via
@@ -282,7 +274,7 @@ async fn e2e_ob3_01_identity_first_send_real_llm() {
     // --- Wait for ASSISTANT response by polling member status ---
     // MobMemberSnapshot.output_preview is Some when the LLM has produced output.
     let mob_handle = unified.mob_handle();
-    let alice_mid = meerkat_mob::MeerkatId::from(alice_record.agent_runtime_id.as_str());
+    let alice_mid = MeerkatId::from(alice_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     let output;
     loop {
@@ -432,7 +424,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
 
     // Wait for alice's response
     let mob_handle = unified.mob_handle();
-    let alice_mid = meerkat_mob::MeerkatId::from(alice_record.agent_runtime_id.as_str());
+    let alice_mid = MeerkatId::from(alice_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&alice_mid).await.expect("member");
@@ -512,7 +504,7 @@ async fn e2e_ob3_02_dynamic_roster_add_subscriber() {
         .await
         .expect("send to carol");
 
-    let carol_mid = meerkat_mob::MeerkatId::from(carol_record.agent_runtime_id.as_str());
+    let carol_mid = MeerkatId::from(carol_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&carol_mid).await.expect("member");
@@ -624,7 +616,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
 
     // Wait for response
     let mob_handle = unified.mob_handle();
-    let alice_mid = meerkat_mob::MeerkatId::from(alice_record.agent_runtime_id.as_str());
+    let alice_mid = MeerkatId::from(alice_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&alice_mid).await.expect("member");
@@ -802,7 +794,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
 
     // Wait for response
     let mob_handle = unified.mob_handle();
-    let alice_mid = meerkat_mob::MeerkatId::from(alice_record.agent_runtime_id.as_str());
+    let alice_mid = MeerkatId::from(alice_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&alice_mid).await.expect("member");
@@ -967,7 +959,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
 
     // Wait for review to process
     let mob_handle = unified.mob_handle();
-    let review_mid = meerkat_mob::MeerkatId::from(review_record.agent_runtime_id.as_str());
+    let review_mid = MeerkatId::from(review_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&review_mid).await.expect("member");
@@ -1005,7 +997,7 @@ async fn e2e_ob3_05_async_checkpoint_durability() {
         .await
         .expect("send to alice");
 
-    let alice_mid = meerkat_mob::MeerkatId::from(alice_record.agent_runtime_id.as_str());
+    let alice_mid = MeerkatId::from(alice_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&alice_mid).await.expect("member");
@@ -1349,7 +1341,7 @@ async fn e2e_ob3_07_delete_and_recreate() {
 
     // Wait for alice to respond
     let mob_handle = unified.mob_handle();
-    let alice_mid = meerkat_mob::MeerkatId::from(alice_record.agent_runtime_id.as_str());
+    let alice_mid = MeerkatId::from(alice_record.agent_runtime_id.as_str());
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
         let member = mob_handle.member(&alice_mid).await.expect("member");

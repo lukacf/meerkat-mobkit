@@ -24,6 +24,12 @@ enum LocalOrRemote {
     Remote(RemoteMobProxy),
 }
 
+struct MemberPeerInfo {
+    peer_id: String,
+    comms_name: String,
+    pubkey: [u8; 32],
+}
+
 /// Errors from cross-mob operations.
 #[derive(Debug)]
 pub enum CrossMobError {
@@ -161,28 +167,28 @@ impl UnifiedRuntime {
         let local_mob_id = local_handle.mob_id().to_string();
         let local_mid = MeerkatId::from(local_member_id);
 
-        let (local_peer_id, local_comms_name) = self
+        let local_info = self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
             .await?;
 
         match remote {
             LocalOrRemote::Local(remote_handle) => {
                 let remote_mid = MeerkatId::from(remote_member_id);
-                let (remote_peer_id, remote_comms_name) = self
+                let remote_info = self
                     .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
                     .await?;
 
                 let remote_spec = build_peer_spec(
-                    &remote_comms_name,
-                    &remote_peer_id,
+                    &remote_info.comms_name,
+                    &remote_info.peer_id,
                     &entry.transport,
-                    entry.pubkey,
+                    Some(remote_info.pubkey),
                 )?;
                 let local_spec = build_peer_spec(
-                    &local_comms_name,
-                    &local_peer_id,
+                    &local_info.comms_name,
+                    &local_info.peer_id,
                     &MobTransport::Inproc,
-                    None,
+                    Some(local_info.pubkey),
                 )?;
 
                 local_handle
@@ -195,10 +201,10 @@ impl UnifiedRuntime {
                     .await
                 {
                     if let Ok(rollback_spec) = build_peer_spec(
-                        &remote_comms_name,
-                        &remote_peer_id,
+                        &remote_info.comms_name,
+                        &remote_info.peer_id,
                         &entry.transport,
-                        entry.pubkey,
+                        Some(remote_info.pubkey),
                     ) {
                         let _ = local_handle
                             .unwire(local_mid, PeerTarget::External(rollback_spec))
@@ -244,13 +250,13 @@ impl UnifiedRuntime {
                     .gateway_peer_keys
                     .as_ref()
                     .map(crate::auth::peer_keys::GatewayPeerKeys::pubkey_b64);
-                let local_spec_address = format!("inproc://{local_comms_name}");
+                let local_spec_address = format!("inproc://{}", local_info.comms_name);
                 if let Err(remote_err) = proxy
                     .wire_remote(
                         remote_member_id,
                         &local_spec_address,
-                        &local_comms_name,
-                        &local_peer_id,
+                        &local_info.comms_name,
+                        &local_info.peer_id,
                         pubkey_b64,
                     )
                     .await
@@ -293,25 +299,22 @@ impl UnifiedRuntime {
 
         let mut first_error: Option<CrossMobError> = None;
 
-        let (local_peer_id_opt, local_comms_name_opt) = match self
+        let local_info_opt = self
             .get_member_peer_info(&local_handle, &local_mid, &local_mob_id)
             .await
-        {
-            Ok((p, c)) => (Some(p), Some(c)),
-            Err(_) => (None, None),
-        };
+            .ok();
 
         match remote {
             LocalOrRemote::Local(remote_handle) => {
                 let remote_mid = MeerkatId::from(remote_member_id);
-                if let Ok((remote_peer_id, remote_comms_name)) = self
+                if let Ok(remote_info) = self
                     .get_member_peer_info(&remote_handle, &remote_mid, remote_mob_id)
                     .await
                     && let Ok(spec) = build_peer_spec(
-                        &remote_comms_name,
-                        &remote_peer_id,
+                        &remote_info.comms_name,
+                        &remote_info.peer_id,
                         &entry.transport,
-                        entry.pubkey,
+                        Some(remote_info.pubkey),
                     )
                     && let Err(e) = local_handle
                         .unwire(local_mid.clone(), PeerTarget::External(spec))
@@ -320,13 +323,12 @@ impl UnifiedRuntime {
                     first_error = Some(CrossMobError::Mob(e));
                 }
 
-                if let (Some(local_peer_id), Some(local_comms_name)) =
-                    (&local_peer_id_opt, &local_comms_name_opt)
+                if let Some(local_info) = &local_info_opt
                     && let Ok(spec) = build_peer_spec(
-                        local_comms_name,
-                        local_peer_id,
+                        &local_info.comms_name,
+                        &local_info.peer_id,
                         &MobTransport::Inproc,
-                        None,
+                        Some(local_info.pubkey),
                     )
                     && let Err(e) = remote_handle
                         .unwire(remote_mid.clone(), PeerTarget::External(spec))
@@ -352,20 +354,18 @@ impl UnifiedRuntime {
                     first_error = Some(CrossMobError::Mob(e));
                 }
 
-                if let (Some(local_peer_id), Some(local_comms_name)) =
-                    (&local_peer_id_opt, &local_comms_name_opt)
-                {
+                if let Some(local_info) = &local_info_opt {
                     let pubkey_b64 = self
                         .gateway_peer_keys
                         .as_ref()
                         .map(crate::auth::peer_keys::GatewayPeerKeys::pubkey_b64);
-                    let local_spec_address = format!("inproc://{local_comms_name}");
+                    let local_spec_address = format!("inproc://{}", local_info.comms_name);
                     if let Err(e) = proxy
                         .unwire_remote(
                             remote_member_id,
                             &local_spec_address,
-                            local_comms_name,
-                            local_peer_id,
+                            &local_info.comms_name,
+                            &local_info.peer_id,
                             pubkey_b64,
                         )
                         .await
@@ -501,9 +501,9 @@ impl UnifiedRuntime {
         let handle = self.mob_runtime.handle();
         let mob_id = handle.mob_id().to_string();
         let mid = MeerkatId::from(member_id);
-        let (peer_id, comms_name) = self.get_member_peer_info(&handle, &mid, &mob_id).await?;
-        let address = format!("inproc://{comms_name}");
-        Ok((peer_id, comms_name, address))
+        let info = self.get_member_peer_info(&handle, &mid, &mob_id).await?;
+        let address = format!("inproc://{}", info.comms_name);
+        Ok((info.peer_id, info.comms_name, address))
     }
 
     /// Wire a local member to an external peer using provided comms info.
@@ -602,19 +602,19 @@ impl UnifiedRuntime {
         }
     }
 
-    /// Resolve a member's peer_id and comms name from the roster entry.
+    /// Resolve a member's peer_id, comms name, and transport key from the roster entry.
     ///
-    /// Returns `(peer_id, comms_name)` where comms_name is derived as
-    /// `"{mob_id}/{profile}/{meerkat_id}"` — this matches the canonical
+    /// Returns peer id, comms name, and the member transport key. The comms
+    /// name is derived as `"{mob_id}/{profile}/{meerkat_id}"`, matching the
     /// format used by meerkat-mob's `derived_comms_name()` and
-    /// `build_agent_config()`. If meerkat-mob changes this format,
-    /// this must be updated to match.
+    /// `build_agent_config()`. If meerkat-mob changes this format, this must
+    /// be updated to match.
     async fn get_member_peer_info(
         &self,
         handle: &MobHandle,
         meerkat_id: &MeerkatId,
         mob_id: &str,
-    ) -> Result<(String, String), CrossMobError> {
+    ) -> Result<MemberPeerInfo, CrossMobError> {
         let entry =
             handle
                 .get_member(meerkat_id)
@@ -630,8 +630,22 @@ impl UnifiedRuntime {
                 mob_id: mob_id.to_string(),
             })?
             .to_string();
+        let pubkey_b64 = entry.transport_public_key().ok_or_else(|| {
+            CrossMobError::PeerSpec(format!(
+                "member '{meerkat_id}' in mob '{mob_id}' has no transport public key"
+            ))
+        })?;
+        let pubkey = crate::auth::peer_keys::decode_pubkey_b64(pubkey_b64).map_err(|err| {
+            CrossMobError::PeerSpec(format!(
+                "member '{meerkat_id}' in mob '{mob_id}' has invalid transport public key: {err}"
+            ))
+        })?;
         let comms_name = format!("{}/{}/{}", mob_id, entry.role, meerkat_id);
-        Ok((peer_id, comms_name))
+        Ok(MemberPeerInfo {
+            peer_id,
+            comms_name,
+            pubkey,
+        })
     }
 }
 

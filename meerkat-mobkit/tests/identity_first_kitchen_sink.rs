@@ -24,7 +24,9 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 
 use meerkat_mob::definition::WiringRules;
-use meerkat_mob::{MobDefinition, MobId, MobRuntimeMode, Profile, ProfileName, ToolConfig};
+use meerkat_mob::{
+    MobDefinition, MobId, MobRuntimeMode, Profile, ProfileBinding, ProfileName, ToolConfig,
+};
 
 use meerkat_mobkit::UnifiedRuntimeBuilder;
 use meerkat_mobkit::contact_directory::ContactDirectory;
@@ -101,7 +103,7 @@ fn author_definition(model: &str) -> MobDefinition {
     ] {
         profiles.insert(
             ProfileName::from(name),
-            Profile {
+            ProfileBinding::Inline(Profile {
                 model: model.to_string(),
                 skills: vec![],
                 tools: ToolConfig {
@@ -115,28 +117,17 @@ fn author_definition(model: &str) -> MobDefinition {
                 max_inline_peer_notifications: None,
                 output_schema: None,
                 provider_params: None,
-            },
+            }),
         );
     }
 
-    MobDefinition {
-        id: MobId::from("authors"),
-        orchestrator: None,
-        profiles,
-        mcp_servers: BTreeMap::new(),
-        wiring: WiringRules {
-            auto_wire_orchestrator: false,
-            role_wiring: vec![],
-        },
-        skills: BTreeMap::new(),
-        backend: Default::default(),
-        flows: Default::default(),
-        topology: None,
-        supervisor: None,
-        limits: None,
-        spawn_policy: None,
-        event_router: None,
-    }
+    let mut definition = MobDefinition::explicit(MobId::from("authors"));
+    definition.profiles = profiles;
+    definition.wiring = WiringRules {
+        auto_wire_orchestrator: false,
+        role_wiring: vec![],
+    };
+    definition
 }
 
 /// Critic mob: lead, judge profiles — all TurnDriven + comms.
@@ -149,7 +140,7 @@ fn critic_definition(model: &str) -> MobDefinition {
     ] {
         profiles.insert(
             ProfileName::from(name),
-            Profile {
+            ProfileBinding::Inline(Profile {
                 model: model.to_string(),
                 skills: vec![],
                 tools: ToolConfig {
@@ -163,28 +154,17 @@ fn critic_definition(model: &str) -> MobDefinition {
                 max_inline_peer_notifications: None,
                 output_schema: None,
                 provider_params: None,
-            },
+            }),
         );
     }
 
-    MobDefinition {
-        id: MobId::from("critics"),
-        orchestrator: None,
-        profiles,
-        mcp_servers: BTreeMap::new(),
-        wiring: WiringRules {
-            auto_wire_orchestrator: false,
-            role_wiring: vec![],
-        },
-        skills: BTreeMap::new(),
-        backend: Default::default(),
-        flows: Default::default(),
-        topology: None,
-        supervisor: None,
-        limits: None,
-        spawn_policy: None,
-        event_router: None,
-    }
+    let mut definition = MobDefinition::explicit(MobId::from("critics"));
+    definition.profiles = profiles;
+    definition.wiring = WiringRules {
+        auto_wire_orchestrator: false,
+        role_wiring: vec![],
+    };
+    definition
 }
 
 // ---------------------------------------------------------------------------

@@ -3367,11 +3367,13 @@ realm_profile = "worker-v2"
     async fn ephemeral_runtime_backed_custom_session_store_persists_created_session() {
         let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
         let store_path = dir.path().to_path_buf();
-        let Ok(definition) = meerkat_mob::MobDefinition::from_toml("[mob]\nid = \"test\"\n") else {
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+        ) else {
             panic!("failed to parse minimal mob definition");
         };
         let custom_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
-        let spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
             definition,
             meerkat_mob::MobStorage::in_memory(),
             store_path,
@@ -3382,29 +3384,28 @@ realm_profile = "worker-v2"
             CapabilityFlags::default(),
             None,
         );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
 
-        let req = CreateSessionRequest {
-            model: "gpt-5.5".to_string(),
-            prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            render_metadata: None,
-            system_prompt: None,
-            max_tokens: None,
-            event_tx: None,
-            skill_references: None,
-            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
-            build: None,
-            labels: None,
-            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
-        };
-        let result = meerkat_core::service::SessionService::create_session(
-            spec.session_service.as_ref(),
-            req,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("{e}"));
+        let runtime = MobRuntime::bootstrap(spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mid = meerkat_mob::ids::MeerkatId::from("worker:one");
+        runtime
+            .handle
+            .spawn_spec(SpawnMemberSpec::new(
+                ProfileName::from("worker"),
+                mid.clone(),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session_id = runtime
+            .handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .unwrap_or_else(|| panic!("spawned worker has no bridge session id"));
 
         let stored = custom_store
-            .load(&result.session_id)
+            .load(&session_id)
             .await
             .unwrap_or_else(|e| panic!("{e}"));
         assert!(

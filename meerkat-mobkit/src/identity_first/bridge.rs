@@ -419,11 +419,11 @@ impl SessionBridge for MobSessionBridge {
 
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
         let mid = MeerkatId::from(runtime_id.as_str());
-        self.handle
-            .retire(mid)
-            .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))?;
-        Ok(())
+        match self.handle.retire(mid).await {
+            Ok(()) => Ok(()),
+            Err(err) if is_archive_not_found_cleanup_error(&err.to_string()) => Ok(()),
+            Err(err) => Err(BridgeError::Mob(err.to_string())),
+        }
     }
 
     async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {

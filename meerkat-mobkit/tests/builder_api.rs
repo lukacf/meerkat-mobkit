@@ -20,7 +20,9 @@ use async_trait::async_trait;
 use base64::Engine as _;
 use meerkat_client::TestClient;
 use meerkat_core::service::{CreateSessionRequest, SessionError};
-use meerkat_mob::{MobDefinition, MobState, MobStorage};
+use meerkat_mob::{
+    MobDefinition, MobState, MobStorage, ProfileName, SpawnMemberSpec, ids::MeerkatId,
+};
 use meerkat_mobkit::{
     DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, SessionHook, UnifiedRuntime,
 };
@@ -289,40 +291,45 @@ async fn test_builder_persistent_custom_store() {
 #[tokio::test]
 async fn test_builder_ephemeral_custom_store_persists_sessions() {
     let custom_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "builder-test-mob"
+
+[profiles.worker]
+model = "test-model"
+
+[profiles.worker.tools]
+comms = true
+"#,
+    )
+    .expect("parse test mob definition");
     let runtime = UnifiedRuntime::builder()
-        .definition(test_definition())
+        .definition(definition)
         .session_store(custom_store.clone())
         .default_llm_client(Arc::new(TestClient::default()))
         .build()
         .await
         .expect("ephemeral build with custom store");
 
-    let session_service = runtime
-        .mob_runtime()
-        .session_service()
-        .expect("builder-created runtime must expose its session service");
-    let result = meerkat_core::service::SessionService::create_session(
-        session_service.as_ref(),
-        CreateSessionRequest {
-            model: "gpt-5.5".to_string(),
-            prompt: meerkat_core::ContentInput::Text("test".to_string()),
-            render_metadata: None,
-            system_prompt: None,
-            max_tokens: None,
-            event_tx: None,
-            skill_references: None,
-            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
-            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
-            build: None,
-            labels: None,
-        },
-    )
-    .await
-    .expect("deferred session create");
+    let mid = MeerkatId::from("worker:one");
+    runtime
+        .mob_handle()
+        .spawn_spec(SpawnMemberSpec::new(
+            ProfileName::from("worker"),
+            mid.clone(),
+        ))
+        .await
+        .expect("spawn worker");
+    let session_id = runtime
+        .mob_handle()
+        .resolve_bridge_session_id(&mid)
+        .await
+        .expect("spawned worker has a bridge session id");
 
     assert!(
         custom_store
-            .load(&result.session_id)
+            .load(&session_id)
             .await
             .expect("custom store load")
             .is_some(),
