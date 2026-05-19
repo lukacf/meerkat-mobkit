@@ -43,18 +43,18 @@ form_urlencoded = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 futures = "0.3"
 object_store = { version = "0.13", features = ["fs"] }
-meerkat-core = "0.6.18"
-meerkat-client = "0.6.18"
-meerkat-contracts = "0.6.18"
-meerkat-mob = "0.6.18"
-meerkat-mob-mcp = "0.6.18"
-meerkat-mcp = "0.6.18"
-meerkat-models = "0.6.18"
-meerkat = { version = "0.6.18", features = ["comms", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }
-meerkat-runtime = { version = "0.6.18", features = ["sqlite-store"] }
-meerkat-session = { version = "0.6.18", features = ["session-store"] }
-meerkat-store = { version = "0.6.18", features = ["sqlite"] }
-meerkat-tools = "0.6.18"
+meerkat-core = "0.6.19"
+meerkat-client = "0.6.19"
+meerkat-contracts = "0.6.19"
+meerkat-mob = "0.6.19"
+meerkat-mob-mcp = "0.6.19"
+meerkat-mcp = "0.6.19"
+meerkat-models = "0.6.19"
+meerkat = { version = "0.6.19", features = ["comms", "skills", "mcp", "memory-store", "jsonl-store", "session-store", "sqlite-store"] }
+meerkat-runtime = { version = "0.6.19", features = ["sqlite-store"] }
+meerkat-session = { version = "0.6.19", features = ["session-store"] }
+meerkat-store = { version = "0.6.19", features = ["sqlite"] }
+meerkat-tools = "0.6.19"
 tempfile = "3"
 async-trait = "0.1"
 rusqlite = { version = "0.37", features = ["bundled"] }
@@ -75,4 +75,4 @@ futures = "0.3"
 tower = "0.5"
 jsonwebtoken = "9"
 async-trait = "0.1"
-meerkat-comms = "0.6.18"
+meerkat-comms = "0.6.19"

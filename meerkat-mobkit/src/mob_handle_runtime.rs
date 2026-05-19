@@ -1077,6 +1077,15 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner.discard_live_session(session_id).await
             }
+            async fn checkpoint_committed_runtime_session_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                session_snapshot: &[u8],
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
+                    .await
+            }
             async fn cancel_all_checkpointers(&self) {
                 self.inner.cancel_all_checkpointers().await;
             }
@@ -1415,6 +1424,15 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), SessionError> {
         self.inner.discard_live_session(session_id).await
+    }
+    async fn checkpoint_committed_runtime_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        session_snapshot: &[u8],
+    ) -> Result<(), SessionError> {
+        self.inner
+            .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
+            .await
     }
     async fn cancel_all_checkpointers(&self) {
         self.inner.cancel_all_checkpointers().await;
