@@ -183,13 +183,23 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
   return frames;
 }
 
+export const DEFAULT_CONSOLE_FETCH_TIMEOUT_MS = 60_000;
+
+function formatTimeoutReason(timeoutMs: number): string {
+  if (timeoutMs % 1000 === 0) {
+    return `${timeoutMs / 1000} s`;
+  }
+  return `${timeoutMs} ms`;
+}
+
 export async function fetchJson<T>(
   baseUrl: string,
   path: string,
-  timeoutMs = 10_000,
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<T> {
   const controller = new AbortController();
-  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutReason = `console fetch timeout after ${formatTimeoutReason(timeoutMs)}`;
+  const timer = globalThis.setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       signal: controller.signal,
@@ -199,6 +209,11 @@ export async function fetchJson<T>(
       throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
     }
     return response.json() as Promise<T>;
+  } catch (error) {
+    if (controller.signal.aborted && typeof controller.signal.reason === "string") {
+      throw new Error(controller.signal.reason);
+    }
+    throw error;
   } finally {
     globalThis.clearTimeout(timer);
   }

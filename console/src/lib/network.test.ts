@@ -2,12 +2,50 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+  fetchJson,
   parseSseFrames,
   queryTimeline,
   sendConsole,
   sendConsoleMultipart,
   subscribeTimelineEvents,
 } from "./network";
+
+test("fetchJson defaults console requests to a 60 second timeout with an abort reason", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  let scheduledMs: number | undefined;
+  let cleared = false;
+
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number) => {
+    scheduledMs = timeout;
+    return originalSetTimeout(handler, 0);
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: number) => {
+    cleared = true;
+    return originalClearTimeout(handle);
+  }) as typeof clearTimeout;
+  globalThis.fetch = (async (_input, init) => {
+    const signal = init?.signal;
+    return new Promise<Response>((_resolve, reject) => {
+      signal?.addEventListener("abort", () => reject(signal.reason));
+    });
+  }) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      fetchJson("http://127.0.0.1:7000", "/console/experience"),
+      /console fetch timeout after 60 s/,
+    );
+    assert.equal(scheduledMs, DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
+    assert.equal(cleared, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
+});
 
 test("queryTimeline normalizes aggregate log frames", async () => {
   const originalFetch = globalThis.fetch;

@@ -16,7 +16,7 @@ use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
-use crate::mob_handle_runtime::{member_entry_to_json, model_capabilities_for_member};
+use crate::mob_handle_runtime::{member_entry_to_json, model_capabilities_for_member_entry};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
@@ -1524,14 +1524,10 @@ async fn member_entry_to_console_json(
     if let Some(object) = value.as_object_mut() {
         object.insert(
             "model_capabilities".to_string(),
-            serde_json::to_value(
-                model_capabilities_for_member(
-                    &runtime.handle(),
-                    runtime.session_service(),
-                    &entry.agent_identity,
-                )
-                .await,
-            )
+            serde_json::to_value(model_capabilities_for_member_entry(
+                runtime.handle().definition(),
+                entry,
+            ))
             .unwrap_or(Value::Null),
         );
     }
@@ -3284,7 +3280,7 @@ async fn build_live_snapshot(
         Some(MobState::Creating | MobState::Running)
     );
     let (mut members, mut session_owner_by_id) =
-        project_console_members_from_handle(&handle, runtime.session_service(), None, None).await;
+        project_console_members_from_handle(&handle, None, None).await;
     if visibility_policy.include_implicit_delegate_members() {
         append_bridge_session_delegate_members(runtime, &mut members, &mut session_owner_by_id)
             .await;
@@ -3624,7 +3620,6 @@ fn dedupe_console_members_by_identity(members: &mut Vec<ConsoleMember>) {
 
 async fn project_console_members_from_handle(
     handle: &MobHandle,
-    session_service: Option<&Arc<dyn meerkat_mob::MobSessionService>>,
     host_identity: Option<&str>,
     source_mob_id: Option<&str>,
 ) -> (Vec<ConsoleMember>, BTreeMap<String, String>) {
@@ -3639,8 +3634,7 @@ async fn project_console_members_from_handle(
         if let Some(session_id) = session_id.as_ref() {
             session_owner_by_id.insert(session_id.clone(), entry.agent_identity.to_string());
         }
-        let model_capabilities =
-            model_capabilities_for_member(handle, session_service, &entry.agent_identity).await;
+        let model_capabilities = model_capabilities_for_member_entry(handle.definition(), entry);
         let mut labels = entry.labels.clone();
         if let Some(host_identity) = host_identity {
             labels
@@ -3688,8 +3682,6 @@ async fn append_bridge_session_delegate_members(
     };
     let primary_mob_id = runtime.handle().mob_id().to_string();
     let mut processed = BTreeSet::from([primary_mob_id.clone()]);
-    let session_service = state.session_service();
-
     loop {
         let mut progressed = false;
         for (mob_id, _mob_state) in state.mob_list().await {
@@ -3709,7 +3701,6 @@ async fn append_bridge_session_delegate_members(
             let (delegate_members, delegate_session_owner_by_id) =
                 project_console_members_from_handle(
                     &handle,
-                    Some(&session_service),
                     Some(&host_identity),
                     Some(mob_id.as_str()),
                 )
@@ -3841,7 +3832,7 @@ mod tests {
         MAX_MULTIPART_BODY_BYTES, MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload,
         apply_console_visibility_policy, cursor_is_after, dedupe_console_members_by_identity,
         externalize_image_upload_placeholders, externalize_single_image_upload,
-        query_timeline_snapshot,
+        project_console_members_from_handle, query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::HideImplicitDelegateMembersConsoleVisibilityPolicy;
@@ -3849,8 +3840,13 @@ mod tests {
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
         ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
+    use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
     use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
+    use crate::{MobBootstrapOptions, MobBootstrapSpec};
     use bytes::Bytes;
+    use meerkat::{AgentFactory, Config, build_ephemeral_service};
+    use meerkat_client::TestClient;
+    use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -4016,6 +4012,59 @@ mod tests {
             vec!["incident-commander"]
         );
         assert_eq!(snapshot.loaded_modules, vec!["incident-commander"]);
+    }
+
+    #[tokio::test]
+    async fn live_snapshot_member_projection_uses_roster_profile_capabilities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let session_path = temp_dir.path().join("sessions");
+        std::fs::create_dir_all(&session_path)?;
+        let factory = AgentFactory::new(&session_path).comms(true);
+        let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+        let definition = MobDefinition::from_toml(
+            r#"
+[mob]
+id = "console-snapshot-test"
+
+[profiles.worker]
+model = "gpt-5.5"
+
+[profiles.worker.tools]
+comms = true
+"#,
+        )?;
+        let expected = model_capabilities_for_role(&definition, "worker");
+        let runtime = MobRuntime::bootstrap(
+            MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+                .with_options(MobBootstrapOptions {
+                    allow_ephemeral_sessions: true,
+                    notify_orchestrator_on_resume: true,
+                    default_llm_client: Some(Arc::new(TestClient::default())),
+                }),
+        )
+        .await?;
+        runtime
+            .handle()
+            .spawn_spec(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "worker:one".to_string(),
+                Some("You are worker one.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let (members, session_owner_by_id) =
+            project_console_members_from_handle(&runtime.handle(), None, None).await;
+
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].model_capabilities, expected);
+        assert_eq!(
+            members[0].session_id.as_ref(),
+            session_owner_by_id.keys().next()
+        );
+        Ok(())
     }
 
     #[tokio::test]

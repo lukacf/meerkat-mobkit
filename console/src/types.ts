@@ -208,6 +208,10 @@ export interface ConsoleUiConfig {
   actions?: ConsoleActionsUiConfig;
 }
 
+export interface ConsolePolicyConfig {
+  fetch_timeout_ms?: number;
+}
+
 export interface ConsoleTopologyNode {
   identity?: string;
   label?: string;
@@ -248,6 +252,7 @@ export interface ConsoleExperience {
   contract_version?: string;
   runtime_id?: string;
   console_config?: ConsoleUiConfig;
+  console_policy?: ConsolePolicyConfig;
   runtime_capabilities?: RuntimeCapabilities;
   agent_sidebar?: ConsoleExperienceSection<{
     title?: string;

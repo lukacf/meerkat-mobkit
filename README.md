@@ -144,7 +144,7 @@ send_label = "Send to agent"
 show_reset = false
 ```
 
-Agent metadata comes from mob member labels, so a spawned member labelled `console_group = "Initiatives"` and `org = "Payments"` appears under `Initiatives / Payments`. Realm-specific overlays can be added under `[realms.<name>]`; the local TUX gateway applies the overlay matching its init `realm`. TypeScript SDK embedders can pass the same file through `MobKit.builder().consoleConfig("config/console.toml")` when booting the RPC gateway, and can explicitly use `.consoleAuthRequired(false)` for local unauthenticated console demos.
+Agent metadata comes from mob member labels, so a spawned member labelled `console_group = "Initiatives"` and `org = "Payments"` appears under `Initiatives / Payments`. Realm-specific overlays can be added under `[realms.<name>]`; the local TUX gateway applies the overlay matching its init `realm`. TypeScript SDK embedders can pass the same file through `MobKit.builder().consoleConfig("config/console.toml")` when booting the RPC gateway, can explicitly use `.consoleAuthRequired(false)` for local unauthenticated console demos, and can tune the bundled console JSON fetch ceiling with `.consoleFetchTimeoutMs(120_000)`.
 
 ## Install
 

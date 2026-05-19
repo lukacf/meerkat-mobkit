@@ -452,6 +452,7 @@ fn runtime_decision_state(runtime_id: &str, console_ui: ConsoleUiConfig) -> Runt
         },
         console: ConsolePolicy {
             require_app_auth: false,
+            fetch_timeout_ms: None,
             ui: console_ui,
         },
         ops: RuntimeOpsPolicy::default(),

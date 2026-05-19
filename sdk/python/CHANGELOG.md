@@ -4,6 +4,12 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+### Console fetch policy
+
+- Added `MobKit.builder().console_fetch_timeout_ms(ms)` for gateway-backed
+  runtimes. The value is sent as `runtime_options.console_fetch_timeout_ms`
+  and projected through `/console/experience` for the bundled console.
+
 ### Runtime state builders
 
 - `.persistent_state(path)` no longer creates a local redb mob store.

@@ -39,6 +39,7 @@ import {
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
 import {
+  DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
   callConsoleRpc,
   fetchJson,
   queryTimeline,
@@ -953,6 +954,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const experienceLoadInFlightRef = React.useRef<Promise<ConsoleAgent[]> | null>(
     null,
   );
+  const consoleFetchTimeoutMsRef = React.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
 
   // Stable agent ref for async callbacks
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
@@ -1174,10 +1176,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     let request: Promise<ConsoleAgent[]>;
     request = (async () => {
+      const timeoutMs = consoleFetchTimeoutMsRef.current;
       const [experienceJson, modulesJson] = await Promise.all([
-        fetchJson<ConsoleExperience>(baseUrl, "/console/experience"),
-        fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules"),
+        fetchJson<ConsoleExperience>(baseUrl, "/console/experience", timeoutMs),
+        fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules", timeoutMs),
       ]);
+      const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
+      if (
+        typeof configuredTimeoutMs === "number" &&
+        Number.isFinite(configuredTimeoutMs) &&
+        configuredTimeoutMs > 0
+      ) {
+        consoleFetchTimeoutMsRef.current = configuredTimeoutMs;
+      }
       const loadedModules = Array.isArray(modulesJson.modules)
         ? modulesJson.modules.map(String)
         : [];

@@ -1,7 +1,6 @@
 //! Console ingress types and JSON request/response structures.
 
 use super::*;
-use crate::console_config::ConsoleUiConfig;
 use crate::rpc::MOBKIT_CONTRACT_VERSION;
 
 /// Console-facing view of a single mob member.
@@ -198,7 +197,7 @@ pub fn handle_console_rest_json_route_with_snapshot(
         .cloned()
         .unwrap_or_else(|| default_console_live_snapshot(decisions));
     let body = if base_path == CONSOLE_EXPERIENCE_ROUTE {
-        build_console_experience_contract(&modules, &live_snapshot, &decisions.console.ui)
+        build_console_experience_contract(&modules, &live_snapshot, &decisions.console)
     } else {
         serde_json::json!({
             "contract_version": MOBKIT_CONTRACT_VERSION,
@@ -246,8 +245,9 @@ fn default_console_live_snapshot(decisions: &RuntimeDecisionState) -> ConsoleLiv
 fn build_console_experience_contract(
     modules: &[String],
     live_snapshot: &ConsoleLiveSnapshot,
-    console_config: &ConsoleUiConfig,
+    console_policy: &ConsolePolicy,
 ) -> Value {
+    let console_config = &console_policy.ui;
     let is_aggregate_console = live_snapshot.runtime_id.as_deref() == Some("console-aggregator");
     fn has_extended_agent_contract(agent: &ConsoleAgentLiveSnapshot) -> bool {
         agent.role.is_some()
@@ -485,7 +485,7 @@ fn build_console_experience_contract(
     };
 
     let console_title = console_config.title.as_deref().unwrap_or("Mob Console");
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "contract_version": MOBKIT_CONTRACT_VERSION,
         "runtime_id": live_snapshot.runtime_id,
         "console_config": console_config,
@@ -762,7 +762,13 @@ fn build_console_experience_contract(
                 "reason": "session history is projected through the console timeline",
             })
         }
-    })
+    });
+    if let Some(fetch_timeout_ms) = console_policy.fetch_timeout_ms {
+        body["console_policy"] = serde_json::json!({
+            "fetch_timeout_ms": fetch_timeout_ms,
+        });
+    }
+    body
 }
 
 fn build_identity_status_rows(sidebar_agents: &[Value]) -> Vec<Value> {

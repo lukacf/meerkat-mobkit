@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Console fetch policy
+
+- Added `MobKit.builder().consoleFetchTimeoutMs(ms)` for gateway-backed
+  runtimes. The value is sent as `runtime_options.console_fetch_timeout_ms`
+  and projected through `/console/experience` for the bundled console.
+
 ### Runtime state builders
 
 - `.persistentState(path)` no longer creates a local redb mob store.

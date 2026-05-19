@@ -68,6 +68,7 @@ struct GatewayRuntimeOptions {
     decisions: Option<RuntimeDecisionState>,
     console_ui: ConsoleUiConfig,
     console_require_app_auth: Option<bool>,
+    console_fetch_timeout_ms: Option<u64>,
     demo_llm: bool,
 }
 
@@ -83,6 +84,7 @@ impl Default for GatewayRuntimeOptions {
             decisions: None,
             console_ui: ConsoleUiConfig::default(),
             console_require_app_auth: None,
+            console_fetch_timeout_ms: None,
             demo_llm: false,
         }
     }
@@ -414,6 +416,42 @@ group_by = ["labels.console_group", "group"]
     }
 
     #[test]
+    fn gateway_runtime_options_parse_console_fetch_timeout_ms() {
+        let params = json!({
+            "runtime_options": {
+                "console_fetch_timeout_ms": 120_000
+            }
+        });
+
+        let options = parse_gateway_runtime_options(&params, None).expect("runtime options");
+
+        assert_eq!(
+            options
+                .decisions
+                .expect("decisions")
+                .console
+                .fetch_timeout_ms,
+            Some(120_000)
+        );
+    }
+
+    #[test]
+    fn gateway_runtime_options_reject_zero_console_fetch_timeout_ms() {
+        let params = json!({
+            "runtime_options": {
+                "console_fetch_timeout_ms": 0
+            }
+        });
+
+        let err = match parse_gateway_runtime_options(&params, None) {
+            Ok(_) => panic!("zero should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("runtime_options.console_fetch_timeout_ms"));
+    }
+
+    #[test]
     fn gateway_runtime_options_parse_demo_llm() {
         let params = json!({
             "runtime_options": {
@@ -474,6 +512,7 @@ fn parse_gateway_runtime_options(
         "auth_config",
         "console_config_path",
         "console_require_app_auth",
+        "console_fetch_timeout_ms",
         "demo_llm",
         "max_sessions",
         "event_log",
@@ -529,6 +568,21 @@ fn parse_gateway_runtime_options(
             "runtime_options.console_require_app_auth must be a boolean".to_string()
         })?);
     }
+    if let Some(value) = runtime_options.get("console_fetch_timeout_ms") {
+        if !value.is_null() {
+            let timeout_ms = value.as_u64().ok_or_else(|| {
+                "runtime_options.console_fetch_timeout_ms must be a positive integer or null"
+                    .to_string()
+            })?;
+            if timeout_ms == 0 {
+                return Err(
+                    "runtime_options.console_fetch_timeout_ms must be greater than zero"
+                        .to_string(),
+                );
+            }
+            parsed.console_fetch_timeout_ms = Some(timeout_ms);
+        }
+    }
     if let Some(value) = runtime_options.get("demo_llm") {
         parsed.demo_llm = value
             .as_bool()
@@ -577,6 +631,13 @@ fn parse_gateway_runtime_options(
             .get_or_insert_with(minimal_decision_state)
             .console
             .require_app_auth = require_app_auth;
+    }
+    if let Some(fetch_timeout_ms) = parsed.console_fetch_timeout_ms {
+        parsed
+            .decisions
+            .get_or_insert_with(minimal_decision_state)
+            .console
+            .fetch_timeout_ms = Some(fetch_timeout_ms);
     }
     if let Some(decisions) = parsed.decisions.as_mut() {
         decisions.console.ui = parsed.console_ui.clone();

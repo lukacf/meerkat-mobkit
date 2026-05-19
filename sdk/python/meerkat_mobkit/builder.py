@@ -16,6 +16,7 @@ class MobKitBuilderConfig:
     pre_spawn_callback: Any | None = None
     error_callback: Any | None = None
     event_log: Any | None = None
+    console_fetch_timeout_ms: int | None = None
     gating_config_path: str | None = None
     routing_config_path: str | None = None
     scheduling_files: list[str] = field(default_factory=list)
@@ -128,6 +129,12 @@ class MobKitBuilder:
 
     def auth(self, config: Any) -> MobKitBuilder:
         self._config.auth_config = config
+        return self
+
+    def console_fetch_timeout_ms(self, timeout_ms: int) -> MobKitBuilder:
+        if not isinstance(timeout_ms, int) or timeout_ms <= 0:
+            raise ValueError("console_fetch_timeout_ms must be a positive integer")
+        self._config.console_fetch_timeout_ms = timeout_ms
         return self
 
     def implicit_delegate_idle_retirement(

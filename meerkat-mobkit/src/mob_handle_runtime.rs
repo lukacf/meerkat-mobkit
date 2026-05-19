@@ -2310,6 +2310,13 @@ pub fn model_capabilities_for_role(
         .unwrap_or(crate::runtime::ConsoleModelCapabilities { image_input: false })
 }
 
+pub fn model_capabilities_for_member_entry(
+    definition: &MobDefinition,
+    entry: &meerkat_mob::runtime::MobMemberListEntry,
+) -> crate::runtime::ConsoleModelCapabilities {
+    model_capabilities_for_role(definition, entry.role.as_str())
+}
+
 pub async fn model_capabilities_for_member(
     handle: &MobHandle,
     session_service: Option<&Arc<dyn MobSessionService>>,

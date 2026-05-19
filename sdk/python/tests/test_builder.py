@@ -36,6 +36,16 @@ class TestBuilderChain:
         with pytest.raises(ValueError):
             MobKit.builder().implicit_delegate_idle_retirement(-1)
 
+    def test_console_fetch_timeout_ms_sets_runtime_option(self):
+        b = MobKit.builder().console_fetch_timeout_ms(120_000)
+        params = MobKitRuntime(b._config)._build_init_params()
+
+        assert params["runtime_options"]["console_fetch_timeout_ms"] == 120_000
+
+    def test_console_fetch_timeout_ms_rejects_non_positive_values(self):
+        with pytest.raises(ValueError):
+            MobKit.builder().console_fetch_timeout_ms(0)
+
     def test_memory_stores_without_gateway_config_is_rejected(self):
         with pytest.raises(ValueError, match="not supported by the Rust gateway"):
             MobKit.builder().memory(stores=["main"])
