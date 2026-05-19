@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Console live snapshots no longer read each member's session while building
+  `/console/experience`, `/console/modules`, or console member JSON. Snapshot
+  model capabilities now come from the mob roster profile, so busy in-flight
+  agent turns cannot block the admin console.
+- The bundled console's JSON fetch timeout now defaults to 60s and reports an
+  explicit timeout reason when aborted. `ConsolePolicy.fetch_timeout_ms` can
+  project a custom fetch ceiling to the frontend.
+
 ## [0.5.2] - 2026-03-30
 
 ### Added

@@ -80,6 +80,27 @@ fn decision_state(require_app_auth: bool) -> meerkat_mobkit::RuntimeDecisionStat
     .expect("decision state builds")
 }
 
+fn decision_state_with_console_policy(
+    console: ConsolePolicy,
+) -> meerkat_mobkit::RuntimeDecisionState {
+    build_runtime_decision_state(RuntimeDecisionInputs {
+        bigquery: BigQueryNaming {
+            dataset: "phase8_dataset".to_string(),
+            table: "phase8_table".to_string(),
+        },
+        trusted_mobkit_toml: trusted_toml(),
+        auth: AuthPolicy {
+            default_provider: AuthProvider::GoogleOAuth,
+            email_allowlist: vec!["alice@example.com".to_string()],
+        },
+        trusted_oidc: trusted_oidc(),
+        console,
+        ops: RuntimeOpsPolicy::default(),
+        release_metadata_json: release_json(),
+    })
+    .expect("decision state builds")
+}
+
 #[test]
 fn phase8_console_001_capability_driven_rendering_contract() {
     let state = decision_state(true);
@@ -268,6 +289,32 @@ fn phase8_console_001_capability_driven_rendering_contract() {
                 .expect("modules array")
                 .len()
         )
+    );
+}
+
+#[test]
+fn console_experience_projects_fetch_timeout_policy() {
+    let state = decision_state_with_console_policy(ConsolePolicy {
+        require_app_auth: true,
+        fetch_timeout_ms: Some(120_000),
+        ..ConsolePolicy::default()
+    });
+    let response = handle_console_rest_json_route(
+        &state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/experience".to_string(),
+            auth: Some(ConsoleAccessRequest {
+                provider: AuthProvider::GoogleOAuth,
+                email: "alice@example.com".to_string(),
+            }),
+        },
+    );
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.body["console_policy"]["fetch_timeout_ms"],
+        json!(120_000)
     );
 }
 

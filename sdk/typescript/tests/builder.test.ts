@@ -103,6 +103,20 @@ describe("MobKitBuilder chainable methods", () => {
     assert.equal(builder._config.consoleRequireAppAuth, false);
   });
 
+  it("consoleFetchTimeoutMs() sets consoleFetchTimeoutMs and returns this", () => {
+    const builder = MobKit.builder();
+    const result = builder.consoleFetchTimeoutMs(120_000);
+    assert.equal(result, builder);
+    assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
+  });
+
+  it("consoleFetchTimeoutMs() rejects invalid timeouts", () => {
+    assert.throws(
+      () => MobKit.builder().consoleFetchTimeoutMs(0),
+      /consoleFetchTimeoutMs must be a positive integer/,
+    );
+  });
+
   it("demoLlm() enables deterministic gateway LLM mode and returns this", () => {
     const builder = MobKit.builder();
     const result = builder.demoLlm();
@@ -233,6 +247,7 @@ describe("MobKitBuilder default config", () => {
     assert.equal(cfg.eventLog, null);
     assert.equal(cfg.consoleConfigPath, null);
     assert.equal(cfg.consoleRequireAppAuth, null);
+    assert.equal(cfg.consoleFetchTimeoutMs, null);
     assert.equal(cfg.demoLlm, false);
     assert.equal(cfg.gatingConfigPath, null);
     assert.equal(cfg.routingConfigPath, null);
@@ -275,6 +290,7 @@ describe("MobKitBuilder method chaining", () => {
       .gateway("/bin/gw")
       .consoleConfig("console.toml")
       .consoleAuthRequired(false)
+      .consoleFetchTimeoutMs(120_000)
       .demoLlm()
       .gating("gating.toml")
       .routing("routing.toml")
@@ -288,6 +304,7 @@ describe("MobKitBuilder method chaining", () => {
     assert.equal(builder._config.gatewayBin, "/bin/gw");
     assert.equal(builder._config.consoleConfigPath, "console.toml");
     assert.equal(builder._config.consoleRequireAppAuth, false);
+    assert.equal(builder._config.consoleFetchTimeoutMs, 120_000);
     assert.equal(builder._config.demoLlm, true);
     assert.equal(builder._config.gatingConfigPath, "gating.toml");
     assert.equal(builder._config.routingConfigPath, "routing.toml");

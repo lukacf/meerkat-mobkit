@@ -39,6 +39,7 @@ export interface MobKitBuilderConfig {
   eventLog: Record<string, unknown> | null;
   consoleConfigPath: string | null;
   consoleRequireAppAuth: boolean | null;
+  consoleFetchTimeoutMs: number | null;
   demoLlm: boolean;
   gatingConfigPath: string | null;
   routingConfigPath: string | null;
@@ -70,6 +71,7 @@ function defaultConfig(): MobKitBuilderConfig {
     eventLog: null,
     consoleConfigPath: null,
     consoleRequireAppAuth: null,
+    consoleFetchTimeoutMs: null,
     demoLlm: false,
     gatingConfigPath: null,
     routingConfigPath: null,
@@ -141,6 +143,14 @@ export class MobKitBuilder {
 
   consoleAuthRequired(required: boolean): this {
     this._config.consoleRequireAppAuth = required;
+    return this;
+  }
+
+  consoleFetchTimeoutMs(timeoutMs: number): this {
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("consoleFetchTimeoutMs must be a positive integer");
+    }
+    this._config.consoleFetchTimeoutMs = timeoutMs;
     return this;
   }
 

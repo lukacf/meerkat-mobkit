@@ -99,6 +99,7 @@ The stock SDK gateway consumes the `runtime_options` object sent by Python and T
 | `scheduling_files` | String array | Loads JSON or TOML schedule definitions and uses them as the default schedules for `mobkit/scheduling/evaluate` and `mobkit/scheduling/dispatch` when the RPC request omits `schedules`. |
 | `gating_config_path` | String | Loads JSON or TOML action policies from an `actions` object and supplies a configured `risk_tier` for `mobkit/gating/evaluate` requests that omit `risk_tier`. |
 | `auth_config` | Object | Supports JWT shared-secret auth (`provider = "jwt"` / `shared_secret`) and wires the reference HTTP console/SSE routes to the configured trusted issuer, audience, and email allowlist. |
+| `console_fetch_timeout_ms` | Positive integer | Sets `RuntimeDecisionState.console.fetch_timeout_ms`, which the bundled console uses for JSON fetches after the initial 60s default. |
 | `event_log` | Object | Supports the built-in memory event log with `storage = "memory"`, `batch_size`, and `flush_interval_ms`; `mobkit/query_events` returns the configured store instead of `no_event_log_configured`. |
 
 Unsupported nested fields fail initialization with `-32602` instead of being silently ignored.
@@ -136,12 +137,14 @@ enum AuthProvider {
 ```rust
 ConsolePolicy {
     require_app_auth: bool,
+    fetch_timeout_ms: Option<u64>,
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `require_app_auth` | `bool` | `true` | Whether console routes require JWT authentication |
+| `fetch_timeout_ms` | `Option<u64>` | `None` | Optional bundled-console JSON fetch timeout override, projected through `/console/experience` |
 
 ---
 
