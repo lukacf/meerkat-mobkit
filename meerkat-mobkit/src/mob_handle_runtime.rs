@@ -1077,6 +1077,15 @@ macro_rules! delegate_mob_session_service {
             ) -> Result<(), SessionError> {
                 self.inner.discard_live_session(session_id).await
             }
+            async fn checkpoint_committed_runtime_session_snapshot(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                session_snapshot: &[u8],
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
+                    .await
+            }
             async fn cancel_all_checkpointers(&self) {
                 self.inner.cancel_all_checkpointers().await;
             }
@@ -1415,6 +1424,15 @@ impl MobSessionService for AfterCreateMobSessionService {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<(), SessionError> {
         self.inner.discard_live_session(session_id).await
+    }
+    async fn checkpoint_committed_runtime_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        session_snapshot: &[u8],
+    ) -> Result<(), SessionError> {
+        self.inner
+            .checkpoint_committed_runtime_session_snapshot(session_id, session_snapshot)
+            .await
     }
     async fn cancel_all_checkpointers(&self) {
         self.inner.cancel_all_checkpointers().await;
@@ -3183,6 +3201,15 @@ realm_profile = "worker-v2"
             self.record("archive_with_mob_lifecycle_authority");
             Ok(())
         }
+
+        async fn checkpoint_committed_runtime_session_snapshot(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _session_snapshot: &[u8],
+        ) -> Result<(), SessionError> {
+            self.record("checkpoint_committed_runtime_session_snapshot");
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -3214,6 +3241,56 @@ realm_profile = "worker-v2"
         assert_eq!(
             probe.calls(),
             vec!["archive_with_mob_lifecycle_authority", "stage_tool_results",]
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_build_wrapper_forwards_runtime_checkpoint_projection() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let wrapped = PreBuildMobSessionService {
+            inner,
+            hook: no_op_pre_build_hook(),
+            after_create_hook: None,
+            runtime_adapter_override: Some(Arc::new(meerkat_runtime::MeerkatMachine::ephemeral())),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+
+        MobSessionService::checkpoint_committed_runtime_session_snapshot(
+            &wrapped,
+            &session_id,
+            b"committed snapshot",
+        )
+        .await
+        .expect("runtime checkpoint projection should forward to inner service");
+
+        assert_eq!(
+            probe.calls(),
+            vec!["checkpoint_committed_runtime_session_snapshot"]
+        );
+    }
+
+    #[tokio::test]
+    async fn after_create_wrapper_forwards_runtime_checkpoint_projection() {
+        let probe = Arc::new(ForwardingProbe::default());
+        let inner: Arc<dyn MobSessionService> = probe.clone();
+        let wrapped = AfterCreateMobSessionService {
+            inner,
+            after_hook: Arc::new(|_, _| Box::pin(async {})),
+        };
+        let session_id = meerkat_core::types::SessionId::new();
+
+        MobSessionService::checkpoint_committed_runtime_session_snapshot(
+            &wrapped,
+            &session_id,
+            b"committed snapshot",
+        )
+        .await
+        .expect("runtime checkpoint projection should forward through after-create wrapper");
+
+        assert_eq!(
+            probe.calls(),
+            vec!["checkpoint_committed_runtime_session_snapshot"]
         );
     }
 

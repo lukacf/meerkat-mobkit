@@ -110,10 +110,10 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Set a custom session store. When set, the builder uses this store
-    /// instead of creating a default one. Works with both `.persistent_state()`
-    /// (overrides the auto-created SQLite store) and ephemeral builds
-    /// (provides durable sessions without redb mob storage).
+    /// Set a custom session store. Requires `.persistent_state()` and
+    /// overrides the auto-created SQLite store. Use `.mob_storage_in_memory()`
+    /// with `.persistent_state()` when callers need durable sessions without
+    /// redb-backed mob storage.
     pub fn session_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
         self.custom_session_store = Some(store);
         self
@@ -341,6 +341,16 @@ impl UnifiedRuntimeBuilder {
         let has_lease_provider = self.lease_provider.is_some();
         let has_scratch_dir = self.scratch_dir.is_some();
         let has_any_external = has_continuity_store || has_lease_provider || has_scratch_dir;
+        let has_custom_session_store = self.custom_session_store.is_some();
+
+        if has_custom_session_store && !has_persistent_state {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "session_store() requires persistent_state(); ephemeral runtime-backed builds use \
+                 EphemeralSessionService and cannot project committed runtime turns into a custom \
+                 SessionStore"
+                    .to_string(),
+            ));
+        }
 
         // REQ-23: persistent_state and explicit providers are mutually exclusive
         if has_persistent_state && has_any_external {
@@ -564,6 +574,14 @@ impl UnifiedRuntimeBuilder {
         if max_sessions == 0 {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                 "max_sessions() must be greater than 0".to_string(),
+            ));
+        }
+        if self.custom_session_store.is_some() && self.persistent_state_path.is_none() {
+            return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
+                "session_store() requires persistent_state(); ephemeral runtime-backed builds use \
+                 EphemeralSessionService and cannot project committed runtime turns into a custom \
+                 SessionStore"
+                    .to_string(),
             ));
         }
 
@@ -826,6 +844,40 @@ model = "gpt-5.5"
         assert!(
             err.to_string().contains("max_sessions"),
             "unexpected error: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn definition_based_spec_rejects_session_store_without_persistent_state() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-ephemeral-custom-session-store"
+
+[profiles.worker]
+model = "gpt-5.5"
+"#,
+        )
+        .expect("definition parses");
+
+        let custom_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+        let result = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .session_store(custom_store)
+            .resolve_mob_spec()
+            .await;
+        assert!(
+            matches!(
+                result,
+                Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(_))
+            ),
+            "session_store without persistent_state should be rejected"
+        );
+        let err = result.err().expect("builder error");
+        assert!(
+            err.to_string()
+                .contains("session_store() requires persistent_state()"),
+            "unexpected error: {err}"
         );
     }
 
