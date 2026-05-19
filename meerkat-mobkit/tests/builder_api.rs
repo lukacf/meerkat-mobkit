@@ -284,3 +284,49 @@ async fn test_builder_persistent_custom_store() {
 
     runtime.mob_handle().stop().await.expect("stop");
 }
+
+#[tokio::test]
+async fn test_builder_ephemeral_custom_store_persists_sessions() {
+    let custom_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+    let runtime = UnifiedRuntime::builder()
+        .definition(test_definition())
+        .session_store(custom_store.clone())
+        .default_llm_client(Arc::new(TestClient::default()))
+        .build()
+        .await
+        .expect("ephemeral build with custom store");
+
+    let session_service = runtime
+        .mob_runtime()
+        .session_service()
+        .expect("builder-created runtime must expose its session service");
+    let result = meerkat_core::service::SessionService::create_session(
+        session_service.as_ref(),
+        CreateSessionRequest {
+            model: "gpt-5.5".to_string(),
+            prompt: meerkat_core::ContentInput::Text("test".to_string()),
+            render_metadata: None,
+            system_prompt: None,
+            max_tokens: None,
+            event_tx: None,
+            skill_references: None,
+            initial_turn: meerkat_core::service::InitialTurnPolicy::Defer,
+            deferred_prompt_policy: meerkat_core::service::DeferredPromptPolicy::default(),
+            build: None,
+            labels: None,
+        },
+    )
+    .await
+    .expect("deferred session create");
+
+    assert!(
+        custom_store
+            .load(&result.session_id)
+            .await
+            .expect("custom store load")
+            .is_some(),
+        "ephemeral builder session_store() must wire the custom store into the real session service"
+    );
+
+    runtime.mob_handle().stop().await.expect("stop");
+}

@@ -645,6 +645,7 @@ impl UnifiedRuntimeBuilder {
                 MobStorage::in_memory(),
                 store_path,
                 max_sessions,
+                self.custom_session_store.clone(),
                 hook,
                 caps,
                 after_hook,
