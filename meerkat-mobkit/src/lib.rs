@@ -36,7 +36,8 @@ pub use baseline::{
     REQUIRED_MEERKAT_SYMBOLS, verify_meerkat_baseline_symbols,
 };
 pub use blob_store::{
-    Base64BlobStoreAdapter, BinaryBlobPayload, BinaryBlobStore, ObjectStoreBlobStore,
+    Base64BlobStoreAdapter, BinaryBlobPayload, BinaryBlobStore, BinaryBlobStoreAdapter,
+    ObjectStoreBlobStore,
 };
 pub use config_convention::ConventionalPaths;
 pub use console_aggregator::{

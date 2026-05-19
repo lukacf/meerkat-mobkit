@@ -56,7 +56,6 @@ pub struct UnifiedRuntimeBuilder {
     continuity_store: Option<Arc<dyn crate::identity_first::contracts::ContinuityStore>>,
     lease_provider: Option<Arc<dyn crate::identity_first::contracts::LeaseProvider>>,
     scratch_dir: Option<PathBuf>,
-    runtime_store: Option<Arc<dyn meerkat::SessionStore>>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
     console_log_store: Option<Arc<dyn ConsoleLogStore>>,
 
@@ -74,7 +73,6 @@ pub struct UnifiedRuntimeBuilder {
     pre_spawn_hook: Option<PreSpawnHook>,
     edge_discovery: Option<Box<dyn EdgeDiscovery>>,
     contact_directory: Option<ContactDirectory>,
-    mob_storage_in_memory: bool,
     persistent_metadata: Option<Arc<dyn PersistentMetadataStore>>,
 }
 
@@ -96,9 +94,10 @@ impl UnifiedRuntimeBuilder {
     }
 
     /// Enable persistent state at the given path. When set, the builder
-    /// creates a `SqliteSessionStore`, binary blob store, and
-    /// `MobStorage::redb()` under this directory. When not set, the builder
-    /// uses an ephemeral session service with an auto-created temp directory.
+    /// creates a `SqliteSessionStore`, runtime store, metadata store, console
+    /// log store, and binary blob store under this directory. Mob storage stays
+    /// in-memory. When not set, the builder uses an ephemeral session service
+    /// with an auto-created temp directory.
     pub fn persistent_state(mut self, path: impl Into<PathBuf>) -> Self {
         self.persistent_state_path = Some(path.into());
         self
@@ -113,18 +112,9 @@ impl UnifiedRuntimeBuilder {
     /// Set a custom session store. When set, the builder uses this store
     /// instead of creating a default one. Works with both `.persistent_state()`
     /// (overrides the auto-created SQLite store) and ephemeral builds
-    /// (provides durable sessions without redb mob storage).
+    /// (provides durable sessions without local mob storage).
     pub fn session_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
         self.custom_session_store = Some(store);
-        self
-    }
-
-    /// Use in-memory mob storage instead of redb. When set with
-    /// `.persistent_state()`, sessions are still persisted (via the session
-    /// store) but mob-level metadata (events, flow runs, specs) is ephemeral.
-    /// Avoids the redb exclusive file lock.
-    pub fn mob_storage_in_memory(mut self) -> Self {
-        self.mob_storage_in_memory = true;
         self
     }
 
@@ -174,18 +164,10 @@ impl UnifiedRuntimeBuilder {
         self
     }
 
-    /// Set an optional runtime store for durable dispatch.
-    ///
-    /// Without this, dispatch acknowledgment means in-memory only.
-    /// Can be used with both `persistent_state()` and the external path.
-    pub fn runtime_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
-        self.runtime_store = Some(store);
-        self
-    }
-
     /// Set an optional blob store for custom blob persistence.
     ///
-    /// Can be used with both `persistent_state()` and the external path.
+    /// The same store is used for runtime image blobs and for MobKit's
+    /// `/blobs/{id}` and `mobkit/blob/*` serving/upload paths.
     pub fn blob_store(mut self, store: Arc<dyn meerkat_core::BlobStore>) -> Self {
         self.blob_store = Some(store);
         self
@@ -593,7 +575,7 @@ impl UnifiedRuntimeBuilder {
                 })
             });
 
-        // Note: blocking I/O (fs, SQLite, redb) — acceptable at startup.
+        // Note: blocking I/O (fs, SQLite) — acceptable at startup.
         let mut spec = if let Some(ref state_path) = self.persistent_state_path {
             std::fs::create_dir_all(state_path).map_err(|e| {
                 UnifiedRuntimeBuilderError::Io(format!(
@@ -615,13 +597,7 @@ impl UnifiedRuntimeBuilder {
                         })?,
                     )
                 };
-            let mob_storage = if self.mob_storage_in_memory {
-                MobStorage::in_memory()
-            } else {
-                MobStorage::persistent(state_path.join("mob.redb")).map_err(|e| {
-                    UnifiedRuntimeBuilderError::Io(format!("failed to open redb mob storage: {e}"))
-                })?
-            };
+            let mob_storage = MobStorage::in_memory();
 
             MobBootstrapSpec::persistent_inner(
                 definition,
@@ -629,6 +605,7 @@ impl UnifiedRuntimeBuilder {
                 state_path.clone(),
                 max_sessions,
                 session_store,
+                self.blob_store.clone(),
                 hook,
                 caps,
                 after_hook.clone(),
@@ -646,6 +623,7 @@ impl UnifiedRuntimeBuilder {
                 store_path,
                 max_sessions,
                 self.custom_session_store.clone(),
+                self.blob_store.clone(),
                 hook,
                 caps,
                 after_hook,
@@ -778,7 +756,6 @@ runtime_mode = "autonomous_host"
         let builder = UnifiedRuntimeBuilder::default()
             .definition(definition)
             .persistent_state(tmp.path().join("state"))
-            .mob_storage_in_memory()
             .max_sessions(2);
         let spec = builder.resolve_mob_spec().await.expect("spec resolves");
 

@@ -91,7 +91,6 @@ async fn batch_size_zero_does_not_panic() {
 
     // The bug pre-fix: this call panics inside `start_event_log`.
     let runtime = meerkat_mobkit::UnifiedRuntimeBuilder::default()
-        .mob_storage_in_memory()
         .definition(
             meerkat_mob::MobDefinition::from_toml(
                 "[mob]\nid = \"event-log-zero-batch\"\n\n\

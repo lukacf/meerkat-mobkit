@@ -325,8 +325,7 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
     let critic_continuity_path = temp.path().join("critic_continuity.db");
 
     // Shared session stores — survive across v1→v2 rebuild (like a persistent volume).
-    // Using mob_storage_in_memory() avoids the redb exclusive file lock while still
-    // getting persistent sessions via the shared SQLite store.
+    // Mob storage is in-memory; persistent_state covers sessions/runtime/blob/metadata surfaces.
     let author_session_store: Arc<dyn meerkat::SessionStore> = Arc::new(
         meerkat_store::SqliteSessionStore::open(temp.path().join("author_sessions.db"))
             .expect("author session store"),
@@ -356,7 +355,6 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
         .definition(author_definition(&model))
         .persistent_state(&author_state)
         .session_store(author_session_store.clone())
-        .mob_storage_in_memory()
         .comms(true)
         .contact_directory(dir.clone())
         .build()
@@ -367,7 +365,6 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
         .definition(critic_definition(&model))
         .persistent_state(&critic_state)
         .session_store(critic_session_store.clone())
-        .mob_storage_in_memory()
         .comms(true)
         .contact_directory(dir.clone())
         .build()
@@ -853,7 +850,6 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
         .definition(author_definition(&model))
         .persistent_state(&author_state)
         .session_store(author_session_store.clone())
-        .mob_storage_in_memory()
         .comms(true)
         .contact_directory(dir2.clone())
         .build()
@@ -864,7 +860,6 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
         .definition(critic_definition(&model))
         .persistent_state(&critic_state)
         .session_store(critic_session_store.clone())
-        .mob_storage_in_memory()
         .comms(true)
         .contact_directory(dir2)
         .build()

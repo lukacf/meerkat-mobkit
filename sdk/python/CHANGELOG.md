@@ -4,6 +4,13 @@ All notable changes to the Python SDK are documented here.
 
 ## Unreleased
 
+### Runtime state builders
+
+- `.persistent_state(path)` no longer creates a local redb mob store.
+  Gateway-backed SDK runtimes keep mob storage in-memory while sessions,
+  runtime state, metadata, console logs, and binary blobs remain under
+  the configured state directory.
+
 ### Multimodal attachments
 
 - Added `MobHandle.upload_blob(...)` for efficient binary image upload

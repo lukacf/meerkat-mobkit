@@ -1597,14 +1597,7 @@ external_addressable = true
                     format!("failed to open SQLite session store: {e}"),
                 ),
             };
-        let mob_storage = match MobStorage::persistent(state_path.join("mob.redb")) {
-            Ok(s) => s,
-            Err(e) => fail_init(
-                &request_id,
-                -32603,
-                format!("failed to open redb mob storage: {e}"),
-            ),
-        };
+        let mob_storage = MobStorage::in_memory();
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
             match ObjectStoreBlobStore::local(state_path.join("blobs")) {
                 Ok(store) => Arc::new(store),

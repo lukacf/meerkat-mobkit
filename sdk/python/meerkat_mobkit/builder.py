@@ -157,9 +157,10 @@ class MobKitBuilder:
     def persistent_state(self, path: str) -> MobKitBuilder:
         """Enable persistent state at the given path.
 
-        When set, the gateway creates SQLite session store, binary blob store,
-        and redb mob storage under this directory. When not set, the
-        gateway uses an ephemeral session service.
+        When set, the gateway creates SQLite-backed session/runtime state,
+        MobKit metadata, console logs, and binary blob storage under this
+        directory. Mob storage remains in-memory. When not set, the gateway
+        uses an ephemeral session service.
         """
         self._config.persistent_state = path
         return self
