@@ -22,7 +22,9 @@ use meerkat_mob::{
 use meerkat_store::StoreAdapter;
 use serde_json::Value;
 
-use crate::blob_store::{Base64BlobStoreAdapter, BinaryBlobStore, ObjectStoreBlobStore};
+use crate::blob_store::{
+    Base64BlobStoreAdapter, BinaryBlobStore, BinaryBlobStoreAdapter, ObjectStoreBlobStore,
+};
 
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
 pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
@@ -1680,6 +1682,7 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             None,
+            None,
             CapabilityFlags::default(),
             None,
         )
@@ -1708,6 +1711,7 @@ impl MobBootstrapSpec {
             store_path,
             max_sessions,
             session_store,
+            None,
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
@@ -1721,25 +1725,37 @@ impl MobBootstrapSpec {
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
+        custom_blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
-        let binary_blob_store: Arc<dyn BinaryBlobStore> = match ObjectStoreBlobStore::local(
-            store_path.join("blobs"),
-        ) {
-            Ok(store) => Arc::new(store),
-            Err(err) => {
-                tracing::warn!(
-                    error = %err,
-                    "failed to initialize persistent binary blob store; falling back to in-memory blobs"
-                );
-                Arc::new(ObjectStoreBlobStore::memory())
-            }
+        let (binary_blob_store, blob_store): (
+            Arc<dyn BinaryBlobStore>,
+            Arc<dyn meerkat_core::BlobStore>,
+        ) = if let Some(blob_store) = custom_blob_store {
+            (
+                Arc::new(BinaryBlobStoreAdapter::new(blob_store.clone())),
+                blob_store,
+            )
+        } else {
+            let binary_blob_store: Arc<dyn BinaryBlobStore> = match ObjectStoreBlobStore::local(
+                store_path.join("blobs"),
+            ) {
+                Ok(store) => Arc::new(store),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "failed to initialize persistent binary blob store; falling back to in-memory blobs"
+                    );
+                    Arc::new(ObjectStoreBlobStore::memory())
+                }
+            };
+            let blob_store: Arc<dyn meerkat_core::BlobStore> =
+                Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+            (binary_blob_store, blob_store)
         };
-        let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
         // Use a SQLite-backed runtime store so we get BOTH durability across
         // process restart AND control-op authority (archive/retire). The
         // earlier 0.6.1 wiring used `Some(InMemoryRuntimeStore)`, which was
@@ -1800,16 +1816,32 @@ impl MobBootstrapSpec {
         storage: MobStorage,
         store_path: PathBuf,
         max_sessions: usize,
+        custom_session_store: Option<Arc<dyn SessionStore>>,
+        custom_blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let config = Config::default();
-        let session_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
-        let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
-        let blob_store: Arc<dyn meerkat_core::BlobStore> =
-            Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+        let session_store: Arc<dyn SessionStore> = custom_session_store
+            .clone()
+            .unwrap_or_else(|| Arc::new(meerkat_store::MemoryStore::new()));
+        let (binary_blob_store, blob_store): (
+            Arc<dyn BinaryBlobStore>,
+            Arc<dyn meerkat_core::BlobStore>,
+        ) = if let Some(blob_store) = custom_blob_store {
+            (
+                Arc::new(BinaryBlobStoreAdapter::new(blob_store.clone())),
+                blob_store,
+            )
+        } else {
+            let binary_blob_store: Arc<dyn BinaryBlobStore> =
+                Arc::new(ObjectStoreBlobStore::memory());
+            let blob_store: Arc<dyn meerkat_core::BlobStore> =
+                Arc::new(Base64BlobStoreAdapter::new(binary_blob_store.clone()));
+            (binary_blob_store, blob_store)
+        };
         // Runtime-backed ephemeral mode keeps the live EphemeralSessionService
         // as the comms authority, but registers each created session with the
         // same in-memory machine used by image generation. Meerkat 0.6.4's
@@ -1836,9 +1868,21 @@ impl MobBootstrapSpec {
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
         let mob_tools_slot = Arc::clone(&builder.default_mob_tools);
-        let session_service: Arc<dyn MobSessionService> = Arc::new(
-            meerkat_session::EphemeralSessionService::new(builder, max_sessions),
-        );
+        let session_service: Arc<dyn MobSessionService> =
+            if let Some(custom_session_store) = custom_session_store {
+                Arc::new(meerkat_session::PersistentSessionService::new(
+                    builder,
+                    max_sessions,
+                    custom_session_store,
+                    Some(runtime_store.clone()),
+                    blob_store,
+                ))
+            } else {
+                Arc::new(meerkat_session::EphemeralSessionService::new(
+                    builder,
+                    max_sessions,
+                ))
+            };
         let hook = hook.unwrap_or_else(no_op_pre_build_hook);
         let runtime_adapter_for_after_create = runtime_adapter.clone();
         let combined_after_create_hook: AfterCreateHook = Arc::new(move |session_id, ctx| {
@@ -3304,6 +3348,8 @@ realm_profile = "worker-v2"
             store_path,
             4,
             None,
+            None,
+            None,
             CapabilityFlags::default(),
             None,
         );
@@ -3314,6 +3360,57 @@ realm_profile = "worker-v2"
         assert!(
             spec.session_service.runtime_adapter().is_some(),
             "session service must still expose a runtime adapter so autonomous-host comms can wire"
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_runtime_backed_custom_session_store_persists_created_session() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n",
+        ) else {
+            panic!("failed to parse minimal mob definition");
+        };
+        let custom_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            Some(custom_store.clone()),
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+
+        let runtime = MobRuntime::bootstrap(spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mid = meerkat_mob::ids::MeerkatId::from("worker:one");
+        runtime
+            .handle
+            .spawn_spec(SpawnMemberSpec::new(
+                ProfileName::from("worker"),
+                mid.clone(),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session_id = runtime
+            .handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .unwrap_or_else(|| panic!("spawned worker has no bridge session id"));
+
+        let stored = custom_store
+            .load(&session_id)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(
+            stored.is_some(),
+            "ephemeral runtime-backed builds with a custom store must persist through that store"
         );
     }
 

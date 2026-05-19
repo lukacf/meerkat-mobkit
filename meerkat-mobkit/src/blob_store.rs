@@ -284,6 +284,47 @@ impl BlobStore for Base64BlobStoreAdapter {
     }
 }
 
+pub struct BinaryBlobStoreAdapter {
+    inner: Arc<dyn BlobStore>,
+}
+
+impl BinaryBlobStoreAdapter {
+    pub fn new(inner: Arc<dyn BlobStore>) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl BinaryBlobStore for BinaryBlobStoreAdapter {
+    async fn put_bytes(&self, media_type: &str, data: Bytes) -> Result<BlobRef, BlobStoreError> {
+        let encoded = base64::engine::general_purpose::STANDARD.encode(data.as_ref());
+        self.inner.put_image(media_type, &encoded).await
+    }
+
+    async fn get_bytes(&self, blob_id: &BlobId) -> Result<BinaryBlobPayload, BlobStoreError> {
+        let payload = self.inner.get(blob_id).await?;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload.data.as_bytes())
+            .map_err(|err| {
+                BlobStoreError::ReadFailed(format!("invalid blob base64 payload: {err}"))
+            })?;
+        Ok(BinaryBlobPayload {
+            blob_id: payload.blob_id,
+            media_type: payload.media_type,
+            size: decoded.len() as u64,
+            data: Bytes::from(decoded),
+        })
+    }
+
+    async fn delete(&self, blob_id: &BlobId) -> Result<(), BlobStoreError> {
+        self.inner.delete(blob_id).await
+    }
+
+    fn is_persistent(&self) -> bool {
+        self.inner.is_persistent()
+    }
+}
+
 fn compute_blob_id(media_type: &str, bytes: &[u8]) -> BlobId {
     let mut hasher = Sha256::new();
     hasher.update(media_type.as_bytes());

@@ -17,9 +17,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use meerkat_client::TestClient;
 use meerkat_core::service::{CreateSessionRequest, SessionError};
-use meerkat_mob::{MobDefinition, MobState, MobStorage};
+use meerkat_mob::{
+    MobDefinition, MobState, MobStorage, ProfileName, SpawnMemberSpec, ids::MeerkatId,
+};
 use meerkat_mobkit::{
     DiscoverySpec, MobBootstrapOptions, MobBootstrapSpec, MobKitConfig, SessionHook, UnifiedRuntime,
 };
@@ -60,7 +63,7 @@ async fn test_builder_ephemeral() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Builder persistent (SQLite session store + redb mob storage)
+// 2. Builder persistent (SQLite session/runtime state + in-memory mob storage)
 // ---------------------------------------------------------------------------
 #[tokio::test]
 #[ignore]
@@ -280,6 +283,95 @@ async fn test_builder_persistent_custom_store() {
     assert!(
         !state_path.join("sessions.db").exists(),
         "builder must use custom store, not create default SQLite"
+    );
+
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_builder_ephemeral_custom_store_persists_sessions() {
+    let custom_store: Arc<dyn meerkat::SessionStore> = Arc::new(meerkat::MemoryStore::new());
+    let definition = MobDefinition::from_toml(
+        r#"
+[mob]
+id = "builder-test-mob"
+
+[profiles.worker]
+model = "test-model"
+
+[profiles.worker.tools]
+comms = true
+"#,
+    )
+    .expect("parse test mob definition");
+    let runtime = UnifiedRuntime::builder()
+        .definition(definition)
+        .session_store(custom_store.clone())
+        .default_llm_client(Arc::new(TestClient::default()))
+        .build()
+        .await
+        .expect("ephemeral build with custom store");
+
+    let mid = MeerkatId::from("worker:one");
+    runtime
+        .mob_handle()
+        .spawn_spec(SpawnMemberSpec::new(
+            ProfileName::from("worker"),
+            mid.clone(),
+        ))
+        .await
+        .expect("spawn worker");
+    let session_id = runtime
+        .mob_handle()
+        .resolve_bridge_session_id(&mid)
+        .await
+        .expect("spawned worker has a bridge session id");
+
+    assert!(
+        custom_store
+            .load(&session_id)
+            .await
+            .expect("custom store load")
+            .is_some(),
+        "ephemeral builder session_store() must wire the custom store into the real session service"
+    );
+
+    runtime.mob_handle().stop().await.expect("stop");
+}
+
+#[tokio::test]
+async fn test_builder_custom_blob_store_serves_binary_blobs() {
+    let blob_store: Arc<dyn meerkat_core::BlobStore> =
+        Arc::new(meerkat_store::MemoryBlobStore::new());
+    let runtime = UnifiedRuntime::builder()
+        .definition(test_definition())
+        .blob_store(blob_store.clone())
+        .default_llm_client(Arc::new(TestClient::default()))
+        .build()
+        .await
+        .expect("ephemeral build with custom blob store");
+
+    let binary_store = runtime
+        .binary_blob_store()
+        .expect("builder-created runtime must expose binary blob serving store");
+    let blob_ref = binary_store
+        .put_bytes("image/png", bytes::Bytes::from_static(b"tiny-png"))
+        .await
+        .expect("binary put");
+    let served = binary_store
+        .get_bytes(&blob_ref.blob_id)
+        .await
+        .expect("binary get");
+    assert_eq!(served.data.as_ref(), b"tiny-png");
+
+    let stored = blob_store.get(&blob_ref.blob_id).await.expect("blob get");
+    assert_eq!(stored.media_type, "image/png");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD
+            .decode(stored.data.as_bytes())
+            .expect("stored blob base64")
+            .as_slice(),
+        b"tiny-png"
     );
 
     runtime.mob_handle().stop().await.expect("stop");

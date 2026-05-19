@@ -191,21 +191,13 @@ async fn identity_first_builder_external_path_missing_scratch_dir() {
     assert_build_err_contains(builder, "scratch_dir").await;
 }
 
-// ===========================================================================
-// Task 1.14: Builder advanced durability knobs (REQ-25, REQ-26)
-// ===========================================================================
-
 #[tokio::test]
-async fn identity_first_builder_runtime_store_accepted_with_persistent_state() {
-    // runtime_store and blob_store should be accepted alongside persistent_state
-    // without triggering a conflict error. The build will fail later (missing definition).
+async fn identity_first_builder_blob_store_accepted_with_persistent_state() {
+    // blob_store should be accepted alongside persistent_state without
+    // triggering a conflict error. The build will fail later (missing definition).
     let tmp = tempfile::tempdir().unwrap();
-    let store_path = tmp.path().join("sessions.db");
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state(tmp.path())
-        .runtime_store(Arc::new(
-            meerkat_store::SqliteSessionStore::open(&store_path).unwrap(),
-        ))
         .blob_store(Arc::new(meerkat_store::FsBlobStore::new(
             tmp.path().join("blobs"),
         )));
@@ -213,16 +205,15 @@ async fn identity_first_builder_runtime_store_accepted_with_persistent_state() {
 }
 
 #[tokio::test]
-async fn identity_first_builder_runtime_store_accepted_with_external_path() {
+async fn identity_first_builder_blob_store_accepted_with_external_path() {
     let tmp = tempfile::tempdir().unwrap();
-    let store_path = tmp.path().join("sessions.db");
     let builder = UnifiedRuntimeBuilder::default()
         .continuity_store(Arc::new(StubContinuityStore))
         .lease_provider(Arc::new(StubLeaseProvider))
         .scratch_dir(tmp.path())
-        .runtime_store(Arc::new(
-            meerkat_store::SqliteSessionStore::open(&store_path).unwrap(),
-        ));
+        .blob_store(Arc::new(meerkat_store::FsBlobStore::new(
+            tmp.path().join("blobs"),
+        )));
     assert_build_err_not_contains(builder, "mutually exclusive", "conflicting").await;
 }
 
