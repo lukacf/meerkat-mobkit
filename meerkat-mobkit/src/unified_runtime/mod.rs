@@ -45,6 +45,7 @@ pub use edge_types::{
     PreSpawnContext, PreSpawnHook,
 };
 pub use event_log::{EventLogConfig, EventLogError, EventLogStore, EventQuery, PersistedEvent};
+pub use http::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
 pub use types::{
     ErrorEvent, RediscoverReport, ShutdownDrainReport, UnifiedRuntimeBootstrapError,
     UnifiedRuntimeBuilderError, UnifiedRuntimeBuilderField, UnifiedRuntimeError,

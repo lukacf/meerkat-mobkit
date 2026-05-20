@@ -1841,14 +1841,19 @@ fn frames_from_session_history_message(
             .collect();
     }
     let (kind, timestamp_ms, payload) = match &parsed {
-        Message::User(user) => (
-            "user_input",
-            user.created_at.timestamp_millis().max(0) as u64,
-            json!({
-                "content": user.content,
-                "message": message,
-            }),
-        ),
+        Message::User(user) => {
+            if session_history_user_message_is_scaffold(&message) {
+                return Vec::new();
+            }
+            (
+                "user_input",
+                user.created_at.timestamp_millis().max(0) as u64,
+                json!({
+                    "content": user.content,
+                    "message": message,
+                }),
+            )
+        }
         Message::Assistant(assistant) => (
             "interaction_complete",
             assistant.created_at.timestamp_millis().max(0) as u64,
@@ -1911,6 +1916,32 @@ fn frames_from_session_history_message(
         parent_frame_id: None,
         caused_by_frame_id: None,
     }]
+}
+
+fn session_history_user_message_is_scaffold(message: &Value) -> bool {
+    message
+        .get("content")
+        .is_some_and(scaffold_message_content_is_noise)
+}
+
+fn scaffold_message_content_is_noise(value: &Value) -> bool {
+    match value {
+        Value::String(text) => scaffold_message_text_is_noise(text),
+        Value::Array(items) => items.iter().any(scaffold_message_content_is_noise),
+        Value::Object(map) => ["text", "content", "message"]
+            .iter()
+            .filter_map(|key| map.get(*key))
+            .any(scaffold_message_content_is_noise),
+        _ => false,
+    }
+}
+
+fn scaffold_message_text_is_noise(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with("[PEER UPDATE]")
+        || trimmed
+            .to_ascii_lowercase()
+            .starts_with("you have been spawned")
 }
 
 fn parse_session_history_watermark(watermark: &str, session_id: &str) -> Option<usize> {
@@ -3770,6 +3801,47 @@ comms = true
                 .dedupe_key
                 .starts_with("session-history:runtime-a:session-a:1:")
         );
+    }
+
+    #[test]
+    fn session_history_projection_filters_scaffold_user_messages() {
+        let spawn_notice = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            0,
+            json!({
+                "role": "user",
+                "content": "You have been spawned as 'agent-a' (role: worker) in mob 'mob-a'.",
+                "timestamp_ms": 10
+            }),
+        );
+        let peer_update = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            1,
+            json!({
+                "role": "user",
+                "content": [{ "type": "text", "text": "[PEER UPDATE] alpha wired to beta" }],
+                "timestamp_ms": 11
+            }),
+        );
+        let real_user = frame_from_session_history_message(
+            "runtime-a",
+            "agent-a",
+            "session-a",
+            2,
+            json!({
+                "role": "user",
+                "content": "Please review the incident notes.",
+                "timestamp_ms": 12
+            }),
+        );
+
+        assert!(spawn_notice.is_none());
+        assert!(peer_update.is_none());
+        assert!(real_user.is_some());
     }
 
     #[test]
