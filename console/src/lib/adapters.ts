@@ -2207,6 +2207,21 @@ export function inferResponsePhaseFromFrames(
   return phase;
 }
 
+export function resolvePanelResponsePhase(args: {
+  frames: ConsoleFrame[];
+  serverPhase?: ResponsePhase;
+  localPhase?: ResponsePhase;
+  hasLocalPhase?: boolean;
+}): ResponsePhase {
+  if (args.hasLocalPhase) {
+    return args.localPhase ?? null;
+  }
+  if (args.frames.length > 0) {
+    return inferResponsePhaseFromFrames(args.frames, null);
+  }
+  return args.serverPhase ?? null;
+}
+
 export function buildConversationViewState(args: {
   memberId: string;
   agentLabel: string;

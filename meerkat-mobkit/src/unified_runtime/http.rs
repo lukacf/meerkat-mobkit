@@ -16,8 +16,18 @@ use crate::http_sse::{
     agent_events_sse_router, mob_events_sse_router, mob_structural_events_sse_router,
 };
 use crate::runtime::RuntimeDecisionState;
+use tower::limit::ConcurrencyLimitLayer;
 
 use super::UnifiedRuntime;
+
+/// Default cap for the stock reference app router.
+///
+/// SSE routes keep HTTP requests open for the lifetime of the subscription, so
+/// a demo-scale cap such as 20 can make the console look frozen while streams
+/// occupy all slots. Hosts that wrap MobKit in their own axum service may still
+/// choose a different outer limit, but the reference router itself defaults to
+/// a ceiling high enough for real console usage.
+pub const DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS: usize = 1024;
 
 impl UnifiedRuntime {
     pub fn build_console_json_router(&self, decisions: RuntimeDecisionState) -> Router {
@@ -102,5 +112,18 @@ impl UnifiedRuntime {
                 self.mob_events_store(),
                 Some(sse_decisions_c),
             ))
+            .layer(ConcurrencyLimitLayer::new(
+                DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS,
+            ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS;
+
+    #[test]
+    fn reference_router_default_concurrency_allows_sse_fanout() {
+        assert_eq!(DEFAULT_REFERENCE_APP_MAX_CONCURRENT_REQUESTS, 1024);
     }
 }
