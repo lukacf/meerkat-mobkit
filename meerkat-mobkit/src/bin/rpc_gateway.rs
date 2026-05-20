@@ -1638,6 +1638,60 @@ external_addressable = true
             }
             false => None,
         };
+    let identity_continuity_store: Option<
+        Arc<dyn meerkat_mobkit::identity_first::ContinuityStore>,
+    > = if has_roster_provider {
+        Some(if has_continuity_store {
+            Arc::new(meerkat_mobkit::identity_first::GatewayContinuityStore::new(
+                bridge.clone(),
+            ))
+        } else if let Some(ref state_path) = persistent_state {
+            Arc::new(
+                meerkat_mobkit::identity_first::LocalContinuityStore::open(
+                    state_path.join("continuity.db"),
+                )
+                .unwrap_or_else(|e| {
+                    fail_init(
+                        &request_id,
+                        -32603,
+                        format!("failed to open continuity store: {e}"),
+                    );
+                }),
+            )
+        } else {
+            Arc::new(
+                meerkat_mobkit::identity_first::LocalContinuityStore::open(
+                    std::env::temp_dir()
+                        .join(format!("mobkit-continuity-{}.db", std::process::id())),
+                )
+                .unwrap_or_else(|e| {
+                    fail_init(
+                        &request_id,
+                        -32603,
+                        format!("failed to open continuity store: {e}"),
+                    );
+                }),
+            )
+        })
+    } else {
+        None
+    };
+    let identity_lease_provider: Option<
+        Arc<dyn meerkat_mobkit::identity_first::contracts::LeaseProvider>,
+    > = if has_roster_provider {
+        Some(if has_lease_provider {
+            Arc::new(meerkat_mobkit::identity_first::GatewayLeaseProvider::new(
+                bridge.clone(),
+            ))
+        } else {
+            Arc::new(meerkat_mobkit::identity_first::LocalLeaseProvider::new())
+        })
+    } else {
+        None
+    };
+    let identity_session_store_adapter = identity_continuity_store.as_ref().map(|store| {
+        Arc::new(meerkat_mobkit::identity_first::ContinuitySessionStoreAdapter::new(store.clone()))
+    });
 
     // 5. Build session service with callback bridge.
     let (mob_spec, _temp_dir) = if let Some(ref state_path) = persistent_state {
@@ -1650,13 +1704,17 @@ external_addressable = true
         }
         let sqlite_path = state_path.join("sessions.db");
         let session_store: Arc<dyn meerkat::SessionStore> =
-            match meerkat_store::SqliteSessionStore::open(sqlite_path) {
-                Ok(s) => Arc::new(s),
-                Err(e) => fail_init(
-                    &request_id,
-                    -32603,
-                    format!("failed to open SQLite session store: {e}"),
-                ),
+            if let Some(adapter) = identity_session_store_adapter.clone() {
+                adapter
+            } else {
+                match meerkat_store::SqliteSessionStore::open(sqlite_path) {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => fail_init(
+                        &request_id,
+                        -32603,
+                        format!("failed to open SQLite session store: {e}"),
+                    ),
+                }
             };
         let mob_storage = MobStorage::in_memory();
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
@@ -1766,17 +1824,47 @@ external_addressable = true
             factory = factory.with_image_generation_machine(adapter.clone());
         }
         let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
-        inner_builder.default_blob_store = Some(blob_store);
+        inner_builder.default_blob_store = Some(blob_store.clone());
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
             bridge: bridge.clone(),
             has_session_builder,
             session_store: None,
         };
-        let session_service = Arc::new(EphemeralSessionService::new(
-            callback_builder,
-            gateway_options.max_sessions,
-        ));
+        let session_service: Arc<dyn meerkat_mob::MobSessionService> =
+            if let Some(session_adapter) = identity_session_store_adapter.clone() {
+                let session_store: Arc<dyn meerkat::SessionStore> = session_adapter.clone();
+                let mut factory = AgentFactory::new(agent_workspace)
+                    .builtins(false)
+                    .comms(true)
+                    .session_store(Arc::new(meerkat::MemoryStore::new()));
+                if image_generation {
+                    factory = factory.with_image_generation_machine(adapter.clone());
+                }
+                let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+                inner_builder.default_session_store = Some(Arc::new(
+                    meerkat_store::StoreAdapter::new(session_store.clone()),
+                ));
+                inner_builder.default_blob_store = Some(blob_store.clone());
+                let callback_builder = StdioCallbackAgentBuilder {
+                    inner: inner_builder,
+                    bridge: bridge.clone(),
+                    has_session_builder,
+                    session_store: Some(session_store.clone()),
+                };
+                Arc::new(meerkat_session::PersistentSessionService::new(
+                    callback_builder,
+                    gateway_options.max_sessions,
+                    session_store,
+                    Some(Arc::clone(&runtime_store)),
+                    blob_store.clone(),
+                ))
+            } else {
+                Arc::new(EphemeralSessionService::new(
+                    callback_builder,
+                    gateway_options.max_sessions,
+                ))
+            };
 
         let mut spec = MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
             .with_session_runtime_adapter(adapter.clone())
@@ -1903,68 +1991,43 @@ external_addressable = true
     // 5c. Build identity-first runtime if providers are configured
     let identity_ctx: Option<meerkat_mobkit::rpc::IdentityFirstContext> = if has_roster_provider {
         use meerkat_mobkit::identity_first::{
-            DurabilityPolicy, IdentityRuntime, IdentityRuntimeConfig, LocalContinuityStore,
-            LocalLeaseProvider, RosterContext,
-            contracts::LeaseProvider as LeaseProviderTrait,
+            AgentRuntimeServices, DurabilityPolicy, IdentityFirstRuntimeContext, IdentityRuntime,
+            IdentityRuntimeConfig, RosterContext,
             gateway_bridges::{
-                GatewayAgentCustomizer, GatewayContinuityStore, GatewayLeaseProvider,
-                GatewayRosterProvider, GatewayTopologyProvider,
+                GatewayAgentCustomizer, GatewayRosterProvider, GatewayTopologyProvider,
             },
         };
 
-        // Build provider bridges
-        let continuity_store: Arc<dyn meerkat_mobkit::identity_first::ContinuityStore> =
-            if has_continuity_store {
-                Arc::new(GatewayContinuityStore::new(bridge.clone()))
-            } else if let Some(ref state_path) = persistent_state {
-                Arc::new(
-                    LocalContinuityStore::open(state_path.join("continuity.db")).unwrap_or_else(
-                        |e| {
-                            fail_init(
-                                &request_id,
-                                -32603,
-                                format!("failed to open continuity store: {e}"),
-                            );
-                        },
-                    ),
-                )
-            } else {
-                Arc::new(
-                    LocalContinuityStore::open(
-                        std::env::temp_dir()
-                            .join(format!("mobkit-continuity-{}.db", std::process::id())),
-                    )
-                    .unwrap_or_else(|e| {
-                        fail_init(
-                            &request_id,
-                            -32603,
-                            format!("failed to open continuity store: {e}"),
-                        );
-                    }),
-                )
-            };
-
-        let lease_provider: Arc<dyn LeaseProviderTrait> = if has_lease_provider {
-            Arc::new(GatewayLeaseProvider::new(bridge.clone()))
-        } else {
-            Arc::new(LocalLeaseProvider::new())
-        };
+        let continuity_store = identity_continuity_store
+            .clone()
+            .expect("identity continuity store initialized with roster provider");
+        let lease_provider = identity_lease_provider
+            .clone()
+            .expect("identity lease provider initialized with roster provider");
 
         // Construct the session bridge from the mob handle. The gateway
         // uses the raw bootstrap path (not UnifiedRuntimeBuilder), so
         // session_bridge() won't be set — build it directly.
         let mob_handle = runtime.mob_handle();
         let bridge_arc: Arc<dyn meerkat_mobkit::identity_first::SessionBridge> =
-            if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
+            if let Some(adapter) = identity_session_store_adapter.clone() {
+                Arc::new(
+                    meerkat_mobkit::identity_first::MobSessionBridge::with_continuity_session_store(
+                        mob_handle.clone(),
+                        adapter,
+                        runtime.mob_runtime().session_service().cloned(),
+                    ),
+                )
+            } else if let Some(session_service) = runtime.mob_runtime().session_service().cloned() {
                 Arc::new(
                     meerkat_mobkit::identity_first::MobSessionBridge::with_session_service(
-                        mob_handle,
+                        mob_handle.clone(),
                         session_service,
                     ),
                 )
             } else {
                 Arc::new(meerkat_mobkit::identity_first::MobSessionBridge::new(
-                    mob_handle,
+                    mob_handle.clone(),
                 ))
             };
 
@@ -1972,11 +2035,13 @@ external_addressable = true
             continuity_store,
             lease_provider,
             runtime_instance_id: format!("gateway-{}", std::process::id()),
-            has_runtime_store: persistent_state.is_some(),
+            has_runtime_store: identity_session_store_adapter.is_some()
+                || persistent_state.is_some(),
             durability_policy: DurabilityPolicy::SyncWriteThrough,
             bridge: Some(bridge_arc),
             default_timeout: None,
-        });
+        })
+        .with_runtime_services(AgentRuntimeServices::new(mob_handle));
 
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =
@@ -2021,8 +2086,17 @@ external_addressable = true
             );
         }
 
+        let identity_runtime = Arc::new(irt);
+        runtime.attach_identity_first_context(Arc::new(IdentityFirstRuntimeContext::new(
+            identity_runtime.clone(),
+            roster.clone(),
+            topology.clone(),
+            customizer.clone(),
+            Some(runtime.mob_handle().definition().clone()),
+        )));
+
         Some(meerkat_mobkit::rpc::IdentityFirstContext {
-            runtime: Arc::new(irt),
+            runtime: identity_runtime,
             roster_provider: roster,
             topology_provider: topology,
             customizer,

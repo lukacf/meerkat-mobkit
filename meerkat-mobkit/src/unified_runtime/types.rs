@@ -46,6 +46,7 @@ pub enum UnifiedRuntimeBootstrapError {
         rollback_error: MobRuntimeError,
     },
     PreSpawnHook(String),
+    IdentityFirst(String),
 }
 
 impl Display for UnifiedRuntimeBootstrapError {
@@ -61,6 +62,9 @@ impl Display for UnifiedRuntimeBootstrapError {
             }
             Self::PreSpawnHook(err) => {
                 write!(f, "pre-spawn hook failed: {err}")
+            }
+            Self::IdentityFirst(err) => {
+                write!(f, "identity-first bootstrap failed: {err}")
             }
             Self::ModuleStartupRollbackFailed {
                 startup_error,

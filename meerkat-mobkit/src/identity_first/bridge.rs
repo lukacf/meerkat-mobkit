@@ -6,12 +6,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
-use meerkat_mob::{MobHandle, MobSessionService, SpawnMemberSpec};
+use meerkat_mob::{MobHandle, MobSessionService, SpawnMemberSpec, SpawnSystemPromptOverride};
 
 use crate::mob_handle_runtime::{content_input_has_images, model_capabilities_for_member};
 
+use super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
 use super::types::{
-    AgentBuildDraft, AgentIdentity, AgentRuntimeId, DurableAgentSpec, SessionSnapshot,
+    AgentBuildDraft, AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
+    DurableAgentSpec, FencingToken, SessionSnapshot,
 };
 
 fn is_missing_event_injector_error(error: &str) -> bool {
@@ -67,6 +69,7 @@ pub trait SessionBridge: Send + Sync {
         runtime_id: &AgentRuntimeId,
         spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
 
     /// Resume a mob member from a previously checkpointed snapshot.
@@ -142,6 +145,22 @@ pub trait SessionBridge: Send + Sync {
     ) -> Result<MemberInspection, BridgeError> {
         Err(BridgeError::Mob("inspect not supported".to_string()))
     }
+
+    /// Register identity ownership for a concrete bridge session.
+    ///
+    /// Bridges that install a continuity-backed session store use this to
+    /// ensure subsequent Meerkat session saves checkpoint under the durable
+    /// identity/generation/fencing tuple.
+    async fn register_session_runtime_state(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+        _identity: &AgentIdentity,
+        _generation: ContinuityGeneration,
+        checkpoint_version: CheckpointVersion,
+        _fencing_token: FencingToken,
+    ) -> Result<CheckpointVersion, BridgeError> {
+        Ok(checkpoint_version)
+    }
 }
 
 /// Lightweight inspection of a mob member's current execution state.
@@ -166,6 +185,8 @@ pub struct MobSessionBridge {
     session_store: Option<Arc<dyn meerkat::SessionStore>>,
     /// Session service used to project the live effective model for capability checks.
     session_service: Option<Arc<dyn MobSessionService>>,
+    /// Continuity-backed session store, when installed by the identity-first builder.
+    continuity_session_store: Option<Arc<ContinuitySessionStoreAdapter>>,
 }
 
 impl MobSessionBridge {
@@ -175,6 +196,7 @@ impl MobSessionBridge {
             handle,
             session_store: None,
             session_service: None,
+            continuity_session_store: None,
         }
     }
 
@@ -187,6 +209,7 @@ impl MobSessionBridge {
             handle,
             session_store: None,
             session_service: Some(session_service),
+            continuity_session_store: None,
         }
     }
 
@@ -199,6 +222,7 @@ impl MobSessionBridge {
             handle,
             session_store: Some(session_store),
             session_service: None,
+            continuity_session_store: None,
         }
     }
 
@@ -212,12 +236,27 @@ impl MobSessionBridge {
             handle,
             session_store: Some(session_store),
             session_service: Some(session_service),
+            continuity_session_store: None,
+        }
+    }
+
+    /// Create a bridge with an identity-owned continuity session store.
+    pub fn with_continuity_session_store(
+        handle: MobHandle,
+        session_store: Arc<ContinuitySessionStoreAdapter>,
+        session_service: Option<Arc<dyn MobSessionService>>,
+    ) -> Self {
+        Self {
+            handle,
+            session_store: Some(session_store.clone()),
+            session_service,
+            continuity_session_store: Some(session_store),
         }
     }
 }
 
 /// Build a `SpawnMemberSpec` from identity-first types, wiring draft fields.
-fn build_spawn_spec(
+pub(crate) fn build_spawn_spec(
     runtime_id: &AgentRuntimeId,
     spec: &DurableAgentSpec,
     draft: &AgentBuildDraft,
@@ -225,6 +264,12 @@ fn build_spawn_spec(
     let mid = MeerkatId::from(runtime_id.as_str());
     let mut spawn_spec = SpawnMemberSpec::new(spec.profile.clone(), mid);
 
+    if let Some(message) = spec.initial_message.as_ref() {
+        spawn_spec = spawn_spec.with_initial_message(message.clone());
+    }
+    if let Some(runtime_mode) = spec.runtime_mode_override {
+        spawn_spec = spawn_spec.with_runtime_mode(runtime_mode);
+    }
     if let Some(ref ctx) = draft.app_context {
         spawn_spec = spawn_spec.with_context(ctx.clone());
     }
@@ -233,6 +278,16 @@ fn build_spawn_spec(
     }
     if !draft.additional_instructions.is_empty() {
         spawn_spec = spawn_spec.with_additional_instructions(draft.additional_instructions.clone());
+    }
+    if let Some(model) = draft.model.as_ref() {
+        spawn_spec.model_override = Some(model.clone());
+    }
+    if let Some(system_prompt) = draft.system_prompt.as_ref() {
+        spawn_spec.system_prompt_override =
+            Some(SpawnSystemPromptOverride::Replace(system_prompt.clone()));
+    }
+    if let Some(dispatcher) = draft.local_external_tools.dispatcher() {
+        spawn_spec.external_tools = Some(dispatcher);
     }
 
     spawn_spec
@@ -246,6 +301,7 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         spec: &DurableAgentSpec,
         draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = MeerkatId::from(runtime_id.as_str());
         let spawn_spec = build_spawn_spec(runtime_id, spec, draft);
@@ -255,10 +311,13 @@ impl SessionBridge for MobSessionBridge {
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
 
-        self.handle
+        let actual_session_id = self
+            .handle
             .resolve_bridge_session_id(&mid)
             .await
-            .ok_or_else(|| BridgeError::Mob("member spawned but has no session ID".to_string()))
+            .ok_or_else(|| BridgeError::Mob("member spawned but has no session ID".to_string()))?;
+        let _ = session_id;
+        Ok(actual_session_id)
     }
 
     async fn resume_session(
@@ -488,13 +547,24 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
-        self.handle
+        match self
+            .handle
             .unwire(
                 meerkat_mob::AgentIdentity::from(a.as_str()),
                 MeerkatId::from(b.as_str()),
             )
             .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))
+        {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                let message = err.to_string();
+                if message.contains("peer not found") || message.contains("not wired") {
+                    Ok(())
+                } else {
+                    Err(BridgeError::Mob(message))
+                }
+            }
+        }
     }
 
     async fn inspect_member(
@@ -516,5 +586,117 @@ impl SessionBridge for MobSessionBridge {
                 .map(|pc| pc.reachable_peer_count)
                 .unwrap_or(0),
         })
+    }
+
+    async fn register_session_runtime_state(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        identity: &AgentIdentity,
+        generation: ContinuityGeneration,
+        checkpoint_version: CheckpointVersion,
+        fencing_token: FencingToken,
+    ) -> Result<CheckpointVersion, BridgeError> {
+        if let Some(adapter) = self.continuity_session_store.as_ref() {
+            return adapter
+                .register_session(
+                    session_id,
+                    SessionRuntimeState {
+                        identity: identity.clone(),
+                        generation,
+                        checkpoint_version,
+                        fencing_token,
+                    },
+                )
+                .await
+                .map_err(|err| BridgeError::Mob(format!("continuity register_session: {err}")));
+        }
+        Ok(checkpoint_version)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use meerkat_core::agent::AgentToolDispatcher;
+    use meerkat_core::types::ToolCallView;
+    use meerkat_core::{ToolDef, error::ToolError, ops::ToolDispatchOutcome};
+    use meerkat_mob::MobRuntimeMode;
+
+    use super::*;
+    use crate::identity_first::{AgentAddressability, LocalExternalToolOverlay};
+
+    struct EmptyDispatcher;
+
+    #[async_trait]
+    impl AgentToolDispatcher for EmptyDispatcher {
+        fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+            Arc::from([])
+        }
+
+        async fn dispatch(
+            &self,
+            _call: ToolCallView<'_>,
+        ) -> Result<ToolDispatchOutcome, ToolError> {
+            Err(ToolError::ExecutionFailed {
+                message: "not implemented".to_string(),
+            })
+        }
+    }
+
+    fn durable_spec() -> DurableAgentSpec {
+        DurableAgentSpec {
+            identity: AgentIdentity::parse("agent:alpha").expect("identity"),
+            profile: meerkat_mob::ProfileName::from("worker"),
+            addressability: AgentAddressability::Addressable,
+            display_name: None,
+            labels: Default::default(),
+            context: None,
+            additional_instructions: Vec::new(),
+            initial_message: Some(meerkat_core::ContentInput::Text("hello".to_string())),
+            runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
+        }
+    }
+
+    #[test]
+    fn build_spawn_spec_maps_identity_first_overrides() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut labels = std::collections::BTreeMap::new();
+        labels.insert("team".to_string(), "ops".to_string());
+        let draft = AgentBuildDraft {
+            model: Some("gpt-test".to_string()),
+            system_prompt: Some("system override".to_string()),
+            additional_instructions: vec!["stay focused".to_string()],
+            labels,
+            app_context: Some(serde_json::json!({"ticket": 7})),
+            external_tools: Vec::new(),
+            local_external_tools: LocalExternalToolOverlay::new(Arc::new(EmptyDispatcher)),
+        };
+
+        let spawn = build_spawn_spec(&runtime_id, &durable_spec(), &draft);
+
+        assert_eq!(spawn.model_override.as_deref(), Some("gpt-test"));
+        assert_eq!(
+            spawn.system_prompt_override,
+            Some(SpawnSystemPromptOverride::Replace(
+                "system override".to_string()
+            ))
+        );
+        assert!(spawn.external_tools.is_some());
+        assert_eq!(spawn.runtime_mode, Some(MobRuntimeMode::TurnDriven));
+        assert_eq!(
+            spawn.initial_message,
+            Some(meerkat_core::ContentInput::Text("hello".to_string()))
+        );
+        assert_eq!(
+            spawn
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("team"))
+                .map(String::as_str),
+            Some("ops")
+        );
     }
 }

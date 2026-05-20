@@ -58,6 +58,8 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: None,
     }
 }
 

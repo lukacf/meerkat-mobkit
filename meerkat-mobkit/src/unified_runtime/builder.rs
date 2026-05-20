@@ -9,6 +9,11 @@ use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 
 use crate::console_aggregator::{ConsoleLogStore, InMemoryConsoleLogStore, SqliteConsoleLogStore};
 use crate::contact_directory::ContactDirectory;
+use crate::identity_first::{
+    AgentCustomizer, AgentRuntimeServices, ContinuitySessionStoreAdapter, DurabilityPolicy,
+    IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig, RosterContext,
+    RosterProvider, TopologyProvider, restore_flow,
+};
 use crate::mob_handle_runtime::{
     CapabilityFlags, MobBootstrapOptions, MobBootstrapSpec, SessionHook,
 };
@@ -55,6 +60,10 @@ pub struct UnifiedRuntimeBuilder {
     // --- Identity-first external path ---
     continuity_store: Option<Arc<dyn crate::identity_first::contracts::ContinuityStore>>,
     lease_provider: Option<Arc<dyn crate::identity_first::contracts::LeaseProvider>>,
+    roster_provider: Option<Arc<dyn RosterProvider>>,
+    topology_provider: Option<Arc<dyn TopologyProvider>>,
+    agent_customizer: Option<Arc<dyn AgentCustomizer>>,
+    identity_runtime_instance_id: Option<String>,
     scratch_dir: Option<PathBuf>,
     blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
     console_log_store: Option<Arc<dyn ConsoleLogStore>>,
@@ -153,6 +162,30 @@ impl UnifiedRuntimeBuilder {
         provider: Arc<dyn crate::identity_first::contracts::LeaseProvider>,
     ) -> Self {
         self.lease_provider = Some(provider);
+        self
+    }
+
+    /// Set the desired identity roster provider for identity-first bootstrap.
+    pub fn roster_provider(mut self, provider: Arc<dyn RosterProvider>) -> Self {
+        self.roster_provider = Some(provider);
+        self
+    }
+
+    /// Set the managed topology provider for identity-first bootstrap and refresh.
+    pub fn topology_provider(mut self, provider: Arc<dyn TopologyProvider>) -> Self {
+        self.topology_provider = Some(provider);
+        self
+    }
+
+    /// Set the identity-first build customizer.
+    pub fn agent_customizer(mut self, customizer: Arc<dyn AgentCustomizer>) -> Self {
+        self.agent_customizer = Some(customizer);
+        self
+    }
+
+    /// Set the identity runtime instance id used when acquiring leases.
+    pub fn identity_runtime_instance_id(mut self, id: impl Into<String>) -> Self {
+        self.identity_runtime_instance_id = Some(id.into());
         self
     }
 
@@ -321,20 +354,35 @@ impl UnifiedRuntimeBuilder {
         let has_persistent_state = self.persistent_state_path.is_some();
         let has_continuity_store = self.continuity_store.is_some();
         let has_lease_provider = self.lease_provider.is_some();
+        let has_roster_provider = self.roster_provider.is_some();
+        let has_topology_provider = self.topology_provider.is_some();
+        let has_agent_customizer = self.agent_customizer.is_some();
+        let has_identity_runtime_instance_id = self.identity_runtime_instance_id.is_some();
         let has_scratch_dir = self.scratch_dir.is_some();
-        let has_any_external = has_continuity_store || has_lease_provider || has_scratch_dir;
+        let has_any_external = has_continuity_store
+            || has_lease_provider
+            || has_roster_provider
+            || has_topology_provider
+            || has_agent_customizer
+            || has_identity_runtime_instance_id
+            || has_scratch_dir;
 
         // REQ-23: persistent_state and explicit providers are mutually exclusive
         if has_persistent_state && has_any_external {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
-                "persistent_state() and continuity_store()/lease_provider()/scratch_dir() \
+                "persistent_state() and identity-first provider/customizer/scratch_dir setters \
                  are mutually exclusive — use one path or the other"
                     .to_string(),
             ));
         }
 
         // REQ-24: external path requires all three
-        if has_any_external && !(has_continuity_store && has_lease_provider && has_scratch_dir) {
+        if has_any_external
+            && !(has_continuity_store
+                && has_lease_provider
+                && has_roster_provider
+                && has_scratch_dir)
+        {
             let mut missing = Vec::new();
             if !has_continuity_store {
                 missing.push("continuity_store");
@@ -342,16 +390,27 @@ impl UnifiedRuntimeBuilder {
             if !has_lease_provider {
                 missing.push("lease_provider");
             }
+            if !has_roster_provider {
+                missing.push("roster_provider");
+            }
             if !has_scratch_dir {
                 missing.push("scratch_dir");
             }
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                 format!(
-                    "external-authoritative path requires continuity_store() + lease_provider() + \
-                     scratch_dir(); missing: {}",
+                    "identity-first path requires continuity_store() + lease_provider() + \
+                     roster_provider() + scratch_dir(); missing: {}",
                     missing.join(", ")
                 ),
             ));
+        }
+
+        let continuity_session_store = self
+            .continuity_store
+            .as_ref()
+            .map(|store| Arc::new(ContinuitySessionStoreAdapter::new(store.clone())));
+        if let Some(store) = continuity_session_store.as_ref() {
+            self.custom_session_store = Some(store.clone());
         }
 
         // Legacy mob_spec path takes precedence — must be consumed before
@@ -447,22 +506,116 @@ impl UnifiedRuntimeBuilder {
             let handle = runtime.mob_runtime.handle();
             let session_service = runtime.mob_runtime.session_service().cloned();
             let session_store = self.custom_session_store.clone();
-            let bridge = if let (Some(store), Some(service)) =
-                (session_store.clone(), session_service.clone())
-            {
-                crate::identity_first::bridge::MobSessionBridge::with_session_store_and_service(
-                    handle, store, service,
+            let bridge: Arc<dyn crate::identity_first::bridge::SessionBridge> =
+                if let Some(store) = continuity_session_store.clone() {
+                    Arc::new(
+                    crate::identity_first::bridge::MobSessionBridge::with_continuity_session_store(
+                        handle,
+                        store,
+                        session_service,
+                    ),
                 )
-            } else if let Some(store) = session_store {
-                crate::identity_first::bridge::MobSessionBridge::with_session_store(handle, store)
-            } else if let Some(service) = session_service {
-                crate::identity_first::bridge::MobSessionBridge::with_session_service(
-                    handle, service,
+                } else if let (Some(store), Some(service)) =
+                    (session_store.clone(), session_service.clone())
+                {
+                    Arc::new(
+                    crate::identity_first::bridge::MobSessionBridge::with_session_store_and_service(
+                        handle, store, service,
+                    ),
                 )
-            } else {
-                crate::identity_first::bridge::MobSessionBridge::new(handle)
+                } else if let Some(store) = session_store {
+                    Arc::new(
+                        crate::identity_first::bridge::MobSessionBridge::with_session_store(
+                            handle, store,
+                        ),
+                    )
+                } else if let Some(service) = session_service {
+                    Arc::new(
+                        crate::identity_first::bridge::MobSessionBridge::with_session_service(
+                            handle, service,
+                        ),
+                    )
+                } else {
+                    Arc::new(crate::identity_first::bridge::MobSessionBridge::new(handle))
+                };
+            Some(bridge)
+        };
+
+        let identity_first_context = if has_any_external {
+            let Some(continuity_store) = self.continuity_store.clone() else {
+                return Err(UnifiedRuntimeBuilderError::Bootstrap(
+                    UnifiedRuntimeBootstrapError::IdentityFirst(
+                        "identity-first validation requires continuity_store".to_string(),
+                    ),
+                ));
             };
-            Some(Arc::new(bridge))
+            let Some(lease_provider) = self.lease_provider.clone() else {
+                return Err(UnifiedRuntimeBuilderError::Bootstrap(
+                    UnifiedRuntimeBootstrapError::IdentityFirst(
+                        "identity-first validation requires lease_provider".to_string(),
+                    ),
+                ));
+            };
+            let Some(roster_provider) = self.roster_provider.clone() else {
+                return Err(UnifiedRuntimeBuilderError::Bootstrap(
+                    UnifiedRuntimeBootstrapError::IdentityFirst(
+                        "identity-first validation requires roster_provider".to_string(),
+                    ),
+                ));
+            };
+            let bridge = session_bridge.clone();
+            let identity_runtime = Arc::new(
+                IdentityRuntime::new(IdentityRuntimeConfig {
+                    continuity_store,
+                    lease_provider,
+                    runtime_instance_id: self
+                        .identity_runtime_instance_id
+                        .clone()
+                        .unwrap_or_else(|| format!("mobkit-{}", std::process::id())),
+                    has_runtime_store: true,
+                    durability_policy: DurabilityPolicy::SyncWriteThrough,
+                    bridge,
+                    default_timeout: None,
+                })
+                .with_runtime_services(AgentRuntimeServices::new(runtime.mob_runtime.handle())),
+            );
+
+            let roster_specs = roster_provider
+                .roster(&RosterContext {
+                    mob_definition: Some(runtime.mob_runtime.handle().definition().clone()),
+                    previous_identities: Vec::new(),
+                })
+                .await
+                .map_err(|err| {
+                    UnifiedRuntimeBuilderError::Bootstrap(
+                        UnifiedRuntimeBootstrapError::IdentityFirst(format!(
+                            "roster provider failed: {err}"
+                        )),
+                    )
+                })?;
+
+            restore_flow(
+                &identity_runtime,
+                &roster_specs,
+                self.topology_provider.as_deref(),
+                self.agent_customizer.as_deref(),
+            )
+            .await
+            .map_err(|err| {
+                UnifiedRuntimeBuilderError::Bootstrap(UnifiedRuntimeBootstrapError::IdentityFirst(
+                    format!("restore_flow failed: {err}"),
+                ))
+            })?;
+
+            Some(Arc::new(IdentityFirstRuntimeContext::new(
+                identity_runtime,
+                roster_provider,
+                self.topology_provider.clone(),
+                self.agent_customizer.clone(),
+                Some(runtime.mob_runtime.handle().definition().clone()),
+            )))
+        } else {
+            None
         };
 
         // Set immutable outer fields by rebuilding the struct
@@ -475,6 +628,7 @@ impl UnifiedRuntimeBuilder {
             edge_discovery: self.edge_discovery,
             contact_directory: self.contact_directory,
             session_bridge,
+            identity_first_context,
             console_log_store,
             ..runtime
         };
@@ -488,7 +642,9 @@ impl UnifiedRuntimeBuilder {
         } else {
             serde_json::Value::Null
         };
-        if let Some(ref discovery) = runtime.discovery {
+        if runtime.identity_first_context.is_none()
+            && let Some(ref discovery) = runtime.discovery
+        {
             let specs = discovery.discover(pre_spawn_context).await;
             let spawn_specs: Vec<SpawnMemberSpec> =
                 specs.iter().map(discovery_spec_to_spawn_spec).collect();
@@ -609,6 +765,25 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook.clone(),
+            )
+        } else if let Some(ref scratch_dir) = self.scratch_dir {
+            std::fs::create_dir_all(scratch_dir).map_err(|e| {
+                UnifiedRuntimeBuilderError::Io(format!(
+                    "failed to create scratch directory at {}: {e}",
+                    scratch_dir.display()
+                ))
+            })?;
+
+            MobBootstrapSpec::ephemeral_runtime_backed_inner(
+                definition,
+                MobStorage::in_memory(),
+                scratch_dir.clone(),
+                max_sessions,
+                self.custom_session_store.clone(),
+                self.blob_store.clone(),
+                hook,
+                caps,
+                after_hook,
             )
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.

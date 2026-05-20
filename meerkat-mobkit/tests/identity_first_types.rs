@@ -349,6 +349,8 @@ fn identity_first_types_durable_agent_spec_roundtrip() {
         },
         context: Some(serde_json::json!({"key": "value"})),
         additional_instructions: vec!["Be helpful.".to_string()],
+        initial_message: None,
+        runtime_mode_override: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let back: DurableAgentSpec = serde_json::from_str(&json).expect("deserialize");
@@ -505,6 +507,7 @@ fn identity_first_types_identity_status_full_roundtrip() {
         agent_runtime_id: Some(AgentRuntimeId::parse("rt:001").expect("parse")),
         session_id: Some(meerkat_core::types::SessionId::new()),
         profile: Some(meerkat_mob::ProfileName::from("lead")),
+        runtime_mode: None,
         addressability: AgentAddressability::Addressable,
         display_name: Some(DisplayName::parse("Triage Agent").expect("parse")),
         labels: {
@@ -580,6 +583,7 @@ fn identity_first_types_agent_build_context_roundtrip() {
             AgentIdentity::parse("b:main").expect("parse"),
         ],
         managed_edges: vec![edge],
+        runtime_services: Default::default(),
     };
     let json = serde_json::to_string(&ctx).expect("serialize");
     let back: AgentBuildContext = serde_json::from_str(&json).expect("deserialize");
@@ -603,6 +607,7 @@ fn identity_first_types_agent_build_draft_roundtrip() {
             description: "Search the web".to_string(),
             input_schema: serde_json::json!({"type": "object", "properties": {"query": {"type": "string"}}}),
         }],
+        local_external_tools: Default::default(),
     };
     let json = serde_json::to_string(&draft).expect("serialize");
     let back: AgentBuildDraft = serde_json::from_str(&json).expect("deserialize");
@@ -669,6 +674,8 @@ fn identity_first_types_topology_context_roundtrip() {
             labels: BTreeMap::new(),
             context: None,
             additional_instructions: vec![],
+            initial_message: None,
+            runtime_mode_override: None,
         }],
     };
     let json = serde_json::to_string(&ctx).expect("serialize");

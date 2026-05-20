@@ -86,7 +86,10 @@ fn wait_for_connection(listener: &TcpListener, timeout: Duration) -> TcpStream {
     let deadline = Instant::now() + timeout;
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).expect("set stream blocking");
+                return stream;
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
                     Instant::now() < deadline,

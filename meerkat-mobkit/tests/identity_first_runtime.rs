@@ -52,6 +52,8 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: None,
     }
 }
 
@@ -676,6 +678,129 @@ async fn identity_first_runtime_restore_flow_resumes_ready() {
         }
         other => panic!("expected Resumed, got: {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn identity_first_runtime_restore_flow_reconciles_resume_returned_session_id() {
+    struct ResumeFallbackBridge {
+        actual_session_id: meerkat_core::types::SessionId,
+    }
+
+    #[async_trait]
+    impl SessionBridge for ResumeFallbackBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            _session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(self.actual_session_id.clone())
+        }
+
+        async fn deliver(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(self.actual_session_id.clone())
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Ok(SessionSnapshot {
+                data: b"bridge checkpoint".to_vec(),
+            })
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease_prov = Arc::new(LocalLeaseProvider::new());
+    let actual_session_id = meerkat_core::types::SessionId::new();
+    let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: store.clone(),
+        lease_provider: lease_prov,
+        runtime_instance_id: "test-runtime".to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(Arc::new(ResumeFallbackBridge {
+            actual_session_id: actual_session_id.clone(),
+        })),
+        default_timeout: None,
+    });
+
+    let id = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    assert_ne!(record.session_id, actual_session_id);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(0))
+        .await
+        .unwrap();
+    store
+        .save_session_snapshot(
+            &id,
+            &record.session_id,
+            record.generation,
+            CheckpointVersion::new(1),
+            FencingToken::new(0),
+            &SessionSnapshot {
+                data: b"old snapshot".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let roster = vec![make_spec("triage:main")];
+    let result = restore_flow(&runtime, &roster, None, None).await.unwrap();
+    match result.outcomes.get(&id).unwrap() {
+        RestoreOutcome::Resumed { record, .. } => {
+            assert_eq!(record.session_id, actual_session_id);
+            assert_eq!(record.checkpoint_version, CheckpointVersion::new(1));
+        }
+        other => panic!("expected Resumed, got: {other:?}"),
+    }
+
+    let status = runtime.status(&id).await.unwrap();
+    assert_eq!(status.session_id, Some(actual_session_id.clone()));
+    assert_eq!(status.checkpoint_version, Some(CheckpointVersion::new(1)));
+
+    let next_version = runtime
+        .checkpoint(
+            &id,
+            &SessionSnapshot {
+                data: b"new snapshot".to_vec(),
+            },
+        )
+        .await
+        .expect("checkpoint should use returned resume session id and current version");
+    assert_eq!(next_version, CheckpointVersion::new(2));
+
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let ContinuityResolveState::Ready { record } = resolved.get(&id).unwrap() else {
+        panic!("expected ready record");
+    };
+    assert_eq!(record.session_id, actual_session_id);
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(2));
 }
 
 #[tokio::test]
@@ -1420,8 +1545,9 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
             _runtime_id: &AgentRuntimeId,
             _spec: &DurableAgentSpec,
             _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-            Ok(meerkat_core::types::SessionId::new())
+            Ok(session_id.clone())
         }
 
         async fn resume_session(
@@ -1602,8 +1728,9 @@ async fn identity_first_runtime_topology_claims_persisted_wires_without_rebatchi
             _runtime_id: &AgentRuntimeId,
             _spec: &DurableAgentSpec,
             _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-            Ok(meerkat_core::types::SessionId::new())
+            Ok(session_id.clone())
         }
 
         async fn resume_session(

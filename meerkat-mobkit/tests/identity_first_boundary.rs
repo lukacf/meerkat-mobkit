@@ -142,6 +142,8 @@ system_prompt = "You are a worker agent."
         labels: std::collections::BTreeMap::new(),
         context: None,
         additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
     };
 
     // The fact that this compiles proves ProfileName type compatibility

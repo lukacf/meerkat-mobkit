@@ -291,6 +291,8 @@ async fn identity_first_contracts_roster_provider_mock() {
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
     };
     let provider: Arc<dyn RosterProvider> = Arc::new(MockRosterProvider {
         specs: vec![spec.clone()],
@@ -315,6 +317,7 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         identity: AgentIdentity::parse("triage:main").unwrap(),
         active_peers: vec![],
         managed_edges: vec![],
+        runtime_services: Default::default(),
     };
     let spec = DurableAgentSpec {
         identity: AgentIdentity::parse("triage:main").unwrap(),
@@ -324,6 +327,8 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
     };
     let mut draft = AgentBuildDraft {
         model: None,
@@ -332,6 +337,7 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         labels: BTreeMap::new(),
         app_context: None,
         external_tools: vec![],
+        local_external_tools: Default::default(),
     };
     customizer
         .customize_build(&ctx, &spec, &mut draft)
@@ -794,6 +800,7 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         identity: AgentIdentity::parse("triage:main").unwrap(),
         active_peers: vec![],
         managed_edges: vec![],
+        runtime_services: Default::default(),
     };
     let spec = DurableAgentSpec {
         identity: AgentIdentity::parse("triage:main").unwrap(),
@@ -803,6 +810,8 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
     };
     let mut draft = AgentBuildDraft {
         model: None,
@@ -811,6 +820,7 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         labels: BTreeMap::new(),
         app_context: None,
         external_tools: vec![],
+        local_external_tools: Default::default(),
     };
 
     adapter
@@ -848,6 +858,7 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         identity: AgentIdentity::parse("triage:main").unwrap(),
         active_peers: vec![],
         managed_edges: vec![],
+        runtime_services: Default::default(),
     };
     let spec = DurableAgentSpec {
         identity: AgentIdentity::parse("triage:main").unwrap(),
@@ -857,6 +868,8 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
     };
     let mut draft = AgentBuildDraft {
         model: None,
@@ -865,6 +878,7 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         labels: BTreeMap::new(),
         app_context: None,
         external_tools: vec![],
+        local_external_tools: Default::default(),
     };
 
     // Should succeed but log a warning — we verify it doesn't error
@@ -900,6 +914,7 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         identity: AgentIdentity::parse("review:agent").unwrap(),
         active_peers: vec![],
         managed_edges: vec![],
+        runtime_services: Default::default(),
     };
     let spec = DurableAgentSpec {
         identity: AgentIdentity::parse("review:agent").unwrap(),
@@ -909,6 +924,8 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: vec![],
+        initial_message: None,
+        runtime_mode_override: None,
     };
     let mut draft = AgentBuildDraft {
         model: Some("claude-sonnet-4-6".to_string()),
@@ -917,6 +934,7 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         labels: BTreeMap::new(),
         app_context: None,
         external_tools: vec![],
+        local_external_tools: Default::default(),
     };
 
     // Should succeed — unsupported mutations are warned, not errored

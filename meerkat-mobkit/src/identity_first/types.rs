@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -563,6 +565,10 @@ pub struct DurableAgentSpec {
     pub context: Option<serde_json::Value>,
     #[serde(default)]
     pub additional_instructions: Vec<String>,
+    #[serde(default)]
+    pub initial_message: Option<meerkat_core::ContentInput>,
+    #[serde(default)]
+    pub runtime_mode_override: Option<meerkat_mob::MobRuntimeMode>,
 }
 
 // ---------------------------------------------------------------------------
@@ -616,6 +622,7 @@ pub struct IdentityStatus {
     pub agent_runtime_id: Option<AgentRuntimeId>,
     pub session_id: Option<meerkat_core::types::SessionId>,
     pub profile: Option<meerkat_mob::ProfileName>,
+    pub runtime_mode: Option<meerkat_mob::MobRuntimeMode>,
     pub addressability: AgentAddressability,
     pub display_name: Option<DisplayName>,
     #[serde(default)]
@@ -630,12 +637,55 @@ pub struct IdentityStatus {
 // AgentBuildContext + AgentBuildDraft + ExternalToolDef
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Default)]
+pub struct AgentRuntimeServices {
+    mob_handle: Option<meerkat_mob::MobHandle>,
+}
+
+impl AgentRuntimeServices {
+    pub fn new(mob_handle: meerkat_mob::MobHandle) -> Self {
+        Self {
+            mob_handle: Some(mob_handle),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self { mob_handle: None }
+    }
+
+    pub fn mob_handle(&self) -> Option<meerkat_mob::MobHandle> {
+        self.mob_handle.clone()
+    }
+
+    pub fn has_mob_handle(&self) -> bool {
+        self.mob_handle.is_some()
+    }
+}
+
+impl std::fmt::Debug for AgentRuntimeServices {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentRuntimeServices")
+            .field("mob_handle", &self.mob_handle.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for AgentRuntimeServices {
+    fn eq(&self, other: &Self) -> bool {
+        self.mob_handle.is_some() == other.mob_handle.is_some()
+    }
+}
+
+impl Eq for AgentRuntimeServices {}
+
 /// Read-only context provided to `AgentCustomizer` at build time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentBuildContext {
     pub identity: AgentIdentity,
     pub active_peers: Vec<AgentIdentity>,
     pub managed_edges: Vec<ManagedPeerEdge>,
+    #[serde(default, skip)]
+    pub runtime_services: AgentRuntimeServices,
 }
 
 /// Tool definition for the customizer boundary.
@@ -647,6 +697,52 @@ pub struct ExternalToolDef {
 }
 
 /// Mutable draft that `AgentCustomizer` modifies.
+#[derive(Clone, Default)]
+pub struct LocalExternalToolOverlay {
+    dispatcher: Option<Arc<dyn meerkat_core::agent::AgentToolDispatcher>>,
+}
+
+impl LocalExternalToolOverlay {
+    pub fn new(dispatcher: Arc<dyn meerkat_core::agent::AgentToolDispatcher>) -> Self {
+        Self {
+            dispatcher: Some(dispatcher),
+        }
+    }
+
+    pub fn empty() -> Self {
+        Self { dispatcher: None }
+    }
+
+    pub fn dispatcher(&self) -> Option<Arc<dyn meerkat_core::agent::AgentToolDispatcher>> {
+        self.dispatcher.clone()
+    }
+
+    pub fn is_some(&self) -> bool {
+        self.dispatcher.is_some()
+    }
+}
+
+impl std::fmt::Debug for LocalExternalToolOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalExternalToolOverlay")
+            .field("dispatcher", &self.dispatcher.is_some())
+            .finish()
+    }
+}
+
+impl PartialEq for LocalExternalToolOverlay {
+    fn eq(&self, other: &Self) -> bool {
+        self.dispatcher.is_some() == other.dispatcher.is_some()
+    }
+}
+
+impl Eq for LocalExternalToolOverlay {}
+
+/// Mutable draft that `AgentCustomizer` modifies.
+///
+/// `external_tools` remains the serializable SDK/gateway declaration surface.
+/// `local_external_tools` is intentionally skipped by serde and is the
+/// in-process Rust overlay for apps that can supply a real dispatcher.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentBuildDraft {
     pub model: Option<String>,
@@ -658,6 +754,8 @@ pub struct AgentBuildDraft {
     pub app_context: Option<serde_json::Value>,
     #[serde(default)]
     pub external_tools: Vec<ExternalToolDef>,
+    #[serde(default, skip)]
+    pub local_external_tools: LocalExternalToolOverlay,
 }
 
 // ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ pub use orchestrator::{
     ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions, restore_flow,
 };
 pub use runtime::{
-    IdentityRuntime, IdentityRuntimeConfig, IdentityRuntimeError, wire_cross_mob_by_identity,
+    IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig, IdentityRuntimeError,
+    wire_cross_mob_by_identity,
 };
 pub use types::*;

@@ -53,6 +53,7 @@ impl UnifiedRuntime {
             Some(self.console_log_store()),
             Some(self.mob_events_store()),
             Some(Arc::clone(self.metadata_table())),
+            self.identity_runtime().cloned(),
             visibility_policy,
         )
     }
