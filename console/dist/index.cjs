@@ -3765,9 +3765,11 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
+        phase = "tool-executing";
+        break;
       case "tool_result_received":
       case "tool_execution_completed":
-        phase = "tool-executing";
+        phase = null;
         break;
       case "text_delta":
         phase = "generating";
@@ -3781,7 +3783,8 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
         break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-        if (data.stop_reason === "end_turn") phase = null;
+        const stopReason = data.stop_reason ?? data.stopReason;
+        if (typeof stopReason === "string" ? stopReason !== "tool_use" : true) phase = null;
         break;
       }
       default:
@@ -3789,6 +3792,15 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
     }
   }
   return phase;
+}
+function resolvePanelResponsePhase(args) {
+  if (args.hasLocalPhase) {
+    return args.localPhase ?? null;
+  }
+  if (args.frames.length > 0) {
+    return inferResponsePhaseFromFrames(args.frames, null);
+  }
+  return args.serverPhase ?? null;
 }
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
@@ -4012,9 +4024,17 @@ function parseSseFrames(rawText) {
   }
   return frames;
 }
-async function fetchJson(baseUrl, path, timeoutMs = 1e4) {
+var DEFAULT_CONSOLE_FETCH_TIMEOUT_MS = 6e4;
+function formatTimeoutReason(timeoutMs) {
+  if (timeoutMs % 1e3 === 0) {
+    return `${timeoutMs / 1e3} s`;
+  }
+  return `${timeoutMs} ms`;
+}
+async function fetchJson(baseUrl, path, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const timeoutReason = `console fetch timeout after ${formatTimeoutReason(timeoutMs)}`;
+  const timer = globalThis.setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   try {
     const response = await fetch(`${baseUrl}${path}`, {
       signal: controller.signal
@@ -4024,6 +4044,11 @@ async function fetchJson(baseUrl, path, timeoutMs = 1e4) {
       throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
     }
     return response.json();
+  } catch (error) {
+    if (controller.signal.aborted && typeof controller.signal.reason === "string") {
+      throw new Error(controller.signal.reason);
+    }
+    throw error;
   } finally {
     globalThis.clearTimeout(timer);
   }
@@ -4101,7 +4126,8 @@ var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
   "run_completed",
   "interaction_failed",
-  "run_failed"
+  "run_failed",
+  "turn_completed"
 ]);
 function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
   if (!correlation?.sessionId && !correlation?.interactionId) {
@@ -4124,6 +4150,16 @@ function matchesCorrelation(candidate, correlation, allowUnscoped = true) {
     return true;
   }
   return false;
+}
+function isTerminalTurnCompletedData(data) {
+  const record = data && typeof data === "object" ? data : {};
+  const stopReason = record.stop_reason ?? record.stopReason;
+  return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+}
+function isTerminalSseFrame(frame) {
+  if (!TERMINAL_SSE_EVENTS.has(frame.event || "")) return false;
+  if (frame.event !== "turn_completed") return true;
+  return isTerminalTurnCompletedData(frame.data);
 }
 async function streamFramesFromResponse(response, options = {}) {
   const stopOnTerminal = options.stopOnTerminal ?? Boolean(options.correlation);
@@ -4171,7 +4207,7 @@ async function streamFramesFromResponse(response, options = {}) {
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
-          if (stopOnTerminal && TERMINAL_SSE_EVENTS.has(frame.event || "")) {
+          if (stopOnTerminal && isTerminalSseFrame(frame)) {
             sawTerminal = true;
           }
         }
@@ -7983,6 +8019,9 @@ function dedupeComposerImageFiles(files) {
   }
   return deduped;
 }
+function selectImageTransferFiles(directFiles, itemFiles) {
+  return dedupeComposerImageFiles(directFiles.length > 0 ? directFiles : itemFiles);
+}
 function defaultBaseHref() {
   if (typeof window !== "undefined") return window.location.href;
   return "http://localhost/";
@@ -8071,6 +8110,13 @@ function msgCopyText(message) {
 function msgHasTextualPayload(message) {
   if (message.text?.trim()) return true;
   return Boolean(message.blocks?.some((block) => block.type === "paragraph" || block.type === "heading" || block.type === "divider" || block.type === "code" || block.type === "command"));
+}
+function isScaffoldUserText(text) {
+  const normalized = text.trimStart();
+  return /^you have been spawned\b/i.test(normalized) || /^\[peer update\]/i.test(normalized);
+}
+function isScaffoldUserMessage(message) {
+  return message.kind === "user" && isScaffoldUserText(msgCopyText(message));
 }
 function transcriptCopyText(messages) {
   return messages.map((message) => {
@@ -8176,6 +8222,52 @@ function textSignatureForMsg(message) {
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
+function buildChatMessages(entries) {
+  const flat = entries.flatMap(flattenEntry);
+  const merged = [];
+  for (const m of flat) {
+    const last = merged[merged.length - 1];
+    const lastBlocks = last?.blocks;
+    const mBlocks = m.blocks;
+    const sameName = !!(last && last.kind === "tool" && m.kind === "tool" && Array.isArray(lastBlocks) && lastBlocks.length > 0 && Array.isArray(mBlocks) && mBlocks.length > 0 && lastBlocks.every((b) => b.type === "tool-call") && mBlocks.every((b) => b.type === "tool-call") && lastBlocks[0].type === "tool-call" && mBlocks[0].type === "tool-call" && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name) && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name));
+    const peerCompatible = !sameName ? false : !mBlocks[0].peerTarget ? true : Boolean(lastBlocks[0].peerIncoming) === Boolean(mBlocks[0].peerIncoming);
+    if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
+      last.blocks = [...lastBlocks, ...mBlocks];
+      last.id = `${last.id}+${m.id}`;
+    } else {
+      const canDedupeAdjacent = m.kind === "user" && last?.kind === "user" || m.kind === "agent" && last?.kind === "agent" && last.who === m.who;
+      if (last && canDedupeAdjacent) {
+        const lastSignature = textSignatureForMsg(last);
+        const nextSignature = textSignatureForMsg(m);
+        if (lastSignature && lastSignature === nextSignature) {
+          continue;
+        }
+      }
+      merged.push({ ...m });
+    }
+  }
+  let pendingUserStartedAt = null;
+  return merged.map((message) => {
+    if (message.kind === "user") {
+      pendingUserStartedAt = isScaffoldUserMessage(message) ? null : parseTimeMs(message.createdAt);
+      return message;
+    }
+    if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
+      return message;
+    }
+    const finishedAt = parseTimeMs(message.createdAt);
+    if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
+      return message;
+    }
+    const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
+    pendingUserStartedAt = null;
+    return {
+      ...message,
+      workedFor,
+      workedForCopyText: `Worked for ${workedFor}`
+    };
+  });
+}
 function collectImageTransferPayload(data) {
   const directFiles = Array.from(data.files).filter((file) => file.type.startsWith("image/"));
   const itemFiles = Array.from(data.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file) => Boolean(file));
@@ -8184,7 +8276,7 @@ function collectImageTransferPayload(data) {
     data.getData("text/uri-list"),
     data.getData("text/plain")
   ].filter(Boolean);
-  return { files: dedupeComposerImageFiles([...directFiles, ...itemFiles]), textPayloads };
+  return { files: selectImageTransferFiles(directFiles, itemFiles), textPayloads };
 }
 function imageTransferPayloadHasImage(payload) {
   return payload.files.length > 0 || payload.textPayloads.some((text) => imageDataUrlsFromText(text).length > 0 || consoleBlobUrlsFromText(text).length > 0);
@@ -8312,50 +8404,7 @@ function ChatPane({
     return () => window.cancelAnimationFrame(frame);
   }, [entries.length, phase]);
   const messages = import_react19.default.useMemo(() => {
-    const flat = entries.flatMap(flattenEntry);
-    const merged = [];
-    for (const m of flat) {
-      const last = merged[merged.length - 1];
-      const lastBlocks = last?.blocks;
-      const mBlocks = m.blocks;
-      const sameName = !!(last && last.kind === "tool" && m.kind === "tool" && Array.isArray(lastBlocks) && lastBlocks.length > 0 && Array.isArray(mBlocks) && mBlocks.length > 0 && lastBlocks.every((b) => b.type === "tool-call") && mBlocks.every((b) => b.type === "tool-call") && lastBlocks[0].type === "tool-call" && mBlocks[0].type === "tool-call" && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name) && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name));
-      const peerCompatible = !sameName ? false : !mBlocks[0].peerTarget ? true : Boolean(lastBlocks[0].peerIncoming) === Boolean(mBlocks[0].peerIncoming);
-      if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
-        last.blocks = [...lastBlocks, ...mBlocks];
-        last.id = `${last.id}+${m.id}`;
-      } else {
-        const canDedupeAdjacent = m.kind === "user" && last?.kind === "user" || m.kind === "agent" && last?.kind === "agent" && last.who === m.who;
-        if (last && canDedupeAdjacent) {
-          const lastSignature = textSignatureForMsg(last);
-          const nextSignature = textSignatureForMsg(m);
-          if (lastSignature && lastSignature === nextSignature) {
-            continue;
-          }
-        }
-        merged.push({ ...m });
-      }
-    }
-    let pendingUserStartedAt = null;
-    return merged.map((message) => {
-      if (message.kind === "user") {
-        pendingUserStartedAt = parseTimeMs(message.createdAt);
-        return message;
-      }
-      if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
-        return message;
-      }
-      const finishedAt = parseTimeMs(message.createdAt);
-      if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
-        return message;
-      }
-      const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
-      pendingUserStartedAt = null;
-      return {
-        ...message,
-        workedFor,
-        workedForCopyText: `Worked for ${workedFor}`
-      };
-    });
+    return buildChatMessages(entries);
   }, [entries]);
   const transcriptText = import_react19.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
@@ -9449,10 +9498,11 @@ function cursorSeq(cursor) {
   const parsed = Number(match[1]);
   return Number.isFinite(parsed) ? parsed : null;
 }
-function isEndTurnFrame(frame) {
+function isTerminalTurnCompletedFrame(frame) {
   if (frame.event !== "turn_completed") return false;
   const data = frame.data && typeof frame.data === "object" ? frame.data : {};
-  return data.stop_reason === "end_turn";
+  const stopReason = data.stop_reason ?? data.stopReason;
+  return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
 }
 var REFRESH_TRIGGER_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
@@ -9732,7 +9782,7 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
       return true;
     }
-    if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed" || isEndTurnFrame(frame)) {
+    if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
       return false;
     }
     return null;
@@ -9910,6 +9960,7 @@ function ConsoleApp({ baseUrl }) {
   const experienceLoadInFlightRef = import_react22.default.useRef(
     null
   );
+  const consoleFetchTimeoutMsRef = import_react22.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
   const agentsRef = import_react22.default.useRef([]);
   import_react22.default.useEffect(() => {
     agentsRef.current = agents;
@@ -9993,13 +10044,14 @@ function ConsoleApp({ baseUrl }) {
       case "tool_call_requested":
       case "tool_call":
       case "tool_execution_started":
-      case "tool_result_received":
-      case "tool_execution_completed":
         if (currentPhase === "waiting" && elapsedMs < 300) {
           schedulePanelPhase(panelKey, "tool-executing", 300 - elapsedMs);
           return true;
         }
         return commitPanelPhase(panelKey, "tool-executing");
+      case "tool_result_received":
+      case "tool_execution_completed":
+        return commitPanelPhase(panelKey, null);
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r2 = Math.max(0, 300 - elapsedMs);
@@ -10021,7 +10073,7 @@ function ConsoleApp({ baseUrl }) {
       case "run_failed":
         return commitPanelPhase(panelKey, null);
       case "turn_completed":
-        if (isEndTurnFrame(frame)) return commitPanelPhase(panelKey, null);
+        if (isTerminalTurnCompletedFrame(frame)) return commitPanelPhase(panelKey, null);
         return false;
       case "message_delivery_failed":
         return commitPanelPhase(panelKey, null);
@@ -10078,10 +10130,15 @@ function ConsoleApp({ baseUrl }) {
     }
     let request;
     request = (async () => {
+      const timeoutMs = consoleFetchTimeoutMsRef.current;
       const [experienceJson, modulesJson] = await Promise.all([
-        fetchJson(baseUrl, "/console/experience"),
-        fetchJson(baseUrl, "/console/modules")
+        fetchJson(baseUrl, "/console/experience", timeoutMs),
+        fetchJson(baseUrl, "/console/modules", timeoutMs)
       ]);
+      const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
+      if (typeof configuredTimeoutMs === "number" && Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0) {
+        consoleFetchTimeoutMsRef.current = configuredTimeoutMs;
+      }
       const loadedModules = Array.isArray(modulesJson.modules) ? modulesJson.modules.map(String) : [];
       const nextAgents = normalizeAgents(experienceJson, loadedModules);
       setExperience(experienceJson);
@@ -10377,7 +10434,7 @@ function ConsoleApp({ baseUrl }) {
         updateBusyStateForFrame(identity, frame);
       }
       forceRender();
-      if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isEndTurnFrame(frame)) && identity && identity !== "_system") {
+      if ((HISTORY_REFRESH_EVENTS.has(frame.event) || isTerminalTurnCompletedFrame(frame)) && identity && identity !== "_system") {
         scheduleHistoryRefreshRef.current(identity);
       }
       if (REFRESH_TRIGGER_EVENTS.has(frame.event)) {
@@ -10893,10 +10950,16 @@ function ConsoleApp({ baseUrl }) {
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
-    const phase = Object.prototype.hasOwnProperty.call(
+    const hasLocalPhase = Object.prototype.hasOwnProperty.call(
       phaseRef.current,
       panelKey
-    ) ? phaseRef.current[panelKey] : agent?.response_phase ?? null;
+    );
+    const phase = resolvePanelResponsePhase({
+      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+      localPhase: phaseRef.current[panelKey] ?? null,
+      hasLocalPhase,
+      serverPhase: agent?.response_phase ?? null
+    });
     const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
     const canRetire = configuredActionVisibility.retire && agent?.affordances?.can_retire === true;
     const stackItems = getPendingStack(identity);

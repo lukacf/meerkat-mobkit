@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import type { ConversationTimelineEntry } from "@console-core";
+import { __chatPaneTest } from "./ChatPane";
+
+const USER = { id: "user", label: "You", role: "user" as const };
+const AGENT = { id: "agent", label: "Agent", role: "assistant" as const };
+
+function message(args: {
+  id: string;
+  role: "user" | "assistant";
+  createdAt: string;
+  text: string;
+}): ConversationTimelineEntry {
+  return {
+    id: args.id,
+    kind: "message",
+    variant: "plain",
+    identity: args.role === "user" ? USER : AGENT,
+    createdAt: args.createdAt,
+    text: args.text,
+  };
+}
+
+test("chat pane does not count spawn scaffolding as user work", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({
+      id: "spawn",
+      role: "user",
+      createdAt: "2026-05-20T04:58:01.000Z",
+      text: "You have been spawned as 'review:singleton' (role: review) in mob 'ob3'.",
+    }),
+    message({
+      id: "ready",
+      role: "assistant",
+      createdAt: "2026-05-20T06:43:02.000Z",
+      text: "Ready.",
+    }),
+  ]);
+
+  assert.equal(messages.find((entry) => entry.id === "ready")?.workedFor, undefined);
+});
+
+test("chat pane still shows duration for real user turns", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({
+      id: "operator",
+      role: "user",
+      createdAt: "2026-05-20T06:43:02.000Z",
+      text: "Please review the PR.",
+    }),
+    message({
+      id: "done",
+      role: "assistant",
+      createdAt: "2026-05-20T06:45:07.000Z",
+      text: "Review complete.",
+    }),
+  ]);
+
+  assert.equal(messages.find((entry) => entry.id === "done")?.workedFor, "2m 5s");
+});
+
+test("chat pane does not count peer update scaffolding as user work", () => {
+  const messages = __chatPaneTest.buildChatMessages([
+    message({
+      id: "peer-update",
+      role: "user",
+      createdAt: "2026-05-20T06:43:02.000Z",
+      text: "[PEER UPDATE] review:singleton is now idle.",
+    }),
+    message({
+      id: "reply",
+      role: "assistant",
+      createdAt: "2026-05-20T06:45:07.000Z",
+      text: "Ready.",
+    }),
+  ]);
+
+  assert.equal(messages.find((entry) => entry.id === "reply")?.workedFor, undefined);
+});

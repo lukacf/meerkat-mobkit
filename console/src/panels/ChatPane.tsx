@@ -119,6 +119,16 @@ function msgHasTextualPayload(message: Msg): boolean {
   )));
 }
 
+function isScaffoldUserText(text: string): boolean {
+  const normalized = text.trimStart();
+  return /^you have been spawned\b/i.test(normalized)
+    || /^\[peer update\]/i.test(normalized);
+}
+
+function isScaffoldUserMessage(message: Msg): boolean {
+  return message.kind === "user" && isScaffoldUserText(msgCopyText(message));
+}
+
 function transcriptCopyText(messages: Msg[]): string {
   return messages
     .map((message) => {
@@ -249,6 +259,86 @@ function textSignatureForMsg(message: Msg): string {
   }
   return parts.join("\n").replace(/\s+/g, " ").trim();
 }
+
+function buildChatMessages(entries: ConversationTimelineEntry[]): Msg[] {
+  // Defensive cross-entry merge: the adapter already groups
+  // consecutive same-name tool calls into one entry, but the
+  // merge breaks if a non-tool entry slips between adjacent tool
+  // entries (e.g., a meta event the adapter rendered as its own
+  // bubble). Walk the flattened message list and fold neighbouring
+  // tool messages whose blocks all share the same tool `name` —
+  // and, for peer tools, the same direction.
+  const flat = entries.flatMap(flattenEntry);
+  const merged: Msg[] = [];
+  for (const m of flat) {
+    const last = merged[merged.length - 1];
+    const lastBlocks = last?.blocks;
+    const mBlocks = m.blocks;
+    const sameName = !!(
+      last
+      && last.kind === "tool"
+      && m.kind === "tool"
+      && Array.isArray(lastBlocks) && lastBlocks.length > 0
+      && Array.isArray(mBlocks) && mBlocks.length > 0
+      && lastBlocks.every((b) => b.type === "tool-call")
+      && mBlocks.every((b) => b.type === "tool-call")
+      && lastBlocks[0].type === "tool-call"
+      && mBlocks[0].type === "tool-call"
+      && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+      && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
+    );
+    const peerCompatible = !sameName
+      ? false
+      : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
+        ? true
+        : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
+          === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
+    if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
+      last.blocks = [...lastBlocks, ...mBlocks];
+      last.id = `${last.id}+${m.id}`;
+    } else {
+      const canDedupeAdjacent =
+        (m.kind === "user" && last?.kind === "user")
+        || (m.kind === "agent" && last?.kind === "agent" && last.who === m.who);
+      if (last && canDedupeAdjacent) {
+        const lastSignature = textSignatureForMsg(last);
+        const nextSignature = textSignatureForMsg(m);
+        if (lastSignature && lastSignature === nextSignature) {
+          continue;
+        }
+      }
+      merged.push({ ...m });
+    }
+  }
+  let pendingUserStartedAt: number | null = null;
+  return merged.map((message) => {
+    if (message.kind === "user") {
+      pendingUserStartedAt = isScaffoldUserMessage(message)
+        ? null
+        : parseTimeMs(message.createdAt);
+      return message;
+    }
+    if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
+      return message;
+    }
+    const finishedAt = parseTimeMs(message.createdAt);
+    if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
+      return message;
+    }
+    const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
+    pendingUserStartedAt = null;
+    return {
+      ...message,
+      workedFor,
+      workedForCopyText: `Worked for ${workedFor}`,
+    };
+  });
+}
+
+export const __chatPaneTest = {
+  buildChatMessages,
+  isScaffoldUserText,
+};
 
 interface ImageTransferPayload {
   files: File[];
@@ -415,76 +505,7 @@ export function ChatPane({
   }, [entries.length, phase]);
 
   const messages = React.useMemo(() => {
-    // Defensive cross-entry merge: the adapter already groups
-    // consecutive same-name tool calls into one entry, but the
-    // merge breaks if a non-tool entry slips between adjacent tool
-    // entries (e.g., a meta event the adapter rendered as its own
-    // bubble). Walk the flattened message list and fold neighbouring
-    // tool messages whose blocks all share the same tool `name` —
-    // and, for peer tools, the same direction.
-    const flat = entries.flatMap(flattenEntry);
-    const merged: Msg[] = [];
-    for (const m of flat) {
-      const last = merged[merged.length - 1];
-      const lastBlocks = last?.blocks;
-      const mBlocks = m.blocks;
-      const sameName = !!(
-        last
-        && last.kind === "tool"
-        && m.kind === "tool"
-        && Array.isArray(lastBlocks) && lastBlocks.length > 0
-        && Array.isArray(mBlocks) && mBlocks.length > 0
-        && lastBlocks.every((b) => b.type === "tool-call")
-        && mBlocks.every((b) => b.type === "tool-call")
-        && lastBlocks[0].type === "tool-call"
-        && mBlocks[0].type === "tool-call"
-        && lastBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
-        && mBlocks.every((b) => b.type === "tool-call" && b.name === mBlocks[0].name)
-      );
-      const peerCompatible = !sameName
-        ? false
-        : !((mBlocks![0] as { peerTarget?: unknown }).peerTarget)
-          ? true
-          : Boolean((lastBlocks![0] as { peerIncoming?: unknown }).peerIncoming)
-            === Boolean((mBlocks![0] as { peerIncoming?: unknown }).peerIncoming);
-      if (sameName && peerCompatible && last && lastBlocks && mBlocks) {
-        last.blocks = [...lastBlocks, ...mBlocks];
-        last.id = `${last.id}+${m.id}`;
-      } else {
-        const canDedupeAdjacent =
-          (m.kind === "user" && last?.kind === "user")
-          || (m.kind === "agent" && last?.kind === "agent" && last.who === m.who);
-        if (last && canDedupeAdjacent) {
-          const lastSignature = textSignatureForMsg(last);
-          const nextSignature = textSignatureForMsg(m);
-          if (lastSignature && lastSignature === nextSignature) {
-            continue;
-          }
-        }
-        merged.push({ ...m });
-      }
-    }
-    let pendingUserStartedAt: number | null = null;
-    return merged.map((message) => {
-      if (message.kind === "user") {
-        pendingUserStartedAt = parseTimeMs(message.createdAt);
-        return message;
-      }
-      if (message.kind !== "agent" || !msgHasTextualPayload(message)) {
-        return message;
-      }
-      const finishedAt = parseTimeMs(message.createdAt);
-      if (pendingUserStartedAt === null || finishedAt === null || finishedAt < pendingUserStartedAt) {
-        return message;
-      }
-      const workedFor = formatWorkedDuration(finishedAt - pendingUserStartedAt);
-      pendingUserStartedAt = null;
-      return {
-        ...message,
-        workedFor,
-        workedForCopyText: `Worked for ${workedFor}`,
-      };
-    });
+    return buildChatMessages(entries);
   }, [entries]);
   const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";

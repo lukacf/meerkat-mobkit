@@ -127,43 +127,45 @@ async function runSmoke() {
     global.Text = dom.window.Text;
 
     const root = dom.window.document.getElementById("root");
-    createConsoleApp(root, { baseUrl });
+    const app = createConsoleApp(root, { baseUrl });
 
-    // 1. Wait for sidebar to populate with agent rows
+    // 1. Wait for the current design sidebar to populate with agent rows
     await waitFor(() => {
-      return dom.window.document.querySelectorAll(".cc-sidebar-row").length >= 2;
+      return dom.window.document.querySelectorAll("[data-testid^=\"sidebar-agent:\"]").length >= 2;
     });
 
     const sidebarLabels = Array.from(
-      dom.window.document.querySelectorAll(".cc-sidebar-row")
+      dom.window.document.querySelectorAll("[data-testid^=\"sidebar-agent:\"]")
     ).map((row) => row.textContent.trim());
     assert(
-      sidebarLabels.some((label) => label.includes("router")),
-      `expected "router" in sidebar labels: ${JSON.stringify(sidebarLabels)}`
+      sidebarLabels.some((label) => label.includes("Billing")),
+      `expected "Billing" in sidebar labels: ${JSON.stringify(sidebarLabels)}`
     );
     assert(
-      sidebarLabels.some((label) => label.includes("delivery")),
-      `expected "delivery" in sidebar labels: ${JSON.stringify(sidebarLabels)}`
+      sidebarLabels.some((label) => label.includes("Delivery")),
+      `expected "Delivery" in sidebar labels: ${JSON.stringify(sidebarLabels)}`
     );
 
-    // 2. Verify dock panel (conversation pane) rendered
+    // 2. Open a chat panel and verify the current conversation pane rendered
+    dom.window.document.querySelector("[data-testid^=\"sidebar-agent:\"]").click();
     await waitFor(() => {
-      return dom.window.document.querySelector(".cc-conversation-pane") !== null;
+      return dom.window.document.querySelector("[data-testid^=\"chat-pane:\"]") !== null;
     });
 
     // 3. Verify activity rail rendered
     await waitFor(() => {
-      return dom.window.document.querySelector(".cc-activity-rail") !== null;
+      return dom.window.document.querySelector("[data-testid=\"signals-rail\"]") !== null;
     });
 
-    // 4. Verify shared composer is present
-    const composer = dom.window.document.querySelector(".cc-composer");
-    assert(composer, "shared composer missing");
+    // 4. Verify chat composer is present
+    const composer = dom.window.document.querySelector(".composer");
+    assert(composer, "chat composer missing");
 
     // 5. Verify the workbench layout has all three columns
-    const workbench = dom.window.document.querySelector(".cc-workbench");
+    const workbench = dom.window.document.querySelector("[data-console-workbench=\"root\"]");
     assert(workbench, "workbench layout missing");
 
+    app.unmount();
     dom.window.close();
     process.stdout.write("smoke ok\n");
   } finally {

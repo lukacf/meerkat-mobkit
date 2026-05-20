@@ -9,6 +9,7 @@ import {
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   mergeConversationFrames,
+  resolvePanelResponsePhase,
   sortConversationTimelineEntries,
 } from "./adapters";
 
@@ -445,6 +446,40 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
       { id: "evt-2", event: "tool_call_requested", data: { name: "next_tool" } },
     ]),
     "tool-executing",
+  );
+});
+
+test("resolvePanelResponsePhase lets local terminal history clear stale server phase", () => {
+  assert.equal(
+    resolvePanelResponsePhase({
+      frames: [],
+      serverPhase: "generating",
+    }),
+    "generating",
+  );
+
+  assert.equal(
+    resolvePanelResponsePhase({
+      frames: [
+        { id: "evt-1", event: "interaction_started", timestampMs: 1, data: { content: "Work" } },
+        { id: "evt-2", event: "text_delta", timestampMs: 2, data: { delta: "Done." } },
+        { id: "evt-3", event: "interaction_complete", timestampMs: 3, data: { result: "Done." } },
+      ],
+      serverPhase: "generating",
+    }),
+    null,
+  );
+
+  assert.equal(
+    resolvePanelResponsePhase({
+      frames: [
+        { id: "evt-1", event: "interaction_started", timestampMs: 1, data: { content: "Work" } },
+      ],
+      localPhase: null,
+      hasLocalPhase: true,
+      serverPhase: "generating",
+    }),
+    null,
   );
 });
 

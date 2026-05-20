@@ -34,6 +34,7 @@ import {
   createUserEntry,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
+  resolvePanelResponsePhase,
   sortConversationTimelineEntries,
   type MobKitDockTarget,
 } from "./lib/adapters";
@@ -2280,12 +2281,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
     const isSending = sendingPanels.has(panelKey);
-    const phase = Object.prototype.hasOwnProperty.call(
+    const hasLocalPhase = Object.prototype.hasOwnProperty.call(
       phaseRef.current,
       panelKey,
-    )
-      ? phaseRef.current[panelKey]
-      : (agent?.response_phase ?? null);
+    );
+    const phase = resolvePanelResponsePhase({
+      frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
+      localPhase: phaseRef.current[panelKey] ?? null,
+      hasLocalPhase,
+      serverPhase: agent?.response_phase ?? null,
+    });
     const canRespawn =
       configuredActionVisibility.respawn &&
       agent?.affordances?.can_respawn === true;
