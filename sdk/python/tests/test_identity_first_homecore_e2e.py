@@ -543,7 +543,8 @@ class TestHC07ResetVsDelete:
             after = await rt.status("identity:luka")
             assert after.generation == old_gen + 1
             assert after.session_id != old_session
-            assert after.checkpoint_version in (0, None)  # 0 or omitted for fresh reset
+            # Fresh reset may expose the initial save for the new generation.
+            assert after.checkpoint_version in (0, 1, None)
         finally:
             await rt.shutdown()
 
