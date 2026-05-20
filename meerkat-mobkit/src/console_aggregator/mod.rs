@@ -700,6 +700,109 @@ impl MobKitConsoleAggregator {
         Ok(accepted)
     }
 
+    pub async fn reserve_identity_first_interaction(
+        &self,
+        request: ConsoleSendRequest,
+        session_id: Option<&str>,
+    ) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
+        validate_send_request(&request)?;
+        let _content = content_input_from_value(&request.content)?;
+        let handling_mode_value = request
+            .handling_mode
+            .as_deref()
+            .unwrap_or("queue")
+            .to_string();
+        let dedupe_key = send_dedupe_key(
+            "identity-first",
+            &request.identity,
+            &request.origin,
+            &request.idempotency_key,
+        );
+        let request_fingerprint =
+            send_request_fingerprint(&request.origin, &request.content, &handling_mode_value);
+        if let Some(existing) = self
+            .inner
+            .store
+            .frame_by_dedupe_key(&dedupe_key)
+            .await
+            .map_err(ConsoleSendError::Log)?
+        {
+            let same_request = existing.source.source_cursor.as_deref()
+                == Some(request_fingerprint.as_str())
+                || existing.source.source_cursor.is_none()
+                    && existing.payload.get("origin").and_then(Value::as_str)
+                        == Some(request.origin.as_str())
+                    && existing.payload.get("content") == Some(&request.content)
+                    && existing
+                        .payload
+                        .get("handling_mode")
+                        .and_then(Value::as_str)
+                        == Some(handling_mode_value.as_str());
+            if !same_request {
+                return Err(ConsoleSendError::IdempotencyConflict(
+                    request.idempotency_key,
+                ));
+            }
+            return Ok(accepted_from_frame(&existing));
+        }
+
+        let interaction_id = format!("console-interaction-{}", hash_short(&dedupe_key));
+        let new_frame = NewConsoleFrame {
+            id: None,
+            dedupe_key,
+            timestamp_ms: current_time_ms(),
+            runtime_key: "identity-first".to_string(),
+            identity: request.identity.clone(),
+            conversation_id: Some(request.identity.clone()),
+            session_id: session_id.map(ToString::to_string),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Accepted,
+            payload: json!({
+                "content": request.content,
+                "origin": request.origin,
+                "idempotency_key": request.idempotency_key,
+                "handling_mode": handling_mode_value,
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Send,
+                source_cursor: Some(request_fingerprint),
+            },
+            source_event_id: None,
+            interaction_id: Some(interaction_id),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+        let outcome = self
+            .inner
+            .store
+            .append_if_absent(new_frame)
+            .await
+            .map_err(ConsoleSendError::Log)?;
+        let _ = self
+            .inner
+            .event_tx
+            .send(ConsoleTimelineEvent::ConsoleFrame {
+                frame: outcome.frame.clone(),
+            });
+        Ok(accepted_from_frame(&outcome.frame))
+    }
+
+    pub async fn mark_interaction_delivery_failed(
+        &self,
+        input_frame_id: &str,
+    ) -> Result<(), ConsoleSendError> {
+        update_frame_status_and_emit(
+            &self.inner,
+            input_frame_id,
+            ConsoleFrameStatus::DeliveryFailed,
+        )
+        .await
+        .map_err(ConsoleSendError::Log)?;
+        Ok(())
+    }
+
     pub async fn binary_blob_store_for_identity(
         &self,
         identity: &str,

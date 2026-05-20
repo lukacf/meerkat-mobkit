@@ -1086,6 +1086,7 @@ pub async fn handle_unified_rpc_json(
             if identity_ctx.is_some() {
                 methods.extend_from_slice(&[
                     "mobkit/send",
+                    "mobkit/interact",
                     "mobkit/dispatch",
                     "mobkit/subscribe",
                     "mobkit/status_identity",
@@ -1989,6 +1990,102 @@ pub async fn handle_unified_rpc_json(
                     error: None,
                 },
                 Err(e) => identity_error_response(response_id, &e),
+            }
+        }
+        "mobkit/interact" => {
+            let identity_rt = match identity_ctx {
+                Some(ctx) => &*ctx.runtime,
+                None => return identity_not_configured(response_id),
+            };
+            let identity_str = request
+                .params
+                .get("identity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let identity = match crate::identity_first::AgentIdentity::parse(identity_str) {
+                Ok(id) => id,
+                Err(e) => {
+                    return error_response(response_id, -32602, format!("invalid identity: {e}"));
+                }
+            };
+            let content_val = request
+                .params
+                .get("content")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let content =
+                match serde_json::from_value::<meerkat_core::ContentInput>(content_val.clone()) {
+                    Ok(content) => content,
+                    Err(err) => {
+                        return error_response(
+                            response_id,
+                            -32602,
+                            format!("invalid content: {err}"),
+                        );
+                    }
+                };
+            let origin = request
+                .params
+                .get("origin")
+                .and_then(|v| v.as_str())
+                .unwrap_or("console");
+            let interaction_id = request
+                .params
+                .get("interaction_id")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| meerkat_core::types::SessionId::new().to_string());
+            let runtime_member_id = identity_rt
+                .status(&identity)
+                .await
+                .ok()
+                .and_then(|status| status.agent_runtime_id.map(|id| id.as_str().to_string()));
+
+            if let Err(err) = runtime
+                .reserve_identity_interaction(
+                    identity.as_str(),
+                    runtime_member_id.as_deref(),
+                    &interaction_id,
+                    origin,
+                    content_val,
+                )
+                .await
+            {
+                return error_response(
+                    response_id,
+                    -32003,
+                    format!("failed to reserve interaction: {err}"),
+                );
+            }
+
+            match identity_rt.send(&identity, &content).await {
+                Ok(token) => JsonRpcResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: response_id,
+                    result: Some(serde_json::json!({
+                        "interaction_id": interaction_id,
+                        "fencing_token": token.get(),
+                        "stream": {
+                            "route": format!("/console/identity/{}/stream", identity.as_str()),
+                            "identity": identity.as_str(),
+                        }
+                    })),
+                    error: None,
+                },
+                Err(e) => {
+                    runtime
+                        .record_console_lifecycle(
+                            identity.as_str(),
+                            "interaction_failed",
+                            serde_json::json!({
+                                "interaction_id": interaction_id,
+                                "origin": origin,
+                                "error": e.to_string(),
+                            }),
+                        )
+                        .await;
+                    identity_error_response(response_id, &e)
+                }
             }
         }
         "mobkit/dispatch" => {

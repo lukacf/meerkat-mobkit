@@ -14,12 +14,14 @@ use futures::stream::{self, StreamExt};
 use tokio::sync::{RwLock, broadcast};
 
 use super::bridge::SessionBridge;
-use super::contracts::{ContinuityStore, LeaseProvider};
+use super::contracts::{
+    AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
+};
 use super::types::{
-    AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
-    ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchInput, DurabilityPolicy,
-    DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo,
-    ManagedPeerEdge, NotAddressable, SessionSnapshot,
+    AgentAddressability, AgentIdentity, AgentRuntimeId, AgentRuntimeServices, CheckpointVersion,
+    ContinuityGeneration, ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchInput,
+    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityStatus,
+    LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable, RosterContext, SessionSnapshot,
 };
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
@@ -223,6 +225,54 @@ pub struct IdentityRuntimeConfig {
     pub default_timeout: Option<Duration>,
 }
 
+#[derive(Clone)]
+pub struct IdentityFirstRuntimeContext {
+    pub runtime: Arc<IdentityRuntime>,
+    pub roster_provider: Arc<dyn RosterProvider>,
+    pub topology_provider: Option<Arc<dyn TopologyProvider>>,
+    pub customizer: Option<Arc<dyn AgentCustomizer>>,
+    mob_definition: Option<meerkat_mob::MobDefinition>,
+}
+
+impl IdentityFirstRuntimeContext {
+    pub fn new(
+        runtime: Arc<IdentityRuntime>,
+        roster_provider: Arc<dyn RosterProvider>,
+        topology_provider: Option<Arc<dyn TopologyProvider>>,
+        customizer: Option<Arc<dyn AgentCustomizer>>,
+        mob_definition: Option<meerkat_mob::MobDefinition>,
+    ) -> Self {
+        Self {
+            runtime,
+            roster_provider,
+            topology_provider,
+            customizer,
+            mob_definition,
+        }
+    }
+
+    pub async fn refresh_desired_topology(
+        &self,
+    ) -> Result<super::orchestrator::RestoreFlowResult, IdentityRuntimeError> {
+        let roster = self
+            .roster_provider
+            .roster(&RosterContext {
+                mob_definition: self.mob_definition.clone(),
+                previous_identities: Vec::new(),
+            })
+            .await
+            .map_err(|err| IdentityRuntimeError::Internal(format!("roster provider: {err}")))?;
+
+        super::orchestrator::restore_flow(
+            &self.runtime,
+            &roster,
+            self.topology_provider.as_deref(),
+            self.customizer.as_deref(),
+        )
+        .await
+    }
+}
+
 /// The identity-first runtime tracks active identities and enforces delivery,
 /// ownership, and lifecycle invariants.
 pub struct IdentityRuntime {
@@ -234,6 +284,7 @@ pub struct IdentityRuntime {
     has_runtime_store: bool,
     durability_policy: DurabilityPolicy,
     bridge: Option<Arc<dyn SessionBridge>>,
+    runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
     default_timeout: Duration,
 }
@@ -250,9 +301,19 @@ impl IdentityRuntime {
             has_runtime_store: config.has_runtime_store,
             durability_policy: config.durability_policy,
             bridge: config.bridge,
+            runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
         }
+    }
+
+    pub fn with_runtime_services(mut self, runtime_services: AgentRuntimeServices) -> Self {
+        self.runtime_services = runtime_services;
+        self
+    }
+
+    pub(crate) fn runtime_services(&self) -> AgentRuntimeServices {
+        self.runtime_services.clone()
     }
 
     #[must_use]
@@ -292,25 +353,30 @@ impl IdentityRuntime {
             .iter()
             .map(|(identity, runtime_id)| (runtime_id.clone(), identity.clone()))
             .collect();
-        let current_runtime_edges = bridge.current_member_wires().await.unwrap_or_else(|err| {
-            tracing::debug!(
-                error = %err,
-                "identity-first topology reconcile could not inspect current member wires"
-            );
-            Vec::new()
-        });
-        let current_logical_edges: BTreeSet<(AgentIdentity, AgentIdentity)> = current_runtime_edges
-            .iter()
-            .filter_map(|(runtime_a, runtime_b)| {
-                let a = runtime_identities.get(runtime_a)?;
-                let b = runtime_identities.get(runtime_b)?;
-                if a <= b {
-                    Some((a.clone(), b.clone()))
-                } else {
-                    Some((b.clone(), a.clone()))
+        let current_logical_edges: Option<BTreeSet<(AgentIdentity, AgentIdentity)>> =
+            match bridge.current_member_wires().await {
+                Ok(current_runtime_edges) => Some(
+                    current_runtime_edges
+                        .iter()
+                        .filter_map(|(runtime_a, runtime_b)| {
+                            let a = runtime_identities.get(runtime_a)?;
+                            let b = runtime_identities.get(runtime_b)?;
+                            if a <= b {
+                                Some((a.clone(), b.clone()))
+                            } else {
+                                Some((b.clone(), a.clone()))
+                            }
+                        })
+                        .collect(),
+                ),
+                Err(err) => {
+                    tracing::debug!(
+                        error = %err,
+                        "identity-first topology reconcile could not inspect current member wires"
+                    );
+                    None
                 }
-            })
-            .collect();
+            };
 
         let desired: BTreeSet<(AgentIdentity, AgentIdentity)> = desired_edges
             .iter()
@@ -321,14 +387,22 @@ impl IdentityRuntime {
         let retained_logical_edges: Vec<(AgentIdentity, AgentIdentity)> = desired
             .iter()
             .filter(|edge| !managed_snapshot.contains(*edge))
-            .filter(|edge| current_logical_edges.contains(*edge))
+            .filter(|edge| {
+                current_logical_edges
+                    .as_ref()
+                    .is_some_and(|edges| edges.contains(*edge))
+            })
             .filter(|(a, b)| active_runtimes.contains_key(a) && active_runtimes.contains_key(b))
             .cloned()
             .collect();
         let to_wire: Vec<(AgentIdentity, AgentIdentity, AgentRuntimeId, AgentRuntimeId)> = desired
             .iter()
             .filter(|edge| !managed_snapshot.contains(*edge))
-            .filter(|edge| !current_logical_edges.contains(*edge))
+            .filter(|edge| {
+                current_logical_edges
+                    .as_ref()
+                    .is_none_or(|edges| !edges.contains(*edge))
+            })
             .filter_map(|(a, b)| {
                 let runtime_a = active_runtimes.get(a)?;
                 let runtime_b = active_runtimes.get(b)?;
@@ -346,8 +420,9 @@ impl IdentityRuntime {
             .filter_map(|(a, b)| {
                 let runtime_a = active_runtimes.get(a)?;
                 let runtime_b = active_runtimes.get(b)?;
-                if !current_logical_edges.is_empty()
-                    && !current_logical_edges.contains(&(a.clone(), b.clone()))
+                if current_logical_edges
+                    .as_ref()
+                    .is_some_and(|edges| !edges.contains(&(a.clone(), b.clone())))
                 {
                     return None;
                 }
@@ -721,6 +796,7 @@ impl IdentityRuntime {
                 .map(|c| c.agent_runtime_id.clone()),
             session_id: entry.continuity.as_ref().map(|c| c.session_id.clone()),
             profile: Some(entry.spec.profile.clone()),
+            runtime_mode: entry.spec.runtime_mode_override,
             addressability: entry.spec.addressability,
             display_name: entry.spec.display_name.clone(),
             labels: entry.spec.labels.clone(),
@@ -935,9 +1011,30 @@ impl IdentityRuntime {
                     labels: spec.labels.clone(),
                     app_context: spec.context.clone(),
                     external_tools: Vec::new(),
+                    local_external_tools: Default::default(),
                 };
+                bridge
+                    .register_session_runtime_state(
+                        &new_record.session_id,
+                        identity,
+                        new_record.generation,
+                        new_record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+                    .map_err(|e| {
+                        IdentityRuntimeError::Internal(format!(
+                            "bridge register_session_runtime_state after reset: {e}"
+                        ))
+                    })?;
                 let session_id = bridge
-                    .create_session(identity, &new_record.agent_runtime_id, &spec, &draft)
+                    .create_session(
+                        identity,
+                        &new_record.agent_runtime_id,
+                        &spec,
+                        &draft,
+                        &new_record.session_id,
+                    )
                     .await
                     .map_err(|e| {
                         IdentityRuntimeError::Internal(format!(
@@ -945,13 +1042,31 @@ impl IdentityRuntime {
                         ))
                     })?;
                 // Update the record with the actual session ID
+                let initial_session_id = new_record.session_id.clone();
                 let mut new_record = new_record;
                 new_record.session_id = session_id;
 
                 // Persist the updated record
-                self.continuity_store
-                    .upsert_continuity_record(&new_record, grant.fencing_token)
-                    .await?;
+                if new_record.session_id != initial_session_id {
+                    self.continuity_store
+                        .upsert_continuity_record(&new_record, grant.fencing_token)
+                        .await?;
+                }
+                let effective_checkpoint_version = bridge
+                    .register_session_runtime_state(
+                        &new_record.session_id,
+                        identity,
+                        new_record.generation,
+                        new_record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+                    .map_err(|e| {
+                        IdentityRuntimeError::Internal(format!(
+                            "bridge register actual session runtime state after reset: {e}"
+                        ))
+                    })?;
+                new_record.checkpoint_version = effective_checkpoint_version;
 
                 // Update runtime state
                 let mut entries = self.entries.write().await;
@@ -963,7 +1078,7 @@ impl IdentityRuntime {
                         acquired_at: Instant::now(),
                     });
                     entry.state = IdentityLifecycleState::Active;
-                    entry.checkpoint_version = CheckpointVersion::new(0);
+                    entry.checkpoint_version = new_record.checkpoint_version;
                 }
                 return Ok(new_record);
             }
@@ -1134,6 +1249,7 @@ impl IdentityRuntime {
                     .map(|c| c.agent_runtime_id.clone()),
                 session_id: entry.continuity.as_ref().map(|c| c.session_id.clone()),
                 profile: Some(entry.spec.profile.clone()),
+                runtime_mode: entry.spec.runtime_mode_override,
                 addressability: entry.spec.addressability,
                 display_name: entry.spec.display_name.clone(),
                 labels: entry.spec.labels.clone(),

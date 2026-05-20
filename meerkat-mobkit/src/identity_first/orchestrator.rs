@@ -203,6 +203,7 @@ pub async fn restore_flow(
             identity: identity.clone(),
             active_peers: identities.clone(),
             managed_edges: managed_edges.clone(),
+            runtime_services: runtime.runtime_services(),
         };
 
         // Step 6: customize
@@ -213,6 +214,7 @@ pub async fn restore_flow(
             labels: spec.labels.clone(),
             app_context: spec.context.clone(),
             external_tools: Vec::new(),
+            local_external_tools: Default::default(),
         };
 
         if let Some(cust) = customizer {
@@ -236,12 +238,48 @@ pub async fn restore_flow(
                     generation: ContinuityGeneration::new(0),
                     checkpoint_version: CheckpointVersion::new(0),
                 };
+                let initial_session_id = record.session_id.clone();
+                let mut initial_record_persisted = false;
+
+                // Persist the initial record before spawning through a
+                // continuity-backed session store. PersistentSessionService
+                // saves during member creation, and the store enforces CAS
+                // against the continuity record.
+                if let Some(grant) = grants.get(identity) {
+                    runtime
+                        .continuity_store()
+                        .upsert_continuity_record(&record, grant.fencing_token)
+                        .await?;
+                    initial_record_persisted = true;
+                }
 
                 // Bridge: create the real mob member when available.
                 // Skip if the identity is already active (mob member exists).
                 if !already_active && let Some(bridge) = runtime.bridge() {
+                    if let Some(grant) = grants.get(identity) {
+                        bridge
+                            .register_session_runtime_state(
+                                &record.session_id,
+                                identity,
+                                record.generation,
+                                record.checkpoint_version,
+                                grant.fencing_token,
+                            )
+                            .await
+                            .map_err(|e| {
+                                IdentityRuntimeError::Internal(format!(
+                                    "bridge register_session_runtime_state: {e}"
+                                ))
+                            })?;
+                    }
                     let session_id = bridge
-                        .create_session(identity, &record.agent_runtime_id, spec, &draft)
+                        .create_session(
+                            identity,
+                            &record.agent_runtime_id,
+                            spec,
+                            &draft,
+                            &record.session_id,
+                        )
                         .await
                         .map_err(|e| {
                             IdentityRuntimeError::Internal(format!("bridge create_session: {e}"))
@@ -249,13 +287,32 @@ pub async fn restore_flow(
                     // Update the record with the actual session ID from the mob
                     record.session_id = session_id;
                 }
-
-                // Persist initial continuity record
-                if let Some(grant) = grants.get(identity) {
+                if let Some(grant) = grants.get(identity)
+                    && (!initial_record_persisted || record.session_id != initial_session_id)
+                {
                     runtime
                         .continuity_store()
                         .upsert_continuity_record(&record, grant.fencing_token)
                         .await?;
+                }
+                if let Some(grant) = grants.get(identity)
+                    && let Some(bridge) = runtime.bridge()
+                {
+                    let effective_checkpoint_version = bridge
+                        .register_session_runtime_state(
+                            &record.session_id,
+                            identity,
+                            record.generation,
+                            record.checkpoint_version,
+                            grant.fencing_token,
+                        )
+                        .await
+                        .map_err(|e| {
+                            IdentityRuntimeError::Internal(format!(
+                                "bridge register actual session runtime state: {e}"
+                            ))
+                        })?;
+                    record.checkpoint_version = effective_checkpoint_version;
                 }
 
                 // Register in runtime
@@ -273,6 +330,7 @@ pub async fn restore_flow(
 
             // Step 9: Ready → resume from snapshot
             ContinuityResolveState::Ready { record } => {
+                let mut record = record.clone();
                 // Step 7: load snapshot for resume injection
                 let snapshot = runtime
                     .continuity_store()
@@ -283,24 +341,38 @@ pub async fn restore_flow(
                 // Bridge: resume or create the real mob member when available.
                 // Skip if the identity is already active (mob member exists).
                 if !already_active && let Some(bridge) = runtime.bridge() {
-                    match &snapshot {
-                        Some(snap) => {
-                            bridge
-                                .resume_session(
-                                    identity,
-                                    &record.agent_runtime_id,
-                                    spec,
-                                    &draft,
-                                    &record.session_id,
-                                    snap,
-                                )
-                                .await
-                                .map_err(|e| {
-                                    IdentityRuntimeError::Internal(format!(
-                                        "bridge resume_session: {e}"
-                                    ))
-                                })?;
-                        }
+                    if let Some(grant) = grants.get(identity) {
+                        bridge
+                            .register_session_runtime_state(
+                                &record.session_id,
+                                identity,
+                                record.generation,
+                                record.checkpoint_version,
+                                grant.fencing_token,
+                            )
+                            .await
+                            .map_err(|e| {
+                                IdentityRuntimeError::Internal(format!(
+                                    "bridge register_session_runtime_state: {e}"
+                                ))
+                            })?;
+                    }
+                    let resumed_session_id = match &snapshot {
+                        Some(snap) => bridge
+                            .resume_session(
+                                identity,
+                                &record.agent_runtime_id,
+                                spec,
+                                &draft,
+                                &record.session_id,
+                                snap,
+                            )
+                            .await
+                            .map_err(|e| {
+                                IdentityRuntimeError::Internal(format!(
+                                    "bridge resume_session: {e}"
+                                ))
+                            })?,
                         None => {
                             // No snapshot but record exists — resume from session
                             // store using the session_id from the continuity record.
@@ -320,9 +392,35 @@ pub async fn restore_flow(
                                     IdentityRuntimeError::Internal(format!(
                                         "bridge resume_session (no snapshot): {e}"
                                     ))
-                                })?;
+                                })?
                         }
-                    }
+                    };
+                    record.session_id = resumed_session_id;
+                }
+                if let Some(grant) = grants.get(identity) {
+                    runtime
+                        .continuity_store()
+                        .upsert_continuity_record(&record, grant.fencing_token)
+                        .await?;
+                }
+                if let Some(bridge) = runtime.bridge()
+                    && let Some(grant) = grants.get(identity)
+                {
+                    let effective_checkpoint_version = bridge
+                        .register_session_runtime_state(
+                            &record.session_id,
+                            identity,
+                            record.generation,
+                            record.checkpoint_version,
+                            grant.fencing_token,
+                        )
+                        .await
+                        .map_err(|e| {
+                            IdentityRuntimeError::Internal(format!(
+                                "bridge register_session_runtime_state: {e}"
+                            ))
+                        })?;
+                    record.checkpoint_version = effective_checkpoint_version;
                 }
 
                 // Register in runtime

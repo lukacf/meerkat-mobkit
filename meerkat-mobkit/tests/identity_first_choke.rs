@@ -63,6 +63,8 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         labels: BTreeMap::new(),
         context: None,
         additional_instructions: Vec::new(),
+        initial_message: None,
+        runtime_mode_override: None,
     }
 }
 
@@ -640,6 +642,8 @@ async fn identity_first_choke_09_durable_agent_spec_gateway_round_trip() {
         },
         context: Some(serde_json::json!({"app_key": "value123"})),
         additional_instructions: vec!["be thorough".to_string()],
+        initial_message: None,
+        runtime_mode_override: None,
     };
 
     // Serialize to JSON (simulates gateway wire)
@@ -1244,6 +1248,7 @@ async fn identity_first_choke_20_session_hook_adapter_unsupported_mutation() {
         identity: make_identity("triage:main"),
         active_peers: vec![],
         managed_edges: vec![],
+        runtime_services: Default::default(),
     };
     let spec = make_spec("triage:main");
     let mut draft = AgentBuildDraft {
@@ -1253,6 +1258,7 @@ async fn identity_first_choke_20_session_hook_adapter_unsupported_mutation() {
         labels: BTreeMap::new(),
         app_context: None,
         external_tools: vec![],
+        local_external_tools: Default::default(),
     };
 
     // Should succeed (unsupported mutations are warned, not errored)

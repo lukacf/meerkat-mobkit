@@ -9,6 +9,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use futures::future::join_all;
+use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::{MeerkatId, MobId};
@@ -59,6 +60,7 @@ pub struct ConsoleJsonState {
     /// dispatch can answer `mobkit/peer_pubkey` and stamp non-inproc
     /// `cross_mob/wire_local` descriptors with a real pubkey.
     pub gateway_peer_keys: Option<crate::auth::peer_keys::GatewayPeerKeys>,
+    pub(crate) identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     pub(crate) console_events: Option<ConsoleEventStore>,
     pub(crate) console_aggregator: Option<MobKitConsoleAggregator>,
     pub(crate) mob_events: Option<MobEventsStore>,
@@ -192,6 +194,7 @@ pub fn console_json_router(decisions: RuntimeDecisionState) -> Router {
         contact_directory: None,
         event_log: None,
         gateway_peer_keys: None,
+        identity_runtime: None,
         console_events: None,
         console_aggregator: None,
         mob_events: None,
@@ -212,6 +215,7 @@ pub fn console_json_router_with_aggregator(
         contact_directory: None,
         event_log: None,
         gateway_peer_keys: None,
+        identity_runtime: None,
         console_events: None,
         console_aggregator: Some(console_aggregator),
         mob_events: None,
@@ -238,6 +242,7 @@ pub fn console_json_router_with_runtime(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -253,6 +258,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
     console_log_store: Option<std::sync::Arc<dyn ConsoleLogStore>>,
     mob_events: Option<MobEventsStore>,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
+    identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
 ) -> Router {
     console_json_router_with_runtime_events_and_policy(
         decisions,
@@ -265,6 +271,7 @@ pub(crate) fn console_json_router_with_runtime_and_events(
         console_log_store,
         mob_events,
         metadata_table,
+        identity_runtime,
         Arc::new(HideImplicitDelegateMembersConsoleVisibilityPolicy),
     )
 }
@@ -281,6 +288,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
     console_log_store: Option<std::sync::Arc<dyn ConsoleLogStore>>,
     mob_events: Option<MobEventsStore>,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
+    identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
 ) -> Router {
     let console_aggregator = console_events.clone().map(|events| {
@@ -315,6 +323,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
         contact_directory,
         event_log,
         gateway_peer_keys,
+        identity_runtime,
         console_events,
         console_aggregator,
         mob_events,
@@ -349,6 +358,10 @@ fn console_json_router_with_state(state: ConsoleJsonState) -> Router {
         .route(
             "/console/timeline/stream",
             get(console_timeline_stream_handler),
+        )
+        .route(
+            "/console/identity/{identity}/stream",
+            get(console_identity_timeline_stream_handler),
         )
         .route("/console/send", post(console_send_handler))
         .route("/console/rpc", post(console_rpc_handler))
@@ -506,6 +519,7 @@ pub async fn console_rpc_handler(
         state.gateway_peer_keys.as_ref(),
         state.console_events.clone(),
         state.console_aggregator.clone(),
+        state.identity_runtime.clone(),
         state.metadata_table.clone(),
         state.mob_events.clone(),
         parsed_request,
@@ -614,6 +628,25 @@ async fn console_send_handler(
             "console aggregator unavailable",
         );
     };
+    if let Some(identity_runtime) = &state.identity_runtime {
+        return match console_send_identity_first(
+            aggregator,
+            identity_runtime,
+            state.console_events.as_ref(),
+            request,
+        )
+        .await
+        {
+            Ok(accepted) => (
+                StatusCode::OK,
+                Json::<Value>(
+                    serde_json::to_value(accepted).unwrap_or_else(|_| json!({ "accepted": true })),
+                ),
+            )
+                .into_response(),
+            Err(err) => console_send_error_response(err),
+        };
+    }
     match aggregator.send(request).await {
         Ok(accepted) => (
             StatusCode::OK,
@@ -623,6 +656,105 @@ async fn console_send_handler(
         )
             .into_response(),
         Err(err) => console_send_error_response(err),
+    }
+}
+
+async fn console_send_identity_first(
+    aggregator: &MobKitConsoleAggregator,
+    identity_runtime: &crate::identity_first::IdentityRuntime,
+    console_events: Option<&ConsoleEventStore>,
+    request: ConsoleSendRequest,
+) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
+    let identity = crate::identity_first::AgentIdentity::parse(request.identity.as_str())
+        .map_err(|err| ConsoleSendError::InvalidRequest(format!("invalid identity: {err}")))?;
+    let content: ContentInput = serde_json::from_value(request.content.clone())
+        .map_err(|err| ConsoleSendError::InvalidContent(err.to_string()))?;
+    if let ContentInput::Text(text) = &content
+        && text.trim().is_empty()
+    {
+        return Err(ConsoleSendError::InvalidContent(
+            "content must be non-empty".to_string(),
+        ));
+    }
+    if let ContentInput::Blocks(blocks) = &content
+        && blocks.is_empty()
+    {
+        return Err(ConsoleSendError::InvalidContent(
+            "content blocks must be non-empty".to_string(),
+        ));
+    }
+
+    let status = identity_runtime
+        .status(&identity)
+        .await
+        .map_err(|err| identity_runtime_error_to_console_send_error(identity.as_str(), err))?;
+    let session_id = status
+        .session_id
+        .as_ref()
+        .map(std::string::ToString::to_string);
+    let runtime_member_id = status
+        .agent_runtime_id
+        .as_ref()
+        .map(|id| id.as_str().to_string());
+    let accepted = aggregator
+        .reserve_identity_first_interaction(request.clone(), session_id.as_deref())
+        .await?;
+
+    if let Some(events) = console_events {
+        events
+            .reserve_interaction_value(
+                identity.as_str(),
+                runtime_member_id.as_deref(),
+                &accepted.interaction_id,
+                &request.origin,
+                request.content.clone(),
+            )
+            .await
+            .map_err(ConsoleSendError::State)?;
+    }
+
+    match identity_runtime.send(&identity, &content).await {
+        Ok(_) => Ok(accepted),
+        Err(err) => {
+            let _ = aggregator
+                .mark_interaction_delivery_failed(&accepted.input_frame_id)
+                .await;
+            if let Some(events) = console_events {
+                events
+                    .record_lifecycle(
+                        identity.as_str(),
+                        "interaction_failed",
+                        json!({
+                            "interaction_id": accepted.interaction_id,
+                            "origin": request.origin,
+                            "error": err.to_string(),
+                        }),
+                    )
+                    .await;
+            }
+            Err(identity_runtime_error_to_console_send_error(
+                identity.as_str(),
+                err,
+            ))
+        }
+    }
+}
+
+fn identity_runtime_error_to_console_send_error(
+    identity: &str,
+    err: crate::identity_first::IdentityRuntimeError,
+) -> ConsoleSendError {
+    match err {
+        crate::identity_first::IdentityRuntimeError::UnknownIdentity(_) => {
+            ConsoleSendError::UnknownIdentity(identity.to_string())
+        }
+        crate::identity_first::IdentityRuntimeError::NotAddressable(_) => {
+            ConsoleSendError::NotAddressable(identity.to_string())
+        }
+        crate::identity_first::IdentityRuntimeError::InvalidState { .. } => {
+            ConsoleSendError::Retired(identity.to_string())
+        }
+        other => ConsoleSendError::Dispatch(other.to_string()),
     }
 }
 
@@ -736,6 +868,24 @@ async fn console_timeline_stream_handler(
                 .text(KEEP_ALIVE_TEXT),
         )
         .into_response()
+}
+
+async fn console_identity_timeline_stream_handler(
+    State(state): State<ConsoleJsonState>,
+    headers: HeaderMap,
+    uri: Uri,
+    AxumPath(identity): AxumPath<String>,
+    Query(mut query): Query<ConsoleTimelineHttpQuery>,
+) -> impl IntoResponse {
+    query.identity = Some(identity);
+    Box::pin(console_timeline_stream_handler(
+        State(state),
+        headers,
+        uri,
+        Query(query),
+    ))
+    .await
+    .into_response()
 }
 
 fn timeline_query_from_http(
@@ -1274,6 +1424,7 @@ pub async fn console_rpc_multipart_handler(
             state.gateway_peer_keys.as_ref(),
             state.console_events.clone(),
             state.console_aggregator.clone(),
+            state.identity_runtime.clone(),
             state.metadata_table.clone(),
             state.mob_events.clone(),
             parsed_request,
@@ -1991,6 +2142,7 @@ async fn handle_console_runtime_rpc(
     gateway_peer_keys: Option<&crate::auth::peer_keys::GatewayPeerKeys>,
     console_events: Option<ConsoleEventStore>,
     console_aggregator: Option<MobKitConsoleAggregator>,
+    identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     metadata_table: Option<std::sync::Arc<RuntimeMetadataTable>>,
     mob_events: Option<MobEventsStore>,
     request: JsonRpcRequest,
@@ -2203,6 +2355,31 @@ async fn handle_console_runtime_rpc(
                     }),
                 );
             };
+            if let Some(identity_runtime) = &identity_runtime {
+                return match console_send_identity_first(
+                    aggregator,
+                    identity_runtime,
+                    console_events.as_ref(),
+                    send_request,
+                )
+                .await
+                {
+                    Ok(accepted) => response_value(
+                        response_id,
+                        Some(serde_json::to_value(accepted).unwrap_or(Value::Null)),
+                        None,
+                    ),
+                    Err(err) => response_value(
+                        response_id,
+                        None,
+                        Some(JsonRpcError {
+                            code: console_send_rpc_code(&err),
+                            message: err.to_string(),
+                            data: None,
+                        }),
+                    ),
+                };
+            }
             match aggregator.send(send_request).await {
                 Ok(accepted) => response_value(
                     response_id,
@@ -4007,10 +4184,10 @@ mod tests {
     use super::{
         ConsoleSnapshotReadModel, ConsoleSnapshotReadModelState, MAX_MULTIPART_BODY_BYTES,
         MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, apply_console_visibility_policy,
-        collect_console_snapshot_read_model, cursor_is_after, dedupe_console_members_by_identity,
-        externalize_image_upload_placeholders, externalize_single_image_upload,
-        handle_console_aggregator_rpc, project_console_members_from_handle,
-        query_timeline_snapshot,
+        collect_console_snapshot_read_model, console_send_identity_first, cursor_is_after,
+        dedupe_console_members_by_identity, externalize_image_upload_placeholders,
+        externalize_single_image_upload, handle_console_aggregator_rpc,
+        project_console_members_from_handle, query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -4020,6 +4197,12 @@ mod tests {
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
         ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
+    use crate::identity_first::{
+        AgentAddressability, AgentIdentity, AgentRuntimeId, CheckpointVersion,
+        ContinuityGeneration, ContinuityRecord, DurabilityPolicy, DurableAgentSpec, FencingToken,
+        IdentityLifecycleState, IdentityRuntime, IdentityRuntimeConfig, LeaseGrant,
+        LocalContinuityStore, LocalLeaseProvider,
+    };
     use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
     use crate::rpc::{JSONRPC_VERSION, JsonRpcRequest};
     use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
@@ -4028,10 +4211,12 @@ mod tests {
     use bytes::Bytes;
     use meerkat::{AgentFactory, Config, build_ephemeral_service};
     use meerkat_client::TestClient;
+    use meerkat_mob::ProfileName;
     use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::time::Duration;
 
     async fn build_empty_console_test_runtime(
         mob_id: &str,
@@ -4073,6 +4258,87 @@ comms = true
             method: method.to_string(),
             params: json!({}),
         }
+    }
+
+    #[tokio::test]
+    async fn identity_first_console_send_reserves_timeline_and_uses_identity_runtime()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let runtime = IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        });
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record.clone()),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let events = ConsoleEventStore::new();
+        let accepted = console_send_identity_first(
+            &aggregator,
+            &runtime,
+            Some(&events),
+            crate::console_aggregator::ConsoleSendRequest {
+                identity: identity.as_str().to_string(),
+                content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                    "hello".to_string(),
+                ))?,
+                origin: "test".to_string(),
+                idempotency_key: "idem-1".to_string(),
+                handling_mode: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(accepted.identity, identity.as_str());
+        assert_eq!(accepted.status, ConsoleFrameStatus::Accepted);
+        assert_eq!(accepted.session_id, Some(record.session_id.to_string()));
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some(identity.as_str().to_string()),
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(page.frames[0].runtime_key, "identity-first");
+        assert_eq!(page.frames[0].status, ConsoleFrameStatus::Accepted);
+        assert_eq!(
+            page.frames[0].session_id,
+            Some(record.session_id.to_string())
+        );
+        Ok(())
     }
 
     #[test]

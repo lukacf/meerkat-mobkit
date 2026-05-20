@@ -144,6 +144,7 @@ pub struct UnifiedRuntime {
 
     // Identity-first session bridge
     session_bridge: Option<Arc<dyn crate::identity_first::bridge::SessionBridge>>,
+    identity_first_context: Option<Arc<crate::identity_first::IdentityFirstRuntimeContext>>,
 
     // Mobkit-side label sidecar for mob- and run-scoped metadata
     metadata_table: Arc<RuntimeMetadataTable>,
@@ -212,6 +213,7 @@ impl UnifiedRuntime {
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             gateway_peer_keys: None,
             session_bridge: None,
+            identity_first_context: None,
             metadata_table,
             persistent_metadata,
         }
@@ -337,6 +339,35 @@ impl UnifiedRuntime {
     /// Return the session bridge for identity-first operations, if configured.
     pub fn session_bridge(&self) -> Option<&Arc<dyn crate::identity_first::bridge::SessionBridge>> {
         self.session_bridge.as_ref()
+    }
+
+    pub fn identity_first_context(
+        &self,
+    ) -> Option<&Arc<crate::identity_first::IdentityFirstRuntimeContext>> {
+        self.identity_first_context.as_ref()
+    }
+
+    pub fn identity_runtime(&self) -> Option<&Arc<crate::identity_first::IdentityRuntime>> {
+        self.identity_first_context.as_ref().map(|ctx| &ctx.runtime)
+    }
+
+    pub fn attach_identity_first_context(
+        &mut self,
+        context: Arc<crate::identity_first::IdentityFirstRuntimeContext>,
+    ) {
+        self.identity_first_context = Some(context);
+    }
+
+    pub async fn refresh_desired_topology(
+        &self,
+    ) -> Result<
+        Option<crate::identity_first::RestoreFlowResult>,
+        crate::identity_first::IdentityRuntimeError,
+    > {
+        match self.identity_first_context.as_ref() {
+            Some(ctx) => ctx.refresh_desired_topology().await.map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Return the mob/run label sidecar table.
@@ -471,6 +502,19 @@ impl UnifiedRuntime {
         self.console_events
             .record_lifecycle(identity, event_type, data)
             .await;
+    }
+
+    pub async fn reserve_identity_interaction(
+        &self,
+        identity: &str,
+        runtime_member_id: Option<&str>,
+        interaction_id: &str,
+        origin: &str,
+        content: serde_json::Value,
+    ) -> Result<(), &'static str> {
+        self.console_events
+            .reserve_interaction_value(identity, runtime_member_id, interaction_id, origin, content)
+            .await
     }
 
     pub(crate) async fn project_console_event_from_unified(

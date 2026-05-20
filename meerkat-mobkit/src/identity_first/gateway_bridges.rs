@@ -14,8 +14,12 @@
 //! - Errors propagate as JSON-RPC errors → typed Rust errors
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+use meerkat_core::agent::AgentToolDispatcher;
+use meerkat_core::types::ToolCallView;
+use meerkat_core::{ContentBlock, ToolDef, ToolResult, error::ToolError, ops::ToolDispatchOutcome};
 use serde_json::{Value, json};
 
 use super::contracts::{
@@ -24,8 +28,8 @@ use super::contracts::{
 use super::types::{
     AgentBuildContext, AgentBuildDraft, AgentIdentity, CheckpointVersion, ContinuityGeneration,
     ContinuityResolveState, ContinuityStoreError, CustomizerError, DurableAgentSpec, FencingToken,
-    LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, ManagedPeerEdge, RosterContext,
-    RosterError, SessionSnapshot, TopologyContext, TopologyError,
+    LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, LocalExternalToolOverlay,
+    ManagedPeerEdge, RosterContext, RosterError, SessionSnapshot, TopologyContext, TopologyError,
 };
 use crate::mob_handle_runtime::SessionCreatedContext;
 
@@ -298,13 +302,92 @@ impl RosterProvider for GatewayRosterProvider {
 
 /// Gateway-side `AgentCustomizer` that delegates to Python/TypeScript via JSON-RPC.
 pub struct GatewayAgentCustomizer {
-    bridge: Box<dyn CallbackBridge>,
+    bridge: Arc<dyn CallbackBridge>,
 }
 
 impl GatewayAgentCustomizer {
     pub fn new(bridge: impl CallbackBridge + 'static) -> Self {
         Self {
-            bridge: Box::new(bridge),
+            bridge: Arc::new(bridge),
+        }
+    }
+}
+
+struct GatewayCallbackToolDispatcher {
+    bridge: Arc<dyn CallbackBridge>,
+    scope_id: String,
+    tool_defs: Arc<[Arc<ToolDef>]>,
+}
+
+impl GatewayCallbackToolDispatcher {
+    fn new(
+        bridge: Arc<dyn CallbackBridge>,
+        scope_id: String,
+        external_tools: Vec<super::types::ExternalToolDef>,
+    ) -> Self {
+        let tool_defs = external_tools
+            .into_iter()
+            .map(|tool| {
+                Arc::new(ToolDef {
+                    name: tool.name.into(),
+                    description: tool.description,
+                    input_schema: tool.input_schema,
+                    provenance: None,
+                })
+            })
+            .collect::<Vec<_>>()
+            .into();
+        Self {
+            bridge,
+            scope_id,
+            tool_defs,
+        }
+    }
+}
+
+#[async_trait]
+impl AgentToolDispatcher for GatewayCallbackToolDispatcher {
+    fn tools(&self) -> Arc<[Arc<ToolDef>]> {
+        self.tool_defs.clone()
+    }
+
+    async fn dispatch(&self, call: ToolCallView<'_>) -> Result<ToolDispatchOutcome, ToolError> {
+        let args: Value =
+            serde_json::from_str(call.args.get()).map_err(|err| ToolError::InvalidArguments {
+                name: call.name.to_string(),
+                reason: err.to_string(),
+            })?;
+        let params = json!({
+            "scope_id": self.scope_id,
+            "tool": call.name,
+            "arguments": args,
+        });
+        match self.bridge.call("callback/call_tool", params).await {
+            Ok(result) => {
+                let text = result
+                    .get("content")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| serde_json::to_string(value).unwrap_or_default())
+                    })
+                    .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default());
+                Ok(ToolResult {
+                    tool_use_id: call.id.to_string(),
+                    content: vec![ContentBlock::Text { text }],
+                    is_error: false,
+                }
+                .into())
+            }
+            Err(err) => Ok(ToolResult {
+                tool_use_id: call.id.to_string(),
+                content: vec![ContentBlock::Text {
+                    text: format!("Tool execution failed: {err}"),
+                }],
+                is_error: true,
+            }
+            .into()),
         }
     }
 }
@@ -332,8 +415,16 @@ impl AgentCustomizer for GatewayAgentCustomizer {
             .map_err(CustomizerError::Io)?;
 
         // The SDK returns the mutated draft. Deserialize and apply.
-        let returned_draft: AgentBuildDraft = serde_json::from_value(result)
+        let mut returned_draft: AgentBuildDraft = serde_json::from_value(result)
             .map_err(|e| CustomizerError::Io(format!("deserialize draft: {e}")))?;
+        if !returned_draft.external_tools.is_empty() {
+            returned_draft.local_external_tools =
+                LocalExternalToolOverlay::new(Arc::new(GatewayCallbackToolDispatcher::new(
+                    self.bridge.clone(),
+                    context.identity.as_str().to_string(),
+                    returned_draft.external_tools.clone(),
+                )));
+        }
         *draft = returned_draft;
         Ok(())
     }
@@ -559,6 +650,7 @@ mod tests {
             identity: id.clone(),
             active_peers: vec![],
             managed_edges: vec![],
+            runtime_services: Default::default(),
         };
         let spec = DurableAgentSpec {
             identity: id,
@@ -568,6 +660,8 @@ mod tests {
             labels: BTreeMap::new(),
             context: None,
             additional_instructions: vec![],
+            initial_message: None,
+            runtime_mode_override: None,
         };
         let mut draft = AgentBuildDraft {
             model: None,
@@ -576,6 +670,7 @@ mod tests {
             labels: BTreeMap::new(),
             app_context: None,
             external_tools: vec![],
+            local_external_tools: Default::default(),
         };
         let result = customizer
             .customize_build(&context, &spec, &mut draft)
@@ -939,6 +1034,8 @@ mod tests {
             },
             context: Some(json!({"key": "value"})),
             additional_instructions: vec!["Be helpful.".to_string()],
+            initial_message: None,
+            runtime_mode_override: None,
         }];
         mock.set_response(
             "callback/roster_provider/roster",
@@ -988,6 +1085,7 @@ mod tests {
                 description: "A custom tool".to_string(),
                 input_schema: json!({"type": "object", "properties": {"x": {"type": "string"}}}),
             }],
+            local_external_tools: Default::default(),
         };
         mock.set_response(
             "callback/agent_customizer/customize_build",
@@ -1007,6 +1105,7 @@ mod tests {
                 )
                 .unwrap(),
             ],
+            runtime_services: Default::default(),
         };
         let spec = DurableAgentSpec {
             identity: id,
@@ -1016,6 +1115,8 @@ mod tests {
             labels: BTreeMap::new(),
             context: None,
             additional_instructions: vec![],
+            initial_message: None,
+            runtime_mode_override: None,
         };
         let mut draft = AgentBuildDraft {
             model: None,
@@ -1024,6 +1125,7 @@ mod tests {
             labels: BTreeMap::new(),
             app_context: None,
             external_tools: vec![],
+            local_external_tools: Default::default(),
         };
 
         customizer
@@ -1041,6 +1143,12 @@ mod tests {
         assert_eq!(draft.labels["custom"], "label");
         assert_eq!(draft.external_tools.len(), 1);
         assert_eq!(draft.external_tools[0].name, "my_tool");
+        let dispatcher = draft
+            .local_external_tools
+            .dispatcher()
+            .expect("SDK external_tools should install a local callback dispatcher");
+        assert_eq!(dispatcher.tools().len(), 1);
+        assert_eq!(dispatcher.tools()[0].name.as_ref(), "my_tool");
 
         // Verify wire format sent to SDK
         let (method, params) = mock.last_call().await;
@@ -1118,6 +1226,8 @@ mod tests {
             labels: BTreeMap::new(),
             context: None,
             additional_instructions: vec![],
+            initial_message: None,
+            runtime_mode_override: None,
         };
         let ctx = TopologyContext {
             roster: vec![roster_spec],
