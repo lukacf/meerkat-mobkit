@@ -3,6 +3,7 @@ mod store;
 mod types;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -73,7 +74,78 @@ struct AggregatorInner {
     active_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     opportunistic_session_backfills: tokio::sync::Mutex<BTreeSet<String>>,
     session_backfill_permits: Arc<Semaphore>,
+    identity_read_model: ConsoleIdentityReadModel,
     options: ConsoleAggregatorOptions,
+}
+
+#[derive(Clone)]
+struct ConsoleIdentityReadModel {
+    inner: Arc<tokio::sync::RwLock<Vec<ConsoleIdentityRecord>>>,
+    refresh_lock: Arc<tokio::sync::Mutex<()>>,
+    primed: Arc<AtomicBool>,
+}
+
+impl Default for ConsoleIdentityReadModel {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
+            primed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl ConsoleIdentityReadModel {
+    async fn snapshot(
+        &self,
+        inner: Arc<AggregatorInner>,
+    ) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
+        if !self.primed.load(Ordering::Acquire) {
+            self.prime_now(inner).await?;
+        }
+        Ok(self.inner.read().await.clone())
+    }
+
+    async fn prime_now(&self, inner: Arc<AggregatorInner>) -> ConsoleLogResult<()> {
+        if self.primed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let _guard = self.refresh_lock.clone().lock_owned().await;
+        if self.primed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let identities = collect_identity_records(&inner).await?;
+        *self.inner.write().await = identities;
+        self.primed.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn refresh_soon(&self, inner: Arc<AggregatorInner>) {
+        let Ok(runtime_handle) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let Ok(guard) = self.refresh_lock.clone().try_lock_owned() else {
+            return;
+        };
+        let read_model = self.clone();
+        runtime_handle.spawn(async move {
+            let _guard = guard;
+            match collect_identity_records(&inner).await {
+                Ok(identities) => {
+                    *read_model.inner.write().await = identities;
+                    read_model.primed.store(true, Ordering::Release);
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "console identity read-model refresh failed");
+                }
+            }
+        });
+    }
+
+    async fn replace(&self, identities: Vec<ConsoleIdentityRecord>) {
+        *self.inner.write().await = identities;
+        self.primed.store(true, Ordering::Release);
+    }
 }
 
 #[derive(Clone)]
@@ -173,6 +245,7 @@ impl MobKitConsoleAggregator {
                 session_backfill_permits: Arc::new(Semaphore::new(
                     options.max_concurrent_session_backfills,
                 )),
+                identity_read_model: ConsoleIdentityReadModel::default(),
                 options,
             }),
         }
@@ -224,6 +297,9 @@ impl MobKitConsoleAggregator {
         if let Ok(mut runtimes) = self.inner.runtimes.write() {
             runtimes.insert(runtime_key.clone(), entry);
         }
+        self.inner
+            .identity_read_model
+            .refresh_soon(self.inner.clone());
         let inner = self.inner.clone();
         let events_for_live = console_events.clone();
         let events_for_live_recovery = console_events.clone();
@@ -278,35 +354,35 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn list_identities(&self) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
-        let entries = self
+        self.inner
+            .identity_read_model
+            .refresh_soon(self.inner.clone());
+        let identities = self
             .inner
-            .runtimes
-            .read()
-            .map_err(|_| runtime_registry_lock_error())?
-            .clone();
-        let mut identities = Vec::new();
-        let mut backfill_targets = Vec::new();
-        for entry in entries.values() {
-            for resolved in member_sources_for_entry(entry).await {
-                if let Some(record) =
-                    identity_record_for_member(entry, &resolved.handle, &resolved.member).await
-                    && entry.visibility_policy.identity_visible(&record)
-                {
-                    if let Some(session_id) = record.session_id.clone() {
-                        backfill_targets.push(SessionBackfillTarget {
-                            entry: entry.clone(),
-                            record: record.clone(),
-                            session_id,
-                        });
-                    }
-                    identities.push(record);
-                }
-            }
-        }
-        for target in backfill_targets {
-            spawn_session_history_backfill_target(self.inner.clone(), target, false);
-        }
-        Ok(dedupe_identity_records(identities))
+            .identity_read_model
+            .snapshot(self.inner.clone())
+            .await?;
+        spawn_identity_backfills_for_records(self.inner.clone(), &identities);
+        Ok(identities)
+    }
+
+    pub(crate) async fn list_identities_fresh(
+        &self,
+    ) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
+        let _guard = self
+            .inner
+            .identity_read_model
+            .refresh_lock
+            .clone()
+            .lock_owned()
+            .await;
+        let identities = collect_identity_records(&self.inner).await?;
+        self.inner
+            .identity_read_model
+            .replace(identities.clone())
+            .await;
+        spawn_identity_backfills_for_records(self.inner.clone(), &identities);
+        Ok(identities)
     }
 
     pub async fn inspect_identity(
@@ -729,6 +805,58 @@ fn identity_record_prefer(
         return candidate_live;
     }
     candidate.session_id.as_deref().unwrap_or("") > current.session_id.as_deref().unwrap_or("")
+}
+
+async fn collect_identity_records(
+    inner: &Arc<AggregatorInner>,
+) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
+    let entries = inner
+        .runtimes
+        .read()
+        .map_err(|_| runtime_registry_lock_error())?
+        .clone();
+    let mut identities = Vec::new();
+    for entry in entries.values() {
+        for resolved in member_sources_for_entry(entry).await {
+            if let Some(record) =
+                identity_record_for_member(entry, &resolved.handle, &resolved.member).await
+                && entry.visibility_policy.identity_visible(&record)
+            {
+                identities.push(record);
+            }
+        }
+    }
+    Ok(dedupe_identity_records(identities))
+}
+
+fn spawn_identity_backfills_for_records(
+    inner: Arc<AggregatorInner>,
+    records: &[ConsoleIdentityRecord],
+) {
+    if !inner.options.session_history_backfill_enabled {
+        return;
+    }
+    let entries = match inner.runtimes.read() {
+        Ok(entries) => entries.clone(),
+        Err(_) => return,
+    };
+    for record in records {
+        let Some(entry) = entries.get(&record.runtime_key).cloned() else {
+            continue;
+        };
+        let Some(session_id) = record.session_id.clone() else {
+            continue;
+        };
+        spawn_session_history_backfill_target(
+            inner.clone(),
+            SessionBackfillTarget {
+                entry,
+                record: record.clone(),
+                session_id,
+            },
+            false,
+        );
+    }
 }
 
 async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMember> {
@@ -2609,6 +2737,85 @@ comms = true
         }
     }
 
+    fn identity_record_for_test(identity: &str) -> ConsoleIdentityRecord {
+        ConsoleIdentityRecord {
+            identity: identity.to_string(),
+            display_name: identity.to_string(),
+            runtime_key: "runtime-cache".to_string(),
+            runtime_member_id: identity.to_string(),
+            session_id: Some(format!("session-{identity}")),
+            visibility: ConsoleVisibility::Addressable,
+            addressable: true,
+            health: "ready".to_string(),
+            labels: BTreeMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_identities_serves_hot_cache_while_identity_refresh_is_in_flight() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let record = identity_record_for_test("agent-cached");
+        *aggregator.inner.identity_read_model.inner.write().await = vec![record.clone()];
+        aggregator
+            .inner
+            .identity_read_model
+            .primed
+            .store(true, Ordering::Release);
+        let _guard = aggregator
+            .inner
+            .identity_read_model
+            .refresh_lock
+            .clone()
+            .lock_owned()
+            .await;
+
+        let identities =
+            tokio::time::timeout(Duration::from_millis(50), aggregator.list_identities())
+                .await
+                .expect("hot identity list should not wait for refresh lock")
+                .expect("identity list succeeds");
+
+        assert_eq!(identities, vec![record]);
+    }
+
+    #[tokio::test]
+    async fn list_identities_waits_for_inflight_identity_refresh_on_cold_cache() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let guard = aggregator
+            .inner
+            .identity_read_model
+            .refresh_lock
+            .clone()
+            .lock_owned()
+            .await;
+        let waiter = tokio::spawn({
+            let aggregator = aggregator.clone();
+            async move { aggregator.list_identities().await }
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !waiter.is_finished(),
+            "cold identity list should wait for the in-flight refresh to finish"
+        );
+
+        let record = identity_record_for_test("agent-primed");
+        *aggregator.inner.identity_read_model.inner.write().await = vec![record.clone()];
+        aggregator
+            .inner
+            .identity_read_model
+            .primed
+            .store(true, Ordering::Release);
+        drop(guard);
+
+        let identities = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .expect("cold identity list waiter should resume")
+            .expect("waiter joins")
+            .expect("identity list succeeds");
+        assert_eq!(identities, vec![record]);
+    }
+
     #[tokio::test]
     async fn query_timeline_reads_from_aggregate_store() {
         let aggregator = MobKitConsoleAggregator::in_memory();
@@ -2792,17 +2999,13 @@ comms = true
         )
         .await
         .expect("direct member send succeeds");
-        let identities = aggregator
-            .list_identities()
-            .await
-            .expect("late identities list");
-        assert!(
-            identities
-                .iter()
-                .any(|record| record.identity == "late/agent-late"
-                    && record.session_id.as_deref() == Some(session_id.as_str())),
-            "late member should be visible with its bridge session"
-        );
+        wait_for_identity_record(
+            &aggregator,
+            "late/agent-late",
+            Some(session_id.as_str()),
+            Duration::from_secs(5),
+        )
+        .await?;
 
         wait_for_session_history_text(
             &aggregator,
@@ -2904,6 +3107,32 @@ comms = true
 
         Err(format!(
             "session history text {expected:?} was not backfilled; observed frames: {observed:#?}",
+        ))
+    }
+
+    async fn wait_for_identity_record(
+        aggregator: &MobKitConsoleAggregator,
+        identity: &str,
+        session_id: Option<&str>,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            observed = aggregator
+                .list_identities()
+                .await
+                .map_err(|err| err.to_string())?;
+            if observed.iter().any(|record| {
+                record.identity == identity && record.session_id.as_deref() == session_id
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        Err(format!(
+            "identity {identity:?} with session {session_id:?} was not projected; observed identities: {observed:#?}",
         ))
     }
 
