@@ -1924,7 +1924,7 @@ async fn handle_console_aggregator_rpc(
             let Some(aggregator) = &console_aggregator else {
                 return console_aggregator_unavailable(response_id);
             };
-            match aggregator.list_identities().await {
+            match aggregator.list_identities_fresh().await {
                 Ok(identities) => {
                     let mut retired = Vec::new();
                     let mut failed = Vec::new();
@@ -4009,24 +4009,71 @@ mod tests {
         MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, apply_console_visibility_policy,
         collect_console_snapshot_read_model, cursor_is_after, dedupe_console_members_by_identity,
         externalize_image_upload_placeholders, externalize_single_image_upload,
-        project_console_members_from_handle, query_timeline_snapshot,
+        handle_console_aggregator_rpc, project_console_members_from_handle,
+        query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
-    use crate::console_aggregator::HideImplicitDelegateMembersConsoleVisibilityPolicy;
+    use crate::console_aggregator::{
+        AllowAllConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    };
     use crate::console_aggregator::{
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
         ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
     use crate::mob_handle_runtime::{MobRuntime, model_capabilities_for_role};
+    use crate::rpc::{JSONRPC_VERSION, JsonRpcRequest};
     use crate::runtime::{ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember};
+    use crate::unified_runtime::ConsoleEventStore;
     use crate::{MobBootstrapOptions, MobBootstrapSpec};
     use bytes::Bytes;
     use meerkat::{AgentFactory, Config, build_ephemeral_service};
     use meerkat_client::TestClient;
     use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::collections::BTreeMap;
     use std::sync::Arc;
+
+    async fn build_empty_console_test_runtime(
+        mob_id: &str,
+    ) -> Result<(tempfile::TempDir, MobRuntime), Box<dyn std::error::Error + Send + Sync>> {
+        let temp_dir = tempfile::tempdir()?;
+        let session_path = temp_dir.path().join("sessions");
+        std::fs::create_dir_all(&session_path)?;
+        let factory = AgentFactory::new(&session_path).comms(true);
+        let session_service = Arc::new(build_ephemeral_service(factory, Config::default(), 16));
+        let definition = MobDefinition::from_toml(&format!(
+            r#"
+[mob]
+id = "{mob_id}"
+
+[profiles.worker]
+model = "gpt-5.5"
+external_addressable = true
+
+[profiles.worker.tools]
+comms = true
+"#
+        ))?;
+        let runtime = MobRuntime::bootstrap(
+            MobBootstrapSpec::new(definition, MobStorage::in_memory(), session_service)
+                .with_options(MobBootstrapOptions {
+                    allow_ephemeral_sessions: true,
+                    notify_orchestrator_on_resume: true,
+                    default_llm_client: Some(Arc::new(TestClient::default())),
+                }),
+        )
+        .await?;
+        Ok((temp_dir, runtime))
+    }
+
+    fn rpc_request(method: &str) -> JsonRpcRequest {
+        JsonRpcRequest {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: Some(json!(1)),
+            method: method.to_string(),
+            params: json!({}),
+        }
+    }
 
     #[test]
     fn multipart_body_limit_covers_configured_image_limit() {
@@ -4128,6 +4175,46 @@ mod tests {
         };
         let result = tokio::time::timeout(Duration::from_millis(100), snap_fast_path).await;
         assert!(result.is_ok(), "hot-cache snapshot path should not block");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn console_aggregator_reset_all_rpc_force_refreshes_identity_cache()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, runtime) =
+            build_empty_console_test_runtime("console-reset-fresh-identity-cache").await?;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-reset",
+            "reset",
+            runtime.clone(),
+            ConsoleEventStore::new(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+        let primed_empty = aggregator.list_identities().await?;
+        assert!(
+            primed_empty.is_empty(),
+            "test precondition: identity cache should be primed empty before late spawn"
+        );
+
+        runtime
+            .handle()
+            .spawn_spec(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "agent-reset".to_string(),
+                Some("You are agent-reset.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let response =
+            handle_console_aggregator_rpc(Some(aggregator), rpc_request("mobkit/reset_all"), true)
+                .await;
+
+        assert_eq!(response["error"], Value::Null);
+        assert_eq!(response["result"]["retired"], json!(["reset/agent-reset"]));
+        let _ = runtime.handle().stop().await;
         Ok(())
     }
 
