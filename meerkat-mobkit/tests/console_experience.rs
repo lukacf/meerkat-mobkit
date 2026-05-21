@@ -15,6 +15,8 @@
     clippy::unwrap_in_result,
     clippy::useless_vec
 )]
+use std::collections::BTreeMap;
+
 use meerkat_mobkit::{
     AuthPolicy, AuthProvider, BigQueryNaming, ConsoleAccessRequest, ConsoleLiveSnapshot,
     ConsolePolicy, ConsoleRestJsonRequest, RuntimeDecisionInputs, RuntimeOpsPolicy,
@@ -315,6 +317,51 @@ fn console_experience_projects_fetch_timeout_policy() {
     assert_eq!(
         response.body["console_policy"]["fetch_timeout_ms"],
         json!(120_000)
+    );
+}
+
+#[test]
+fn console_experience_projects_durable_identity_for_runtime_member_rows() {
+    let state = decision_state(false);
+    let runtime_snapshot = ConsoleLiveSnapshot::new(
+        Some("ob3".to_string()),
+        true,
+        vec!["rt:review:singleton:0".to_string()],
+        vec![],
+        vec![meerkat_mobkit::runtime::ConsoleMember {
+            agent_identity: "rt:review:singleton:0".to_string(),
+            role: "review-worker".to_string(),
+            state: "active".to_string(),
+            model_capabilities: meerkat_mobkit::ConsoleModelCapabilities { image_input: false },
+            runtime_mode: Some("identity_first".to_string()),
+            session_id: Some("session-review".to_string()),
+            wired_to: Vec::new(),
+            labels: BTreeMap::from([
+                ("agent_identity".to_string(), "review:singleton".to_string()),
+                ("display_name".to_string(), "Review Worker".to_string()),
+            ]),
+        }],
+        true,
+    );
+
+    let response = handle_console_rest_json_route_with_snapshot(
+        &state,
+        &ConsoleRestJsonRequest {
+            method: "GET".to_string(),
+            path: "/console/experience".to_string(),
+            auth: None,
+        },
+        Some(&runtime_snapshot),
+    );
+
+    assert_eq!(response.status, 200);
+    let agent = &response.body["agent_sidebar"]["live_snapshot"]["agents"][0];
+    assert_eq!(agent["identity"], json!("review:singleton"));
+    assert_eq!(agent["member_id"], json!("rt:review:singleton:0"));
+    assert_eq!(agent["agent_id"], json!("rt:review:singleton:0"));
+    assert_eq!(
+        response.body["identity_status"]["rows"][0]["identity"],
+        json!("review:singleton")
     );
 }
 
