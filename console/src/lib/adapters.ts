@@ -93,6 +93,29 @@ export function buildPanelConversationKey(
   return `panel:${panelId}:${target.kind}:${targetKey}`;
 }
 
+export interface OptimisticUserMessage {
+  interactionId: string;
+  entry: ConversationTimelineEntry;
+  sentAtMs: number;
+  objectUrls?: string[];
+}
+
+export function optimisticUserMessageForPanel(
+  optimisticByPanelKey: Record<string, OptimisticUserMessage>,
+  panelKey: string,
+  identity: string,
+): OptimisticUserMessage | null {
+  const direct = optimisticByPanelKey[panelKey];
+  if (direct) return direct;
+  const identitySuffix = `:agent-chat:${identity}`;
+  let latest: OptimisticUserMessage | null = null;
+  for (const [key, optimistic] of Object.entries(optimisticByPanelKey)) {
+    if (!key.endsWith(identitySuffix)) continue;
+    if (!latest || optimistic.sentAtMs > latest.sentAtMs) latest = optimistic;
+  }
+  return latest;
+}
+
 export function buildDockTarget(agent: ConsoleAgent): AgentChatTarget {
   const subtitle = [agent.role, agent.kind].filter(Boolean).join(" \u00b7 ") || undefined;
   const identity = typeof agent.identity === "string" && agent.identity.trim()

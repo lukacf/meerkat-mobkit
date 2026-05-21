@@ -10,11 +10,15 @@
 //! Tests for identity-first builder validation (Phase 1, Tasks 1.12–1.15).
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use meerkat_client::{LlmClient, LlmDoneOutcome, LlmError, LlmEvent, LlmRequest};
+use meerkat_core::StopReason;
 use meerkat_mobkit::identity_first::contracts::{
     ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
@@ -220,6 +224,45 @@ impl RosterProvider for StubRosterProvider {
 
 struct StubTopologyProvider {
     edges: Arc<tokio::sync::Mutex<Vec<ManagedPeerEdge>>>,
+}
+
+struct SlowTurnClient {
+    delay: Duration,
+}
+
+impl LlmClient for SlowTurnClient {
+    fn stream<'a>(
+        &'a self,
+        _request: &'a LlmRequest,
+    ) -> Pin<Box<dyn futures::Stream<Item = Result<LlmEvent, LlmError>> + Send + 'a>> {
+        let delay = self.delay;
+        Box::pin(async_stream::stream! {
+            tokio::time::sleep(delay).await;
+            yield Ok(LlmEvent::TextDelta {
+                delta: "slow ok".to_string(),
+                meta: None,
+            });
+            yield Ok(LlmEvent::Done {
+                outcome: LlmDoneOutcome::Success {
+                    stop_reason: StopReason::EndTurn,
+                },
+            });
+        })
+    }
+
+    fn provider(&self) -> &'static str {
+        "slow-identity-test"
+    }
+
+    fn health_check<'life0, 'async_trait>(
+        &'life0 self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), LlmError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 #[async_trait]
@@ -452,6 +495,59 @@ async fn identity_first_builder_bootstraps_and_exposes_identity_runtime() {
         status.runtime_mode,
         Some(meerkat_mob::MobRuntimeMode::TurnDriven)
     );
+}
+
+#[tokio::test]
+async fn identity_first_send_does_not_park_mob_actor_until_turn_completion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let roster = Arc::new(StubRosterProvider::new(vec![durable_spec("agent:alpha")]));
+
+    let runtime = UnifiedRuntimeBuilder::default()
+        .definition(test_definition())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(roster)
+        .scratch_dir(tmp.path())
+        .identity_runtime_instance_id("builder-slow-send-test")
+        .default_llm_client(Arc::new(SlowTurnClient {
+            delay: Duration::from_secs(2),
+        }))
+        .build()
+        .await
+        .expect("builder should bootstrap identity-first runtime");
+
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime should be exposed")
+        .clone();
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        identity_runtime.send(
+            &AgentIdentity::parse("agent:alpha").unwrap(),
+            &meerkat_core::ContentInput::Text("start slow turn".to_string()),
+        ),
+    )
+    .await
+    .expect("identity send should ack at ingress, not turn completion")
+    .expect("identity send should be accepted");
+
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        runtime
+            .mob_handle()
+            .spawn_spec(meerkat_mob::SpawnMemberSpec::from_wire(
+                "default".to_string(),
+                "agent:beta".to_string(),
+                Some("You are beta.".into()),
+                None,
+                None,
+            )),
+    )
+    .await
+    .expect("mob actor should still process spawn while alpha turn runs")
+    .expect("spawn should succeed");
+
+    let _ = runtime.mob_handle().stop().await;
 }
 
 #[tokio::test]

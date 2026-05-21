@@ -368,6 +368,10 @@ impl IdentityRuntime {
         *self.desired_peer_edges.write().await = edges;
     }
 
+    pub async fn desired_peer_edges(&self) -> Vec<ManagedPeerEdge> {
+        self.desired_peer_edges.read().await.clone()
+    }
+
     async fn registered_identities(&self) -> Vec<AgentIdentity> {
         self.entries.read().await.keys().cloned().collect()
     }

@@ -9,6 +9,7 @@ import {
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   mergeConversationFrames,
+  optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
   sortConversationTimelineEntries,
 } from "./adapters";
@@ -752,6 +753,67 @@ test("sortConversationTimelineEntries keeps optimistic user messages after older
   ]);
 
   assert.deepEqual(entries.map((entry) => entry.id), ["user-1", "assistant-1", "user-2"]);
+});
+
+test("optimisticUserMessageForPanel shares the latest identity prompt across split panes", () => {
+  const older = {
+    interactionId: "",
+    sentAtMs: 10,
+    entry: {
+      kind: "message" as const,
+      id: "older",
+      identity: { id: "user", label: "You", role: "user" as const },
+      variant: "plain" as const,
+      text: "Older prompt",
+      createdAt: "2026-05-21T14:00:00.000Z",
+    },
+  };
+  const latest = {
+    interactionId: "",
+    sentAtMs: 20,
+    entry: {
+      kind: "message" as const,
+      id: "latest",
+      identity: { id: "user", label: "You", role: "user" as const },
+      variant: "plain" as const,
+      text: "Latest prompt",
+      createdAt: "2026-05-21T14:01:00.000Z",
+    },
+  };
+  const direct = {
+    interactionId: "",
+    sentAtMs: 1,
+    entry: {
+      kind: "message" as const,
+      id: "direct",
+      identity: { id: "user", label: "You", role: "user" as const },
+      variant: "plain" as const,
+      text: "Direct prompt",
+      createdAt: "2026-05-21T14:02:00.000Z",
+    },
+  };
+  const optimistic = {
+    "panel:left:agent-chat:deep-investigator:singleton": older,
+    "panel:middle:agent-chat:other-agent": direct,
+    "panel:right:agent-chat:deep-investigator:singleton": latest,
+  };
+
+  assert.equal(
+    optimisticUserMessageForPanel(
+      optimistic,
+      "panel:new:agent-chat:deep-investigator:singleton",
+      "deep-investigator:singleton",
+    )?.entry.id,
+    "latest",
+  );
+  assert.equal(
+    optimisticUserMessageForPanel(
+      optimistic,
+      "panel:middle:agent-chat:other-agent",
+      "other-agent",
+    )?.entry.id,
+    "direct",
+  );
 });
 
 test("sortConversationTimelineEntries orders accepted user frames before later assistant replies regardless of entry arrival", () => {

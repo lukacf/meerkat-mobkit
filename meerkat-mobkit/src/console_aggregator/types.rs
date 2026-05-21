@@ -234,6 +234,8 @@ pub struct ConsoleIdentityRecord {
     pub visibility: ConsoleVisibility,
     pub addressable: bool,
     pub health: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub topology_peers: Vec<String>,
     #[serde(default)]
     pub labels: std::collections::BTreeMap<String, String>,
 }

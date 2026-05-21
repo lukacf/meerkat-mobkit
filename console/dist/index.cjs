@@ -2115,6 +2115,22 @@ var import_jsx_runtime14 = require("react/jsx-runtime");
 var import_jsx_runtime15 = require("react/jsx-runtime");
 
 // src/lib/agents.ts
+function canonicalConsoleIdentity(identity, agents) {
+  const normalized = identity?.trim() || "";
+  if (!normalized) return "";
+  for (const agent of agents) {
+    const labelIdentity = typeof agent.labels?.agent_identity === "string" ? agent.labels.agent_identity.trim() : "";
+    const aliases = [
+      agent.identity,
+      agent.member_id,
+      agent.agent_id,
+      labelIdentity
+    ].filter((value) => Boolean(value?.trim())).map((value) => value.trim());
+    if (!aliases.includes(normalized)) continue;
+    return (agent.identity || agent.member_id || agent.agent_id || normalized).trim();
+  }
+  return normalized;
+}
 function normalizeModelCapabilities(entry) {
   const record = entry && typeof entry === "object" ? entry : {};
   const caps = record.model_capabilities && typeof record.model_capabilities === "object" ? record.model_capabilities : {};
@@ -2240,6 +2256,17 @@ function buildPanelConversationKey(panelId, target) {
   }
   const targetKey = target.identity || target.memberId || target.id;
   return `panel:${panelId}:${target.kind}:${targetKey}`;
+}
+function optimisticUserMessageForPanel(optimisticByPanelKey, panelKey, identity) {
+  const direct = optimisticByPanelKey[panelKey];
+  if (direct) return direct;
+  const identitySuffix = `:agent-chat:${identity}`;
+  let latest = null;
+  for (const [key, optimistic] of Object.entries(optimisticByPanelKey)) {
+    if (!key.endsWith(identitySuffix)) continue;
+    if (!latest || optimistic.sentAtMs > latest.sentAtMs) latest = optimistic;
+  }
+  return latest;
 }
 function buildDockTarget(agent) {
   const subtitle = [agent.role, agent.kind].filter(Boolean).join(" \xB7 ") || void 0;
@@ -10110,6 +10137,18 @@ function ConsoleApp({ baseUrl }) {
     }
     return changed;
   }
+  function commitPhaseForIdentity(identity, phase) {
+    let changed = false;
+    for (const panel of dockRef.current.viewState.panels) {
+      const target = panel.target;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      if (commitPanelPhase(buildPanelConversationKey(panel.id, target), phase)) {
+        changed = true;
+      }
+    }
+    return changed;
+  }
   function recomputePhaseForIdentity(identity) {
     const frames = getSortedFrames(identity).filter(
       (frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)
@@ -10422,14 +10461,19 @@ function ConsoleApp({ baseUrl }) {
   const scheduleExperienceRefreshRef = import_react22.default.useRef(scheduleExperienceRefresh);
   scheduleExperienceRefreshRef.current = scheduleExperienceRefresh;
   import_react22.default.useEffect(() => {
-    const handleLiveFrame = (frame) => {
+    const handleLiveFrame = (incomingFrame) => {
+      const canonicalIdentity = canonicalConsoleIdentity(
+        incomingFrame.identity,
+        agentsRef.current
+      );
+      const frame = canonicalIdentity && canonicalIdentity !== incomingFrame.identity ? { ...incomingFrame, identity: canonicalIdentity } : incomingFrame;
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
       }
       if (PANEL_ROUTABLE_EVENTS.has(frame.event)) {
         commitLiveFrames([frame, ...liveFramesRef.current].slice(0, 300));
       }
-      const identity = frame.identity?.trim();
+      const identity = canonicalIdentity || frame.identity?.trim();
       if (PANEL_ROUTABLE_EVENTS.has(frame.event) && identity && identity !== "_system") {
         appendFrame(identity, frame);
         updatePhaseForIdentity(identity, frame);
@@ -10525,7 +10569,7 @@ function ConsoleApp({ baseUrl }) {
       sentAtMs: Date.now(),
       objectUrls: optimisticObjectUrls
     };
-    commitPanelPhase(panelKey, "waiting");
+    commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
     commitLiveFrames([{
       id: `optimistic-topology:${identity}:${Date.now()}`,
@@ -10935,7 +10979,11 @@ function ConsoleApp({ baseUrl }) {
         blobBaseUrl: baseUrl
       }
     );
-    const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey] ?? null;
+    const optimisticUser = optimisticUserMessageForPanel(
+      optimisticUserByPanelKeyRef.current,
+      panelKey,
+      identity
+    );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
     const entries = sanitizeConversationEntries(
       sortConversationTimelineEntries([

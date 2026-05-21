@@ -46,6 +46,13 @@ const SESSION_HISTORY_REFRESH_TTL_MS: u64 = 30_000;
 const SESSION_HISTORY_GROWING_REFRESH_TTL_MS: u64 = 2_000;
 const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const EXPLICIT_IDENTITY_BACKFILL_WAIT: Duration = Duration::from_millis(750);
+const IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityCollectionMode {
+    CachedOnly,
+    IncludeLiveMembers,
+}
 
 #[derive(Clone)]
 pub struct MobKitConsoleAggregator {
@@ -106,6 +113,29 @@ impl ConsoleIdentityReadModel {
         Ok(self.inner.read().await.clone())
     }
 
+    async fn current(&self) -> Vec<ConsoleIdentityRecord> {
+        self.inner.read().await.clone()
+    }
+
+    async fn refresh_now_if_idle(
+        &self,
+        inner: Arc<AggregatorInner>,
+        mode: IdentityCollectionMode,
+    ) -> Option<ConsoleLogResult<Vec<ConsoleIdentityRecord>>> {
+        let Ok(guard) = self.refresh_lock.clone().try_lock_owned() else {
+            return None;
+        };
+        let result = collect_identity_records(&inner, mode).await;
+        drop(guard);
+        match result {
+            Ok(identities) => {
+                self.replace(identities.clone()).await;
+                Some(Ok(identities))
+            }
+            Err(err) => Some(Err(err)),
+        }
+    }
+
     async fn prime_now(&self, inner: Arc<AggregatorInner>) -> ConsoleLogResult<()> {
         if self.primed.load(Ordering::Acquire) {
             return Ok(());
@@ -114,7 +144,8 @@ impl ConsoleIdentityReadModel {
         if self.primed.load(Ordering::Acquire) {
             return Ok(());
         }
-        let identities = collect_identity_records(&inner).await?;
+        let identities =
+            collect_identity_records(&inner, IdentityCollectionMode::CachedOnly).await?;
         *self.inner.write().await = identities;
         self.primed.store(true, Ordering::Release);
         Ok(())
@@ -130,7 +161,8 @@ impl ConsoleIdentityReadModel {
         let read_model = self.clone();
         runtime_handle.spawn(async move {
             let _guard = guard;
-            match collect_identity_records(&inner).await {
+            match collect_identity_records(&inner, IdentityCollectionMode::IncludeLiveMembers).await
+            {
                 Ok(identities) => {
                     *read_model.inner.write().await = identities;
                     read_model.primed.store(true, Ordering::Release);
@@ -359,6 +391,19 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn list_identities(&self) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
+        if let Some(identities) = self
+            .inner
+            .identity_read_model
+            .refresh_now_if_idle(
+                self.inner.clone(),
+                IdentityCollectionMode::IncludeLiveMembers,
+            )
+            .await
+        {
+            let identities = identities?;
+            spawn_identity_backfills_for_records(self.inner.clone(), &identities);
+            return Ok(identities);
+        }
         self.inner
             .identity_read_model
             .refresh_soon(self.inner.clone());
@@ -381,7 +426,9 @@ impl MobKitConsoleAggregator {
             .clone()
             .lock_owned()
             .await;
-        let identities = collect_identity_records(&self.inner).await?;
+        let identities =
+            collect_identity_records(&self.inner, IdentityCollectionMode::IncludeLiveMembers)
+                .await?;
         self.inner
             .identity_read_model
             .replace(identities.clone())
@@ -394,6 +441,55 @@ impl MobKitConsoleAggregator {
         &self,
         identity: &str,
     ) -> ConsoleLogResult<Option<ConsoleIdentityInspection>> {
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in &entries {
+            let Some(identity_runtime) = entry.identity_runtime.clone() else {
+                continue;
+            };
+            let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
+                continue;
+            };
+            let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&raw_identity)
+            else {
+                continue;
+            };
+            let Ok(status) = identity_runtime.status(&parsed_identity).await else {
+                continue;
+            };
+            let mut record = identity_record_for_status(entry, &status);
+            let topology_peers =
+                identity_runtime_topology_peers(entry, identity_runtime.as_ref()).await;
+            record.topology_peers = topology_peers
+                .get(&record.identity)
+                .cloned()
+                .unwrap_or_default();
+            if !entry.visibility_policy.identity_visible(&record) {
+                return Ok(None);
+            }
+            if let Some(session_id) = record.session_id.clone() {
+                spawn_session_history_backfill_target(
+                    self.inner.clone(),
+                    SessionBackfillTarget {
+                        entry: entry.clone(),
+                        record: record.clone(),
+                        session_id,
+                    },
+                    false,
+                );
+            }
+            return Ok(Some(ConsoleIdentityInspection {
+                peers: record.topology_peers.clone(),
+                identity: record,
+            }));
+        }
+
         if let Some(resolved) = self.resolve_member(identity).await {
             let Some(record) =
                 identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member)
@@ -427,37 +523,6 @@ impl MobKitConsoleAggregator {
             }));
         }
 
-        let entries = self
-            .inner
-            .runtimes
-            .read()
-            .map_err(|_| runtime_registry_lock_error())?
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for entry in entries {
-            let Some(identity_runtime) = entry.identity_runtime.clone() else {
-                continue;
-            };
-            let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
-                continue;
-            };
-            let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&raw_identity)
-            else {
-                continue;
-            };
-            let Ok(status) = identity_runtime.status(&parsed_identity).await else {
-                continue;
-            };
-            let record = identity_record_for_status(&entry, &status);
-            if !entry.visibility_policy.identity_visible(&record) {
-                return Ok(None);
-            }
-            return Ok(Some(ConsoleIdentityInspection {
-                identity: record,
-                peers: Vec::new(),
-            }));
-        }
         Ok(None)
     }
 
@@ -504,6 +569,7 @@ impl MobKitConsoleAggregator {
         }
         let mut visible_frames = Vec::with_capacity(page.frames.len());
         let mut identity_visibility_cache = HashMap::new();
+        let identity_records = self.inner.identity_read_model.current().await;
         for frame in page.frames {
             let allow_historical_identity =
                 explicit_identity.as_deref() == Some(frame.identity.as_str());
@@ -512,6 +578,7 @@ impl MobKitConsoleAggregator {
                 &frame,
                 allow_historical_identity,
                 &mut identity_visibility_cache,
+                &identity_records,
             )
             .await
             .unwrap_or(false)
@@ -551,7 +618,8 @@ impl MobKitConsoleAggregator {
         match event {
             ConsoleTimelineEvent::ConsoleFrame { frame }
             | ConsoleTimelineEvent::FrameUpdated { frame } => {
-                frame_is_visible(&self.inner, frame, false)
+                let identity_records = self.inner.identity_read_model.current().await;
+                frame_is_visible(&self.inner, frame, false, &identity_records)
                     .await
                     .unwrap_or(false)
             }
@@ -567,9 +635,15 @@ impl MobKitConsoleAggregator {
         identity: Option<&str>,
     ) -> bool {
         let allow_historical_identity = identity == Some(frame.identity.as_str());
-        frame_is_visible(&self.inner, frame, allow_historical_identity)
-            .await
-            .unwrap_or(false)
+        let identity_records = self.inner.identity_read_model.current().await;
+        frame_is_visible(
+            &self.inner,
+            frame,
+            allow_historical_identity,
+            &identity_records,
+        )
+        .await
+        .unwrap_or(false)
     }
 
     pub async fn send(
@@ -745,13 +819,16 @@ impl MobKitConsoleAggregator {
     ) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
         validate_send_request(&request)?;
         let _content = content_input_from_value(&request.content)?;
+        let runtime_key = self
+            .runtime_key_for_identity_first_send(&request.identity)
+            .await?;
         let handling_mode_value = request
             .handling_mode
             .as_deref()
             .unwrap_or("queue")
             .to_string();
         let dedupe_key = send_dedupe_key(
-            "identity-first",
+            &runtime_key,
             &request.identity,
             &request.origin,
             &request.idempotency_key,
@@ -789,7 +866,7 @@ impl MobKitConsoleAggregator {
             id: None,
             dedupe_key,
             timestamp_ms: current_time_ms(),
-            runtime_key: "identity-first".to_string(),
+            runtime_key,
             identity: request.identity.clone(),
             conversation_id: Some(request.identity.clone()),
             session_id: session_id.map(ToString::to_string),
@@ -825,6 +902,47 @@ impl MobKitConsoleAggregator {
                 frame: outcome.frame.clone(),
             });
         Ok(accepted_from_frame(&outcome.frame))
+    }
+
+    async fn runtime_key_for_identity_first_send(
+        &self,
+        identity: &str,
+    ) -> Result<String, ConsoleSendError> {
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| ConsoleSendError::Log(runtime_registry_lock_error()))?
+            .clone();
+        if entries.is_empty() {
+            return Ok("identity-first".to_string());
+        }
+
+        let mut identity_runtime_keys = Vec::new();
+        for entry in entries.values() {
+            let Some(identity_runtime) = entry.identity_runtime.as_ref() else {
+                continue;
+            };
+            identity_runtime_keys.push(entry.runtime_key.clone());
+            let runtime_identity = strip_namespace(identity, &entry.identity_namespace)
+                .unwrap_or_else(|| identity.to_string());
+            let Ok(parsed_identity) =
+                crate::identity_first::AgentIdentity::parse(&runtime_identity)
+            else {
+                continue;
+            };
+            if identity_runtime.status(&parsed_identity).await.is_ok() {
+                return Ok(entry.runtime_key.clone());
+            }
+        }
+
+        match identity_runtime_keys.as_slice() {
+            [] => Err(ConsoleSendError::UnknownIdentity(identity.to_string())),
+            [runtime_key] => Ok(runtime_key.clone()),
+            _ => Err(ConsoleSendError::InvalidRequest(format!(
+                "identity-first send for '{identity}' did not match exactly one registered runtime"
+            ))),
+        }
     }
 
     pub async fn mark_interaction_delivery_failed(
@@ -956,6 +1074,7 @@ fn identity_record_prefer(
 
 async fn collect_identity_records(
     inner: &Arc<AggregatorInner>,
+    mode: IdentityCollectionMode,
 ) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
     let entries = inner
         .runtimes
@@ -964,7 +1083,43 @@ async fn collect_identity_records(
         .clone();
     let mut identities = Vec::new();
     for entry in entries.values() {
-        for resolved in member_sources_for_entry(entry).await {
+        if let Some(identity_runtime) = entry.identity_runtime.as_ref() {
+            let topology_peers =
+                identity_runtime_topology_peers(entry, identity_runtime.as_ref()).await;
+            for status in identity_runtime.statuses().await {
+                let mut record = identity_record_for_status(entry, &status);
+                record.topology_peers = topology_peers
+                    .get(&record.identity)
+                    .cloned()
+                    .unwrap_or_default();
+                if entry.visibility_policy.identity_visible(&record) {
+                    identities.push(record);
+                }
+            }
+            if mode == IdentityCollectionMode::CachedOnly {
+                continue;
+            }
+        }
+        let members = if entry.identity_runtime.is_some() {
+            match tokio::time::timeout(
+                IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT,
+                member_sources_for_entry(entry),
+            )
+            .await
+            {
+                Ok(members) => members,
+                Err(_) => {
+                    tracing::warn!(
+                        runtime_key = %entry.runtime_key,
+                        "identity-first live member refresh timed out; keeping cached identity read model"
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            member_sources_for_entry(entry).await
+        };
+        for resolved in members {
             if let Some(record) =
                 identity_record_for_member(entry, &resolved.handle, &resolved.member).await
                 && entry.visibility_policy.identity_visible(&record)
@@ -972,16 +1127,25 @@ async fn collect_identity_records(
                 identities.push(record);
             }
         }
-        if let Some(identity_runtime) = entry.identity_runtime.as_ref() {
-            for status in identity_runtime.statuses().await {
-                let record = identity_record_for_status(entry, &status);
-                if entry.visibility_policy.identity_visible(&record) {
-                    identities.push(record);
-                }
-            }
-        }
     }
     Ok(dedupe_identity_records(identities))
+}
+
+async fn identity_runtime_topology_peers(
+    entry: &RuntimeEntry,
+    identity_runtime: &crate::identity_first::IdentityRuntime,
+) -> BTreeMap<String, Vec<String>> {
+    let mut peers: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for edge in identity_runtime.desired_peer_edges().await {
+        let a = apply_namespace(edge.a().as_str(), &entry.identity_namespace);
+        let b = apply_namespace(edge.b().as_str(), &entry.identity_namespace);
+        peers.entry(a.clone()).or_default().insert(b.clone());
+        peers.entry(b).or_default().insert(a);
+    }
+    peers
+        .into_iter()
+        .map(|(identity, peers)| (identity, peers.into_iter().collect()))
+        .collect()
 }
 
 fn spawn_identity_backfills_for_records(
@@ -1549,21 +1713,24 @@ async fn backfill_identity_for_explicit_query(inner: Arc<AggregatorInner>, ident
     if !inner.options.session_history_backfill_enabled {
         return;
     }
-    let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
-        return;
-    };
     let (tx, rx) = oneshot::channel();
+    let warning_identity = identity.clone();
     tokio::spawn(async move {
-        let result = run_targeted_session_history_backfill(inner, target, true)
-            .await
-            .map_err(|err| err.to_string());
+        let result = async {
+            let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
+                return Ok(());
+            };
+            run_targeted_session_history_backfill(inner, target, true).await
+        }
+        .await
+        .map_err(|err| err.to_string());
         let _ = tx.send(result);
     });
     match tokio::time::timeout(EXPLICIT_IDENTITY_BACKFILL_WAIT, rx).await {
         Ok(Ok(Ok(())) | Err(_)) | Err(_) => {}
         Ok(Ok(Err(err))) => {
             tracing::warn!(
-                identity = %identity,
+                identity = %warning_identity,
                 error = %err,
                 "console explicit identity session-history refresh failed"
             );
@@ -2253,6 +2420,7 @@ async fn frame_is_visible(
     inner: &AggregatorInner,
     frame: &ConsoleFrame,
     allow_historical_identity: bool,
+    identity_records: &[ConsoleIdentityRecord],
 ) -> ConsoleLogResult<bool> {
     let mut identity_visibility_cache = HashMap::new();
     frame_is_visible_cached(
@@ -2260,6 +2428,7 @@ async fn frame_is_visible(
         frame,
         allow_historical_identity,
         &mut identity_visibility_cache,
+        identity_records,
     )
     .await
 }
@@ -2269,6 +2438,7 @@ async fn frame_is_visible_cached(
     frame: &ConsoleFrame,
     allow_historical_identity: bool,
     identity_visibility_cache: &mut HashMap<(String, String), CachedIdentityVisibility>,
+    identity_records: &[ConsoleIdentityRecord],
 ) -> ConsoleLogResult<bool> {
     let entry = {
         let entries = inner
@@ -2291,23 +2461,15 @@ async fn frame_is_visible_cached(
             } else {
                 let runtime_member_id = strip_namespace(&frame.identity, &entry.identity_namespace)
                     .unwrap_or_else(|| frame.identity.clone());
-                let runtime_member = MeerkatId::from(runtime_member_id.as_str());
-                let visibility = match member_sources_for_entry(&entry)
-                    .await
-                    .into_iter()
-                    .find(|member| member.member.agent_identity == runtime_member)
-                {
-                    Some(resolved) => {
-                        match identity_record_for_member(&entry, &resolved.handle, &resolved.member)
-                            .await
-                        {
-                            Some(record) if entry.visibility_policy.identity_visible(&record) => {
-                                CachedIdentityVisibility::Visible
-                            }
-                            Some(_) => CachedIdentityVisibility::Hidden,
-                            None => CachedIdentityVisibility::Hidden,
-                        }
+                let visibility = match identity_records.iter().find(|record| {
+                    record.runtime_key == frame.runtime_key
+                        && (record.identity == frame.identity
+                            || record.runtime_member_id == runtime_member_id)
+                }) {
+                    Some(record) if entry.visibility_policy.identity_visible(record) => {
+                        CachedIdentityVisibility::Visible
                     }
+                    Some(_) => CachedIdentityVisibility::Hidden,
                     None => CachedIdentityVisibility::Missing,
                 };
                 identity_visibility_cache.insert(cache_key, visibility);
@@ -2373,6 +2535,7 @@ async fn identity_record_for_member(
             "hidden_by_policy"
         }
         .to_string(),
+        topology_peers: member.wired_to.iter().map(ToString::to_string).collect(),
         labels,
     })
 }
@@ -2431,6 +2594,7 @@ fn identity_record_for_status(
         visibility,
         addressable,
         health,
+        topology_peers: Vec::new(),
         labels: status.labels.clone(),
     }
 }
@@ -3000,8 +3164,64 @@ comms = true
             visibility: ConsoleVisibility::Addressable,
             addressable: true,
             health: "ready".to_string(),
+            topology_peers: Vec::new(),
             labels: BTreeMap::new(),
         }
+    }
+
+    async fn identity_runtime_for_test(
+        identities: &[&str],
+    ) -> Result<Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-identity-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        for identity in identities {
+            let identity = crate::identity_first::AgentIdentity::parse(identity)?;
+            let record = crate::identity_first::ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(&format!(
+                    "rt:{}:0",
+                    identity.as_str()
+                ))?,
+                session_id: SessionId::new(),
+                generation: crate::identity_first::ContinuityGeneration::new(0),
+                checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+            };
+            runtime
+                .register(
+                    crate::identity_first::DurableAgentSpec {
+                        identity: identity.clone(),
+                        profile: meerkat_mob::ProfileName::from("worker"),
+                        addressability: crate::identity_first::AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                    },
+                    crate::identity_first::IdentityLifecycleState::Active,
+                    Some(record),
+                    Some(crate::identity_first::LeaseGrant {
+                        identity,
+                        fencing_token: crate::identity_first::FencingToken::new(1),
+                        ttl: Duration::from_mins(5),
+                    }),
+                )
+                .await;
+        }
+        Ok(runtime)
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3059,6 +3279,81 @@ comms = true
         assert_eq!(
             inspection.identity.runtime_member_id,
             "rt:channel:C0SMOKEOB3:0"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_first_list_identities_projects_cached_topology_peers()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-topology-cache-test").await;
+        let identity_runtime = identity_runtime_for_test(&["agent:alpha", "agent:beta"]).await?;
+        identity_runtime
+            .set_desired_peer_edges(vec![crate::identity_first::ManagedPeerEdge::new(
+                crate::identity_first::AgentIdentity::parse("agent:alpha")?,
+                crate::identity_first::AgentIdentity::parse("agent:beta")?,
+            )?])
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "identity-first",
+            "",
+            runtime.mob_runtime().clone(),
+            Some(identity_runtime),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        let identities = aggregator.list_identities().await?;
+        let alpha = identities
+            .iter()
+            .find(|record| record.identity == "agent:alpha")
+            .ok_or("agent:alpha identity missing")?;
+        assert_eq!(alpha.topology_peers, vec!["agent:beta".to_string()]);
+        let inspection = aggregator
+            .inspect_identity("agent:alpha")
+            .await?
+            .ok_or("agent:alpha inspection missing")?;
+        assert_eq!(inspection.peers, vec!["agent:beta".to_string()]);
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_first_list_identities_includes_member_only_spawned_workers()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-member-only-test").await;
+        let identity_runtime = identity_runtime_for_test(&["agent:alpha"]).await?;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "identity-first",
+            "",
+            runtime.mob_runtime().clone(),
+            Some(identity_runtime),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        runtime
+            .spawn(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "agent:beta".to_string(),
+                Some("You are beta.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let identities = aggregator.list_identities().await?;
+        assert!(
+            identities
+                .iter()
+                .any(|record| record.identity == "agent:beta"),
+            "member-only spawned workers should remain visible in identity-first listings: {identities:#?}"
         );
 
         let _ = runtime.mob_handle().stop().await;
