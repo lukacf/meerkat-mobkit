@@ -3657,6 +3657,13 @@ comms = true
             .await
             .expect("identity record exists");
         let session_id = record.session_id.expect("agent-a has a session");
+        wait_for_runtime_session_history_text(
+            &runtime,
+            &session_id,
+            "You are agent-a.",
+            Duration::from_secs(5),
+        )
+        .await?;
 
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
@@ -3735,6 +3742,48 @@ comms = true
         ))
     }
 
+    async fn wait_for_runtime_session_history_text(
+        runtime: &UnifiedRuntime,
+        session_id: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            let page = runtime
+                .mob_runtime()
+                .read_session_history(session_id, 0, Some(20))
+                .await
+                .map_err(|err| err.to_string())?;
+            observed = page.messages;
+            if observed.iter().enumerate().any(|(idx, message)| {
+                let Some(message) = serde_json::to_value(message).ok() else {
+                    return false;
+                };
+                frames_from_session_history_message(
+                    "runtime-a",
+                    "test/agent-a",
+                    session_id,
+                    idx,
+                    message,
+                )
+                .iter()
+                .any(|frame| {
+                    frame.kind == "user_input"
+                        && session_history_frame_content_text(frame).as_deref() == Some(expected)
+                })
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        Err(format!(
+            "runtime session history text {expected:?} was not readable before watermark setup; observed messages: {observed:#?}",
+        ))
+    }
+
     async fn wait_for_identity_record(
         aggregator: &MobKitConsoleAggregator,
         identity: &str,
@@ -3762,13 +3811,21 @@ comms = true
     }
 
     fn session_history_content_text(frame: &ConsoleFrame) -> Option<String> {
-        if let Some(text) = frame.payload.get("text").and_then(Value::as_str) {
+        session_history_payload_text(&frame.payload)
+    }
+
+    fn session_history_frame_content_text(frame: &NewConsoleFrame) -> Option<String> {
+        session_history_payload_text(&frame.payload)
+    }
+
+    fn session_history_payload_text(payload: &Value) -> Option<String> {
+        if let Some(text) = payload.get("text").and_then(Value::as_str) {
             return Some(text.to_string());
         }
-        if let Some(text) = frame.payload.get("result").and_then(Value::as_str) {
+        if let Some(text) = payload.get("result").and_then(Value::as_str) {
             return Some(text.to_string());
         }
-        match frame.payload.get("content")? {
+        match payload.get("content")? {
             Value::String(text) => Some(text.clone()),
             Value::Array(blocks) => Some(
                 blocks

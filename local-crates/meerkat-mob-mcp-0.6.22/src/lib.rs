@@ -414,10 +414,8 @@ impl MobMcpState {
         builder
     }
 
-    fn storage_with_realm_profiles(&self, mut storage: MobStorage) -> MobStorage {
-        if let Some(store) = &self.realm_profile_store {
-            storage.realm_profiles = Some(store.clone());
-        }
+    fn bind_realm_profile_store(&self, mut storage: MobStorage) -> MobStorage {
+        storage.realm_profiles = self.realm_profile_store.clone();
         storage
     }
 
@@ -440,13 +438,10 @@ impl MobMcpState {
             })?;
             let path = Self::persistent_storage_path(root, mob_id);
             let storage = MobStorage::persistent(&path)?;
-            return Ok((self.storage_with_realm_profiles(storage), Some(path)));
+            return Ok((self.bind_realm_profile_store(storage), Some(path)));
         }
 
-        Ok((
-            self.storage_with_realm_profiles(MobStorage::in_memory()),
-            None,
-        ))
+        Ok((self.bind_realm_profile_store(MobStorage::in_memory()), None))
     }
 
     async fn maybe_remove_storage_file(path: Option<&Path>) {
@@ -535,7 +530,7 @@ impl MobMcpState {
                     continue;
                 }
 
-                let storage = self.storage_with_realm_profiles(MobStorage::persistent(&path)?);
+                let storage = self.bind_realm_profile_store(MobStorage::persistent(&path)?);
                 if storage.events.replay_all().await?.is_empty() {
                     Self::maybe_remove_storage_file(Some(path.as_path())).await;
                     continue;
@@ -1090,7 +1085,7 @@ impl MobMcpState {
             return Ok(());
         }
 
-        let deadline = Instant::now() + Duration::from_secs(120);
+        let deadline = Instant::now() + Duration::from_mins(2);
         loop {
             if !adapter.contains_session(bridge_session_id).await {
                 return Ok(());
@@ -5720,6 +5715,56 @@ mod tests {
             }
             other => panic!("unexpected skill source: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn realm_ref_mob_create_spawns_against_shared_profile_store() {
+        let svc = Arc::new(MockSessionSvc::new());
+        let state = MobMcpState::new(svc);
+        let mut profile = sample_realm_profile("gpt-5.5");
+        profile.tools.comms = true;
+        state
+            .realm_profile_create("investigation-worker", &profile)
+            .await
+            .expect("realm profile seeded");
+        state
+            .realm_profile_create("person-worker", &profile)
+            .await
+            .expect("person profile seeded");
+
+        let mut definition = MobDefinition::explicit(MobId::from("nest-1779406812080"));
+        definition.wiring.auto_wire_orchestrator = true;
+        definition.profiles.insert(
+            ProfileName::from("investigation-worker"),
+            meerkat_mob::ProfileBinding::RealmRef {
+                realm_profile: "investigation-worker".to_string(),
+            },
+        );
+        definition.profiles.insert(
+            ProfileName::from("person-worker"),
+            meerkat_mob::ProfileBinding::RealmRef {
+                realm_profile: "person-worker".to_string(),
+            },
+        );
+
+        let mob_id = state
+            .mob_create_definition(definition)
+            .await
+            .expect("realm-ref mob create should succeed");
+        let mut spec = SpawnMemberSpec::new(
+            ProfileName::from("investigation-worker"),
+            AgentIdentity::from("investigation-worker-nest-1779406812080"),
+        );
+        spec.auto_wire_parent = true;
+
+        let result = state
+            .mob_spawn_spec(&mob_id, spec)
+            .await
+            .expect("realm-ref profile should resolve from shared state store");
+        assert_eq!(
+            result.agent_identity,
+            AgentIdentity::from("investigation-worker-nest-1779406812080")
+        );
     }
 
     #[tokio::test]
