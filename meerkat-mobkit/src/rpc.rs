@@ -2487,6 +2487,17 @@ pub async fn handle_unified_rpc_json(
                                         "generation": record.generation.get(),
                                     })
                                 }
+                                crate::identity_first::RestoreOutcome::Dormant {
+                                    record, ..
+                                } => {
+                                    serde_json::json!({
+                                        "outcome": "dormant",
+                                        "identity": id.as_str(),
+                                        "agent_runtime_id": record.as_ref().map(|record| record.agent_runtime_id.as_str()),
+                                        "session_id": record.as_ref().map(|record| record.session_id.to_string()),
+                                        "generation": record.as_ref().map(|record| record.generation.get()),
+                                    })
+                                }
                                 crate::identity_first::RestoreOutcome::Resumed {
                                     record, ..
                                 } => {

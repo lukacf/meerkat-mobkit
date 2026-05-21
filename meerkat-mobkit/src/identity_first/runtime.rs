@@ -11,17 +11,18 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
-use tokio::sync::{RwLock, broadcast};
+use tokio::sync::{Mutex, RwLock, broadcast};
 
 use super::bridge::SessionBridge;
 use super::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, RosterProvider, TopologyProvider,
 };
 use super::types::{
-    AgentAddressability, AgentIdentity, AgentRuntimeId, AgentRuntimeServices, CheckpointVersion,
-    ContinuityGeneration, ContinuityHealth, ContinuityRecord, ContinuityStoreError, DispatchInput,
-    DurabilityPolicy, DurableAgentSpec, FencingToken, IdentityLifecycleState, IdentityStatus,
-    LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable, RosterContext, SessionSnapshot,
+    AgentAddressability, AgentBuildContext, AgentIdentity, AgentRuntimeId, AgentRuntimeServices,
+    CheckpointVersion, ContinuityGeneration, ContinuityHealth, ContinuityRecord,
+    ContinuityStoreError, DispatchInput, DurabilityPolicy, DurableAgentSpec, FencingToken,
+    IdentityLifecycleState, IdentityStatus, LeaseGrant, LeaseInfo, ManagedPeerEdge, NotAddressable,
+    RosterContext, SessionSnapshot,
 };
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
@@ -200,6 +201,12 @@ pub enum IdentityEvent {
         identity: AgentIdentity,
         version: CheckpointVersion,
     },
+    /// Resume could not reuse a persisted runtime binding and materialization
+    /// fresh-spawned a member instead.
+    ResumeFallback {
+        identity: AgentIdentity,
+        reason: super::bridge::ResumeFallbackReason,
+    },
 }
 
 /// Per-identity event channel capacity.
@@ -232,6 +239,7 @@ pub struct IdentityFirstRuntimeContext {
     pub topology_provider: Option<Arc<dyn TopologyProvider>>,
     pub customizer: Option<Arc<dyn AgentCustomizer>>,
     mob_definition: Option<meerkat_mob::MobDefinition>,
+    lazy_materialization: bool,
 }
 
 impl IdentityFirstRuntimeContext {
@@ -242,12 +250,31 @@ impl IdentityFirstRuntimeContext {
         customizer: Option<Arc<dyn AgentCustomizer>>,
         mob_definition: Option<meerkat_mob::MobDefinition>,
     ) -> Self {
+        Self::new_with_lazy_materialization(
+            runtime,
+            roster_provider,
+            topology_provider,
+            customizer,
+            mob_definition,
+            false,
+        )
+    }
+
+    pub fn new_with_lazy_materialization(
+        runtime: Arc<IdentityRuntime>,
+        roster_provider: Arc<dyn RosterProvider>,
+        topology_provider: Option<Arc<dyn TopologyProvider>>,
+        customizer: Option<Arc<dyn AgentCustomizer>>,
+        mob_definition: Option<meerkat_mob::MobDefinition>,
+        lazy_materialization: bool,
+    ) -> Self {
         Self {
             runtime,
             roster_provider,
             topology_provider,
             customizer,
             mob_definition,
+            lazy_materialization,
         }
     }
 
@@ -263,13 +290,22 @@ impl IdentityFirstRuntimeContext {
             .await
             .map_err(|err| IdentityRuntimeError::Internal(format!("roster provider: {err}")))?;
 
-        super::orchestrator::restore_flow(
-            &self.runtime,
-            &roster,
-            self.topology_provider.as_deref(),
-            self.customizer.as_deref(),
-        )
-        .await
+        if self.lazy_materialization {
+            super::orchestrator::lazy_register_flow(
+                &self.runtime,
+                &roster,
+                self.topology_provider.as_deref(),
+            )
+            .await
+        } else {
+            super::orchestrator::restore_flow(
+                &self.runtime,
+                &roster,
+                self.topology_provider.as_deref(),
+                self.customizer.as_deref(),
+            )
+            .await
+        }
     }
 }
 
@@ -286,6 +322,9 @@ pub struct IdentityRuntime {
     bridge: Option<Arc<dyn SessionBridge>>,
     runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
+    desired_peer_edges: RwLock<Vec<ManagedPeerEdge>>,
+    materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
+    customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
     default_timeout: Duration,
 }
 
@@ -303,6 +342,9 @@ impl IdentityRuntime {
             bridge: config.bridge,
             runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
+            desired_peer_edges: RwLock::new(Vec::new()),
+            materialization_locks: RwLock::new(BTreeMap::new()),
+            customizer: RwLock::new(None),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
         }
     }
@@ -314,6 +356,14 @@ impl IdentityRuntime {
 
     pub(crate) fn runtime_services(&self) -> AgentRuntimeServices {
         self.runtime_services.clone()
+    }
+
+    pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
+        *self.customizer.write().await = customizer;
+    }
+
+    pub async fn set_desired_peer_edges(&self, edges: Vec<ManagedPeerEdge>) {
+        *self.desired_peer_edges.write().await = edges;
     }
 
     #[must_use]
@@ -530,6 +580,243 @@ impl IdentityRuntime {
         self.event_channels.write().await.insert(identity, tx);
     }
 
+    async fn materialization_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
+        if let Some(lock) = self.materialization_locks.read().await.get(identity) {
+            return lock.clone();
+        }
+        let mut locks = self.materialization_locks.write().await;
+        locks
+            .entry(identity.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    /// Materialize a dormant identity into a concrete mob member/session.
+    ///
+    /// This is the lazy counterpart to eager `restore_flow`: it performs the
+    /// expensive bridge create/resume and snapshot load only when an identity is
+    /// actually touched. Parallel calls for one identity coalesce on a
+    /// per-identity lock and re-check state after acquiring it.
+    pub async fn materialize(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let lock = self.materialization_lock_for(identity).await;
+        let _guard = lock.lock().await;
+
+        let (spec, continuity, state) = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            if entry.state == IdentityLifecycleState::Active {
+                return entry.continuity.clone().ok_or_else(|| {
+                    IdentityRuntimeError::Internal(format!(
+                        "active identity {identity} has no continuity record"
+                    ))
+                });
+            }
+            (entry.spec.clone(), entry.continuity.clone(), entry.state)
+        };
+
+        match state {
+            IdentityLifecycleState::Dormant | IdentityLifecycleState::Uninitialized => {}
+            IdentityLifecycleState::Broken
+            | IdentityLifecycleState::Retiring
+            | IdentityLifecycleState::Suspended => {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: identity.clone(),
+                    state,
+                    operation: "materialize",
+                });
+            }
+            IdentityLifecycleState::Active => unreachable!("active handled above"),
+        }
+
+        let lease_results = self
+            .lease_provider
+            .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
+            .await
+            .map_err(IdentityRuntimeError::Lease)?;
+        let grant = match lease_results.get(identity) {
+            Some(super::types::LeaseAcquireResult::Acquired(grant)) => grant.clone(),
+            _ => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
+        };
+
+        let active_peers = self.entries.read().await.keys().cloned().collect();
+        let managed_edges = self.desired_peer_edges.read().await.clone();
+        let build_context = AgentBuildContext {
+            identity: identity.clone(),
+            active_peers,
+            managed_edges,
+            runtime_services: self.runtime_services(),
+        };
+        let mut draft = super::types::AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: spec.additional_instructions.clone(),
+            labels: spec.labels.clone(),
+            app_context: spec.context.clone(),
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+        };
+        if let Some(customizer) = self.customizer.read().await.clone() {
+            customizer
+                .customize_build(&build_context, &spec, &mut draft)
+                .await
+                .map_err(|err| IdentityRuntimeError::Internal(format!("customizer: {err}")))?;
+        }
+
+        let mut record = if let Some(mut record) = continuity {
+            let snapshot = self
+                .continuity_store
+                .load_session_snapshot(&record.session_id)
+                .await
+                .map_err(IdentityRuntimeError::Store)?;
+
+            if let Some(bridge) = self.bridge.as_ref() {
+                bridge
+                    .register_session_runtime_state(
+                        &record.session_id,
+                        identity,
+                        record.generation,
+                        record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!(
+                            "bridge register_session_runtime_state: {err}"
+                        ))
+                    })?;
+                let snapshot = snapshot.unwrap_or(SessionSnapshot { data: Vec::new() });
+                let outcome = bridge
+                    .resume_session(
+                        identity,
+                        &record.agent_runtime_id,
+                        &spec,
+                        &draft,
+                        &record.session_id,
+                        &snapshot,
+                    )
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!("bridge resume_session: {err}"))
+                    })?;
+                if let Some(reason) = outcome.fallback_reason().cloned() {
+                    tracing::warn!(
+                        %identity,
+                        reason = ?reason,
+                        "lazy identity materialization fresh-spawned after typed resume fallback"
+                    );
+                    self.emit_event(
+                        identity,
+                        IdentityEvent::ResumeFallback {
+                            identity: identity.clone(),
+                            reason,
+                        },
+                    )
+                    .await;
+                }
+                record.session_id = outcome.session_id().clone();
+            }
+            record
+        } else {
+            let new_runtime_id =
+                AgentRuntimeId::parse(&format!("rt:{identity}:0")).map_err(|err| {
+                    IdentityRuntimeError::Internal(format!("failed to mint runtime id: {err}"))
+                })?;
+            let mut record = ContinuityRecord {
+                identity: identity.clone(),
+                agent_runtime_id: new_runtime_id,
+                session_id: meerkat_core::types::SessionId::new(),
+                generation: ContinuityGeneration::new(0),
+                checkpoint_version: CheckpointVersion::new(0),
+            };
+            self.continuity_store
+                .upsert_continuity_record(&record, grant.fencing_token)
+                .await?;
+            if let Some(bridge) = self.bridge.as_ref() {
+                bridge
+                    .register_session_runtime_state(
+                        &record.session_id,
+                        identity,
+                        record.generation,
+                        record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!(
+                            "bridge register_session_runtime_state: {err}"
+                        ))
+                    })?;
+                record.session_id = bridge
+                    .create_session(
+                        identity,
+                        &record.agent_runtime_id,
+                        &spec,
+                        &draft,
+                        &record.session_id,
+                    )
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!("bridge create_session: {err}"))
+                    })?;
+            }
+            record
+        };
+
+        self.continuity_store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await?;
+        if let Some(bridge) = self.bridge.as_ref() {
+            let effective_checkpoint_version = bridge
+                .register_session_runtime_state(
+                    &record.session_id,
+                    identity,
+                    record.generation,
+                    record.checkpoint_version,
+                    grant.fencing_token,
+                )
+                .await
+                .map_err(|err| {
+                    IdentityRuntimeError::Internal(format!(
+                        "bridge register actual session runtime state: {err}"
+                    ))
+                })?;
+            record.checkpoint_version = effective_checkpoint_version;
+        }
+
+        {
+            let mut entries = self.entries.write().await;
+            let entry = entries
+                .get_mut(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry.continuity = Some(record.clone());
+            entry.lease = Some(LeaseEntry {
+                fencing_token: grant.fencing_token,
+                ttl: grant.ttl,
+                acquired_at: Instant::now(),
+            });
+            entry.state = IdentityLifecycleState::Active;
+            entry.checkpoint_version = record.checkpoint_version;
+        }
+        self.emit_event(
+            identity,
+            IdentityEvent::StateChanged {
+                identity: identity.clone(),
+                new_state: IdentityLifecycleState::Active,
+            },
+        )
+        .await;
+        let desired_edges = self.desired_peer_edges.read().await.clone();
+        if !desired_edges.is_empty() {
+            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        }
+        Ok(record)
+    }
+
     // -----------------------------------------------------------------------
     // Subscribe — REQ-06
     // -----------------------------------------------------------------------
@@ -672,7 +959,7 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         content: &meerkat_core::ContentInput,
     ) -> Result<FencingToken, IdentityRuntimeError> {
-        let (token, runtime_id) = {
+        let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -684,6 +971,26 @@ impl IdentityRuntime {
                     identity: identity.clone(),
                     addressability: entry.spec.addressability,
                 }));
+            }
+            entry.state == IdentityLifecycleState::Dormant
+                || entry.state == IdentityLifecycleState::Uninitialized
+        };
+        if should_materialize {
+            self.materialize(identity).await?;
+        }
+
+        let (token, runtime_id) = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+
+            if entry.state != IdentityLifecycleState::Active {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: identity.clone(),
+                    state: entry.state,
+                    operation: "send",
+                });
             }
 
             // INV-01 / INV-02: require active lease
@@ -726,11 +1033,31 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         input: &DispatchInput,
     ) -> Result<(FencingToken, bool), IdentityRuntimeError> {
+        let should_materialize = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry.state == IdentityLifecycleState::Dormant
+                || entry.state == IdentityLifecycleState::Uninitialized
+        };
+        if should_materialize {
+            self.materialize(identity).await?;
+        }
+
         let (token, is_durable, runtime_id) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+
+            if entry.state != IdentityLifecycleState::Active {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: identity.clone(),
+                    state: entry.state,
+                    operation: "dispatch",
+                });
+            }
 
             // INV-01 / INV-02: require active lease
             let token = Self::check_lease(entry)?;
@@ -809,6 +1136,25 @@ impl IdentityRuntime {
             lease: lease_info,
             continuity_health,
         })
+    }
+
+    /// Return statuses for every registered identity without materializing
+    /// dormant members.
+    pub async fn statuses(&self) -> Vec<IdentityStatus> {
+        let identities = self
+            .entries
+            .read()
+            .await
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut statuses = Vec::with_capacity(identities.len());
+        for identity in identities {
+            if let Ok(status) = self.status(&identity).await {
+                statuses.push(status);
+            }
+        }
+        statuses
     }
 
     // -----------------------------------------------------------------------

@@ -298,6 +298,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
                 "default",
                 "",
                 runtime.clone(),
+                identity_runtime.clone(),
                 events,
                 visibility_policy.clone(),
             );
@@ -308,6 +309,7 @@ pub(crate) fn console_json_router_with_runtime_events_and_policy(
                 "default",
                 "",
                 runtime.clone(),
+                identity_runtime.clone(),
                 events,
                 visibility_policy.clone(),
             );
@@ -4492,6 +4494,7 @@ comms = true
             "runtime-reset",
             "reset",
             runtime.clone(),
+            None,
             ConsoleEventStore::new(),
             Arc::new(AllowAllConsoleVisibilityPolicy),
         );

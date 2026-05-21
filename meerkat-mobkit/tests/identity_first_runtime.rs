@@ -14,6 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -21,7 +22,7 @@ use meerkat_mobkit::identity_first::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, TopologyProvider,
 };
 use meerkat_mobkit::identity_first::orchestrator::{
-    ReconcileAction, RestoreOutcome, compute_reconcile_actions, restore_flow,
+    ReconcileAction, RestoreOutcome, compute_reconcile_actions, lazy_register_flow, restore_flow,
 };
 use meerkat_mobkit::identity_first::runtime::IdentityEvent;
 use meerkat_mobkit::identity_first::{
@@ -107,6 +108,205 @@ fn make_runtime_with_store(
         bridge: None,
         default_timeout: None,
     })
+}
+
+fn make_runtime_with_bridge(
+    store: Arc<dyn ContinuityStore>,
+    lease: Arc<dyn LeaseProvider>,
+    bridge: Arc<dyn SessionBridge>,
+) -> Arc<IdentityRuntime> {
+    Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+        continuity_store: store,
+        lease_provider: lease,
+        runtime_instance_id: "test-runtime".to_string(),
+        has_runtime_store: true,
+        durability_policy: DurabilityPolicy::SyncWriteThrough,
+        bridge: Some(bridge),
+        default_timeout: None,
+    }))
+}
+
+struct CountingContinuityStore {
+    inner: Arc<LocalContinuityStore>,
+    resolve_many_calls: AtomicUsize,
+    load_snapshot_calls: AtomicUsize,
+}
+
+impl CountingContinuityStore {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(LocalContinuityStore::in_memory().unwrap()),
+            resolve_many_calls: AtomicUsize::new(0),
+            load_snapshot_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn reset_counts(&self) {
+        self.resolve_many_calls.store(0, Ordering::SeqCst);
+        self.load_snapshot_calls.store(0, Ordering::SeqCst);
+    }
+
+    fn resolve_many_calls(&self) -> usize {
+        self.resolve_many_calls.load(Ordering::SeqCst)
+    }
+
+    fn load_snapshot_calls(&self) -> usize {
+        self.load_snapshot_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for CountingContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        self.resolve_many_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.resolve_many(identities).await
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        self.load_snapshot_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.load_session_snapshot(session_id).await
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        identity: &AgentIdentity,
+        session_id: &meerkat_core::types::SessionId,
+        generation: ContinuityGeneration,
+        version: CheckpointVersion,
+        fencing_token: FencingToken,
+        snapshot: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .save_session_snapshot(
+                identity,
+                session_id,
+                generation,
+                version,
+                fencing_token,
+                snapshot,
+            )
+            .await
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        record: &ContinuityRecord,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .upsert_continuity_record(record, fencing_token)
+            .await
+    }
+
+    async fn delete_continuity_record(
+        &self,
+        identity: &AgentIdentity,
+        fencing_token: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.inner
+            .delete_continuity_record(identity, fencing_token)
+            .await
+    }
+}
+
+#[derive(Default)]
+struct CountingBridge {
+    create_calls: AtomicUsize,
+    resume_calls: AtomicUsize,
+    deliver_calls: AtomicUsize,
+    force_resume_fallback: AtomicBool,
+    resume_delay: tokio::sync::Mutex<Option<Duration>>,
+    fallback_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
+}
+
+impl CountingBridge {
+    async fn set_resume_delay(&self, delay: Duration) {
+        *self.resume_delay.lock().await = Some(delay);
+    }
+
+    async fn set_force_resume_fallback(&self, session_id: meerkat_core::types::SessionId) {
+        self.force_resume_fallback.store(true, Ordering::SeqCst);
+        *self.fallback_session_id.lock().await = Some(session_id);
+    }
+}
+
+#[async_trait]
+impl SessionBridge for CountingBridge {
+    async fn create_session(
+        &self,
+        _identity: &AgentIdentity,
+        _runtime_id: &AgentRuntimeId,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        self.create_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(session_id.clone())
+    }
+
+    async fn resume_session(
+        &self,
+        _identity: &AgentIdentity,
+        _runtime_id: &AgentRuntimeId,
+        _spec: &DurableAgentSpec,
+        _draft: &AgentBuildDraft,
+        session_id: &meerkat_core::types::SessionId,
+        _snapshot: &SessionSnapshot,
+    ) -> Result<meerkat_mobkit::identity_first::ResumeSessionOutcome, BridgeError> {
+        self.resume_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(delay) = *self.resume_delay.lock().await {
+            tokio::time::sleep(delay).await;
+        }
+        if self.force_resume_fallback.load(Ordering::SeqCst) {
+            let fallback_session_id = self
+                .fallback_session_id
+                .lock()
+                .await
+                .clone()
+                .unwrap_or_else(meerkat_core::types::SessionId::new);
+            return Ok(
+                meerkat_mobkit::identity_first::ResumeSessionOutcome::FreshSpawned {
+                    session_id: fallback_session_id,
+                    reason:
+                        meerkat_mobkit::identity_first::ResumeFallbackReason::RuntimeIdentityIncompatible {
+                            detail: "test mismatch".to_string(),
+                        },
+                },
+            );
+        }
+        Ok(
+            meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            },
+        )
+    }
+
+    async fn deliver(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _content: &meerkat_core::ContentInput,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        self.deliver_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(meerkat_core::types::SessionId::new())
+    }
+
+    async fn checkpoint_session(
+        &self,
+        _runtime_id: &AgentRuntimeId,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<SessionSnapshot, BridgeError> {
+        Ok(SessionSnapshot { data: Vec::new() })
+    }
+
+    async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+        Ok(())
+    }
 }
 
 fn make_content() -> meerkat_core::ContentInput {
@@ -606,6 +806,229 @@ async fn identity_first_runtime_delete_identity_removes_from_runtime() {
 }
 
 // ===========================================================================
+// Lazy materialization — build registers identity metadata, first touch hydrates
+// ===========================================================================
+
+#[tokio::test]
+async fn identity_first_runtime_lazy_register_does_not_load_snapshots_or_spawn_members() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    let roster = (0..1_000)
+        .map(|index| {
+            let name = format!("agent:{index}");
+            let record = make_record(&name, 0, 1);
+            let store = store.clone();
+            async move {
+                store
+                    .upsert_continuity_record(&record, FencingToken::new(1))
+                    .await
+                    .unwrap();
+                make_spec(&name)
+            }
+        })
+        .collect::<Vec<_>>();
+    let roster = futures::future::join_all(roster).await;
+    store.reset_counts();
+
+    let result = lazy_register_flow(&runtime, &roster, None).await.unwrap();
+
+    assert_eq!(result.outcomes.len(), 1_000);
+    assert_eq!(store.resolve_many_calls(), 1);
+    assert_eq!(store.load_snapshot_calls(), 0);
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 0);
+    let status = runtime.status(&make_identity("agent:42")).await.unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Dormant);
+    assert_eq!(
+        status.agent_runtime_id,
+        Some(AgentRuntimeId::parse("rt:agent:42:0").unwrap())
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_lazy_first_send_materializes_only_target_once() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    for name in ["agent:a", "agent:b"] {
+        let record = make_record(name, 0, 1);
+        store
+            .upsert_continuity_record(&record, FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &make_identity(name),
+                &record.session_id,
+                record.generation,
+                CheckpointVersion::new(2),
+                FencingToken::new(1),
+                &SessionSnapshot {
+                    data: format!("snapshot-{name}").into_bytes(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let roster = vec![make_spec("agent:a"), make_spec("agent:b")];
+    lazy_register_flow(&runtime, &roster, None).await.unwrap();
+    store.reset_counts();
+
+    runtime
+        .send(&make_identity("agent:a"), &make_content())
+        .await
+        .unwrap();
+
+    assert_eq!(store.load_snapshot_calls(), 1);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:a"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Active
+    );
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:b"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Dormant
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_parallel_sends_to_dormant_identity_coalesce_materialization() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    bridge.set_resume_delay(Duration::from_millis(50)).await;
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    let record = make_record("agent:coalesce", 0, 1);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    lazy_register_flow(&runtime, &[make_spec("agent:coalesce")], None)
+        .await
+        .unwrap();
+    store.reset_counts();
+
+    let mut tasks = Vec::new();
+    for _ in 0..10 {
+        let runtime = runtime.clone();
+        tasks.push(tokio::spawn(async move {
+            runtime
+                .send(&make_identity("agent:coalesce"), &make_content())
+                .await
+                .unwrap();
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+
+    assert_eq!(store.load_snapshot_calls(), 1);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 10);
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:coalesce"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Active
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_lazy_dispatch_materializes_internal_only_identity() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    lazy_register_flow(&runtime, &[make_internal_spec("agent:internal")], None)
+        .await
+        .unwrap();
+    runtime
+        .dispatch(&make_identity("agent:internal"), &make_dispatch_input())
+        .await
+        .unwrap();
+
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:internal"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Active
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_lazy_resume_incompatible_fallback_is_typed_and_visible() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let fallback_session_id = meerkat_core::types::SessionId::new();
+    bridge
+        .set_force_resume_fallback(fallback_session_id.clone())
+        .await;
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+
+    let record = make_record("agent:legacy", 0, 1);
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+    lazy_register_flow(&runtime, &[make_spec("agent:legacy")], None)
+        .await
+        .unwrap();
+    let mut events = runtime
+        .subscribe(&make_identity("agent:legacy"))
+        .await
+        .unwrap();
+
+    runtime
+        .send(&make_identity("agent:legacy"), &make_content())
+        .await
+        .unwrap();
+
+    let event = events.recv().await.unwrap();
+    match event {
+        IdentityEvent::ResumeFallback { identity, reason } => {
+            assert_eq!(identity, make_identity("agent:legacy"));
+            assert!(matches!(
+                reason,
+                meerkat_mobkit::identity_first::ResumeFallbackReason::RuntimeIdentityIncompatible { .. }
+            ));
+        }
+        other => panic!("expected ResumeFallback, got {other:?}"),
+    }
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:legacy"))
+            .await
+            .unwrap()
+            .session_id,
+        Some(fallback_session_id)
+    );
+}
+
+// ===========================================================================
 // Task 2.11 — Full restore flow with sequencing (REQ-12)
 // ===========================================================================
 
@@ -707,8 +1130,12 @@ async fn identity_first_runtime_restore_flow_reconciles_resume_returned_session_
             _draft: &AgentBuildDraft,
             _session_id: &meerkat_core::types::SessionId,
             _snapshot: &SessionSnapshot,
-        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-            Ok(self.actual_session_id.clone())
+        ) -> Result<meerkat_mobkit::identity_first::ResumeSessionOutcome, BridgeError> {
+            Ok(
+                meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed {
+                    session_id: self.actual_session_id.clone(),
+                },
+            )
         }
 
         async fn deliver(
@@ -1558,8 +1985,12 @@ async fn identity_first_runtime_topology_materializes_runtime_peer_wires() {
             _draft: &AgentBuildDraft,
             session_id: &meerkat_core::types::SessionId,
             _snapshot: &SessionSnapshot,
-        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-            Ok(session_id.clone())
+        ) -> Result<meerkat_mobkit::identity_first::ResumeSessionOutcome, BridgeError> {
+            Ok(
+                meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed {
+                    session_id: session_id.clone(),
+                },
+            )
         }
 
         async fn deliver(
@@ -1741,8 +2172,12 @@ async fn identity_first_runtime_topology_claims_persisted_wires_without_rebatchi
             _draft: &AgentBuildDraft,
             session_id: &meerkat_core::types::SessionId,
             _snapshot: &SessionSnapshot,
-        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-            Ok(session_id.clone())
+        ) -> Result<meerkat_mobkit::identity_first::ResumeSessionOutcome, BridgeError> {
+            Ok(
+                meerkat_mobkit::identity_first::ResumeSessionOutcome::Resumed {
+                    session_id: session_id.clone(),
+                },
+            )
         }
 
         async fn deliver(

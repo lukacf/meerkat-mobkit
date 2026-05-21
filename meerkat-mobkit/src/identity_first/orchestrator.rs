@@ -22,6 +22,12 @@ use super::types::{
 /// Result of the restore flow for a single identity.
 #[derive(Debug, Clone)]
 pub enum RestoreOutcome {
+    /// Lazy bootstrap registered identity metadata without materializing a
+    /// concrete mob member/session.
+    Dormant {
+        record: Option<ContinuityRecord>,
+        draft: AgentBuildDraft,
+    },
     /// Fresh-created: new AgentRuntimeId, new SessionId.
     Created {
         record: ContinuityRecord,
@@ -372,7 +378,9 @@ pub async fn restore_flow(
                                 IdentityRuntimeError::Internal(format!(
                                     "bridge resume_session: {e}"
                                 ))
-                            })?,
+                            })?
+                            .session_id()
+                            .clone(),
                         None => {
                             // No snapshot but record exists — resume from session
                             // store using the session_id from the continuity record.
@@ -393,6 +401,8 @@ pub async fn restore_flow(
                                         "bridge resume_session (no snapshot): {e}"
                                     ))
                                 })?
+                                .session_id()
+                                .clone()
                         }
                     };
                     record.session_id = resumed_session_id;
@@ -460,6 +470,118 @@ pub async fn restore_flow(
 
             // Step 11: Broken → fail loudly (REQ-13)
             ContinuityResolveState::Broken { failure } => {
+                outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure.clone()));
+            }
+        }
+    }
+
+    runtime.reconcile_managed_peer_edges(&managed_edges).await?;
+
+    Ok(RestoreFlowResult {
+        outcomes,
+        managed_edges,
+    })
+}
+
+/// Register the roster/topology metadata without materializing members.
+///
+/// This is the identity-first lazy bootstrap path: it validates the roster,
+/// resolves cheap continuity metadata, records desired topology, and exposes
+/// status/inspection surfaces. It deliberately does not acquire leases, call
+/// customizers, load session snapshots, create sessions, or resume sessions.
+pub async fn lazy_register_flow(
+    runtime: &IdentityRuntime,
+    roster: &[DurableAgentSpec],
+    topology_provider: Option<&dyn TopologyProvider>,
+) -> Result<RestoreFlowResult, IdentityRuntimeError> {
+    IdentityRuntime::validate_roster_uniqueness(roster)?;
+
+    let identities: Vec<AgentIdentity> = roster.iter().map(|s| s.identity.clone()).collect();
+    let resolved = runtime
+        .continuity_store()
+        .resolve_many(&identities)
+        .await
+        .map_err(IdentityRuntimeError::Store)?;
+
+    let topology_context = TopologyContext {
+        roster: roster.to_vec(),
+    };
+    let managed_edges = if let Some(tp) = topology_provider {
+        tp.compute_edges(&identities, &topology_context)
+            .await
+            .map_err(|e| IdentityRuntimeError::Internal(format!("topology: {e}")))?
+    } else {
+        Vec::new()
+    };
+    runtime.set_desired_peer_edges(managed_edges.clone()).await;
+
+    let mut outcomes = BTreeMap::new();
+    for spec in roster {
+        let identity = &spec.identity;
+        let currently_active = runtime
+            .status(identity)
+            .await
+            .is_ok_and(|status| status.state == IdentityLifecycleState::Active);
+        let draft = AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: spec.additional_instructions.clone(),
+            labels: spec.labels.clone(),
+            app_context: spec.context.clone(),
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+        };
+        match resolved.get(identity).ok_or_else(|| {
+            IdentityRuntimeError::Internal(format!(
+                "resolve_many did not return state for {identity}"
+            ))
+        })? {
+            ContinuityResolveState::Uninitialized => {
+                if currently_active {
+                    runtime.update_spec(spec.clone()).await?;
+                } else {
+                    runtime
+                        .register(spec.clone(), IdentityLifecycleState::Dormant, None, None)
+                        .await;
+                }
+                outcomes.insert(
+                    identity.clone(),
+                    RestoreOutcome::Dormant {
+                        record: None,
+                        draft,
+                    },
+                );
+            }
+            ContinuityResolveState::Ready { record } => {
+                if currently_active {
+                    runtime.update_spec(spec.clone()).await?;
+                } else {
+                    runtime
+                        .register(
+                            spec.clone(),
+                            IdentityLifecycleState::Dormant,
+                            Some(record.clone()),
+                            None,
+                        )
+                        .await;
+                }
+                outcomes.insert(
+                    identity.clone(),
+                    RestoreOutcome::Dormant {
+                        record: Some(record.clone()),
+                        draft,
+                    },
+                );
+            }
+            ContinuityResolveState::Broken { failure } => {
+                runtime
+                    .register(
+                        spec.clone(),
+                        IdentityLifecycleState::Broken,
+                        failure.record.clone(),
+                        None,
+                    )
+                    .await;
                 outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure.clone()));
             }
         }

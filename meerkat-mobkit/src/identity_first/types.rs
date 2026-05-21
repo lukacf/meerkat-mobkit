@@ -579,9 +579,15 @@ pub struct DurableAgentSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdentityLifecycleState {
+    /// Identity metadata is registered and addressable, but no concrete mob
+    /// member/session has been spawned or resumed in this runtime yet.
+    Dormant,
+    /// Identity has a concrete mob member/session in this runtime.
     Active,
     Retiring,
     Suspended,
+    /// Continuity exists but cannot currently be materialized safely.
+    Broken,
     Uninitialized,
 }
 

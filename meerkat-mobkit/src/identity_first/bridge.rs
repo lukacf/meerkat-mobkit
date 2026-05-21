@@ -53,6 +53,47 @@ impl std::fmt::Display for BridgeError {
 
 impl std::error::Error for BridgeError {}
 
+/// Typed reason a requested resume could not reuse the persisted runtime
+/// binding and had to fall back to a fresh member spawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeFallbackReason {
+    /// The persisted session/runtime identity is incompatible with the current
+    /// mob runtime binding.
+    RuntimeIdentityIncompatible { detail: String },
+}
+
+/// Result of attempting to materialize a persisted identity through resume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeSessionOutcome {
+    /// The persisted session was resumed as-is.
+    Resumed {
+        session_id: meerkat_core::types::SessionId,
+    },
+    /// Resume was rejected for a typed compatibility reason and a fresh member
+    /// was spawned instead.
+    FreshSpawned {
+        session_id: meerkat_core::types::SessionId,
+        reason: ResumeFallbackReason,
+    },
+}
+
+impl ResumeSessionOutcome {
+    #[must_use]
+    pub fn session_id(&self) -> &meerkat_core::types::SessionId {
+        match self {
+            Self::Resumed { session_id } | Self::FreshSpawned { session_id, .. } => session_id,
+        }
+    }
+
+    #[must_use]
+    pub fn fallback_reason(&self) -> Option<&ResumeFallbackReason> {
+        match self {
+            Self::Resumed { .. } => None,
+            Self::FreshSpawned { reason, .. } => Some(reason),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SessionBridge trait
 // ---------------------------------------------------------------------------
@@ -87,7 +128,7 @@ pub trait SessionBridge: Send + Sync {
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
         snapshot: &SessionSnapshot,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+    ) -> Result<ResumeSessionOutcome, BridgeError>;
 
     /// Deliver content to an active mob member.
     async fn deliver(
@@ -328,7 +369,7 @@ impl SessionBridge for MobSessionBridge {
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
         _snapshot: &SessionSnapshot,
-    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+    ) -> Result<ResumeSessionOutcome, BridgeError> {
         // Try MemberLaunchMode::Resume first — this loads the existing session
         // from the session store (conversation history intact).
         let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft);
@@ -337,7 +378,9 @@ impl SessionBridge for MobSessionBridge {
         };
 
         match self.handle.spawn_spec(spawn_spec).await {
-            Ok(_) => Ok(session_id.clone()),
+            Ok(_) => Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            }),
             Err(e) => {
                 // Resume can fail if the old session's comms identity is still
                 // claimed (e.g., in-process restart where the previous mob actor
@@ -346,7 +389,8 @@ impl SessionBridge for MobSessionBridge {
                     identity = %_identity,
                     session_id = %session_id,
                     error = %e,
-                    "resume_session failed, falling back to fresh spawn"
+                    reason = "runtime_identity_incompatible",
+                    "resume_session incompatible with current runtime binding, falling back to fresh spawn"
                 );
                 let fresh_spec = build_spawn_spec(runtime_id, spec, draft);
                 self.handle
@@ -355,14 +399,21 @@ impl SessionBridge for MobSessionBridge {
                     .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
 
                 let mid = MeerkatId::from(runtime_id.as_str());
-                self.handle
+                let session_id = self
+                    .handle
                     .resolve_bridge_session_id(&mid)
                     .await
                     .ok_or_else(|| {
                         BridgeError::Mob(
                             "member spawned (fresh fallback) but has no session ID".to_string(),
                         )
-                    })
+                    })?;
+                Ok(ResumeSessionOutcome::FreshSpawned {
+                    session_id,
+                    reason: ResumeFallbackReason::RuntimeIdentityIncompatible {
+                        detail: e.to_string(),
+                    },
+                })
             }
         }
     }

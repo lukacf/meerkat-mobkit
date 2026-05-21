@@ -14,7 +14,10 @@ pub use adapters::{
     ContinuitySessionStoreAdapter, DiscoveryRosterAdapter, EdgeDiscoveryTopologyAdapter,
     SessionHookCustomizerAdapter, agent_discovery_to_durable,
 };
-pub use bridge::{BridgeError, MemberInspection, MobSessionBridge, SessionBridge};
+pub use bridge::{
+    BridgeError, MemberInspection, MobSessionBridge, ResumeFallbackReason, ResumeSessionOutcome,
+    SessionBridge,
+};
 pub use contracts::*;
 pub use gateway_bridges::{
     CallbackBridge, GatewayAgentCustomizer, GatewayContinuityStore, GatewayLeaseProvider,
@@ -23,7 +26,8 @@ pub use gateway_bridges::{
 pub use local_lease::LocalLeaseProvider;
 pub use local_store::LocalContinuityStore;
 pub use orchestrator::{
-    ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions, restore_flow,
+    ReconcileAction, RestoreFlowResult, RestoreOutcome, compute_reconcile_actions,
+    lazy_register_flow, restore_flow,
 };
 pub use runtime::{
     IdentityFirstRuntimeContext, IdentityRuntime, IdentityRuntimeConfig, IdentityRuntimeError,

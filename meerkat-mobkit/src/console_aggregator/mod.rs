@@ -153,6 +153,7 @@ struct RuntimeEntry {
     runtime_key: String,
     identity_namespace: String,
     runtime: MobRuntime,
+    identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
     console_events: ConsoleEventStore,
     visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
 }
@@ -268,10 +269,12 @@ impl MobKitConsoleAggregator {
     }
 
     pub fn register_runtime(&self, registration: ConsoleRuntimeRegistration) {
+        let identity_runtime = registration.runtime.identity_runtime().cloned();
         self.register_runtime_handles_with_policy(
             registration.runtime_key,
             registration.identity_namespace,
             registration.runtime.mob_runtime().clone(),
+            identity_runtime,
             registration.runtime.console_events(),
             registration.visibility_policy,
         );
@@ -282,6 +285,7 @@ impl MobKitConsoleAggregator {
         runtime_key: impl Into<String>,
         identity_namespace: impl Into<String>,
         runtime: MobRuntime,
+        identity_runtime: Option<Arc<crate::identity_first::IdentityRuntime>>,
         console_events: ConsoleEventStore,
         visibility_policy: Arc<dyn ConsoleVisibilityPolicy>,
     ) {
@@ -291,6 +295,7 @@ impl MobKitConsoleAggregator {
             runtime_key: runtime_key.clone(),
             identity_namespace,
             runtime,
+            identity_runtime,
             console_events: console_events.clone(),
             visibility_policy,
         };
@@ -389,38 +394,71 @@ impl MobKitConsoleAggregator {
         &self,
         identity: &str,
     ) -> ConsoleLogResult<Option<ConsoleIdentityInspection>> {
-        let Some(resolved) = self.resolve_member(identity).await else {
-            return Ok(None);
-        };
-        let Some(record) =
-            identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await
-        else {
-            return Ok(None);
-        };
-        if !resolved.entry.visibility_policy.identity_visible(&record) {
-            return Ok(None);
+        if let Some(resolved) = self.resolve_member(identity).await {
+            let Some(record) =
+                identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member)
+                    .await
+            else {
+                return Ok(None);
+            };
+            if !resolved.entry.visibility_policy.identity_visible(&record) {
+                return Ok(None);
+            }
+            if let Some(session_id) = record.session_id.clone() {
+                spawn_session_history_backfill_target(
+                    self.inner.clone(),
+                    SessionBackfillTarget {
+                        entry: resolved.entry.clone(),
+                        record: record.clone(),
+                        session_id,
+                    },
+                    false,
+                );
+            }
+            let peers = resolved
+                .member
+                .wired_to
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            return Ok(Some(ConsoleIdentityInspection {
+                identity: record,
+                peers,
+            }));
         }
-        if let Some(session_id) = record.session_id.clone() {
-            spawn_session_history_backfill_target(
-                self.inner.clone(),
-                SessionBackfillTarget {
-                    entry: resolved.entry.clone(),
-                    record: record.clone(),
-                    session_id,
-                },
-                false,
-            );
+
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for entry in entries {
+            let Some(identity_runtime) = entry.identity_runtime.clone() else {
+                continue;
+            };
+            let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
+                continue;
+            };
+            let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&raw_identity)
+            else {
+                continue;
+            };
+            let Ok(status) = identity_runtime.status(&parsed_identity).await else {
+                continue;
+            };
+            let record = identity_record_for_status(&entry, &status);
+            if !entry.visibility_policy.identity_visible(&record) {
+                return Ok(None);
+            }
+            return Ok(Some(ConsoleIdentityInspection {
+                identity: record,
+                peers: Vec::new(),
+            }));
         }
-        let peers = resolved
-            .member
-            .wired_to
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        Ok(Some(ConsoleIdentityInspection {
-            identity: record,
-            peers,
-        }))
+        Ok(None)
     }
 
     pub async fn retire_identity(&self, identity: &str) -> ConsoleLogResult<bool> {
@@ -934,6 +972,14 @@ async fn collect_identity_records(
                 identities.push(record);
             }
         }
+        if let Some(identity_runtime) = entry.identity_runtime.as_ref() {
+            for status in identity_runtime.statuses().await {
+                let record = identity_record_for_status(entry, &status);
+                if entry.visibility_policy.identity_visible(&record) {
+                    identities.push(record);
+                }
+            }
+        }
     }
     Ok(dedupe_identity_records(identities))
 }
@@ -950,6 +996,9 @@ fn spawn_identity_backfills_for_records(
         Err(_) => return,
     };
     for record in records {
+        if record.health == "dormant" || record.health == "uninitialized" {
+            continue;
+        }
         let Some(entry) = entries.get(&record.runtime_key).cloned() else {
             continue;
         };
@@ -2328,6 +2377,64 @@ async fn identity_record_for_member(
     })
 }
 
+fn identity_record_for_status(
+    entry: &RuntimeEntry,
+    status: &crate::identity_first::IdentityStatus,
+) -> ConsoleIdentityRecord {
+    let identity = apply_namespace(status.identity.as_str(), &entry.identity_namespace);
+    let runtime_member_id = status
+        .agent_runtime_id
+        .as_ref()
+        .map(crate::identity_first::AgentRuntimeId::as_str)
+        .unwrap_or_else(|| status.identity.as_str())
+        .to_string();
+    let addressable = status.addressability
+        == crate::identity_first::AgentAddressability::Addressable
+        && matches!(
+            status.state,
+            crate::identity_first::IdentityLifecycleState::Active
+                | crate::identity_first::IdentityLifecycleState::Dormant
+                | crate::identity_first::IdentityLifecycleState::Uninitialized
+        );
+    let visibility = match status.state {
+        crate::identity_first::IdentityLifecycleState::Retiring => {
+            ConsoleVisibility::RetiredReadable
+        }
+        crate::identity_first::IdentityLifecycleState::Broken
+        | crate::identity_first::IdentityLifecycleState::Suspended => {
+            ConsoleVisibility::Unreachable
+        }
+        _ if addressable => ConsoleVisibility::Addressable,
+        _ => ConsoleVisibility::Hidden,
+    };
+    let health = match status.state {
+        crate::identity_first::IdentityLifecycleState::Active => "ready",
+        crate::identity_first::IdentityLifecycleState::Dormant => "dormant",
+        crate::identity_first::IdentityLifecycleState::Uninitialized => "uninitialized",
+        crate::identity_first::IdentityLifecycleState::Broken => "broken",
+        crate::identity_first::IdentityLifecycleState::Suspended => "suspended",
+        crate::identity_first::IdentityLifecycleState::Retiring => "retired",
+    }
+    .to_string();
+    let display_name = status
+        .display_name
+        .as_ref()
+        .map(crate::identity_first::DisplayName::as_str)
+        .unwrap_or_else(|| status.identity.as_str())
+        .to_string();
+    ConsoleIdentityRecord {
+        identity,
+        display_name,
+        runtime_key: entry.runtime_key.clone(),
+        runtime_member_id,
+        session_id: status.session_id.as_ref().map(ToString::to_string),
+        visibility,
+        addressable,
+        health,
+        labels: status.labels.clone(),
+    }
+}
+
 pub(crate) fn is_implicit_delegate_member(
     role: &str,
     labels: &std::collections::BTreeMap<String, String>,
@@ -2877,6 +2984,7 @@ comms = true
             runtime_key: runtime_key.to_string(),
             identity_namespace: "test".to_string(),
             runtime: runtime.mob_runtime().clone(),
+            identity_runtime: runtime.identity_runtime().cloned(),
             console_events: runtime.console_events(),
             visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
         }
@@ -2924,6 +3032,7 @@ comms = true
             runtime_key: "runtime-a".to_string(),
             identity_namespace: String::new(),
             runtime: runtime.mob_runtime().clone(),
+            identity_runtime: runtime.identity_runtime().cloned(),
             console_events: runtime.console_events(),
             visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
         };

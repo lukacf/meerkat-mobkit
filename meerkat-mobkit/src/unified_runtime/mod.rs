@@ -39,7 +39,7 @@ pub mod mob_ops;
 pub mod module_ops;
 pub mod types;
 
-pub use builder::UnifiedRuntimeBuilder;
+pub use builder::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
