@@ -92,6 +92,14 @@ pub struct ConsoleLiveSnapshot {
     pub has_mob_runtime: bool,
 }
 
+fn console_member_console_identity(member: &ConsoleMember) -> &str {
+    member
+        .labels
+        .get("agent_identity")
+        .filter(|value| !value.trim().is_empty())
+        .map_or(member.agent_identity.as_str(), String::as_str)
+}
+
 impl ConsoleLiveSnapshot {
     pub fn new(
         runtime_id: Option<String>,
@@ -290,6 +298,7 @@ fn build_console_experience_contract(
         sorted_members
                 .iter()
                 .map(|member| {
+                    let console_identity = console_member_console_identity(member);
                     let label = member
                         .labels
                         .get("display_name")
@@ -329,7 +338,7 @@ fn build_console_experience_contract(
                     serde_json::json!({
                         "agent_id": member.agent_identity,
                         "member_id": member.agent_identity,
-                        "identity": member.agent_identity,
+                        "identity": console_identity,
                         "label": label,
                         "kind": "mob_agent",
                         "role": member.role,
@@ -541,7 +550,7 @@ fn build_console_experience_contract(
                     "singleton": "set \"true\" to prevent retire (e.g. review, summarizer agents)",
                     "group": "sidebar group name; overrides profile-based grouping",
                 },
-                "refresh_projection": "source_method returns ConsoleMember rows (agent_identity, role, state, model_capabilities, wired_to, labels). Clients must project: agent_id=agent_identity, member_id=agent_identity, label=labels.display_name||agent_identity, group=labels.group||role, addressable=labels.addressable!='false', model_capabilities.image_input default false, affordances derived from labels.singleton and addressable.",
+                "refresh_projection": "source_method returns ConsoleMember rows (agent_identity, role, state, model_capabilities, wired_to, labels). Clients must project: agent_id=agent_identity, member_id=agent_identity, identity=labels.agent_identity||agent_identity, label=labels.display_name||agent_identity, group=labels.group||role, addressable=labels.addressable!='false', model_capabilities.image_input default false, affordances derived from labels.singleton and addressable.",
             },
             "live_snapshot": {
                 "agents": sidebar_agents,

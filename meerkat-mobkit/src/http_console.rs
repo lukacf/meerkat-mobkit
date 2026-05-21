@@ -3642,6 +3642,7 @@ async fn build_live_snapshot(
     let agents = members
         .iter()
         .map(|member| async move {
+            let console_identity = console_member_console_identity(member);
             let label = member
                 .labels
                 .get("display_name")
@@ -3662,11 +3663,7 @@ async fn build_live_snapshot(
                 .map(|value: &String| value == "true");
             let degraded_reason = member.labels.get("console_degraded_reason").cloned();
             let response_phase = match console_events {
-                Some(store) => {
-                    store
-                        .response_phase_for_identity(&member.agent_identity)
-                        .await
-                }
+                Some(store) => store.response_phase_for_identity(console_identity).await,
                 None => None,
             };
             ConsoleAgentLiveSnapshot {
@@ -3674,7 +3671,7 @@ async fn build_live_snapshot(
                 member_id: member.agent_identity.clone(),
                 label,
                 kind: "meerkat".to_string(),
-                identity: Some(member.agent_identity.clone()),
+                identity: Some(console_identity.to_string()),
                 role: Some(member.role.clone()),
                 state: Some(member.state.clone()),
                 session_id: member.session_id.clone(),
@@ -4046,6 +4043,14 @@ async fn wait_for_reset_startup_history(
 fn dedupe_console_members_by_identity(members: &mut Vec<ConsoleMember>) {
     let mut seen_member_ids = BTreeSet::new();
     members.retain(|member| seen_member_ids.insert(member.agent_identity.clone()));
+}
+
+fn console_member_console_identity(member: &ConsoleMember) -> &str {
+    member
+        .labels
+        .get("agent_identity")
+        .filter(|value| !value.trim().is_empty())
+        .map_or(member.agent_identity.as_str(), String::as_str)
 }
 
 async fn project_console_members_from_handle(

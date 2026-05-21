@@ -45,6 +45,34 @@ test("CHOKE-004 target: sidebar adapter chooses identity addressing once for com
   assert.equal(target.identity, "identity:luka");
 });
 
+test("sidebar adapter keeps durable chat identity when member id is runtime-scoped", () => {
+  const [agent] = normalizeAgents(
+    {
+      agent_sidebar: {
+        live_snapshot: {
+          agents: [
+            {
+              identity: "review:singleton",
+              member_id: "rt:review:singleton:0",
+              agent_id: "rt:review:singleton:0",
+              label: "Review Worker",
+              kind: "mob_agent",
+              labels: { agent_identity: "review:singleton" },
+            },
+          ],
+        },
+      },
+    } as ConsoleExperience,
+    [],
+  );
+
+  assert.ok(agent);
+  const target = buildDockTarget(agent);
+
+  assert.equal(target.identity, "review:singleton");
+  assert.equal(target.memberId, "rt:review:singleton:0");
+});
+
 test("CHOKE-003 target: refreshed experience metadata drives host refresh strategy instead of stale per-panel fetch assumptions", () => {
   const before = normalizeAgents(
     {
