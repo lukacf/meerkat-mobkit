@@ -5,6 +5,31 @@ import {
 } from "@console-core";
 import type { ConsoleAgent, ConsoleExperience, ConsoleExperienceAgentSnapshotRow } from "../types";
 
+export function canonicalConsoleIdentity(
+  identity: string | undefined,
+  agents: ConsoleAgent[],
+): string {
+  const normalized = identity?.trim() || "";
+  if (!normalized) return "";
+  for (const agent of agents) {
+    const labelIdentity =
+      typeof agent.labels?.agent_identity === "string"
+        ? agent.labels.agent_identity.trim()
+        : "";
+    const aliases = [
+      agent.identity,
+      agent.member_id,
+      agent.agent_id,
+      labelIdentity,
+    ]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .map((value) => value.trim());
+    if (!aliases.includes(normalized)) continue;
+    return (agent.identity || agent.member_id || agent.agent_id || normalized).trim();
+  }
+  return normalized;
+}
+
 function normalizeModelCapabilities(entry: unknown): { image_input: boolean } {
   const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : {};
   const caps = record.model_capabilities && typeof record.model_capabilities === "object"

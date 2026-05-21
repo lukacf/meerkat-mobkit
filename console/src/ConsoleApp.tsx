@@ -21,7 +21,7 @@ import {
   normalizeIdentityInspectViewState,
 } from "@console-core";
 
-import { normalizeAgents } from "./lib/agents";
+import { canonicalConsoleIdentity, normalizeAgents } from "./lib/agents";
 import {
   buildActivityRailViewState,
   buildControlTarget,
@@ -34,9 +34,11 @@ import {
   createUserEntry,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
+  optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
   sortConversationTimelineEntries,
   type MobKitDockTarget,
+  type OptimisticUserMessage,
 } from "./lib/adapters";
 import { errorMessage } from "./lib/errors";
 import {
@@ -84,13 +86,6 @@ interface ConsoleAppProps {
 type RoutingPanelData = ReturnType<typeof buildRoutingSectionView>;
 type GatingPanelData = { pending: unknown[]; audit: unknown[] };
 type DockPresetId = "single" | "two_columns" | "two_rows" | "grid";
-
-interface OptimisticUserMessage {
-  interactionId: string;
-  entry: ConversationTimelineEntry;
-  sentAtMs: number;
-  objectUrls?: string[];
-}
 
 interface IdentityLog {
   events: ConsoleFrame[];
@@ -1149,6 +1144,22 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return changed;
   }
 
+  function commitPhaseForIdentity(
+    identity: string,
+    phase: "waiting" | "tool-executing" | "generating" | null,
+  ): boolean {
+    let changed = false;
+    for (const panel of dockRef.current.viewState.panels) {
+      const target = panel.target as MobKitDockTarget | null;
+      if (!target || target.kind !== "agent-chat") continue;
+      if ((target.identity || target.memberId) !== identity) continue;
+      if (commitPanelPhase(buildPanelConversationKey(panel.id, target), phase)) {
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   function recomputePhaseForIdentity(identity: string): boolean {
     const frames = getSortedFrames(identity).filter((frame) =>
       PANEL_ROUTABLE_EVENTS.has(frame.event)
@@ -1545,7 +1556,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // Seed activity with recent history (only on mount) — apply same
     // filter as SSE. The activity rail is its own concern; it doesn't
     // share state with the per-identity logs.
-    const handleLiveFrame = (frame: ConsoleFrame) => {
+    const handleLiveFrame = (incomingFrame: ConsoleFrame) => {
+      const canonicalIdentity = canonicalConsoleIdentity(
+        incomingFrame.identity,
+        agentsRef.current,
+      );
+      const frame =
+        canonicalIdentity && canonicalIdentity !== incomingFrame.identity
+          ? { ...incomingFrame, identity: canonicalIdentity }
+          : incomingFrame;
       // Activity rail (independent buffer)
       if (!ACTIVITY_SKIP_EVENTS.has(frame.event)) {
         activityRef.current = [frame, ...activityRef.current].slice(0, 200);
@@ -1559,7 +1578,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       }
 
       // Identity log (single canonical store)
-      const identity = frame.identity?.trim();
+      const identity = canonicalIdentity || frame.identity?.trim();
       if (
         PANEL_ROUTABLE_EVENTS.has(frame.event) &&
         identity &&
@@ -1727,7 +1746,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // `updatePanelPhaseFromFrame` reads — otherwise the next text_delta's
     // "elapsedMs since waiting" check is computed against `since=0`,
     // which we want anyway, but `currentPhase` would read undefined.
-    commitPanelPhase(panelKey, "waiting");
+    commitPhaseForIdentity(identity, "waiting");
     identityBusyRef.current[identity] = true;
     commitLiveFrames([{
       id: `optimistic-topology:${identity}:${Date.now()}`,
@@ -2261,8 +2280,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     // with the matching interaction_id is appended to the log (which
     // clears it via appendFrame). Until then, it sits at the tail of
     // the conversation as a synthetic entry.
-    const optimisticUser =
-      optimisticUserByPanelKeyRef.current[panelKey] ?? null;
+    const optimisticUser = optimisticUserMessageForPanel(
+      optimisticUserByPanelKeyRef.current,
+      panelKey,
+      identity,
+    );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
 
     const entries = sanitizeConversationEntries(

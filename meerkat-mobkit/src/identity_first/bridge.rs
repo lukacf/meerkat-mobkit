@@ -6,7 +6,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
-use meerkat_mob::{MobHandle, MobSessionService, SpawnMemberSpec, SpawnSystemPromptOverride};
+use meerkat_mob::{
+    MobHandle, MobSessionService, SpawnMemberSpec, SpawnSystemPromptOverride, WorkOrigin, WorkRef,
+    WorkSpec,
+};
 
 use crate::mob_handle_runtime::{content_input_has_images, model_capabilities_for_member};
 
@@ -92,6 +95,27 @@ impl ResumeSessionOutcome {
             Self::FreshSpawned { reason, .. } => Some(reason),
         }
     }
+}
+
+async fn submit_internal_bridge_work(
+    handle: &MobHandle,
+    member_id: &MeerkatId,
+    content: &meerkat_core::ContentInput,
+) -> Result<(), BridgeError> {
+    let entry = handle
+        .get_member(member_id)
+        .await
+        .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
+    handle
+        .submit_work(
+            entry.agent_runtime_id.clone(),
+            entry.fence_token,
+            WorkRef::new(),
+            WorkSpec::new(content.clone(), WorkOrigin::Internal),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|err| BridgeError::Mob(err.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -425,11 +449,6 @@ impl SessionBridge for MobSessionBridge {
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
         let mid = MeerkatId::from(runtime_id.as_str());
         let member_entry_before_delivery = self.handle.get_member(&mid).await;
-        let member = self
-            .handle
-            .member(&mid)
-            .await
-            .map_err(|e| BridgeError::Mob(e.to_string()))?;
         if content_input_has_images(content) {
             let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
                 BridgeError::Mob("member not found while checking image capability".to_string())
@@ -447,12 +466,13 @@ impl SessionBridge for MobSessionBridge {
             }
         }
 
-        // Use internal_turn() to bypass the mob-layer external_addressable
-        // check. The identity layer owns addressability enforcement — the
+        // Submit internal work directly through the mob work lane so delivery
+        // acks at runtime ingress rather than waiting for the full turn to
+        // complete. The identity layer owns addressability enforcement — the
         // bridge is an internal delivery mechanism regardless of whether the
         // identity is Addressable or InternalOnly.
-        let _receipt = match member.internal_turn(content.clone()).await {
-            Ok(receipt) => receipt,
+        match submit_internal_bridge_work(&self.handle, &mid, content).await {
+            Ok(()) => {}
             Err(err) if is_missing_event_injector_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
@@ -479,16 +499,10 @@ impl SessionBridge for MobSessionBridge {
                     }
                     Err(respawn_err) => return Err(BridgeError::Mob(respawn_err.to_string())),
                 }
-                self.handle
-                    .member(&mid)
-                    .await
-                    .map_err(|e| BridgeError::Mob(e.to_string()))?
-                    .internal_turn(content.clone())
-                    .await
-                    .map_err(|e| BridgeError::Mob(e.to_string()))?
+                submit_internal_bridge_work(&self.handle, &mid, content).await?;
             }
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
-        };
+        }
 
         // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
         // Query the bridge session id directly from the mob handle.

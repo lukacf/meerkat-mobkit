@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { normalizeAgents } from "./agents";
+import { canonicalConsoleIdentity, normalizeAgents } from "./agents";
 
 test("normalizeAgents preserves identity-status summary fields without invention", () => {
   const agents = normalizeAgents(
@@ -182,6 +182,58 @@ test("normalizeAgents maps runtime member sidebar rows back to durable agent ide
   assert.equal(agent?.identity, "channel:C0SMOKEOB3");
   assert.equal(agent?.member_id, "rt:channel:C0SMOKEOB3:0");
   assert.equal(agent?.agent_id, "channel:C0SMOKEOB3");
+});
+
+test("canonicalConsoleIdentity maps runtime/member aliases back to durable chat identity", () => {
+  const agents = normalizeAgents(
+    {
+      agent_sidebar: {
+        live_snapshot: {
+          agents: [
+            {
+              identity: "rt:deep-investigator:0",
+              agent_id: "deep-investigator",
+              member_id: "rt:deep-investigator:0",
+              label: "Deep Investigator",
+              role: "deep-investigator",
+              state: "active",
+              addressable: true,
+              labels: {
+                agent_identity: "deep-investigator:singleton",
+              },
+            },
+          ],
+        },
+      },
+      identity_status: {
+        schema_version: "1",
+        rows: [
+          {
+            identity: "deep-investigator:singleton",
+            display_name: "Deep Investigator",
+            role: "deep-investigator",
+            state: "active",
+            addressability: "addressable",
+          },
+        ],
+      },
+    },
+    [],
+  );
+
+  assert.equal(
+    canonicalConsoleIdentity("deep-investigator", agents),
+    "deep-investigator:singleton",
+  );
+  assert.equal(
+    canonicalConsoleIdentity("rt:deep-investigator:0", agents),
+    "deep-investigator:singleton",
+  );
+  assert.equal(
+    canonicalConsoleIdentity("deep-investigator:singleton", agents),
+    "deep-investigator:singleton",
+  );
+  assert.equal(canonicalConsoleIdentity("unknown-agent", agents), "unknown-agent");
 });
 
 test("normalizeAgents appends live identities missing from the sidebar snapshot", () => {

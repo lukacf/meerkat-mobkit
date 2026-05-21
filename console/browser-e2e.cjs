@@ -105,13 +105,24 @@ async function sidebarLabels(page) {
 }
 
 async function fillComposer(page, text) {
-  const textarea = page.locator('textarea, .cc-composer__textarea').first();
+  const textarea = page
+    .locator('[data-testid^="chat-composer:"]:visible, textarea:visible, .cc-composer__textarea:visible')
+    .first();
   await textarea.fill(text);
 }
 
 async function clickSend(page) {
-  const send = page.locator('button:has-text("Send"), .cc-composer__send-btn').first();
+  const send = page.locator('button:has-text("Send"):visible, .cc-composer__send-btn:visible').first();
   await send.click();
+}
+
+async function openSidebarAgentChat(page, labelPattern) {
+  const row = page
+    .locator('.agent[role="button"], .cc-sidebar-row')
+    .filter({ hasText: labelPattern })
+    .first();
+  await row.click();
+  await page.waitForSelector('[data-testid^="chat-composer:"]', { timeout: 30_000 });
 }
 
 function startMockConsoleServer(port, options = {}) {
@@ -450,6 +461,7 @@ async function runReferenceBrowserProof() {
     await page.waitForSelector('[data-testid="signals-rail"], .cc-activity-rail', { timeout: 10_000 });
 
     // Send a message via the composer
+    await openSidebarAgentChat(page, /router/i);
     await fillComposer(page, "browser proof message");
     await clickSend(page);
     await page.waitForTimeout(1_000);
@@ -498,11 +510,12 @@ async function runCanonicalSendBrowserProof() {
       `mock sidebar missing legacy target: ${JSON.stringify(labels)}`,
     );
 
+    await openSidebarAgentChat(page, /Identity Luka/i);
     await fillComposer(page, "identity proof message");
     await clickSend(page);
     await page.waitForTimeout(100);
 
-    await page.locator('.agent[role="button"], .cc-sidebar-row').nth(1).click();
+    await openSidebarAgentChat(page, /Legacy Router/i);
     await fillComposer(page, "legacy proof message");
     await clickSend(page);
     await page.waitForTimeout(100);
