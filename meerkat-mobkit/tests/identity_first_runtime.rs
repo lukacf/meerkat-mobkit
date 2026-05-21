@@ -220,14 +220,22 @@ struct CountingBridge {
     create_calls: AtomicUsize,
     resume_calls: AtomicUsize,
     deliver_calls: AtomicUsize,
+    wire_calls: AtomicUsize,
     force_resume_fallback: AtomicBool,
     resume_delay: tokio::sync::Mutex<Option<Duration>>,
+    resume_barrier: tokio::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
     fallback_session_id: tokio::sync::Mutex<Option<meerkat_core::types::SessionId>>,
+    wires: tokio::sync::Mutex<Vec<(String, String)>>,
+    current_wires: tokio::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl CountingBridge {
     async fn set_resume_delay(&self, delay: Duration) {
         *self.resume_delay.lock().await = Some(delay);
+    }
+
+    async fn set_resume_barrier(&self, barrier: Arc<tokio::sync::Barrier>) {
+        *self.resume_barrier.lock().await = Some(barrier);
     }
 
     async fn set_force_resume_fallback(&self, session_id: meerkat_core::types::SessionId) {
@@ -262,6 +270,10 @@ impl SessionBridge for CountingBridge {
         self.resume_calls.fetch_add(1, Ordering::SeqCst);
         if let Some(delay) = *self.resume_delay.lock().await {
             tokio::time::sleep(delay).await;
+        }
+        let barrier = self.resume_barrier.lock().await.clone();
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
         }
         if self.force_resume_fallback.load(Ordering::SeqCst) {
             let fallback_session_id = self
@@ -306,6 +318,46 @@ impl SessionBridge for CountingBridge {
 
     async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
         Ok(())
+    }
+
+    async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
+        self.wire_calls.fetch_add(1, Ordering::SeqCst);
+        self.wires
+            .lock()
+            .await
+            .push((a.as_str().to_string(), b.as_str().to_string()));
+        Ok(())
+    }
+
+    async fn wire_peers_batch(
+        &self,
+        edges: &[(AgentRuntimeId, AgentRuntimeId)],
+    ) -> Result<(), BridgeError> {
+        for (a, b) in edges {
+            self.wire_peer(a, b).await?;
+            self.current_wires
+                .lock()
+                .await
+                .push((a.as_str().to_string(), b.as_str().to_string()));
+        }
+        Ok(())
+    }
+
+    async fn current_member_wires(
+        &self,
+    ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
+        Ok(self
+            .current_wires
+            .lock()
+            .await
+            .iter()
+            .filter_map(|(a, b)| {
+                Some((
+                    AgentRuntimeId::parse(a).ok()?,
+                    AgentRuntimeId::parse(b).ok()?,
+                ))
+            })
+            .collect())
     }
 }
 
@@ -976,6 +1028,144 @@ async fn identity_first_runtime_lazy_dispatch_materializes_internal_only_identit
             .state,
         IdentityLifecycleState::Active
     );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_lazy_first_send_materializes_reachable_peers_and_wires_topology() {
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|err| TopologyError::InvalidEdge(format!("{err}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let roster = vec![
+        make_spec("review:singleton"),
+        make_spec("initiative:alpha"),
+        make_spec("initiative:beta"),
+    ];
+
+    lazy_register_flow(
+        &runtime,
+        &roster,
+        Some(&StaticTopology(vec![
+            ("review:singleton", "initiative:alpha"),
+            ("review:singleton", "initiative:beta"),
+        ])),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(bridge.create_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bridge.wire_calls.load(Ordering::SeqCst), 0);
+
+    runtime
+        .send(&make_identity("review:singleton"), &make_content())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        bridge.create_calls.load(Ordering::SeqCst),
+        3,
+        "first review send must hydrate review plus its initiative peers"
+    );
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(bridge.wire_calls.load(Ordering::SeqCst), 2);
+    for identity in ["review:singleton", "initiative:alpha", "initiative:beta"] {
+        assert_eq!(
+            runtime
+                .status(&make_identity(identity))
+                .await
+                .unwrap()
+                .state,
+            IdentityLifecycleState::Active
+        );
+    }
+
+    let wires = bridge.wires.lock().await.clone();
+    assert!(
+        wires.contains(&(
+            "rt:initiative:alpha:0".to_string(),
+            "rt:review:singleton:0".to_string()
+        )),
+        "review must be concretely wired to initiative:alpha, got {wires:?}"
+    );
+    assert!(
+        wires.contains(&(
+            "rt:initiative:beta:0".to_string(),
+            "rt:review:singleton:0".to_string()
+        )),
+        "review must be concretely wired to initiative:beta, got {wires:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_materialize_all_hydrates_registered_identities_in_parallel() {
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let agent_count = 8;
+    let roster = (0..agent_count)
+        .map(|index| make_spec(&format!("agent:{index}")))
+        .collect::<Vec<_>>();
+
+    for spec in &roster {
+        let record = make_record(spec.identity.as_str(), 0, 1);
+        store
+            .upsert_continuity_record(&record, FencingToken::new(1))
+            .await
+            .unwrap();
+        store
+            .save_session_snapshot(
+                &spec.identity,
+                &record.session_id,
+                record.generation,
+                CheckpointVersion::new(2),
+                FencingToken::new(1),
+                &SessionSnapshot {
+                    data: format!("snapshot-{}", spec.identity).into_bytes(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    lazy_register_flow(&runtime, &roster, None).await.unwrap();
+    store.reset_counts();
+    bridge
+        .set_resume_barrier(Arc::new(tokio::sync::Barrier::new(agent_count)))
+        .await;
+
+    let records = tokio::time::timeout(Duration::from_secs(2), runtime.materialize_all())
+        .await
+        .expect("parallel materialize_all should not block behind one pending resume")
+        .unwrap();
+
+    assert_eq!(records.len(), agent_count);
+    assert_eq!(store.load_snapshot_calls(), agent_count);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), agent_count);
+    for spec in &roster {
+        assert_eq!(
+            runtime.status(&spec.identity).await.unwrap().state,
+            IdentityLifecycleState::Active
+        );
+    }
 }
 
 #[tokio::test]

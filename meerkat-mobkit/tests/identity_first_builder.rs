@@ -28,8 +28,9 @@ use meerkat_mobkit::identity_first::{
 use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 use meerkat_mobkit::{
     AllowAllConsoleVisibilityPolicy, ConsoleRuntimeRegistration, ConsoleVisibility,
-    MobKitConsoleAggregator,
+    JsonRpcResponse, MobKitConsoleAggregator, handle_unified_rpc_json,
 };
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Minimal mock implementations for builder testing
@@ -244,6 +245,30 @@ runtime_mode = "turn_driven"
 
 [profiles.default.tools]
 comms = true
+"#,
+    )
+    .unwrap()
+}
+
+fn review_flow_definition() -> meerkat_mob::MobDefinition {
+    meerkat_mob::MobDefinition::from_toml(
+        r#"
+[mob]
+id = "identity-builder-flow-test"
+
+[profiles.default]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.default.tools]
+comms = true
+
+[flows.review_cycle]
+description = "OB3-shaped review flow"
+
+[flows.review_cycle.steps.review]
+role = "default"
+message = "run review cycle"
 "#,
     )
     .unwrap()
@@ -645,6 +670,122 @@ async fn identity_first_builder_lazy_topology_refresh_stays_metadata_only() {
         .await
         .unwrap();
     assert_eq!(status.state, IdentityLifecycleState::Dormant);
+}
+
+#[tokio::test]
+async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_before_flow_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = vec![
+        durable_spec("review:singleton"),
+        durable_spec("initiative:alpha"),
+        durable_spec("initiative:beta"),
+    ];
+    let topology = Arc::new(StubTopologyProvider {
+        edges: Arc::new(tokio::sync::Mutex::new(vec![
+            ManagedPeerEdge::new(
+                AgentIdentity::parse("review:singleton").unwrap(),
+                AgentIdentity::parse("initiative:alpha").unwrap(),
+            )
+            .unwrap(),
+            ManagedPeerEdge::new(
+                AgentIdentity::parse("review:singleton").unwrap(),
+                AgentIdentity::parse("initiative:beta").unwrap(),
+            )
+            .unwrap(),
+        ])),
+    });
+
+    let runtime = UnifiedRuntimeBuilder::default()
+        .definition(review_flow_definition())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+        .topology_provider(topology)
+        .scratch_dir(tmp.path())
+        .identity_runtime_instance_id("builder-lazy-flow-test")
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+        .build()
+        .await
+        .expect("lazy builder should bootstrap");
+
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "lazy build must still start without concrete members"
+    );
+
+    let response: JsonRpcResponse = serde_json::from_str(
+        &handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "review-flow",
+                "method": "mobkit/run_flow",
+                "params": {
+                    "flow_id": "review_cycle",
+                    "params": { "source": "ob3" }
+                }
+            })
+            .to_string(),
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .await,
+    )
+    .expect("json-rpc response");
+
+    assert!(
+        response.error.is_none(),
+        "run_flow should hydrate lazy identities before concrete flow execution: {:?}",
+        response.error
+    );
+    assert!(
+        response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("run_id"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|run_id| !run_id.is_empty()),
+        "run_flow should return a concrete run id"
+    );
+
+    let members = runtime.mob_handle().list_members_including_retiring().await;
+    let member_ids = members
+        .iter()
+        .map(|member| member.agent_identity.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        member_ids.len(),
+        3,
+        "flow entrypoint must materialize the full review roster, got {member_ids:?}"
+    );
+    for expected in [
+        "rt:review:singleton:0",
+        "rt:initiative:alpha:0",
+        "rt:initiative:beta:0",
+    ] {
+        assert!(
+            member_ids.iter().any(|member_id| member_id == expected),
+            "expected materialized member {expected}, got {member_ids:?}"
+        );
+    }
+
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    for identity in ["review:singleton", "initiative:alpha", "initiative:beta"] {
+        assert_eq!(
+            identity_runtime
+                .status(&AgentIdentity::parse(identity).unwrap())
+                .await
+                .unwrap()
+                .state,
+            IdentityLifecycleState::Active
+        );
+    }
 }
 
 #[tokio::test]

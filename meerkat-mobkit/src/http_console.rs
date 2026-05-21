@@ -3179,6 +3179,14 @@ async fn handle_console_runtime_rpc(
             }
             let flow_id = meerkat_mob::FlowId::from(flow_id_str);
             let flow_params = request.params.get("params").cloned().unwrap_or(Value::Null);
+            if let Some(identity_runtime) = &identity_runtime
+                && let Err(err) = identity_runtime.materialize_all().await
+            {
+                return internal_error(
+                    response_id,
+                    format!("identity-first flow materialization failed: {err}"),
+                );
+            }
             match runtime.handle().run_flow(flow_id, flow_params).await {
                 Ok(run_id) => response_value(
                     response_id,

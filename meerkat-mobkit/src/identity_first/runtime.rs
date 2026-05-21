@@ -322,6 +322,7 @@ pub struct IdentityRuntime {
     bridge: Option<Arc<dyn SessionBridge>>,
     runtime_services: AgentRuntimeServices,
     managed_peer_edges: RwLock<BTreeSet<(AgentIdentity, AgentIdentity)>>,
+    managed_peer_reconcile_lock: Mutex<()>,
     desired_peer_edges: RwLock<Vec<ManagedPeerEdge>>,
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
@@ -342,6 +343,7 @@ impl IdentityRuntime {
             bridge: config.bridge,
             runtime_services: AgentRuntimeServices::empty(),
             managed_peer_edges: RwLock::new(BTreeSet::new()),
+            managed_peer_reconcile_lock: Mutex::new(()),
             desired_peer_edges: RwLock::new(Vec::new()),
             materialization_locks: RwLock::new(BTreeMap::new()),
             customizer: RwLock::new(None),
@@ -366,6 +368,29 @@ impl IdentityRuntime {
         *self.desired_peer_edges.write().await = edges;
     }
 
+    async fn registered_identities(&self) -> Vec<AgentIdentity> {
+        self.entries.read().await.keys().cloned().collect()
+    }
+
+    async fn reachable_peer_identities(&self, identity: &AgentIdentity) -> Vec<AgentIdentity> {
+        self.desired_peer_edges
+            .read()
+            .await
+            .iter()
+            .filter_map(|edge| {
+                if edge.a() == identity {
+                    Some(edge.b().clone())
+                } else if edge.b() == identity {
+                    Some(edge.a().clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
     #[must_use]
     pub fn has_session_bridge(&self) -> bool {
         self.bridge.is_some()
@@ -380,6 +405,7 @@ impl IdentityRuntime {
         &self,
         desired_edges: &[ManagedPeerEdge],
     ) -> Result<(), IdentityRuntimeError> {
+        let _guard = self.managed_peer_reconcile_lock.lock().await;
         let Some(bridge) = self.bridge.clone() else {
             return Ok(());
         };
@@ -817,6 +843,65 @@ impl IdentityRuntime {
         Ok(record)
     }
 
+    /// Materialize all identities currently registered with the runtime.
+    ///
+    /// Lazy bootstrap keeps `build()` metadata-only, but flow execution still
+    /// enters the mob runtime through concrete member IDs. This helper gives
+    /// flow entrypoints a single choke point to hydrate the concrete mob graph
+    /// before calling `run_flow`.
+    pub async fn materialize_all(&self) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
+        let identities = self.registered_identities().await;
+        let results = stream::iter(
+            identities
+                .into_iter()
+                .map(|identity| async move { self.materialize(&identity).await }),
+        )
+        .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let mut records = Vec::with_capacity(results.len());
+        for result in results {
+            records.push(result?);
+        }
+
+        let desired_edges = self.desired_peer_edges.read().await.clone();
+        if !desired_edges.is_empty() {
+            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        }
+
+        Ok(records)
+    }
+
+    /// Ensure an active identity's desired peer neighborhood exists in the
+    /// concrete mob graph before ordinary communication starts.
+    pub async fn materialize_reachable_peers(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<Vec<ContinuityRecord>, IdentityRuntimeError> {
+        let peers = self.reachable_peer_identities(identity).await;
+        let results = stream::iter(
+            peers
+                .into_iter()
+                .map(|peer| async move { self.materialize(&peer).await }),
+        )
+        .buffer_unordered(MANAGED_PEER_RECONCILE_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+
+        let mut records = Vec::with_capacity(results.len());
+        for result in results {
+            records.push(result?);
+        }
+
+        let desired_edges = self.desired_peer_edges.read().await.clone();
+        if !desired_edges.is_empty() {
+            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        }
+
+        Ok(records)
+    }
+
     // -----------------------------------------------------------------------
     // Subscribe — REQ-06
     // -----------------------------------------------------------------------
@@ -978,6 +1063,7 @@ impl IdentityRuntime {
         if should_materialize {
             self.materialize(identity).await?;
         }
+        self.materialize_reachable_peers(identity).await?;
 
         let (token, runtime_id) = {
             let entries = self.entries.read().await;
@@ -1044,6 +1130,7 @@ impl IdentityRuntime {
         if should_materialize {
             self.materialize(identity).await?;
         }
+        self.materialize_reachable_peers(identity).await?;
 
         let (token, is_durable, runtime_id) = {
             let entries = self.entries.read().await;

@@ -370,6 +370,20 @@ impl UnifiedRuntime {
         }
     }
 
+    /// Hydrate identity-first lazy members before handing control to concrete
+    /// mob APIs that operate on already-materialized runtime members.
+    pub async fn materialize_identity_first_for_flow(
+        &self,
+    ) -> Result<
+        Vec<crate::identity_first::ContinuityRecord>,
+        crate::identity_first::IdentityRuntimeError,
+    > {
+        match self.identity_runtime() {
+            Some(runtime) => runtime.materialize_all().await,
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// Return the mob/run label sidecar table.
     ///
     /// Mobkit owns this table — meerkat-mob has no concept of mob- or
