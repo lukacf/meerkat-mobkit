@@ -136,6 +136,54 @@ test("normalizeAgents enriches sidebar snapshot rows with identity_status when b
   assert.deepEqual(agent?.model_capabilities, { image_input: true });
 });
 
+test("normalizeAgents maps runtime member sidebar rows back to durable agent identity", () => {
+  const agents = normalizeAgents(
+    {
+      agent_sidebar: {
+        live_snapshot: {
+          agents: [
+            {
+              identity: "rt:channel:C0SMOKEOB3:0",
+              member_id: "rt:channel:C0SMOKEOB3:0",
+              label: "C0SMOKEOB3",
+              kind: "channel",
+              state: "active",
+              addressable: true,
+              labels: {
+                agent_identity: "channel:C0SMOKEOB3",
+                agent_type: "channel",
+              },
+            },
+          ],
+        },
+      },
+      identity_status: {
+        schema_version: "1",
+        rows: [
+          {
+            identity: "channel:C0SMOKEOB3",
+            display_name: "C0SMOKEOB3",
+            role: "domain",
+            state: "active",
+            addressability: "addressable",
+            labels: {
+              agent_identity: "channel:C0SMOKEOB3",
+              agent_type: "channel",
+            },
+          },
+        ],
+      },
+    },
+    [],
+  );
+
+  assert.equal(agents.length, 1);
+  const agent = agents[0];
+  assert.equal(agent?.identity, "channel:C0SMOKEOB3");
+  assert.equal(agent?.member_id, "rt:channel:C0SMOKEOB3:0");
+  assert.equal(agent?.agent_id, "channel:C0SMOKEOB3");
+});
+
 test("normalizeAgents appends live identities missing from the sidebar snapshot", () => {
   const agents = normalizeAgents(
     {

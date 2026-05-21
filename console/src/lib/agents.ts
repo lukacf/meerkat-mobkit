@@ -32,7 +32,16 @@ export function normalizeAgents(
     const agents = snapshotAgents.map((entry: ConsoleExperienceAgentSnapshotRow) => {
       const entryIdentity = typeof entry.identity === "string" ? entry.identity.trim() : "";
       const entryMemberId = typeof entry.member_id === "string" ? entry.member_id.trim() : "";
+      const entryLabels =
+        entry.labels && typeof entry.labels === "object"
+          ? entry.labels as Record<string, unknown>
+          : {};
+      const durableAgentIdentity =
+        typeof entryLabels.agent_identity === "string"
+          ? entryLabels.agent_identity.trim()
+          : "";
       const statusRow =
+        identityStatusByIdentity.get(durableAgentIdentity) ||
         identityStatusByIdentity.get(entryIdentity) ||
         identityStatusByIdentity.get(entryMemberId) ||
         normalizeIdentityStatusRow(entry);
@@ -46,8 +55,14 @@ export function normalizeAgents(
         }));
 
       return {
-        ...(statusRow?.identity ? { identity: statusRow.identity } : entry.identity ? { identity: String(entry.identity) } : {}),
-        agent_id: String(entry.agent_id || statusRow?.identity || entry.identity || entry.member_id || ""),
+        ...(statusRow?.identity
+          ? { identity: statusRow.identity }
+          : durableAgentIdentity
+            ? { identity: durableAgentIdentity }
+            : entry.identity
+              ? { identity: String(entry.identity) }
+              : {}),
+        agent_id: String(entry.agent_id || statusRow?.identity || durableAgentIdentity || entry.identity || entry.member_id || ""),
         member_id: String(entry.member_id || statusRow?.identity || entry.identity || entry.agent_id || ""),
         ...(typeof entry.session_id === "string" && entry.session_id.trim() ? { session_id: entry.session_id.trim() } : {}),
         label: String(entry.label || statusRow?.display_name || entry.display_name || statusRow?.identity || entry.identity || entry.member_id || entry.agent_id || "unknown"),
