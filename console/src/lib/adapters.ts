@@ -398,6 +398,18 @@ function eventSortRank(event: string | undefined): number {
   }
 }
 
+function isInteractionStartEvent(event: string | undefined): boolean {
+  return event === "user_input" || event === "interaction_started";
+}
+
+function cursorSeq(cursor: string | undefined): number | null {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
   const interactionStartMs = new Map<string, number>();
   for (const frame of frames) {
@@ -424,17 +436,29 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
       if (leftGroupTs !== rightGroupTs) {
         return leftGroupTs - rightGroupTs;
       }
+      const leftCursor = cursorSeq(left.frame.cursor);
+      const rightCursor = cursorSeq(right.frame.cursor);
+      if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
+        return leftCursor - rightCursor;
+      }
       if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
-        const leftRank = eventSortRank(left.frame.event);
-        const rightRank = eventSortRank(right.frame.event);
-        if (leftRank !== rightRank) {
-          return leftRank - rightRank;
+        const leftStarts = isInteractionStartEvent(left.frame.event);
+        const rightStarts = isInteractionStartEvent(right.frame.event);
+        if (leftStarts !== rightStarts && (leftCursor === null || rightCursor === null)) {
+          return leftStarts ? -1 : 1;
         }
       }
       const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       if (leftTs !== rightTs) {
         return leftTs - rightTs;
+      }
+      if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
+        const leftRank = eventSortRank(left.frame.event);
+        const rightRank = eventSortRank(right.frame.event);
+        if (leftRank !== rightRank) {
+          return leftRank - rightRank;
+        }
       }
       return left.index - right.index;
     })
@@ -933,7 +957,7 @@ function renderTerminalEntry(
       };
     }
 
-    if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
+    if (streamedTextMatchesTerminal(streamedText, text)) {
       return null;
     }
 
@@ -1110,6 +1134,18 @@ function imageEntryKey(entry: ConversationTimelineEntry): string | null {
 
 function normalizeComparableText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function normalizeTextWithoutWhitespace(value: string): string {
+  return value.replace(/\s+/g, "");
+}
+
+function streamedTextMatchesTerminal(streamedText: string, terminalText: string): boolean {
+  const streamed = normalizeComparableText(streamedText);
+  const terminal = normalizeComparableText(terminalText);
+  if (!streamed || !terminal) return false;
+  return streamed === terminal
+    || normalizeTextWithoutWhitespace(streamed) === normalizeTextWithoutWhitespace(terminal);
 }
 
 function conversationEntryVisibleText(entry: ConversationTimelineEntry): string {
@@ -1844,6 +1880,8 @@ export function mapFramesToTimelineEntries(
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt: string | undefined;
+  let streamedInteractionText = "";
+  let streamedInteractionId = "";
 
   function flushPendingText() {
     if (!pendingText) return;
@@ -1869,11 +1907,18 @@ export function mapFramesToTimelineEntries(
       if (options.renderTextDeltas === false) {
         continue;
       }
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (frameInteractionId !== streamedInteractionId) {
+        streamedInteractionText = "";
+        streamedInteractionId = frameInteractionId;
+      }
+      const delta = summarizeFrameData(frame.data);
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
-      pendingText += summarizeFrameData(frame.data);
+      pendingText += delta;
+      streamedInteractionText += delta;
       continue;
     }
 
@@ -1961,6 +2006,11 @@ export function mapFramesToTimelineEntries(
 
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (frameInteractionId !== streamedInteractionId) {
+        streamedInteractionText = "";
+        streamedInteractionId = frameInteractionId;
+      }
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
@@ -2004,6 +2054,13 @@ export function mapFramesToTimelineEntries(
     if (frame.event === "text_complete") {
       if (frame.sourceKind !== "session_history") {
         const text = terminalFrameVisibleText(frame).trim();
+        if (
+          text
+          && pendingText
+          && normalizeComparableText(pendingText) === normalizeComparableText(text)
+        ) {
+          continue;
+        }
         const interactionId = frame.interactionId?.trim();
         const duplicateTerminalFollows = text
           && orderedFrames.slice(i + 1).some((later) => {
@@ -2055,8 +2112,10 @@ export function mapFramesToTimelineEntries(
       || frame.event === "interaction_failed"
       || frame.event === "run_failed"
     ) {
-      const streamedText = pendingText;
+      const streamedText = streamedInteractionText || pendingText;
       flushPendingText();
+      streamedInteractionText = "";
+      streamedInteractionId = "";
       if (frame.sourceKind === "session_history") {
         const historyText = terminalFrameVisibleText(frame).trim();
         if (
@@ -2191,6 +2250,9 @@ export function inferResponsePhaseFromFrames(
   for (const frame of frames) {
     switch (frame.event) {
       case "user_input":
+        if (isTerminalUserInputStatus(frame.status)) phase = null;
+        else phase = "waiting";
+        break;
       case "interaction_started":
         phase = "waiting";
         break;
@@ -2228,6 +2290,10 @@ export function inferResponsePhaseFromFrames(
     }
   }
   return phase;
+}
+
+function isTerminalUserInputStatus(status?: string): boolean {
+  return status === "completed" || status === "delivery_failed" || status === "failed";
 }
 
 export function resolvePanelResponsePhase(args: {

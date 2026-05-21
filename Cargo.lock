@@ -1655,9 +1655,8 @@ dependencies = [
 [[package]]
 name = "meerkat-mob"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37f26d343c4f6a353279e828441d459b3f8d484ee7834f985f304199e8fa9284"
 dependencies = [
+ "async-stream",
  "async-trait",
  "chrono",
  "futures",
@@ -1674,27 +1673,30 @@ dependencies = [
  "meerkat-machine-schema",
  "meerkat-runtime",
  "meerkat-session",
+ "meerkat-store",
  "notify",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tokio_with_wasm",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "meerkat-mob-mcp"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a711fa3001f9b175ca0197102ad60d433d6eeaa8803fac3c724b6bc4f2e9e20"
 dependencies = [
  "async-trait",
+ "chrono",
  "futures",
  "indexmap",
  "meerkat",
@@ -1706,6 +1708,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio_with_wasm",

@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use meerkat_core::types::HandlingMode;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::{
@@ -101,17 +102,19 @@ async fn submit_internal_bridge_work(
     handle: &MobHandle,
     member_id: &MeerkatId,
     content: &meerkat_core::ContentInput,
+    handling_mode: HandlingMode,
 ) -> Result<(), BridgeError> {
     let entry = handle
         .get_member(member_id)
         .await
         .ok_or_else(|| BridgeError::Mob(format!("member not found: {member_id}")))?;
     handle
-        .submit_work(
+        .submit_work_with_mode(
             entry.agent_runtime_id.clone(),
             entry.fence_token,
             WorkRef::new(),
             WorkSpec::new(content.clone(), WorkOrigin::Internal),
+            handling_mode,
         )
         .await
         .map(|_| ())
@@ -160,6 +163,19 @@ pub trait SessionBridge: Send + Sync {
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError>;
+
+    /// Deliver content to an active mob member using a caller-selected turn
+    /// handling mode. Bridge implementations that do not distinguish modes can
+    /// fall back to ordinary delivery.
+    async fn deliver_with_mode(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let _ = handling_mode;
+        self.deliver(runtime_id, content).await
+    }
 
     /// Checkpoint the current session state for a mob member.
     async fn checkpoint_session(
@@ -471,7 +487,7 @@ impl SessionBridge for MobSessionBridge {
         // complete. The identity layer owns addressability enforcement — the
         // bridge is an internal delivery mechanism regardless of whether the
         // identity is Addressable or InternalOnly.
-        match submit_internal_bridge_work(&self.handle, &mid, content).await {
+        match submit_internal_bridge_work(&self.handle, &mid, content, HandlingMode::Queue).await {
             Ok(()) => {}
             Err(err) if is_missing_event_injector_error(&err.to_string()) => {
                 tracing::warn!(
@@ -499,13 +515,80 @@ impl SessionBridge for MobSessionBridge {
                     }
                     Err(respawn_err) => return Err(BridgeError::Mob(respawn_err.to_string())),
                 }
-                submit_internal_bridge_work(&self.handle, &mid, content).await?;
+                submit_internal_bridge_work(&self.handle, &mid, content, HandlingMode::Queue)
+                    .await?;
             }
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
         }
 
         // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
         // Query the bridge session id directly from the mob handle.
+        self.handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .ok_or_else(|| {
+                BridgeError::Mob("member has no bridge session after deliver".to_string())
+            })
+    }
+
+    async fn deliver_with_mode(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        let mid = MeerkatId::from(runtime_id.as_str());
+        let member_entry_before_delivery = self.handle.get_member(&mid).await;
+        if content_input_has_images(content) {
+            let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
+                BridgeError::Mob("member not found while checking image capability".to_string())
+            })?;
+            let caps = model_capabilities_for_member(
+                &self.handle,
+                self.session_service.as_ref(),
+                &member_entry.agent_identity,
+            )
+            .await;
+            if !caps.image_input {
+                return Err(BridgeError::InvalidInput(
+                    "target member model cannot accept image input".to_string(),
+                ));
+            }
+        }
+
+        match submit_internal_bridge_work(&self.handle, &mid, content, handling_mode).await {
+            Ok(()) => {}
+            Err(err) if is_missing_event_injector_error(&err.to_string()) => {
+                tracing::warn!(
+                    runtime_id = %runtime_id,
+                    error = %err,
+                    "identity bridge delivery found a stale dispatch capability; repairing member before retry"
+                );
+                match self.handle.respawn(mid.clone(), None).await {
+                    Ok(_) => {}
+                    Err(respawn_err)
+                        if is_archive_not_found_cleanup_error(&respawn_err.to_string()) =>
+                    {
+                        if self.handle.get_member(&mid).await.is_none()
+                            && let Some(entry) = member_entry_before_delivery
+                        {
+                            let mut spec = SpawnMemberSpec::new(entry.role.clone(), mid.clone());
+                            if !entry.labels.is_empty() {
+                                spec = spec.with_labels(entry.labels.clone());
+                            }
+                            self.handle
+                                .ensure_member(spec)
+                                .await
+                                .map_err(|e| BridgeError::Mob(e.to_string()))?;
+                        }
+                    }
+                    Err(respawn_err) => return Err(BridgeError::Mob(respawn_err.to_string())),
+                }
+                submit_internal_bridge_work(&self.handle, &mid, content, handling_mode).await?;
+            }
+            Err(err) => return Err(BridgeError::Mob(err.to_string())),
+        }
+
         self.handle
             .resolve_bridge_session_id(&mid)
             .await

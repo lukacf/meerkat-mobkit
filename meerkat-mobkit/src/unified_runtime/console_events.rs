@@ -36,6 +36,7 @@ struct ConsoleEventReplayState {
     all_events: VecDeque<ConsoleIdentityEventEnvelope>,
     by_identity: BTreeMap<String, VecDeque<ConsoleIdentityEventEnvelope>>,
     pending_by_identity: BTreeMap<String, VecDeque<PendingInteraction>>,
+    active_interaction_by_identity: BTreeMap<String, String>,
     runtime_to_identity: BTreeMap<String, String>,
     response_phase_by_identity: BTreeMap<String, Option<String>>,
 }
@@ -45,6 +46,25 @@ struct PendingInteraction {
     interaction_id: String,
     origin: String,
     content: Value,
+}
+
+impl ConsoleEventReplayState {
+    fn resolve_identity_for_runtime_event(&self, runtime_event_id: &str) -> Option<String> {
+        if let Some(identity) = self.runtime_to_identity.get(runtime_event_id) {
+            return Some(identity.clone());
+        }
+
+        self.runtime_to_identity
+            .iter()
+            .filter_map(|(runtime_member_id, identity)| {
+                runtime_event_id
+                    .strip_prefix(runtime_member_id)
+                    .filter(|suffix| suffix.starts_with(':'))
+                    .map(|_| (runtime_member_id.len(), identity.clone()))
+            })
+            .max_by_key(|(prefix_len, _)| *prefix_len)
+            .map(|(_, identity)| identity)
+    }
 }
 
 impl ConsoleEventStore {
@@ -75,6 +95,7 @@ impl ConsoleEventStore {
                 all_events: VecDeque::from([bootstrap]),
                 by_identity,
                 pending_by_identity: BTreeMap::new(),
+                active_interaction_by_identity: BTreeMap::new(),
                 runtime_to_identity: BTreeMap::new(),
                 response_phase_by_identity: BTreeMap::new(),
             })),
@@ -259,12 +280,17 @@ impl ConsoleEventStore {
             return;
         }
 
-        let (identity, interaction_id) = {
+        let mut projected_data = payload.clone().unwrap_or_else(|| json!({}));
+        if let Some(object) = projected_data.as_object_mut() {
+            object
+                .entry("source_event_type".to_string())
+                .or_insert_with(|| Value::String(event_type.clone()));
+        }
+
+        let (identity, interaction_id, superseded_pending) = {
             let mut state = self.state.write().await;
             let identity = state
-                .runtime_to_identity
-                .get(agent_id)
-                .cloned()
+                .resolve_identity_for_runtime_event(agent_id)
                 .or_else(|| derive_identity_from_runtime_id(agent_id));
             let Some(identity) = identity else {
                 tracing::warn!(
@@ -278,25 +304,46 @@ impl ConsoleEventStore {
                 .runtime_to_identity
                 .entry(agent_id.clone())
                 .or_insert_with(|| identity.clone());
-            let interaction_id = state
-                .pending_by_identity
-                .get(&identity)
-                .and_then(|queue| queue.front())
-                .map(|pending| pending.interaction_id.clone());
-            (identity, interaction_id)
+            let (interaction_id, superseded_pending) = match event_type.as_str() {
+                "run_started" => {
+                    select_interaction_for_run_started(&mut state, &identity, &projected_data)
+                }
+                _ => (
+                    state
+                        .active_interaction_by_identity
+                        .get(&identity)
+                        .cloned()
+                        .or_else(|| {
+                            state
+                                .pending_by_identity
+                                .get(&identity)
+                                .and_then(|queue| queue.front())
+                                .map(|pending| pending.interaction_id.clone())
+                        }),
+                    Vec::new(),
+                ),
+            };
+            (identity, interaction_id, superseded_pending)
         };
+        for pending in superseded_pending {
+            self.append(
+                identity.clone(),
+                Some(pending.interaction_id),
+                "interaction_failed",
+                json!({
+                    "reason": "superseded_by_later_run",
+                    "origin": pending.origin,
+                    "content": pending.content,
+                }),
+            )
+            .await;
+        }
 
         let projected_type = match event_type.as_str() {
             "run_completed" => "interaction_complete",
             "run_failed" => "interaction_failed",
             other => other,
         };
-        let mut projected_data = payload.clone().unwrap_or_else(|| json!({}));
-        if let Some(object) = projected_data.as_object_mut() {
-            object
-                .entry("source_event_type".to_string())
-                .or_insert_with(|| Value::String(event_type.clone()));
-        }
 
         self.append_envelope(ConsoleIdentityEventEnvelope {
             event_id: event.event_id.clone(),
@@ -346,6 +393,7 @@ impl ConsoleEventStore {
                         .insert(identity.clone(), Some("generating".to_string()));
                 }
                 "run_completed" | "run_failed" => {
+                    state.active_interaction_by_identity.remove(&identity);
                     state
                         .response_phase_by_identity
                         .insert(identity.clone(), None);
@@ -363,11 +411,11 @@ impl ConsoleEventStore {
             let mut state = self.state.write().await;
             if let Some(interaction_id) = interaction_id.as_deref()
                 && let Some(queue) = state.pending_by_identity.get_mut(&identity)
-                && queue
-                    .front()
-                    .is_some_and(|pending| pending.interaction_id == interaction_id)
+                && let Some(position) = queue
+                    .iter()
+                    .position(|pending| pending.interaction_id == interaction_id)
             {
-                queue.pop_front();
+                queue.remove(position);
                 if queue.is_empty() {
                     state.pending_by_identity.remove(&identity);
                 }
@@ -384,6 +432,75 @@ impl ConsoleEventStore {
             .cloned()
             .flatten()
     }
+}
+
+fn select_interaction_for_run_started(
+    state: &mut ConsoleEventReplayState,
+    identity: &str,
+    payload: &Value,
+) -> (Option<String>, Vec<PendingInteraction>) {
+    let Some(queue) = state.pending_by_identity.get_mut(identity) else {
+        return (None, Vec::new());
+    };
+
+    let matched_position = queue
+        .iter()
+        .position(|pending| pending_matches_run_started(pending, payload))
+        .unwrap_or(0);
+
+    let mut superseded = Vec::new();
+    for _ in 0..matched_position {
+        if let Some(pending) = queue.pop_front() {
+            superseded.push(pending);
+        }
+    }
+
+    let interaction_id = queue.front().map(|pending| pending.interaction_id.clone());
+    if let Some(interaction_id) = &interaction_id {
+        state
+            .active_interaction_by_identity
+            .insert(identity.to_string(), interaction_id.clone());
+    }
+    (interaction_id, superseded)
+}
+
+fn pending_matches_run_started(pending: &PendingInteraction, payload: &Value) -> bool {
+    let Some(prompt) = payload.get("prompt").and_then(Value::as_str) else {
+        return false;
+    };
+    content_value_matches_text(&pending.content, prompt)
+}
+
+fn content_value_matches_text(value: &Value, expected: &str) -> bool {
+    match value {
+        Value::String(text) => text == expected,
+        Value::Array(items) => {
+            let combined = items
+                .iter()
+                .filter_map(text_from_content_block)
+                .collect::<String>();
+            !combined.is_empty() && combined == expected
+        }
+        Value::Object(map) => {
+            map.get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text == expected)
+                || map
+                    .get("content")
+                    .is_some_and(|content| content_value_matches_text(content, expected))
+                || map
+                    .get("blocks")
+                    .is_some_and(|blocks| content_value_matches_text(blocks, expected))
+        }
+        _ => false,
+    }
+}
+
+fn text_from_content_block(value: &Value) -> Option<&str> {
+    value
+        .get("text")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("content").and_then(Value::as_str))
 }
 
 fn is_terminal_turn_completed_event(event_type: &str, payload: &Value) -> bool {
@@ -598,6 +715,130 @@ mod tests {
             .find(|event| event.event_id == "evt-3")
             .expect("run completion should be replayed");
         assert_eq!(run_completed.interaction_id.as_deref(), Some("turn-1"));
+    }
+
+    #[tokio::test]
+    async fn run_started_matches_pending_prompt_and_fails_superseded_input() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:worker:1", "worker")
+            .await;
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "stale-turn",
+                "console",
+                json!("debug probe that was superseded"),
+            )
+            .await
+            .expect("reserve stale interaction");
+        store
+            .reserve_interaction_value(
+                "worker",
+                Some("rt:worker:1"),
+                "real-turn",
+                "console",
+                json!("reply with this exact token"),
+            )
+            .await
+            .expect("reserve real interaction");
+
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-run-started".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 1,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "run_started".to_string(),
+                    payload: Some(json!({ "prompt": "reply with this exact token" })),
+                },
+            })
+            .await;
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-run-completed".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 2,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:worker:1".to_string(),
+                    event_type: "run_completed".to_string(),
+                    payload: Some(json!({ "result": "reply with this exact token" })),
+                },
+            })
+            .await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let stale_failed = replay
+            .iter()
+            .find(|event| event.interaction_id.as_deref() == Some("stale-turn"))
+            .expect("stale interaction should be failed");
+        assert_eq!(stale_failed.event_type, "interaction_failed");
+        assert_eq!(stale_failed.data["reason"], "superseded_by_later_run");
+
+        let run_started = replay
+            .iter()
+            .find(|event| event.event_id == "evt-run-started")
+            .expect("run_started should be replayed");
+        assert_eq!(run_started.interaction_id.as_deref(), Some("real-turn"));
+        let run_completed = replay
+            .iter()
+            .find(|event| event.event_id == "evt-run-completed")
+            .expect("run completion should be replayed");
+        assert_eq!(run_completed.interaction_id.as_deref(), Some("real-turn"));
+    }
+
+    #[tokio::test]
+    async fn runtime_event_child_id_uses_registered_identity_alias() {
+        let store = ConsoleEventStore::new();
+        store
+            .register_runtime_identity("rt:review:singleton:0", "review:singleton")
+            .await;
+        store
+            .reserve_interaction_value(
+                "review:singleton",
+                Some("rt:review:singleton:0"),
+                "turn-1",
+                "console",
+                json!({}),
+            )
+            .await
+            .expect("reserve interaction");
+
+        store
+            .project_unified_event(&EventEnvelope {
+                event_id: "evt-1".to_string(),
+                source: "test".to_string(),
+                timestamp_ms: 1,
+                event: UnifiedEvent::Agent {
+                    agent_id: "rt:review:singleton:0:0".to_string(),
+                    event_type: "text_delta".to_string(),
+                    payload: Some(json!({ "delta": "ok" })),
+                },
+            })
+            .await;
+
+        let replay = store
+            .replay_all(None)
+            .await
+            .expect("all-events replay should succeed");
+        let projected = replay
+            .iter()
+            .find(|event| event.event_id == "evt-1")
+            .expect("child runtime event should project");
+        assert_eq!(projected.identity, "review:singleton");
+        assert_eq!(projected.interaction_id.as_deref(), Some("turn-1"));
+        assert_eq!(
+            store
+                .response_phase_for_identity("review:singleton")
+                .await
+                .as_deref(),
+            Some("generating")
+        );
     }
 
     #[tokio::test]

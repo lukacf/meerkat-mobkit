@@ -50,18 +50,11 @@ async fn run_implicit_delegate_retirement(
     loop {
         tokio::time::sleep(sweep_interval).await;
         let mut seen = BTreeSet::new();
-        for (mob_id, _mob_state) in state.mob_list().await {
+        for (mob_id, handle) in state.mob_handles_snapshot().await {
             if mob_id.as_str() == primary_mob_id || !state.is_implicit_mob(&mob_id).await {
                 continue;
             }
-            let handle = match state.handle_for(&mob_id).await {
-                Ok(handle) => handle,
-                Err(error) => {
-                    tracing::debug!(mob_id = %mob_id, error = %error, "implicit delegate idle sweep skipped missing mob");
-                    continue;
-                }
-            };
-            for member in handle.list_members_including_retiring().await {
+            for member in handle.list_members_observation_snapshot().await {
                 let identity = member.agent_identity.to_string();
                 let key = (mob_id.to_string(), identity.clone());
                 seen.insert(key.clone());

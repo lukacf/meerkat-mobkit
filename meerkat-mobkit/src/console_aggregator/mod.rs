@@ -9,9 +9,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::future::join_all;
 use meerkat_core::{ContentInput, Message};
-use meerkat_mob::MobHandle;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
+use meerkat_mob::{MobError, MobHandle};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, broadcast, oneshot};
@@ -19,7 +19,7 @@ use tokio::sync::{Semaphore, broadcast, oneshot};
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
 use crate::mob_handle_runtime::{
-    MobRuntime, assert_member_accepts_images, send_message_on_mob_with_mode,
+    MobRuntime, MobRuntimeError, assert_member_accepts_images, send_message_on_mob_with_mode,
 };
 use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
@@ -734,7 +734,9 @@ impl MobKitConsoleAggregator {
             .map_err(ConsoleSendError::State)?;
         let session_id = resolved
             .handle
-            .resolve_bridge_session_id(&MeerkatId::from(resolved.runtime_identity.as_str()))
+            .resolve_bridge_session_id_observation(&MeerkatId::from(
+                resolved.runtime_identity.as_str(),
+            ))
             .await
             .map(|sid| sid.to_string());
         let mut new_frame = NewConsoleFrame {
@@ -959,6 +961,16 @@ impl MobKitConsoleAggregator {
         Ok(())
     }
 
+    pub async fn mark_interaction_delivered(
+        &self,
+        input_frame_id: &str,
+    ) -> Result<(), ConsoleSendError> {
+        update_frame_status_and_emit(&self.inner, input_frame_id, ConsoleFrameStatus::Delivered)
+            .await
+            .map_err(ConsoleSendError::Log)?;
+        Ok(())
+    }
+
     pub async fn binary_blob_store_for_identity(
         &self,
         identity: &str,
@@ -1033,7 +1045,7 @@ impl MobKitConsoleAggregator {
             {
                 let session_id = resolved
                     .handle
-                    .resolve_bridge_session_id(&resolved.member.agent_identity)
+                    .resolve_bridge_session_id_observation(&resolved.member.agent_identity)
                     .await
                     .map(|sid| sid.to_string())
                     .unwrap_or_default();
@@ -1185,7 +1197,7 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     let mut resolved = Vec::new();
     let primary_handle = entry.runtime.handle();
     let primary_mob_id = primary_handle.mob_id().to_string();
-    for member in primary_handle.list_members_including_retiring().await {
+    for member in primary_handle.list_members_observation_snapshot().await {
         resolved.push(ResolvedConsoleMember {
             entry: entry.clone(),
             handle: primary_handle.clone(),
@@ -1200,14 +1212,11 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     if !entry.visibility_policy.include_implicit_delegate_members() {
         return resolved;
     }
-    for (mob_id, _state) in state.mob_list().await {
+    for (mob_id, handle) in state.mob_handles_snapshot().await {
         if mob_id.as_str() == primary_mob_id {
             continue;
         }
-        let Ok(handle) = state.handle_for(&mob_id).await else {
-            continue;
-        };
-        for member in handle.list_members_including_retiring().await {
+        for member in handle.list_members_observation_snapshot().await {
             resolved.push(ResolvedConsoleMember {
                 entry: entry.clone(),
                 handle: handle.clone(),
@@ -1234,7 +1243,7 @@ async fn dispatch_message_to_resolved_member(
     .await
     {
         Ok(session_id) => Ok(session_id),
-        Err(err) if err.to_string().contains("not externally addressable") => {
+        Err(err) if is_not_externally_addressable(&err) => {
             let member = resolved
                 .handle
                 .member(&mid)
@@ -1246,13 +1255,20 @@ async fn dispatch_message_to_resolved_member(
                 .map_err(|err| err.to_string())?;
             resolved
                 .handle
-                .resolve_bridge_session_id(&mid)
+                .resolve_bridge_session_id_observation(&mid)
                 .await
                 .map(|sid| sid.to_string())
                 .ok_or_else(|| "member has no bridge session after internal turn".to_string())
         }
         Err(err) => Err(err.to_string()),
     }
+}
+
+fn is_not_externally_addressable(err: &MobRuntimeError) -> bool {
+    matches!(
+        err,
+        MobRuntimeError::Mob(MobError::NotExternallyAddressable(_))
+    )
 }
 
 fn spawn_console_send_dispatch(
@@ -2509,7 +2525,7 @@ async fn identity_record_for_member(
         ConsoleVisibility::Hidden
     };
     let session_id = handle
-        .resolve_bridge_session_id(&member.agent_identity)
+        .resolve_bridge_session_id_observation(&member.agent_identity)
         .await
         .map(|sid| sid.to_string());
     let display_name = member

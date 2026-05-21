@@ -1,6 +1,14 @@
 [workspace]
-members = ["meerkat-mobkit"]
+members = [
+    "meerkat-mobkit",
+    "local-crates/meerkat-mob-0.6.22",
+    "local-crates/meerkat-mob-mcp-0.6.22",
+]
 resolver = "2"
+
+[patch.crates-io]
+meerkat-mob-mcp = { path = "local-crates/meerkat-mob-mcp-0.6.22" }
+meerkat-mob = { path = "local-crates/meerkat-mob-0.6.22" }
 
 [workspace.package]
 edition = "2024"

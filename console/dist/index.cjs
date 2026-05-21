@@ -2510,6 +2510,16 @@ function eventSortRank(event) {
       return 50;
   }
 }
+function isInteractionStartEvent(event) {
+  return event === "user_input" || event === "interaction_started";
+}
+function cursorSeq(cursor) {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 function sortFramesForTranscript(frames) {
   const interactionStartMs = /* @__PURE__ */ new Map();
   for (const frame of frames) {
@@ -2529,17 +2539,29 @@ function sortFramesForTranscript(frames) {
     if (leftGroupTs !== rightGroupTs) {
       return leftGroupTs - rightGroupTs;
     }
+    const leftCursor = cursorSeq(left.frame.cursor);
+    const rightCursor = cursorSeq(right.frame.cursor);
+    if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
+      return leftCursor - rightCursor;
+    }
     if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
-      const leftRank = eventSortRank(left.frame.event);
-      const rightRank = eventSortRank(right.frame.event);
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
+      const leftStarts = isInteractionStartEvent(left.frame.event);
+      const rightStarts = isInteractionStartEvent(right.frame.event);
+      if (leftStarts !== rightStarts && (leftCursor === null || rightCursor === null)) {
+        return leftStarts ? -1 : 1;
       }
     }
     const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
     const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
     if (leftTs !== rightTs) {
       return leftTs - rightTs;
+    }
+    if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
+      const leftRank = eventSortRank(left.frame.event);
+      const rightRank = eventSortRank(right.frame.event);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
     }
     return left.index - right.index;
   }).map(({ frame }) => frame);
@@ -2876,7 +2898,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
         text: `\u21A9 ${peer.verb}: ${peer.summary}`
       };
     }
-    if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
+    if (streamedTextMatchesTerminal(streamedText, text)) {
       return null;
     }
     const blocks = parseConversationRichBlocks(text);
@@ -3007,6 +3029,15 @@ function imageEntryKey(entry) {
 }
 function normalizeComparableText(value) {
   return value.replace(/\s+/g, " ").trim();
+}
+function normalizeTextWithoutWhitespace(value) {
+  return value.replace(/\s+/g, "");
+}
+function streamedTextMatchesTerminal(streamedText, terminalText) {
+  const streamed = normalizeComparableText(streamedText);
+  const terminal = normalizeComparableText(terminalText);
+  if (!streamed || !terminal) return false;
+  return streamed === terminal || normalizeTextWithoutWhitespace(streamed) === normalizeTextWithoutWhitespace(terminal);
 }
 function conversationEntryVisibleText(entry) {
   if (entry.kind !== "message") return "";
@@ -3526,6 +3557,8 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt;
+  let streamedInteractionText = "";
+  let streamedInteractionId = "";
   function flushPendingText() {
     if (!pendingText) return;
     const blocks = parseConversationRichBlocks(pendingText);
@@ -3548,11 +3581,18 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       if (options.renderTextDeltas === false) {
         continue;
       }
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (frameInteractionId !== streamedInteractionId) {
+        streamedInteractionText = "";
+        streamedInteractionId = frameInteractionId;
+      }
+      const delta = summarizeFrameData(frame.data);
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
-      pendingText += summarizeFrameData(frame.data);
+      pendingText += delta;
+      streamedInteractionText += delta;
       continue;
     }
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
@@ -3612,6 +3652,11 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (frameInteractionId !== streamedInteractionId) {
+        streamedInteractionText = "";
+        streamedInteractionId = frameInteractionId;
+      }
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
@@ -3647,6 +3692,9 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "text_complete") {
       if (frame.sourceKind !== "session_history") {
         const text2 = terminalFrameVisibleText(frame).trim();
+        if (text2 && pendingText && normalizeComparableText(pendingText) === normalizeComparableText(text2)) {
+          continue;
+        }
         const interactionId = frame.interactionId?.trim();
         const duplicateTerminalFollows = text2 && orderedFrames.slice(i + 1).some((later) => {
           if (later.event !== "interaction_complete" && later.event !== "run_completed") {
@@ -3681,8 +3729,10 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
-      const streamedText = pendingText;
+      const streamedText = streamedInteractionText || pendingText;
       flushPendingText();
+      streamedInteractionText = "";
+      streamedInteractionId = "";
       if (frame.sourceKind === "session_history") {
         const historyText = terminalFrameVisibleText(frame).trim();
         if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
@@ -3788,6 +3838,9 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
   for (const frame of frames) {
     switch (frame.event) {
       case "user_input":
+        if (isTerminalUserInputStatus(frame.status)) phase = null;
+        else phase = "waiting";
+        break;
       case "interaction_started":
         phase = "waiting";
         break;
@@ -3821,6 +3874,9 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
     }
   }
   return phase;
+}
+function isTerminalUserInputStatus(status) {
+  return status === "completed" || status === "delivery_failed" || status === "failed";
 }
 function resolvePanelResponsePhase(args) {
   if (args.hasLocalPhase) {
@@ -9520,7 +9576,7 @@ function dockLayoutStorageKey(baseUrl, experience) {
   const title = experience?.console_config?.title?.trim();
   return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
 }
-function cursorSeq(cursor) {
+function cursorSeq2(cursor) {
   if (!cursor) return null;
   const match = /^console:(\d+)$/.exec(cursor);
   if (!match) return null;
@@ -9808,13 +9864,19 @@ function ConsoleApp({ baseUrl }) {
     return true;
   }
   function busyTransitionForFrame(frame) {
-    if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
+    if (frame.event === "user_input") {
+      return isTerminalUserInputStatus2(frame.status) ? false : true;
+    }
+    if (frame.event === "interaction_started" || frame.event === "run_started") {
       return true;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
       return false;
     }
     return null;
+  }
+  function isTerminalUserInputStatus2(status) {
+    return status === "completed" || status === "delivery_failed" || status === "failed";
   }
   function busyTransitionSortRank(frame) {
     const transition = busyTransitionForFrame(frame);
@@ -9904,8 +9966,8 @@ function ConsoleApp({ baseUrl }) {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events.map((frame, index) => ({ frame, index })).sort((a, b) => {
-      const ca = cursorSeq(a.frame.cursor);
-      const cb = cursorSeq(b.frame.cursor);
+      const ca = cursorSeq2(a.frame.cursor);
+      const cb = cursorSeq2(b.frame.cursor);
       if (ca !== null && cb !== null && ca !== cb) return ca - cb;
       const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
@@ -9937,7 +9999,16 @@ function ConsoleApp({ baseUrl }) {
         if (!it || typeof it !== "object") return false;
         const r2 = it;
         return typeof r2.id === "string" && typeof r2.text === "string" && typeof r2.addedAt === "number";
-      }).map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+      }).map((it) => {
+        const r2 = it;
+        return {
+          id: it.id,
+          text: it.text,
+          addedAt: it.addedAt,
+          status: r2.status === "draining" ? "draining" : null,
+          drainClaim: typeof r2.drainClaim === "string" ? r2.drainClaim : void 0
+        };
+      });
     } catch {
       return [];
     }
@@ -9945,8 +10016,13 @@ function ConsoleApp({ baseUrl }) {
   function persistPendingStack(identity, items) {
     try {
       const clean = items.filter(
-        (it) => it.status !== "trashing" && it.status !== "draining" && it.status !== "promoting"
-      ).map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+        (it) => it.status !== "trashing" && it.status !== "promoting"
+      ).map((it) => ({
+        id: it.id,
+        text: it.text,
+        addedAt: it.addedAt,
+        ...it.status === "draining" ? { status: "draining", drainClaim: it.drainClaim } : {}
+      }));
       if (clean.length === 0) {
         localStorage.removeItem(stackKeyFor(identity));
       } else {
@@ -10068,6 +10144,8 @@ function ConsoleApp({ baseUrl }) {
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
+        if (isTerminalUserInputStatus2(frame.status)) return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
@@ -10660,7 +10738,13 @@ function ConsoleApp({ baseUrl }) {
     const text = rawDraft.trim();
     if (!text && attachments.length === 0) return false;
     const stack = getPendingStack(identity);
-    const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
+    const visiblePhase = phaseValueByKey.current[panelKey] ?? phaseRef.current[panelKey] ?? null;
+    const agentPhase = agentsRef.current.find(
+      (candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(
+        identity
+      )
+    )?.response_phase ?? null;
+    const shouldQueue = isIdentityBusy(identity) || visiblePhase !== null || agentPhase !== null || stack.length > 0;
     if (!shouldQueue || attachments.length > 0) {
       if (attachments.length === 0) {
         setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
@@ -10669,7 +10753,7 @@ function ConsoleApp({ baseUrl }) {
         panelId,
         target,
         text,
-        "queue",
+        "steer",
         attachments
       );
       if (sent) {
@@ -10697,6 +10781,9 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
+  const pendingDrainOwnerRef = import_react22.default.useRef(
+    `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  );
   function findChatTargetFor(identity) {
     for (const panel of dockRef.current.viewState.panels) {
       const t = panel.target;
@@ -10796,30 +10883,46 @@ function ConsoleApp({ baseUrl }) {
   function maybeDrainHead(identity) {
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
+    const target = findChatTargetFor(identity);
+    if (!target) return;
     if (stack.some((it) => it.status === "draining" || it.status === "promoting"))
       return;
     const head = stack.find((it) => !it.status || it.status === "entering");
     if (!head) return;
+    const drainClaim = `${pendingDrainOwnerRef.current}:${head.id}:${Date.now().toString(36)}`;
     setPendingStack(
       identity,
       (prev) => prev.map(
-        (it) => it.id === head.id ? { ...it, status: "draining" } : it
+        (it) => it.id === head.id ? { ...it, status: "draining", drainClaim } : it
       )
     );
     window.setTimeout(() => {
+      const persistedHead = loadPendingStack(identity).find(
+        (it) => it.id === head.id
+      );
+      if (persistedHead?.drainClaim !== drainClaim) return;
+      const target2 = findChatTargetFor(identity);
+      if (!target2) {
+        setPendingStack(
+          identity,
+          (prev) => prev.map(
+            (it) => it.id === head.id && it.drainClaim === drainClaim ? { ...it, status: null, drainClaim: void 0 } : it
+          )
+        );
+        return;
+      }
       setPendingStack(
         identity,
-        (prev) => prev.filter((it) => it.id !== head.id)
+        (prev) => prev.filter(
+          (it) => it.id !== head.id || it.drainClaim !== drainClaim
+        )
       );
-      const target = findChatTargetFor(identity);
-      if (target) {
-        void submitMessageNow(
-          target.panelId,
-          target.target,
-          head.text,
-          "queue"
-        );
-      }
+      void submitMessageNow(
+        target2.panelId,
+        target2.target,
+        head.text,
+        "steer"
+      );
     }, animMs(420));
   }
   async function onLifecycleAction(identity, method) {
@@ -11004,10 +11107,11 @@ function ConsoleApp({ baseUrl }) {
       phaseRef.current,
       panelKey
     );
+    const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
     const phase = resolvePanelResponsePhase({
       frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
-      localPhase: phaseRef.current[panelKey] ?? null,
-      hasLocalPhase,
+      localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
+      hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null
     });
     const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;
