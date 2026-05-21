@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,10 +21,16 @@ use meerkat_mobkit::identity_first::contracts::{
 use meerkat_mobkit::identity_first::{
     AgentAddressability, AgentIdentity, CheckpointVersion, ContinuityGeneration, ContinuityRecord,
     ContinuityResolveState, ContinuityStoreError, DurableAgentSpec, FencingToken,
-    LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult, LocalContinuityStore,
-    ManagedPeerEdge, RosterContext, RosterError, SessionSnapshot, TopologyContext, TopologyError,
+    IdentityLifecycleState, LeaseAcquireResult, LeaseError, LeaseGrant, LeaseRenewResult,
+    LocalContinuityStore, ManagedPeerEdge, RosterContext, RosterError, SessionSnapshot,
+    TopologyContext, TopologyError,
 };
-use meerkat_mobkit::unified_runtime::UnifiedRuntimeBuilder;
+use meerkat_mobkit::unified_runtime::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
+use meerkat_mobkit::{
+    AllowAllConsoleVisibilityPolicy, ConsoleRuntimeRegistration, ConsoleVisibility,
+    JsonRpcResponse, MobKitConsoleAggregator, handle_unified_rpc_json,
+};
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // Minimal mock implementations for builder testing
@@ -66,6 +73,88 @@ impl ContinuityStore for StubContinuityStore {
     ) -> Result<(), ContinuityStoreError> {
         Ok(())
     }
+    async fn delete_continuity_record(
+        &self,
+        _identity: &AgentIdentity,
+        _ft: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+}
+
+struct CountingReadyContinuityStore {
+    records: BTreeMap<AgentIdentity, ContinuityRecord>,
+    load_snapshot_calls: AtomicUsize,
+    upsert_calls: AtomicUsize,
+}
+
+impl CountingReadyContinuityStore {
+    fn new(records: BTreeMap<AgentIdentity, ContinuityRecord>) -> Self {
+        Self {
+            records,
+            load_snapshot_calls: AtomicUsize::new(0),
+            upsert_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn load_snapshot_calls(&self) -> usize {
+        self.load_snapshot_calls.load(Ordering::SeqCst)
+    }
+
+    fn upsert_calls(&self) -> usize {
+        self.upsert_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl ContinuityStore for CountingReadyContinuityStore {
+    async fn resolve_many(
+        &self,
+        identities: &[AgentIdentity],
+    ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+        Ok(identities
+            .iter()
+            .map(|id| {
+                let state = self
+                    .records
+                    .get(id)
+                    .cloned()
+                    .map(|record| ContinuityResolveState::Ready { record })
+                    .unwrap_or(ContinuityResolveState::Uninitialized);
+                (id.clone(), state)
+            })
+            .collect())
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        _sid: &meerkat_core::types::SessionId,
+    ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+        self.load_snapshot_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(None)
+    }
+
+    async fn save_session_snapshot(
+        &self,
+        _identity: &AgentIdentity,
+        _sid: &meerkat_core::types::SessionId,
+        _gen: ContinuityGeneration,
+        _ver: CheckpointVersion,
+        _ft: FencingToken,
+        _snap: &SessionSnapshot,
+    ) -> Result<(), ContinuityStoreError> {
+        Ok(())
+    }
+
+    async fn upsert_continuity_record(
+        &self,
+        _record: &ContinuityRecord,
+        _ft: FencingToken,
+    ) -> Result<(), ContinuityStoreError> {
+        self.upsert_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn delete_continuity_record(
         &self,
         _identity: &AgentIdentity,
@@ -161,6 +250,30 @@ comms = true
     .unwrap()
 }
 
+fn review_flow_definition() -> meerkat_mob::MobDefinition {
+    meerkat_mob::MobDefinition::from_toml(
+        r#"
+[mob]
+id = "identity-builder-flow-test"
+
+[profiles.default]
+model = "gpt-5.5"
+runtime_mode = "turn_driven"
+
+[profiles.default.tools]
+comms = true
+
+[flows.review_cycle]
+description = "OB3-shaped review flow"
+
+[flows.review_cycle.steps.review]
+role = "default"
+message = "run review cycle"
+"#,
+    )
+    .unwrap()
+}
+
 fn durable_spec(identity: &str) -> DurableAgentSpec {
     DurableAgentSpec {
         identity: AgentIdentity::parse(identity).unwrap(),
@@ -172,6 +285,19 @@ fn durable_spec(identity: &str) -> DurableAgentSpec {
         additional_instructions: Vec::new(),
         initial_message: None,
         runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+    }
+}
+
+fn continuity_record(identity: &str) -> ContinuityRecord {
+    ContinuityRecord {
+        identity: AgentIdentity::parse(identity).unwrap(),
+        agent_runtime_id: meerkat_mobkit::identity_first::AgentRuntimeId::parse(&format!(
+            "rt:{identity}:0"
+        ))
+        .unwrap(),
+        session_id: meerkat_core::types::SessionId::new(),
+        generation: ContinuityGeneration::new(0),
+        checkpoint_version: CheckpointVersion::new(1),
     }
 }
 
@@ -326,6 +452,340 @@ async fn identity_first_builder_bootstraps_and_exposes_identity_runtime() {
         status.runtime_mode,
         Some(meerkat_mob::MobRuntimeMode::TurnDriven)
     );
+}
+
+#[tokio::test]
+async fn identity_first_builder_lazy_materialize_registers_large_ready_roster_without_hydration() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = (0..1_000)
+        .map(|index| durable_spec(&format!("agent:{index}")))
+        .collect::<Vec<_>>();
+    let records = specs
+        .iter()
+        .map(|spec| {
+            (
+                spec.identity.clone(),
+                continuity_record(spec.identity.as_str()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let continuity_store = Arc::new(CountingReadyContinuityStore::new(records));
+
+    let runtime = UnifiedRuntimeBuilder::default()
+        .definition(test_definition())
+        .continuity_store(continuity_store.clone())
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+        .scratch_dir(tmp.path())
+        .identity_runtime_instance_id("builder-lazy-test")
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+        .build()
+        .await
+        .expect("lazy builder should bootstrap identity metadata");
+
+    assert_eq!(
+        continuity_store.load_snapshot_calls(),
+        0,
+        "lazy build must not hydrate session snapshots"
+    );
+    assert_eq!(
+        continuity_store.upsert_calls(),
+        0,
+        "lazy build must not rewrite continuity records"
+    );
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "lazy build must not spawn/resume mob members"
+    );
+    let identity_runtime = runtime
+        .identity_runtime()
+        .expect("identity runtime should be exposed");
+    let status = identity_runtime
+        .status(&AgentIdentity::parse("agent:42").unwrap())
+        .await
+        .expect("dormant identity should be inspectable");
+    assert_eq!(status.state, IdentityLifecycleState::Dormant);
+    assert_eq!(status.profile.unwrap().as_str(), "default");
+}
+
+#[tokio::test]
+async fn identity_first_builder_lazy_console_lists_and_inspects_dormant_identities() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = vec![durable_spec("agent:alpha"), durable_spec("agent:beta")];
+    let alpha_record = continuity_record("agent:alpha");
+    let expected_alpha_session_id = alpha_record.session_id.to_string();
+    let beta_record = continuity_record("agent:beta");
+    let records = BTreeMap::from([
+        (AgentIdentity::parse("agent:alpha").unwrap(), alpha_record),
+        (AgentIdentity::parse("agent:beta").unwrap(), beta_record),
+    ]);
+    let continuity_store = Arc::new(CountingReadyContinuityStore::new(records));
+
+    let runtime = Arc::new(
+        UnifiedRuntimeBuilder::default()
+            .definition(test_definition())
+            .continuity_store(continuity_store.clone())
+            .lease_provider(Arc::new(StubLeaseProvider))
+            .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+            .scratch_dir(tmp.path())
+            .identity_runtime_instance_id("builder-lazy-console-test")
+            .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+            .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+            .build()
+            .await
+            .expect("lazy builder should bootstrap identity metadata"),
+    );
+    let aggregator = MobKitConsoleAggregator::in_memory();
+    aggregator.register_runtime(ConsoleRuntimeRegistration {
+        runtime_key: "runtime-a".to_string(),
+        runtime: runtime.clone(),
+        identity_namespace: "prod".to_string(),
+        visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+    });
+
+    let records = aggregator
+        .list_identities()
+        .await
+        .expect("console identity list should work");
+    let alpha = records
+        .iter()
+        .find(|record| record.identity == "prod/agent:alpha")
+        .expect("dormant alpha should be visible");
+    assert_eq!(alpha.health, "dormant");
+    assert_eq!(alpha.visibility, ConsoleVisibility::Addressable);
+    assert_eq!(alpha.session_id, Some(expected_alpha_session_id));
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "console listing must not materialize dormant identities"
+    );
+    assert_eq!(
+        continuity_store.load_snapshot_calls(),
+        0,
+        "console listing must not load session snapshots"
+    );
+
+    let inspection = aggregator
+        .inspect_identity("prod/agent:alpha")
+        .await
+        .expect("console inspect should not fail")
+        .expect("dormant alpha should be inspectable");
+    assert_eq!(inspection.identity.health, "dormant");
+    assert!(inspection.peers.is_empty());
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "console inspection must not materialize dormant identities"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_builder_rejects_zero_background_warm_concurrency() {
+    let tmp = tempfile::tempdir().unwrap();
+    let builder = UnifiedRuntimeBuilder::default()
+        .definition(test_definition())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(vec![durable_spec(
+            "agent:alpha",
+        )])))
+        .scratch_dir(tmp.path())
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 0 })
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
+
+    assert_build_err_contains(builder, "concurrency").await;
+}
+
+#[tokio::test]
+async fn identity_first_builder_lazy_topology_refresh_stays_metadata_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = vec![durable_spec("agent:a"), durable_spec("agent:b")];
+    let records = specs
+        .iter()
+        .map(|spec| {
+            (
+                spec.identity.clone(),
+                continuity_record(spec.identity.as_str()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let continuity_store = Arc::new(CountingReadyContinuityStore::new(records));
+    let topology = Arc::new(StubTopologyProvider {
+        edges: Arc::new(tokio::sync::Mutex::new(vec![
+            ManagedPeerEdge::new(
+                AgentIdentity::parse("agent:a").unwrap(),
+                AgentIdentity::parse("agent:b").unwrap(),
+            )
+            .unwrap(),
+        ])),
+    });
+
+    let runtime = UnifiedRuntimeBuilder::default()
+        .definition(test_definition())
+        .continuity_store(continuity_store.clone())
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+        .topology_provider(topology)
+        .scratch_dir(tmp.path())
+        .identity_runtime_instance_id("builder-lazy-refresh-test")
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+        .build()
+        .await
+        .expect("lazy builder should bootstrap");
+
+    runtime
+        .refresh_desired_topology()
+        .await
+        .expect("lazy refresh should succeed");
+
+    assert_eq!(
+        continuity_store.load_snapshot_calls(),
+        0,
+        "lazy topology refresh must not hydrate snapshots"
+    );
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "lazy topology refresh must not spawn members"
+    );
+    let status = runtime
+        .identity_runtime()
+        .unwrap()
+        .status(&AgentIdentity::parse("agent:a").unwrap())
+        .await
+        .unwrap();
+    assert_eq!(status.state, IdentityLifecycleState::Dormant);
+}
+
+#[tokio::test]
+async fn identity_first_builder_lazy_run_flow_materializes_ob3_shaped_roster_before_flow_start() {
+    let tmp = tempfile::tempdir().unwrap();
+    let specs = vec![
+        durable_spec("review:singleton"),
+        durable_spec("initiative:alpha"),
+        durable_spec("initiative:beta"),
+    ];
+    let topology = Arc::new(StubTopologyProvider {
+        edges: Arc::new(tokio::sync::Mutex::new(vec![
+            ManagedPeerEdge::new(
+                AgentIdentity::parse("review:singleton").unwrap(),
+                AgentIdentity::parse("initiative:alpha").unwrap(),
+            )
+            .unwrap(),
+            ManagedPeerEdge::new(
+                AgentIdentity::parse("review:singleton").unwrap(),
+                AgentIdentity::parse("initiative:beta").unwrap(),
+            )
+            .unwrap(),
+        ])),
+    });
+
+    let runtime = UnifiedRuntimeBuilder::default()
+        .definition(review_flow_definition())
+        .continuity_store(Arc::new(StubContinuityStore))
+        .lease_provider(Arc::new(StubLeaseProvider))
+        .roster_provider(Arc::new(StubRosterProvider::new(specs)))
+        .topology_provider(topology)
+        .scratch_dir(tmp.path())
+        .identity_runtime_instance_id("builder-lazy-flow-test")
+        .identity_bootstrap_mode(IdentityBootstrapMode::LazyMaterialize)
+        .default_llm_client(Arc::new(meerkat_client::TestClient::default()))
+        .build()
+        .await
+        .expect("lazy builder should bootstrap");
+
+    assert!(
+        runtime
+            .mob_handle()
+            .list_members_including_retiring()
+            .await
+            .is_empty(),
+        "lazy build must still start without concrete members"
+    );
+
+    let response: JsonRpcResponse = serde_json::from_str(
+        &handle_unified_rpc_json(
+            &runtime,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": "review-flow",
+                "method": "mobkit/run_flow",
+                "params": {
+                    "flow_id": "review_cycle",
+                    "params": { "source": "ob3" }
+                }
+            })
+            .to_string(),
+            Duration::from_secs(2),
+            None,
+            None,
+        )
+        .await,
+    )
+    .expect("json-rpc response");
+
+    assert!(
+        response.error.is_none(),
+        "run_flow should hydrate lazy identities before concrete flow execution: {:?}",
+        response.error
+    );
+    assert!(
+        response
+            .result
+            .as_ref()
+            .and_then(|result| result.get("run_id"))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|run_id| !run_id.is_empty()),
+        "run_flow should return a concrete run id"
+    );
+
+    let members = runtime.mob_handle().list_members_including_retiring().await;
+    let member_ids = members
+        .iter()
+        .map(|member| member.agent_identity.to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        member_ids.len(),
+        3,
+        "flow entrypoint must materialize the full review roster, got {member_ids:?}"
+    );
+    for expected in [
+        "rt:review:singleton:0",
+        "rt:initiative:alpha:0",
+        "rt:initiative:beta:0",
+    ] {
+        assert!(
+            member_ids.iter().any(|member_id| member_id == expected),
+            "expected materialized member {expected}, got {member_ids:?}"
+        );
+    }
+
+    let identity_runtime = runtime.identity_runtime().unwrap();
+    for identity in ["review:singleton", "initiative:alpha", "initiative:beta"] {
+        assert_eq!(
+            identity_runtime
+                .status(&AgentIdentity::parse(identity).unwrap())
+                .await
+                .unwrap()
+                .state,
+            IdentityLifecycleState::Active
+        );
+    }
 }
 
 #[tokio::test]

@@ -39,7 +39,7 @@ pub mod mob_ops;
 pub mod module_ops;
 pub mod types;
 
-pub use builder::UnifiedRuntimeBuilder;
+pub use builder::{IdentityBootstrapMode, UnifiedRuntimeBuilder};
 pub use edge_types::{
     DesiredPeerEdge, DesiredPeerEdgeError, Discovery, EdgeDiscovery, EdgeReconcileFailure,
     PreSpawnContext, PreSpawnHook,
@@ -367,6 +367,20 @@ impl UnifiedRuntime {
         match self.identity_first_context.as_ref() {
             Some(ctx) => ctx.refresh_desired_topology().await.map(Some),
             None => Ok(None),
+        }
+    }
+
+    /// Hydrate identity-first lazy members before handing control to concrete
+    /// mob APIs that operate on already-materialized runtime members.
+    pub async fn materialize_identity_first_for_flow(
+        &self,
+    ) -> Result<
+        Vec<crate::identity_first::ContinuityRecord>,
+        crate::identity_first::IdentityRuntimeError,
+    > {
+        match self.identity_runtime() {
+            Some(runtime) => runtime.materialize_all().await,
+            None => Ok(Vec::new()),
         }
     }
 
