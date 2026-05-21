@@ -663,9 +663,10 @@ async fn console_send_identity_first(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: &crate::identity_first::IdentityRuntime,
     console_events: Option<&ConsoleEventStore>,
-    request: ConsoleSendRequest,
+    mut request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
-    let identity = crate::identity_first::AgentIdentity::parse(request.identity.as_str())
+    let requested_identity = request.identity.clone();
+    let parsed_identity = crate::identity_first::AgentIdentity::parse(request.identity.as_str())
         .map_err(|err| ConsoleSendError::InvalidRequest(format!("invalid identity: {err}")))?;
     let content: ContentInput = serde_json::from_value(request.content.clone())
         .map_err(|err| ConsoleSendError::InvalidContent(err.to_string()))?;
@@ -684,10 +685,31 @@ async fn console_send_identity_first(
         ));
     }
 
-    let status = identity_runtime
-        .status(&identity)
-        .await
-        .map_err(|err| identity_runtime_error_to_console_send_error(identity.as_str(), err))?;
+    let (identity, status) = match identity_runtime.status(&parsed_identity).await {
+        Ok(status) => (parsed_identity, status),
+        Err(original_err) => {
+            let Some(canonical_identity) =
+                resolve_console_send_identity_alias(aggregator, &requested_identity).await
+            else {
+                return Err(identity_runtime_error_to_console_send_error(
+                    requested_identity.as_str(),
+                    original_err,
+                ));
+            };
+            let identity = crate::identity_first::AgentIdentity::parse(canonical_identity.as_str())
+                .map_err(|err| {
+                    ConsoleSendError::InvalidRequest(format!("invalid aliased identity: {err}"))
+                })?;
+            let status = identity_runtime.status(&identity).await.map_err(|_| {
+                identity_runtime_error_to_console_send_error(
+                    requested_identity.as_str(),
+                    original_err,
+                )
+            })?;
+            request.identity = canonical_identity;
+            (identity, status)
+        }
+    };
     let session_id = status
         .session_id
         .as_ref()
@@ -738,6 +760,17 @@ async fn console_send_identity_first(
             ))
         }
     }
+}
+
+async fn resolve_console_send_identity_alias(
+    aggregator: &MobKitConsoleAggregator,
+    requested_identity: &str,
+) -> Option<String> {
+    let identities = aggregator.list_identities().await.ok()?;
+    identities
+        .into_iter()
+        .find(|record| record.runtime_member_id == requested_identity)
+        .map(|record| record.identity)
 }
 
 fn identity_runtime_error_to_console_send_error(
