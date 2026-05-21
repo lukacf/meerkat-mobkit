@@ -863,10 +863,17 @@ impl MobKitConsoleAggregator {
                 continue;
             };
             let mid = MeerkatId::from(raw_identity.as_str());
-            for mut resolved in member_sources_for_entry(entry)
+            for resolved in member_sources_for_entry(entry)
                 .await
                 .into_iter()
-                .filter(|candidate| candidate.member.agent_identity == mid)
+                .filter(|candidate| {
+                    candidate.member.agent_identity == mid
+                        || candidate
+                            .member
+                            .labels
+                            .get("agent_identity")
+                            .is_some_and(|agent_identity| agent_identity == &raw_identity)
+                })
             {
                 let session_id = resolved
                     .handle
@@ -874,7 +881,6 @@ impl MobKitConsoleAggregator {
                     .await
                     .map(|sid| sid.to_string())
                     .unwrap_or_default();
-                resolved.runtime_identity = raw_identity.clone();
                 matches.push((session_id, resolved));
             }
         }
@@ -2277,7 +2283,12 @@ async fn identity_record_for_member(
     member: &MobMemberListEntry,
 ) -> Option<ConsoleIdentityRecord> {
     let runtime_member_id = member.agent_identity.to_string();
-    let identity = apply_namespace(&runtime_member_id, &entry.identity_namespace);
+    let durable_identity = member
+        .labels
+        .get("agent_identity")
+        .filter(|value| !value.trim().is_empty())
+        .map_or(runtime_member_id.as_str(), String::as_str);
+    let identity = apply_namespace(durable_identity, &entry.identity_namespace);
     let addressable = member_is_addressable(member);
     let visibility = if member.state == meerkat_mob::MemberState::Retiring {
         ConsoleVisibility::RetiredReadable
@@ -2883,6 +2894,66 @@ comms = true
             health: "ready".to_string(),
             labels: BTreeMap::new(),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_record_uses_durable_agent_identity_label_for_identity_first_members()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-label-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert(
+            "agent_identity".to_string(),
+            "channel:C0SMOKEOB3".to_string(),
+        );
+        labels.insert("display_name".to_string(), "C0SMOKEOB3".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:channel:C0SMOKEOB3:0".to_string(),
+                    Some("You are C0SMOKEOB3.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("member spawns");
+
+        let entry = RuntimeEntry {
+            runtime_key: "runtime-a".to_string(),
+            identity_namespace: String::new(),
+            runtime: runtime.mob_runtime().clone(),
+            console_events: runtime.console_events(),
+            visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+        };
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+
+        let records = aggregator.list_identities_fresh().await?;
+        let record = records
+            .iter()
+            .find(|record| record.identity == "channel:C0SMOKEOB3")
+            .expect("durable identity is exposed");
+        assert_eq!(record.runtime_member_id, "rt:channel:C0SMOKEOB3:0");
+
+        let inspection = aggregator
+            .inspect_identity("channel:C0SMOKEOB3")
+            .await?
+            .expect("durable identity resolves back to runtime member");
+        assert_eq!(inspection.identity.identity, "channel:C0SMOKEOB3");
+        assert_eq!(
+            inspection.identity.runtime_member_id,
+            "rt:channel:C0SMOKEOB3:0"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
     }
 
     #[tokio::test]

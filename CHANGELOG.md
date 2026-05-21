@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.36] - 2026-05-21
+
 ### Fixed
 
+- Identity-first console records now expose the durable `agent_identity` label
+  as the UI/send identity while preserving the runtime member id for bridge
+  operations.
 - Identity-first external-authoritative runtimes now resume from the supplied
   `ContinuitySessionStoreAdapter` after process restart instead of looking only
   at the process-local runtime snapshot store.
