@@ -19,6 +19,8 @@ use meerkat_mob::{
     MobBuilder, MobDefinition, MobError, MobHandle, MobSessionService, MobStorage, Profile,
     ProfileName, SpawnMemberSpec,
 };
+use meerkat_runtime::input_state::StoredInputState;
+use meerkat_runtime::store::MachineLifecycleCommit;
 use meerkat_store::StoreAdapter;
 use serde_json::Value;
 
@@ -602,6 +604,244 @@ fn build_persistent_runtime_store(store_path: &Path) -> Arc<dyn meerkat_runtime:
             );
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new())
         }
+    }
+}
+
+/// RuntimeStore facade for external-authoritative identity-first apps.
+///
+/// `PersistentSessionService` treats `RuntimeStore` as the authoritative
+/// session snapshot source whenever one is installed. External apps such as
+/// OB3 supply a durable `SessionStore` through `ContinuitySessionStoreAdapter`,
+/// so this bridge makes that store visible to the runtime snapshot path while
+/// delegating non-session runtime bookkeeping to the process-local store.
+struct SessionStoreBackedRuntimeStore {
+    inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+    session_store: Arc<dyn SessionStore>,
+}
+
+impl SessionStoreBackedRuntimeStore {
+    fn new(
+        inner: Arc<dyn meerkat_runtime::RuntimeStore>,
+        session_store: Arc<dyn SessionStore>,
+    ) -> Self {
+        Self {
+            inner,
+            session_store,
+        }
+    }
+
+    fn session_id_for_runtime(
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<meerkat_core::types::SessionId, meerkat_runtime::store::RuntimeStoreError> {
+        const PREFIX: &str = "rt:session:";
+        let Some(raw) = runtime_id.0.strip_prefix(PREFIX) else {
+            return Err(meerkat_runtime::store::RuntimeStoreError::Unsupported(
+                format!("cannot map non-session runtime id '{runtime_id}' to SessionStore"),
+            ));
+        };
+        meerkat_core::types::SessionId::parse(raw).map_err(|err| {
+            meerkat_runtime::store::RuntimeStoreError::Internal(format!(
+                "invalid session runtime id '{runtime_id}': {err}"
+            ))
+        })
+    }
+
+    fn decode_session(
+        snapshot: &[u8],
+        session_store_key: Option<&meerkat_core::types::SessionId>,
+    ) -> Result<meerkat_core::Session, meerkat_runtime::store::RuntimeStoreError> {
+        let session: meerkat_core::Session = serde_json::from_slice(snapshot).map_err(|err| {
+            meerkat_runtime::store::RuntimeStoreError::Internal(format!(
+                "failed to deserialize runtime session snapshot: {err}"
+            ))
+        })?;
+        if let Some(expected) = session_store_key
+            && session.id() != expected
+        {
+            return Err(
+                meerkat_runtime::store::RuntimeStoreError::SessionKeyMismatch {
+                    expected: expected.clone(),
+                    actual: session.id().clone(),
+                },
+            );
+        }
+        Ok(session)
+    }
+
+    async fn save_session_snapshot_to_store(
+        &self,
+        snapshot: &[u8],
+        session_store_key: Option<&meerkat_core::types::SessionId>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let session = Self::decode_session(snapshot, session_store_key)?;
+        self.session_store.save(&session).await.map_err(|err| {
+            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
+                "external SessionStore save failed: {err}"
+            ))
+        })
+    }
+}
+
+#[async_trait]
+impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
+    fn auth_authority_key(&self) -> Option<String> {
+        self.inner.auth_authority_key()
+    }
+
+    fn persist_auth_oauth_flow_snapshot(
+        &self,
+        snapshot_json: &[u8],
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.persist_auth_oauth_flow_snapshot(snapshot_json)
+    }
+
+    fn load_auth_oauth_flow_snapshot(
+        &self,
+    ) -> Result<Option<Vec<u8>>, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.load_auth_oauth_flow_snapshot()
+    }
+
+    fn update_auth_oauth_flow_snapshot(
+        &self,
+        update: &mut meerkat_runtime::store::AuthOAuthFlowSnapshotUpdate<'_>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.update_auth_oauth_flow_snapshot(update)
+    }
+
+    async fn commit_session_snapshot(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: meerkat_runtime::store::SessionDelta,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        let session_id = Self::session_id_for_runtime(runtime_id)?;
+        self.save_session_snapshot_to_store(&session_delta.session_snapshot, Some(&session_id))
+            .await?;
+        self.inner
+            .commit_session_snapshot(runtime_id, session_delta)
+            .await
+    }
+
+    async fn atomic_apply(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: Option<meerkat_runtime::store::SessionDelta>,
+        receipt: meerkat_core::lifecycle::RunBoundaryReceipt,
+        input_updates: Vec<StoredInputState>,
+        session_store_key: Option<meerkat_core::types::SessionId>,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        if let Some(delta) = session_delta.as_ref() {
+            self.save_session_snapshot_to_store(
+                &delta.session_snapshot,
+                session_store_key.as_ref(),
+            )
+            .await?;
+        }
+        self.inner
+            .atomic_apply(
+                runtime_id,
+                session_delta,
+                receipt,
+                input_updates,
+                session_store_key,
+            )
+            .await
+    }
+
+    async fn load_input_states(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<Vec<StoredInputState>, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.load_input_states(runtime_id).await
+    }
+
+    async fn load_boundary_receipt(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        run_id: &meerkat_core::lifecycle::RunId,
+        sequence: u64,
+    ) -> Result<
+        Option<meerkat_core::lifecycle::RunBoundaryReceipt>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner
+            .load_boundary_receipt(runtime_id, run_id, sequence)
+            .await
+    }
+
+    async fn load_session_snapshot(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<Option<Vec<u8>>, meerkat_runtime::store::RuntimeStoreError> {
+        if let Some(snapshot) = self.inner.load_session_snapshot(runtime_id).await? {
+            return Ok(Some(snapshot));
+        }
+        let session_id = Self::session_id_for_runtime(runtime_id)?;
+        let Some(session) = self.session_store.load(&session_id).await.map_err(|err| {
+            meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
+                "external SessionStore load failed: {err}"
+            ))
+        })?
+        else {
+            return Ok(None);
+        };
+        serde_json::to_vec(&session).map(Some).map_err(|err| {
+            meerkat_runtime::store::RuntimeStoreError::Internal(format!(
+                "failed to serialize external SessionStore snapshot: {err}"
+            ))
+        })
+    }
+
+    async fn persist_input_state(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        state: &StoredInputState,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.persist_input_state(runtime_id, state).await
+    }
+
+    async fn load_input_state(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        input_id: &meerkat_core::lifecycle::InputId,
+    ) -> Result<Option<StoredInputState>, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.load_input_state(runtime_id, input_id).await
+    }
+
+    async fn load_runtime_state(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<Option<meerkat_runtime::RuntimeState>, meerkat_runtime::store::RuntimeStoreError>
+    {
+        self.inner.load_runtime_state(runtime_id).await
+    }
+
+    async fn commit_machine_lifecycle(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        commit: MachineLifecycleCommit,
+        input_states: &[StoredInputState],
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .commit_machine_lifecycle(runtime_id, commit, input_states)
+            .await
+    }
+
+    async fn persist_ops_lifecycle(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        snapshot: &meerkat_runtime::ops_lifecycle::PersistedOpsSnapshot,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.persist_ops_lifecycle(runtime_id, snapshot).await
+    }
+
+    async fn load_ops_lifecycle(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<
+        Option<meerkat_runtime::ops_lifecycle::PersistedOpsSnapshot>,
+        meerkat_runtime::store::RuntimeStoreError,
+    > {
+        self.inner.load_ops_lifecycle(runtime_id).await
     }
 }
 
@@ -1849,8 +2089,17 @@ impl MobBootstrapSpec {
         // handles early enough for mob edge reconciliation; this bounded bridge
         // preserves live comms while avoiding the old "image tool sees the
         // session as destroyed" split-machine bug.
-        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+        let base_runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
             Arc::new(meerkat_runtime::InMemoryRuntimeStore::new());
+        let runtime_store: Arc<dyn meerkat_runtime::RuntimeStore> =
+            if let Some(custom_session_store) = custom_session_store.clone() {
+                Arc::new(SessionStoreBackedRuntimeStore::new(
+                    Arc::clone(&base_runtime_store),
+                    custom_session_store,
+                ))
+            } else {
+                Arc::clone(&base_runtime_store)
+            };
         let runtime_adapter = Arc::new(meerkat_runtime::MeerkatMachine::persistent(
             Arc::clone(&runtime_store),
             Arc::clone(&blob_store),
@@ -3419,6 +3668,85 @@ realm_profile = "worker-v2"
             stored.is_some(),
             "ephemeral runtime-backed builds with a custom store must persist through that store"
         );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_runtime_backed_custom_session_store_resumes_after_runtime_restart() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let definition_toml = "[mob]\nid = \"test\"\n\n[profiles.worker]\nmodel = \"gpt-5.5\"\n[profiles.worker.tools]\ncomms = true\n";
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(definition_toml) else {
+            panic!("failed to parse minimal mob definition");
+        };
+        let custom_store: Arc<dyn SessionStore> = Arc::new(meerkat_store::MemoryStore::new());
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path.clone(),
+            4,
+            Some(custom_store.clone()),
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+
+        let runtime = MobRuntime::bootstrap(spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mid = meerkat_mob::ids::MeerkatId::from("worker:one");
+        runtime
+            .handle
+            .spawn_spec(SpawnMemberSpec::new(
+                ProfileName::from("worker"),
+                mid.clone(),
+            ))
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let session_id = runtime
+            .handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .unwrap_or_else(|| panic!("spawned worker has no bridge session id"));
+        drop(runtime);
+
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(definition_toml) else {
+            panic!("failed to parse minimal mob definition");
+        };
+        let mut restarted_spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            Some(custom_store),
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        restarted_spec.options.default_llm_client =
+            Some(Arc::new(meerkat_client::TestClient::default()));
+
+        let restarted = MobRuntime::bootstrap(restarted_spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let mut resume_spec = SpawnMemberSpec::new(ProfileName::from("worker"), mid.clone());
+        resume_spec.launch_mode = meerkat_mob::MemberLaunchMode::Resume {
+            bridge_session_id: session_id.clone(),
+        };
+        restarted
+            .handle
+            .spawn_spec(resume_spec)
+            .await
+            .unwrap_or_else(|e| panic!("resume should load the external session snapshot: {e}"));
+
+        let resumed_session_id = restarted
+            .handle
+            .resolve_bridge_session_id(&mid)
+            .await
+            .unwrap_or_else(|| panic!("resumed worker has no bridge session id"));
+        assert_eq!(resumed_session_id, session_id);
     }
 
     /// Regression: public ephemeral builds without image generation stay on the

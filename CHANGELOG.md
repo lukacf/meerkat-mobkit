@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Identity-first external-authoritative runtimes now resume from the supplied
+  `ContinuitySessionStoreAdapter` after process restart instead of looking only
+  at the process-local runtime snapshot store.
 - Console live snapshots no longer read each member's session while building
   `/console/experience`, `/console/modules`, or console member JSON. Snapshot
   model capabilities now come from the mob roster profile, so busy in-flight
