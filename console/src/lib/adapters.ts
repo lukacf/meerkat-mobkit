@@ -2251,6 +2251,13 @@ export function sortConversationTimelineEntries(
     .map(({ entry }) => entry);
 }
 
+export function appendOptimisticConversationEntry(
+  entries: ConversationTimelineEntry[],
+  optimisticEntry: ConversationTimelineEntry | null | undefined,
+): ConversationTimelineEntry[] {
+  return optimisticEntry ? [...entries, optimisticEntry] : entries;
+}
+
 export function inferResponsePhaseFromFrames(
   frames: ConsoleFrame[],
   fallback: ResponsePhase = null,

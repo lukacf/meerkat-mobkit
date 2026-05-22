@@ -32,11 +32,11 @@ import {
   buildRoutingSectionView,
   buildSidebarViewState,
   createUserEntry,
+  appendOptimisticConversationEntry,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
-  sortConversationTimelineEntries,
   type MobKitDockTarget,
   type OptimisticUserMessage,
 } from "./lib/adapters";
@@ -2353,11 +2353,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
 
+    // `conversationEntries` are already in canonical frame/cursor order.
+    // Re-sorting rendered entries by createdAt can move terminal history
+    // text above live tool cards when those timestamps differ.
     const entries = sanitizeConversationEntries(
-      sortConversationTimelineEntries([
-        ...conversationEntries,
-        ...(optimisticEntry ? [optimisticEntry] : []),
-      ]),
+      appendOptimisticConversationEntry(conversationEntries, optimisticEntry),
     );
 
     const conversation = buildConversationViewState({

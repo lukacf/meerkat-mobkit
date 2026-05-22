@@ -3823,23 +3823,8 @@ function createUserEntry(message, images = []) {
     text: message
   };
 }
-function sortConversationTimelineEntries(entries) {
-  return entries.map((entry, index) => ({ entry, index })).sort((left, right) => {
-    const leftTs = Date.parse(String(left.entry.createdAt || ""));
-    const rightTs = Date.parse(String(right.entry.createdAt || ""));
-    const safeLeft = Number.isFinite(leftTs) ? leftTs : Number.NaN;
-    const safeRight = Number.isFinite(rightTs) ? rightTs : Number.NaN;
-    if (Number.isFinite(safeLeft) && Number.isFinite(safeRight) && safeLeft !== safeRight) {
-      return safeLeft - safeRight;
-    }
-    if (Number.isFinite(safeLeft) && !Number.isFinite(safeRight)) {
-      return 1;
-    }
-    if (!Number.isFinite(safeLeft) && Number.isFinite(safeRight)) {
-      return -1;
-    }
-    return left.index - right.index;
-  }).map(({ entry }) => entry);
+function appendOptimisticConversationEntry(entries, optimisticEntry) {
+  return optimisticEntry ? [...entries, optimisticEntry] : entries;
 }
 function inferResponsePhaseFromFrames(frames, fallback = null) {
   let phase = fallback;
@@ -11108,10 +11093,7 @@ function ConsoleApp({ baseUrl }) {
     );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
     const entries = sanitizeConversationEntries(
-      sortConversationTimelineEntries([
-        ...conversationEntries,
-        ...optimisticEntry ? [optimisticEntry] : []
-      ])
+      appendOptimisticConversationEntry(conversationEntries, optimisticEntry)
     );
     const conversation = buildConversationViewState({
       memberId: target.memberId,

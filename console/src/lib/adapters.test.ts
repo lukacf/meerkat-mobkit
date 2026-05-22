@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  appendOptimisticConversationEntry,
   buildActivityRailViewState,
   buildQuickPromptSuggestions,
   buildRoutingSectionView,
@@ -884,6 +885,65 @@ test("sortConversationTimelineEntries orders accepted user frames before later a
   ]);
 
   assert.deepEqual(entries.map((entry) => entry.id), ["user-1", "assistant-1"]);
+});
+
+test("appendOptimisticConversationEntry preserves canonical tool/text frame order", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "deep-investigator",
+      member_id: "deep-investigator",
+      label: "Deep Investigator",
+      kind: "identity",
+    },
+    [
+      {
+        id: "tool-1",
+        cursor: "console:4",
+        event: "tool_call_requested",
+        timestampMs: 1_779_405_464_000,
+        interactionId: "turn-1",
+        data: { id: "call-1", name: "get_all_initiatives", args: {} },
+      },
+      {
+        id: "tool-1-done",
+        cursor: "console:5",
+        event: "tool_execution_completed",
+        timestampMs: 1_779_405_464_500,
+        interactionId: "turn-1",
+        data: { id: "call-1", name: "get_all_initiatives", result: "[]" },
+      },
+      {
+        id: "final",
+        cursor: "console:6",
+        event: "interaction_complete",
+        timestampMs: 1_779_405_463_000,
+        interactionId: "turn-1",
+        data: { result: "I checked the initiative list." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true, renderTextDeltas: true },
+  );
+  const optimistic = {
+    kind: "message" as const,
+    id: "optimistic",
+    identity: { id: "user", label: "You", role: "user" as const },
+    variant: "plain" as const,
+    text: "Queued follow-up",
+    createdAt: "2026-05-22T00:00:00.000Z",
+  };
+
+  assert.deepEqual(
+    appendOptimisticConversationEntry(entries, optimistic).map((entry) => {
+      if (entry.id === "optimistic") return "optimistic";
+      if (entry.kind !== "message") return entry.kind;
+      if (entry.variant === "rich" && entry.blocks?.[0]?.type === "tool-call") return "tool";
+      if (entry.variant === "rich" && entry.blocks?.[0]?.type === "paragraph") {
+        return entry.blocks[0].text;
+      }
+      return "text" in entry ? entry.text : "rich";
+    }),
+    ["tool", "I checked the initiative list.", "optimistic"],
+  );
 });
 
 test("mapFramesToTimelineEntries renders tool turns without raw tool lifecycle system noise", () => {
