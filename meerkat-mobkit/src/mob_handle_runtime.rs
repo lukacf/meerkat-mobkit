@@ -1484,6 +1484,20 @@ macro_rules! delegate_mob_session_service {
                     )
                     .await
             }
+            async fn discard_runtime_system_context_for_active_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+                idempotency_keys: Vec<String>,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .discard_runtime_system_context_for_active_turn(
+                        session_id,
+                        expected_run_id,
+                        idempotency_keys,
+                    )
+                    .await
+            }
             async fn active_turn_system_context_boundary_available(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -1848,6 +1862,20 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<Option<Vec<u8>>, SessionError> {
         self.inner
             .stage_runtime_system_context_for_active_turn(session_id, expected_run_id, appends)
+            .await
+    }
+    async fn discard_runtime_system_context_for_active_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        idempotency_keys: Vec<String>,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .discard_runtime_system_context_for_active_turn(
+                session_id,
+                expected_run_id,
+                idempotency_keys,
+            )
             .await
     }
     async fn active_turn_system_context_boundary_available(
@@ -3821,6 +3849,16 @@ realm_profile = "worker-v2"
             Ok(Some(b"snapshot".to_vec()))
         }
 
+        async fn discard_runtime_system_context_for_active_turn(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _expected_run_id: &meerkat_core::lifecycle::RunId,
+            _idempotency_keys: Vec<String>,
+        ) -> Result<(), SessionError> {
+            self.record("discard_runtime_system_context_for_active_turn");
+            Ok(())
+        }
+
         async fn active_turn_system_context_boundary_available(
             &self,
             _session_id: &meerkat_core::types::SessionId,
@@ -3875,6 +3913,14 @@ realm_profile = "worker-v2"
             .await
             .expect("active-turn staging should forward");
         assert_eq!(snapshot.as_deref(), Some(&b"snapshot"[..]));
+        wrapped
+            .discard_runtime_system_context_for_active_turn(
+                &session_id,
+                &meerkat_core::lifecycle::RunId::new(),
+                vec!["test".to_string()],
+            )
+            .await
+            .expect("active-turn rollback should forward");
         assert_eq!(
             probe.calls(),
             vec![
@@ -3882,6 +3928,7 @@ realm_profile = "worker-v2"
                 "stage_tool_results",
                 "active_turn_system_context_boundary_available",
                 "stage_runtime_system_context_for_active_turn",
+                "discard_runtime_system_context_for_active_turn",
             ]
         );
     }
