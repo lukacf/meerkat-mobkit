@@ -3741,7 +3741,7 @@ realm_profile = "worker-v2"
             panic!("failed to parse parent mob definition");
         };
 
-        let spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
             parent_definition,
             meerkat_mob::MobStorage::in_memory(),
             store_path,
@@ -3752,6 +3752,7 @@ realm_profile = "worker-v2"
             CapabilityFlags::default(),
             None,
         );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
         let state = spec
             .agent_mob_mcp_state
             .expect("agent mob MCP state should be installed");
