@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
+use meerkat_core::types::HandlingMode;
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 use super::bridge::SessionBridge;
@@ -1048,6 +1049,21 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         content: &meerkat_core::ContentInput,
     ) -> Result<FencingToken, IdentityRuntimeError> {
+        self.send_with_mode(identity, content, HandlingMode::Queue)
+            .await
+    }
+
+    /// Send conversational content using an explicit turn handling mode.
+    ///
+    /// This is the identity-first counterpart to the mob member send path used
+    /// by the console. Ordinary API callers can keep using [`Self::send`],
+    /// which preserves queue semantics.
+    pub async fn send_with_mode(
+        &self,
+        identity: &AgentIdentity,
+        content: &meerkat_core::ContentInput,
+        handling_mode: HandlingMode,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
         let should_materialize = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -1067,7 +1083,13 @@ impl IdentityRuntime {
         if should_materialize {
             self.materialize(identity).await?;
         }
-        self.materialize_reachable_peers(identity).await?;
+        // Live steers are latency-sensitive operator input for an already
+        // active turn. Ordinary sends may hydrate the reachable topology first,
+        // but a steer must reach the current session boundary before the tool
+        // turn resumes; background/full-fleet materialization owns the peers.
+        if handling_mode != HandlingMode::Steer {
+            self.materialize_reachable_peers(identity).await?;
+        }
 
         let (token, runtime_id) = {
             let entries = self.entries.read().await;
@@ -1097,7 +1119,7 @@ impl IdentityRuntime {
         // Deliver through the session bridge when available.
         if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
             bridge
-                .deliver(rid, content)
+                .deliver_with_mode(rid, content, handling_mode)
                 .await
                 .map_err(|e| IdentityRuntimeError::Internal(format!("bridge deliver: {e}")))?;
         }

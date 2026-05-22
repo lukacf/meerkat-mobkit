@@ -50,18 +50,13 @@ async fn run_implicit_delegate_retirement(
     loop {
         tokio::time::sleep(sweep_interval).await;
         let mut seen = BTreeSet::new();
-        for (mob_id, _mob_state) in state.mob_list().await {
-            if mob_id.as_str() == primary_mob_id || !state.is_implicit_mob(&mob_id).await {
+        for (mob_id, handle) in state.mob_handles_snapshot().await {
+            let is_primary_mob = mob_id.as_str() == primary_mob_id;
+            let is_implicit_mob = state.is_implicit_mob(&mob_id).await;
+            if !is_primary_mob && !is_implicit_mob {
                 continue;
             }
-            let handle = match state.handle_for(&mob_id).await {
-                Ok(handle) => handle,
-                Err(error) => {
-                    tracing::debug!(mob_id = %mob_id, error = %error, "implicit delegate idle sweep skipped missing mob");
-                    continue;
-                }
-            };
-            for member in handle.list_members_including_retiring().await {
+            for member in handle.list_members_observation_snapshot().await {
                 let identity = member.agent_identity.to_string();
                 let key = (mob_id.to_string(), identity.clone());
                 seen.insert(key.clone());
@@ -73,6 +68,15 @@ async fn run_implicit_delegate_retirement(
                     Some(overrides) => overrides.get(mob_id.as_str(), &identity).await,
                     None => None,
                 };
+                if !idle_retirement_candidate(
+                    is_primary_mob,
+                    is_implicit_mob,
+                    &member.labels,
+                    per_delegate_override,
+                ) {
+                    idle_since.remove(&key);
+                    continue;
+                }
                 let Some(idle_after) = delegate_member_idle_retire_after(
                     &member.labels,
                     per_delegate_override,
@@ -116,7 +120,7 @@ async fn run_implicit_delegate_retirement(
                             mob_id = %mob_id,
                             agent_identity = %identity,
                             idle_after_ms = idle_after.as_millis() as u64,
-                            "retired idle implicit delegate member"
+                            "retired idle spawned member"
                         );
                     }
                     Err(error) => {
@@ -137,6 +141,19 @@ async fn run_implicit_delegate_retirement(
 
 fn delegate_execution_is_idle(snapshot: &AgentExecutionSnapshot) -> bool {
     turn_phase_is_idle(snapshot.turn_phase)
+}
+
+fn idle_retirement_candidate(
+    is_primary_mob: bool,
+    is_implicit_mob: bool,
+    labels: &std::collections::BTreeMap<String, String>,
+    per_delegate_override: Option<DelegateIdleRetireOverride>,
+) -> bool {
+    if is_implicit_mob {
+        return true;
+    }
+    is_primary_mob
+        && (per_delegate_override.is_some() || labels.contains_key(DELEGATE_IDLE_RETIRE_SECS_LABEL))
 }
 
 fn delegate_member_idle_retire_after(
@@ -187,6 +204,25 @@ mod tests {
         assert!(!turn_phase_is_idle(TurnPhase::Extracting));
         assert!(!turn_phase_is_idle(TurnPhase::ErrorRecovery));
         assert!(!turn_phase_is_idle(TurnPhase::Cancelling));
+    }
+
+    #[test]
+    fn idle_retirement_candidates_require_primary_mob_opt_in() {
+        let no_labels = std::collections::BTreeMap::new();
+        let labeled = std::collections::BTreeMap::from([(
+            DELEGATE_IDLE_RETIRE_SECS_LABEL.to_string(),
+            "300".to_string(),
+        )]);
+
+        assert!(idle_retirement_candidate(false, true, &no_labels, None,));
+        assert!(idle_retirement_candidate(true, false, &labeled, None,));
+        assert!(idle_retirement_candidate(
+            true,
+            false,
+            &no_labels,
+            Some(DelegateIdleRetireOverride::Seconds(60)),
+        ));
+        assert!(!idle_retirement_candidate(true, false, &no_labels, None,));
     }
 
     #[test]

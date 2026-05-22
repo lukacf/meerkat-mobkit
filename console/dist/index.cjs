@@ -2482,6 +2482,12 @@ function summarizeFrameData(data) {
   }
   return String(data ?? "");
 }
+function isSteerDeliveryTerminalFrame(frame) {
+  if (frame.event !== "interaction_complete") return false;
+  if (!frame.data || typeof frame.data !== "object") return false;
+  const record = frame.data;
+  return record.reason === "steer_delivered";
+}
 function eventSortRank(event) {
   switch (event) {
     case "user_input":
@@ -2510,6 +2516,16 @@ function eventSortRank(event) {
       return 50;
   }
 }
+function isInteractionStartEvent(event) {
+  return event === "user_input" || event === "interaction_started";
+}
+function cursorSeq(cursor) {
+  if (!cursor) return null;
+  const match = /^console:(\d+)$/.exec(cursor);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 function sortFramesForTranscript(frames) {
   const interactionStartMs = /* @__PURE__ */ new Map();
   for (const frame of frames) {
@@ -2529,17 +2545,29 @@ function sortFramesForTranscript(frames) {
     if (leftGroupTs !== rightGroupTs) {
       return leftGroupTs - rightGroupTs;
     }
+    const leftCursor = cursorSeq(left.frame.cursor);
+    const rightCursor = cursorSeq(right.frame.cursor);
+    if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
+      return leftCursor - rightCursor;
+    }
     if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
-      const leftRank = eventSortRank(left.frame.event);
-      const rightRank = eventSortRank(right.frame.event);
-      if (leftRank !== rightRank) {
-        return leftRank - rightRank;
+      const leftStarts = isInteractionStartEvent(left.frame.event);
+      const rightStarts = isInteractionStartEvent(right.frame.event);
+      if (leftStarts !== rightStarts && (leftCursor === null || rightCursor === null)) {
+        return leftStarts ? -1 : 1;
       }
     }
     const leftTs = typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER;
     const rightTs = typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER;
     if (leftTs !== rightTs) {
       return leftTs - rightTs;
+    }
+    if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
+      const leftRank = eventSortRank(left.frame.event);
+      const rightRank = eventSortRank(right.frame.event);
+      if (leftRank !== rightRank) {
+        return leftRank - rightRank;
+      }
     }
     return left.index - right.index;
   }).map(({ frame }) => frame);
@@ -2863,6 +2891,7 @@ function renderPeerEntry(frame, entryId) {
 }
 function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   if (frame.event === "interaction_complete") {
+    if (isSteerDeliveryTerminalFrame(frame)) return null;
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
     const peer = parsePeerSummary(text);
@@ -2876,7 +2905,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
         text: `\u21A9 ${peer.verb}: ${peer.summary}`
       };
     }
-    if (streamedText.trim() && normalizeComparableText(streamedText) === normalizeComparableText(text)) {
+    if (streamedTextMatchesTerminal(streamedText, text)) {
       return null;
     }
     const blocks = parseConversationRichBlocks(text);
@@ -2904,6 +2933,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   return null;
 }
 function terminalFrameVisibleText(frame) {
+  if (isSteerDeliveryTerminalFrame(frame)) return "";
   if (frame.event === "text_complete") {
     const record = frame.data && typeof frame.data === "object" ? frame.data : null;
     if (typeof record?.content === "string") return record.content;
@@ -3007,6 +3037,15 @@ function imageEntryKey(entry) {
 }
 function normalizeComparableText(value) {
   return value.replace(/\s+/g, " ").trim();
+}
+function normalizeTextWithoutWhitespace(value) {
+  return value.replace(/\s+/g, "");
+}
+function streamedTextMatchesTerminal(streamedText, terminalText) {
+  const streamed = normalizeComparableText(streamedText);
+  const terminal = normalizeComparableText(terminalText);
+  if (!streamed || !terminal) return false;
+  return streamed === terminal || normalizeTextWithoutWhitespace(streamed) === normalizeTextWithoutWhitespace(terminal);
 }
 function conversationEntryVisibleText(entry) {
   if (entry.kind !== "message") return "";
@@ -3526,6 +3565,8 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt;
+  let streamedInteractionText = "";
+  let streamedInteractionId = "";
   function flushPendingText() {
     if (!pendingText) return;
     const blocks = parseConversationRichBlocks(pendingText);
@@ -3548,11 +3589,18 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       if (options.renderTextDeltas === false) {
         continue;
       }
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (frameInteractionId !== streamedInteractionId) {
+        streamedInteractionText = "";
+        streamedInteractionId = frameInteractionId;
+      }
+      const delta = summarizeFrameData(frame.data);
       if (!pendingId) {
         pendingId = entryId;
         pendingCreatedAt = isoFromTimestampMs(frame.timestampMs);
       }
-      pendingText += summarizeFrameData(frame.data);
+      pendingText += delta;
+      streamedInteractionText += delta;
       continue;
     }
     if (frame.event === "assistant_image" || frame.event === "assistant_image_appended") {
@@ -3612,6 +3660,11 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     }
     if (options.renderInteractionStartsAsUser && (frame.event === "interaction_started" || frame.event === "user_input")) {
       flushPendingText();
+      const frameInteractionId = frame.interactionId?.trim() || "";
+      if (frameInteractionId !== streamedInteractionId) {
+        streamedInteractionText = "";
+        streamedInteractionId = frameInteractionId;
+      }
       const userEntry = renderHistoryUserEntry(frame, entryId, options.blobBaseUrl);
       if (userEntry) {
         const userKey = userEntryDedupeKey(frame, userEntry);
@@ -3647,6 +3700,9 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "text_complete") {
       if (frame.sourceKind !== "session_history") {
         const text2 = terminalFrameVisibleText(frame).trim();
+        if (text2 && pendingText && normalizeComparableText(pendingText) === normalizeComparableText(text2)) {
+          continue;
+        }
         const interactionId = frame.interactionId?.trim();
         const duplicateTerminalFollows = text2 && orderedFrames.slice(i + 1).some((later) => {
           if (later.event !== "interaction_complete" && later.event !== "run_completed") {
@@ -3681,8 +3737,10 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
       continue;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_failed") {
-      const streamedText = pendingText;
+      const streamedText = streamedInteractionText || pendingText;
       flushPendingText();
+      streamedInteractionText = "";
+      streamedInteractionId = "";
       if (frame.sourceKind === "session_history") {
         const historyText = terminalFrameVisibleText(frame).trim();
         if (historyText && liveAssistantTerminalTexts.has(normalizeComparableText(historyText))) {
@@ -3765,29 +3823,17 @@ function createUserEntry(message, images = []) {
     text: message
   };
 }
-function sortConversationTimelineEntries(entries) {
-  return entries.map((entry, index) => ({ entry, index })).sort((left, right) => {
-    const leftTs = Date.parse(String(left.entry.createdAt || ""));
-    const rightTs = Date.parse(String(right.entry.createdAt || ""));
-    const safeLeft = Number.isFinite(leftTs) ? leftTs : Number.NaN;
-    const safeRight = Number.isFinite(rightTs) ? rightTs : Number.NaN;
-    if (Number.isFinite(safeLeft) && Number.isFinite(safeRight) && safeLeft !== safeRight) {
-      return safeLeft - safeRight;
-    }
-    if (Number.isFinite(safeLeft) && !Number.isFinite(safeRight)) {
-      return 1;
-    }
-    if (!Number.isFinite(safeLeft) && Number.isFinite(safeRight)) {
-      return -1;
-    }
-    return left.index - right.index;
-  }).map(({ entry }) => entry);
+function appendOptimisticConversationEntry(entries, optimisticEntry) {
+  return optimisticEntry ? [...entries, optimisticEntry] : entries;
 }
 function inferResponsePhaseFromFrames(frames, fallback = null) {
   let phase = fallback;
   for (const frame of frames) {
     switch (frame.event) {
       case "user_input":
+        if (isTerminalUserInputStatus(frame.status)) phase = null;
+        else phase = "waiting";
+        break;
       case "interaction_started":
         phase = "waiting";
         break;
@@ -3821,6 +3867,9 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
     }
   }
   return phase;
+}
+function isTerminalUserInputStatus(status) {
+  return status === "completed" || status === "delivery_failed" || status === "failed";
 }
 function resolvePanelResponsePhase(args) {
   if (args.hasLocalPhase) {
@@ -6876,7 +6925,7 @@ function Topbar({
         onClick: onToggleTheme,
         "data-testid": "theme-toggle",
         title: `Switch to ${theme === "dark" ? "light" : "dark"} mode`,
-        children: theme === "dark" ? "\u2600 light" : "\u263E dark"
+        children: theme === "dark" ? "\u263E dark" : "\u2600 light"
       }
     ) }),
     railVisible ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
@@ -7020,6 +7069,10 @@ function findSpawnHost(a, agents, commander) {
     (candidate) => candidate.member_id !== a.member_id && isCommanderLike(candidate) && isWiredTo(a, candidate)
   );
   if (commanderHost) return commanderHost;
+  const wiredNonWorkerHost = agents.find(
+    (candidate) => candidate.member_id !== a.member_id && !isWorkerish(candidate) && isWiredTo(a, candidate)
+  );
+  if (wiredNonWorkerHost) return wiredNonWorkerHost;
   const workerHost = agents.find(
     (candidate) => candidate.member_id !== a.member_id && isWorkerish(candidate) && isWiredTo(a, candidate)
   );
@@ -7080,16 +7133,21 @@ function firstConfiguredValue(agent, selectors) {
 function configuredAgentGroup(agent, config, parentById, byId) {
   const selectors = configuredSelectors(config, "group_by");
   if (selectors.length === 0) return null;
+  const chain = [];
   let current = agent;
   const seen = /* @__PURE__ */ new Set();
-  while (current) {
-    const value = firstConfiguredValue(current, selectors);
-    if (value) return value;
-    if (!parentById || !byId || seen.has(current.member_id)) break;
+  while (current && !seen.has(current.member_id)) {
     seen.add(current.member_id);
+    chain.push(current);
+    if (!parentById || !byId) break;
     const parentId = parentById.get(current.member_id);
     if (!parentId) break;
     current = byId.get(parentId);
+  }
+  const searchOrder = chain.length > 1 ? [...chain].reverse() : chain;
+  for (const candidate of searchOrder) {
+    const value = firstConfiguredValue(candidate, selectors);
+    if (value) return value;
   }
   return config?.fallback_group?.trim() || "Agents";
 }
@@ -8537,7 +8595,6 @@ function ChatPane({
     try {
       const sent = await onSend(files);
       if (sent) {
-        onDraftChange("");
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
@@ -9520,7 +9577,7 @@ function dockLayoutStorageKey(baseUrl, experience) {
   const title = experience?.console_config?.title?.trim();
   return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
 }
-function cursorSeq(cursor) {
+function cursorSeq2(cursor) {
   if (!cursor) return null;
   const match = /^console:(\d+)$/.exec(cursor);
   if (!match) return null;
@@ -9808,13 +9865,19 @@ function ConsoleApp({ baseUrl }) {
     return true;
   }
   function busyTransitionForFrame(frame) {
-    if (frame.event === "user_input" || frame.event === "interaction_started" || frame.event === "run_started") {
+    if (frame.event === "user_input") {
+      return isTerminalUserInputStatus2(frame.status) ? false : true;
+    }
+    if (frame.event === "interaction_started" || frame.event === "run_started") {
       return true;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
       return false;
     }
     return null;
+  }
+  function isTerminalUserInputStatus2(status) {
+    return status === "completed" || status === "delivery_failed" || status === "failed";
   }
   function busyTransitionSortRank(frame) {
     const transition = busyTransitionForFrame(frame);
@@ -9904,8 +9967,8 @@ function ConsoleApp({ baseUrl }) {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events.map((frame, index) => ({ frame, index })).sort((a, b) => {
-      const ca = cursorSeq(a.frame.cursor);
-      const cb = cursorSeq(b.frame.cursor);
+      const ca = cursorSeq2(a.frame.cursor);
+      const cb = cursorSeq2(b.frame.cursor);
       if (ca !== null && cb !== null && ca !== cb) return ca - cb;
       const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
@@ -9926,18 +9989,32 @@ function ConsoleApp({ baseUrl }) {
   }
   const pendingStackRef = import_react22.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
+  const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
-  function loadPendingStack(identity) {
+  function loadPendingStack(identity, opts = {}) {
     try {
       const raw = localStorage.getItem(stackKeyFor(identity));
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
+      const now = Date.now();
       return parsed.filter((it) => {
         if (!it || typeof it !== "object") return false;
         const r2 = it;
         return typeof r2.id === "string" && typeof r2.text === "string" && typeof r2.addedAt === "number";
-      }).map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+      }).map((it) => {
+        const r2 = it;
+        const drainClaimedAt = typeof r2.drainClaimedAt === "number" ? r2.drainClaimedAt : void 0;
+        const freshDrainClaim = opts.preserveFreshDraining === true && r2.status === "draining" && typeof r2.drainClaim === "string" && typeof drainClaimedAt === "number" && now - drainClaimedAt < PENDING_DRAIN_CLAIM_TTL_MS;
+        return {
+          id: it.id,
+          text: it.text,
+          addedAt: it.addedAt,
+          status: freshDrainClaim ? "draining" : null,
+          drainClaim: freshDrainClaim ? r2.drainClaim : void 0,
+          drainClaimedAt: freshDrainClaim ? drainClaimedAt : void 0
+        };
+      });
     } catch {
       return [];
     }
@@ -9945,8 +10022,17 @@ function ConsoleApp({ baseUrl }) {
   function persistPendingStack(identity, items) {
     try {
       const clean = items.filter(
-        (it) => it.status !== "trashing" && it.status !== "draining" && it.status !== "promoting"
-      ).map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+        (it) => it.status !== "trashing" && it.status !== "promoting"
+      ).map((it) => ({
+        id: it.id,
+        text: it.text,
+        addedAt: it.addedAt,
+        ...it.status === "draining" ? {
+          status: "draining",
+          drainClaim: it.drainClaim,
+          drainClaimedAt: it.drainClaimedAt
+        } : {}
+      }));
       if (clean.length === 0) {
         localStorage.removeItem(stackKeyFor(identity));
       } else {
@@ -9972,7 +10058,9 @@ function ConsoleApp({ baseUrl }) {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
-      pendingStackRef.current[identity] = loadPendingStack(identity);
+      pendingStackRef.current[identity] = loadPendingStack(identity, {
+        preserveFreshDraining: true
+      });
       forceRender();
     };
     window.addEventListener("storage", onStorage);
@@ -10068,6 +10156,8 @@ function ConsoleApp({ baseUrl }) {
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
+        if (isTerminalUserInputStatus2(frame.status)) return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
@@ -10660,10 +10750,28 @@ function ConsoleApp({ baseUrl }) {
     const text = rawDraft.trim();
     if (!text && attachments.length === 0) return false;
     const stack = getPendingStack(identity);
-    const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
+    const visiblePhase = phaseValueByKey.current[panelKey] ?? phaseRef.current[panelKey] ?? null;
+    const agentPhase = agentsRef.current.find(
+      (candidate) => [candidate.identity, candidate.member_id, candidate.agent_id].includes(
+        identity
+      )
+    )?.response_phase ?? null;
+    const shouldQueue = isIdentityBusy(identity) || visiblePhase !== null || agentPhase !== null || stack.length > 0;
+    const clearSubmittedDraft = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== rawDraft) return current;
+        return { ...current, [panelKey]: "" };
+      });
+    };
+    const restoreSubmittedDraftIfEmpty = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== "") return current;
+        return { ...current, [panelKey]: rawDraft };
+      });
+    };
     if (!shouldQueue || attachments.length > 0) {
       if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       }
       const sent = await submitMessageNow(
         panelId,
@@ -10673,9 +10781,9 @@ function ConsoleApp({ baseUrl }) {
         attachments
       );
       if (sent) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       } else if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: rawDraft }));
+        restoreSubmittedDraftIfEmpty();
       }
       return sent;
     }
@@ -10684,7 +10792,7 @@ function ConsoleApp({ baseUrl }) {
       ...prev,
       { id: newId, text, addedAt: Date.now(), status: "entering" }
     ]);
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    clearSubmittedDraft();
     window.setTimeout(() => {
       setPendingStack(
         identity,
@@ -10697,6 +10805,9 @@ function ConsoleApp({ baseUrl }) {
   }
   const reducedMotion = typeof window !== "undefined" ? window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false : false;
   const animMs = (ms) => reducedMotion ? 0 : ms;
+  const pendingDrainOwnerRef = import_react22.default.useRef(
+    `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  );
   function findChatTargetFor(identity) {
     for (const panel of dockRef.current.viewState.panels) {
       const t = panel.target;
@@ -10796,30 +10907,47 @@ function ConsoleApp({ baseUrl }) {
   function maybeDrainHead(identity) {
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
+    const target = findChatTargetFor(identity);
+    if (!target) return;
     if (stack.some((it) => it.status === "draining" || it.status === "promoting"))
       return;
     const head = stack.find((it) => !it.status || it.status === "entering");
     if (!head) return;
+    const drainClaim = `${pendingDrainOwnerRef.current}:${head.id}:${Date.now().toString(36)}`;
+    const drainClaimedAt = Date.now();
     setPendingStack(
       identity,
       (prev) => prev.map(
-        (it) => it.id === head.id ? { ...it, status: "draining" } : it
+        (it) => it.id === head.id ? { ...it, status: "draining", drainClaim, drainClaimedAt } : it
       )
     );
     window.setTimeout(() => {
+      const persistedHead = loadPendingStack(identity, {
+        preserveFreshDraining: true
+      }).find((it) => it.id === head.id);
+      if (persistedHead?.drainClaim !== drainClaim) return;
+      const target2 = findChatTargetFor(identity);
+      if (!target2) {
+        setPendingStack(
+          identity,
+          (prev) => prev.map(
+            (it) => it.id === head.id && it.drainClaim === drainClaim ? { ...it, status: null, drainClaim: void 0 } : it
+          )
+        );
+        return;
+      }
       setPendingStack(
         identity,
-        (prev) => prev.filter((it) => it.id !== head.id)
+        (prev) => prev.filter(
+          (it) => it.id !== head.id || it.drainClaim !== drainClaim
+        )
       );
-      const target = findChatTargetFor(identity);
-      if (target) {
-        void submitMessageNow(
-          target.panelId,
-          target.target,
-          head.text,
-          "queue"
-        );
-      }
+      void submitMessageNow(
+        target2.panelId,
+        target2.target,
+        head.text,
+        "queue"
+      );
     }, animMs(420));
   }
   async function onLifecycleAction(identity, method) {
@@ -10986,10 +11114,7 @@ function ConsoleApp({ baseUrl }) {
     );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
     const entries = sanitizeConversationEntries(
-      sortConversationTimelineEntries([
-        ...conversationEntries,
-        ...optimisticEntry ? [optimisticEntry] : []
-      ])
+      appendOptimisticConversationEntry(conversationEntries, optimisticEntry)
     );
     const conversation = buildConversationViewState({
       memberId: target.memberId,
@@ -11004,10 +11129,11 @@ function ConsoleApp({ baseUrl }) {
       phaseRef.current,
       panelKey
     );
+    const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
     const phase = resolvePanelResponsePhase({
       frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
-      localPhase: phaseRef.current[panelKey] ?? null,
-      hasLocalPhase,
+      localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
+      hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null
     });
     const canRespawn = configuredActionVisibility.respawn && agent?.affordances?.can_respawn === true;

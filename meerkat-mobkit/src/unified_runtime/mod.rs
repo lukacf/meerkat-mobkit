@@ -1,15 +1,20 @@
 //! Unified runtime — combines mob lifecycle, module management, and operational subsystems.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use meerkat_core::event::agent_event_type;
+use futures::stream::{SelectAll, StreamExt};
+use meerkat_core::comms::EventStream;
+use meerkat_core::event::{AgentEvent, agent_event_type};
 use meerkat_mob::ids::MeerkatId;
-use meerkat_mob::{AttributedEvent, MobError, MobEventRouterHandle, MobHandle, SpawnMemberSpec};
+use meerkat_mob::{
+    AgentIdentity, AgentRuntimeId, AttributedEvent, FenceToken, MobError, MobHandle, ProfileName,
+    SpawnMemberSpec,
+};
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
 
@@ -156,7 +161,6 @@ pub struct UnifiedRuntime {
 }
 
 enum MobEventIngress {
-    Pull(MobEventRouterHandle),
     Forwarder(MobEventForwarder),
 }
 
@@ -175,14 +179,14 @@ impl UnifiedRuntime {
         module_runtime: MobkitRuntimeHandle,
         persistent_metadata: Arc<dyn PersistentMetadataStore>,
     ) -> Self {
-        let mob_event_router = mob_runtime.handle().subscribe_mob_events().await;
         // Construct the metadata table first so the structural-events store
         // can be wired with it — every projected envelope picks up the
         // matching mob/run labels at projection time.
         let metadata_table = Arc::new(RuntimeMetadataTable::new());
         let mob_events_store = MobEventsStore::new().with_metadata_table(metadata_table.clone());
         let mob_event_ingress = Some(Self::create_event_ingress(
-            mob_event_router,
+            mob_runtime.handle(),
+            mob_runtime.agent_mob_mcp_state(),
             mob_events_store.clone(),
         ));
         let mob_events_task = Self::spawn_mob_events_subscriber(
@@ -551,16 +555,18 @@ impl UnifiedRuntime {
     }
 
     fn create_event_ingress(
-        router: MobEventRouterHandle,
+        mob_handle: MobHandle,
+        agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
         mob_events: MobEventsStore,
     ) -> MobEventIngress {
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            return MobEventIngress::Pull(router);
-        };
-
         // Keep forwarding bounded to avoid unbounded memory growth under sustained ingress.
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(256);
-        let task = handle.spawn(run_mob_event_forwarder(router, event_tx, mob_events));
+        let task = tokio::spawn(run_resilient_mob_agent_event_forwarder(
+            mob_handle,
+            agent_mob_mcp_state,
+            event_tx,
+            mob_events,
+        ));
         MobEventIngress::Forwarder(MobEventForwarder { event_rx, task })
     }
 
@@ -578,27 +584,134 @@ impl UnifiedRuntime {
     }
 }
 
-async fn run_mob_event_forwarder(
-    mut router: MobEventRouterHandle,
+type TaggedAgentEvent = (
+    AgentRuntimeId,
+    FenceToken,
+    ProfileName,
+    meerkat_core::event::EventEnvelope<AgentEvent>,
+);
+
+type TaggedAgentEventStream = futures::stream::Map<
+    EventStream,
+    Box<dyn FnMut(meerkat_core::event::EventEnvelope<AgentEvent>) -> TaggedAgentEvent + Send>,
+>;
+
+type TrackedAgentEventStream = (String, AgentIdentity);
+
+async fn run_resilient_mob_agent_event_forwarder(
+    handle: MobHandle,
+    agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     event_tx: Sender<EventEnvelope<UnifiedEvent>>,
     mob_events: MobEventsStore,
 ) {
-    while let Some(attributed_event) = router.event_rx.recv().await {
-        // Fan out to the structural mob events store. Today this is a
-        // no-op for attributed agent events (they don't carry mob/run/
-        // step fields), but the projection seam keeps the surface
-        // symmetric with the `MobEvent` poller and lets future code add
-        // attribution without touching the forwarder shape.
-        let _ = mob_events.project_attributed_event(&attributed_event).await;
-        if event_tx
-            .send(attributed_event_to_unified(attributed_event))
-            .await
-            .is_err()
-        {
-            break;
+    let mut streams: SelectAll<TaggedAgentEventStream> = SelectAll::new();
+    let mut tracked = HashSet::new();
+    let mut reconcile_interval = tokio::time::interval(Duration::from_millis(250));
+    #[cfg(not(target_arch = "wasm32"))]
+    reconcile_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams).await;
+
+    loop {
+        tokio::select! {
+            Some((source, source_fence_token, role, envelope)) = streams.next() => {
+                let attributed_event = AttributedEvent {
+                    source,
+                    source_fence_token,
+                    role,
+                    envelope,
+                };
+                // Fan out to the structural mob events store. Today this is a
+                // no-op for attributed agent events (they don't carry mob/run/
+                // step fields), but the projection seam keeps the surface
+                // symmetric with the structural `MobEvent` subscriber and lets
+                // future code add attribution without touching this shape.
+                let _ = mob_events.project_attributed_event(&attributed_event).await;
+                if event_tx
+                    .send(attributed_event_to_unified(attributed_event))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            _ = reconcile_interval.tick() => {
+                reconcile_agent_event_streams(&handle, &agent_mob_mcp_state, &mut tracked, &mut streams).await;
+            }
         }
     }
-    router.cancel();
+}
+
+async fn reconcile_agent_event_streams(
+    handle: &MobHandle,
+    agent_mob_mcp_state: &Option<Arc<meerkat_mob_mcp::MobMcpState>>,
+    tracked: &mut HashSet<TrackedAgentEventStream>,
+    streams: &mut SelectAll<TaggedAgentEventStream>,
+) {
+    let mut handles = vec![handle.clone()];
+    if let Some(state) = agent_mob_mcp_state {
+        let primary_mob_id = handle.mob_id().to_string();
+        handles.extend(state.mob_handles_snapshot().await.into_iter().filter_map(
+            |(mob_id, child_handle)| {
+                if mob_id.as_str() == primary_mob_id {
+                    None
+                } else {
+                    Some(child_handle)
+                }
+            },
+        ));
+    }
+
+    let mut current: HashSet<TrackedAgentEventStream> = HashSet::new();
+    for handle in &handles {
+        let mob_id = handle.mob_id().to_string();
+        for entry in handle.list_members_observation_snapshot().await {
+            current.insert((mob_id.clone(), entry.agent_identity.clone()));
+        }
+    }
+
+    tracked.retain(|identity| current.contains(identity));
+
+    for handle in handles {
+        let mob_id = handle.mob_id().to_string();
+        for entry in handle.list_members_observation_snapshot().await {
+            let tracked_key = (mob_id.clone(), entry.agent_identity.clone());
+            if tracked.contains(&tracked_key) {
+                continue;
+            }
+
+            let identity = entry.agent_identity.clone();
+            let (runtime_id, fence_token) = entry.binding_atoms();
+            let role = entry.role.clone();
+
+            match handle.subscribe_agent_events_observation(&identity).await {
+                Ok(stream) => {
+                    tracked.insert(tracked_key);
+                    let mapped = stream.map(Box::new(move |envelope| {
+                        (runtime_id.clone(), fence_token, role.clone(), envelope)
+                    })
+                        as Box<
+                            dyn FnMut(
+                                    meerkat_core::event::EventEnvelope<AgentEvent>,
+                                ) -> TaggedAgentEvent
+                                + Send,
+                        >);
+                    streams.push(mapped);
+                }
+                Err(error) => {
+                    // This can be a short-lived spawn/resume race while Meerkat
+                    // finishes installing the session event injector. Leave the
+                    // identity untracked so the next reconcile tick tries again.
+                    tracing::warn!(
+                        mob_id = %mob_id,
+                        identity = %identity,
+                        error = %error,
+                        "mobkit agent event forwarder: failed to subscribe; will retry"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Streaming subscription against the meerkat mob event ledger. Each

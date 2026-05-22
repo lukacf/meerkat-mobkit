@@ -13,6 +13,13 @@ export interface PendingItem {
   /// by CSS keyframes. Items in `promoting`/`trashing`/`draining` are
   /// non-interactive and on their way out.
   status?: "entering" | "promoting" | "trashing" | "draining" | null;
+  /// Cross-tab claim token for an item that is already being drained.
+  /// Without this, two open console tabs can both observe busy→idle and
+  /// submit the same pending item.
+  drainClaim?: string;
+  /// Wall-clock time for the drain claim. Used to expire claims whose
+  /// owning tab was closed before it submitted the queued item.
+  drainClaimedAt?: number;
 }
 
 type DropWhere = "above" | "below";

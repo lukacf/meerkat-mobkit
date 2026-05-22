@@ -631,7 +631,7 @@ async fn console_send_handler(
         );
     };
     if let Some(identity_runtime) = &state.identity_runtime {
-        return match console_send_identity_first(
+        return match console_send_with_identity_first_fallback(
             aggregator,
             identity_runtime.clone(),
             state.console_events.as_ref(),
@@ -661,6 +661,19 @@ async fn console_send_handler(
     }
 }
 
+async fn console_send_with_identity_first_fallback(
+    aggregator: &MobKitConsoleAggregator,
+    identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
+    console_events: Option<&ConsoleEventStore>,
+    request: ConsoleSendRequest,
+) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
+    let member_send_request = request.clone();
+    match console_send_identity_first(aggregator, identity_runtime, console_events, request).await {
+        Err(ConsoleSendError::UnknownIdentity(_)) => aggregator.send(member_send_request).await,
+        result => result,
+    }
+}
+
 async fn console_send_identity_first(
     aggregator: &MobKitConsoleAggregator,
     identity_runtime: Arc<crate::identity_first::IdentityRuntime>,
@@ -686,6 +699,7 @@ async fn console_send_identity_first(
             "content blocks must be non-empty".to_string(),
         ));
     }
+    let handling_mode = parse_identity_first_handling_mode(request.handling_mode.as_deref())?;
 
     let (identity, status) = match identity_runtime.status(&parsed_identity).await {
         Ok(status) => (parsed_identity, status),
@@ -737,6 +751,57 @@ async fn console_send_identity_first(
             .map_err(ConsoleSendError::State)?;
     }
 
+    if handling_mode == meerkat_core::types::HandlingMode::Steer {
+        match identity_runtime
+            .send_with_mode(&identity, &content, handling_mode)
+            .await
+        {
+            Ok(_) => {
+                if let Err(err) = aggregator
+                    .mark_steer_interaction_delivered(
+                        &accepted.input_frame_id,
+                        &accepted.interaction_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        identity = %identity,
+                        error = %err,
+                        "console identity-first steer was admitted but delivery status projection failed"
+                    );
+                }
+            }
+            Err(err) => {
+                let _ = aggregator
+                    .mark_interaction_delivery_failed(&accepted.input_frame_id)
+                    .await;
+                if let Some(events) = console_events {
+                    events
+                        .record_lifecycle(
+                            identity.as_str(),
+                            "interaction_failed",
+                            json!({
+                                "interaction_id": accepted.interaction_id,
+                                "origin": request.origin,
+                                "error": err.to_string(),
+                            }),
+                        )
+                        .await;
+                }
+                tracing::warn!(
+                    identity = %identity,
+                    error = %err,
+                    "console identity-first steer was accepted but delivery failed"
+                );
+                return Err(identity_runtime_error_to_console_send_error(
+                    identity.as_str(),
+                    err,
+                ));
+            }
+        }
+        return Ok(accepted);
+    }
+
     let dispatch_aggregator = aggregator.clone();
     let dispatch_events = console_events.cloned();
     let dispatch_identity = identity.clone();
@@ -744,34 +809,58 @@ async fn console_send_identity_first(
     let dispatch_origin = request.origin.clone();
     let dispatch_accepted = accepted.clone();
     tokio::spawn(async move {
-        if let Err(err) = identity_runtime
-            .send(&dispatch_identity, &dispatch_content)
+        match identity_runtime
+            .send_with_mode(&dispatch_identity, &dispatch_content, handling_mode)
             .await
         {
-            let _ = dispatch_aggregator
-                .mark_interaction_delivery_failed(&dispatch_accepted.input_frame_id)
-                .await;
-            if let Some(events) = dispatch_events {
-                events
-                    .record_lifecycle(
-                        dispatch_identity.as_str(),
-                        "interaction_failed",
-                        json!({
-                            "interaction_id": dispatch_accepted.interaction_id,
-                            "origin": dispatch_origin,
-                            "error": err.to_string(),
-                        }),
-                    )
-                    .await;
+            Ok(_) => {
+                if let Err(err) = dispatch_aggregator
+                    .mark_interaction_delivered(&dispatch_accepted.input_frame_id)
+                    .await
+                {
+                    tracing::warn!(
+                        identity = %dispatch_identity,
+                        error = %err,
+                        "console identity-first send was accepted but delivery status projection failed"
+                    );
+                }
             }
-            tracing::warn!(
-                identity = %dispatch_identity,
-                error = %err,
-                "console identity-first send was accepted but delivery failed"
-            );
+            Err(err) => {
+                let _ = dispatch_aggregator
+                    .mark_interaction_delivery_failed(&dispatch_accepted.input_frame_id)
+                    .await;
+                if let Some(events) = dispatch_events {
+                    events
+                        .record_lifecycle(
+                            dispatch_identity.as_str(),
+                            "interaction_failed",
+                            json!({
+                                "interaction_id": dispatch_accepted.interaction_id,
+                                "origin": dispatch_origin,
+                                "error": err.to_string(),
+                            }),
+                        )
+                        .await;
+                }
+                tracing::warn!(
+                    identity = %dispatch_identity,
+                    error = %err,
+                    "console identity-first send was accepted but delivery failed"
+                );
+            }
         }
     });
     Ok(accepted)
+}
+
+fn parse_identity_first_handling_mode(
+    value: Option<&str>,
+) -> Result<meerkat_core::types::HandlingMode, ConsoleSendError> {
+    match value.unwrap_or("queue") {
+        "queue" => Ok(meerkat_core::types::HandlingMode::Queue),
+        "steer" => Ok(meerkat_core::types::HandlingMode::Steer),
+        other => Err(ConsoleSendError::InvalidHandlingMode(other.to_string())),
+    }
 }
 
 async fn resolve_console_send_identity_alias(
@@ -1968,7 +2057,7 @@ async fn lookup_member_with_session(
         .into_iter()
         .find(|e| &e.agent_identity == identity)?;
     let session_id = handle
-        .resolve_bridge_session_id(identity)
+        .resolve_bridge_session_id_observation(identity)
         .await
         .map(|s| s.to_string());
     Some((entry, session_id))
@@ -2401,7 +2490,7 @@ async fn handle_console_runtime_rpc(
                 );
             };
             if let Some(identity_runtime) = &identity_runtime {
-                return match console_send_identity_first(
+                return match console_send_with_identity_first_fallback(
                     aggregator,
                     identity_runtime.clone(),
                     console_events.as_ref(),
@@ -3746,13 +3835,10 @@ async fn collect_console_snapshot_read_model(
     let mut delegate_groups: Vec<Vec<ConsoleMember>> = Vec::new();
     loop {
         let mut progressed = false;
-        for (mob_id, _mob_state) in mcp_state.mob_list().await {
+        for (mob_id, delegate_handle) in mcp_state.mob_handles_snapshot().await {
             if processed.contains(mob_id.as_str()) {
                 continue;
             }
-            let Ok(delegate_handle) = mcp_state.handle_for(&mob_id).await else {
-                continue;
-            };
             let Some(owner_session_id) = delegate_handle.definition().owner_bridge_session_index()
             else {
                 processed.insert(mob_id.to_string());
@@ -3786,10 +3872,10 @@ async fn collect_console_session_index_for_handle(
     handle: &MobHandle,
     state: &mut ConsoleSnapshotReadModelState,
 ) {
-    for entry in handle.list_members_including_retiring().await {
+    for entry in handle.list_members_observation_snapshot().await {
         let identity = entry.agent_identity.to_string();
         let Some(session_id) = handle
-            .resolve_bridge_session_id(&entry.agent_identity)
+            .resolve_bridge_session_id_observation(&entry.agent_identity)
             .await
             .map(|session_id| session_id.to_string())
         else {
@@ -4240,10 +4326,10 @@ mod tests {
         ConsoleSnapshotReadModel, ConsoleSnapshotReadModelState, MAX_MULTIPART_BODY_BYTES,
         MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, apply_console_visibility_policy,
         build_aggregator_live_snapshot, collect_console_snapshot_read_model,
-        console_send_identity_first, cursor_is_after, dedupe_console_members_by_identity,
-        externalize_image_upload_placeholders, externalize_single_image_upload,
-        handle_console_aggregator_rpc, project_console_members_from_handle,
-        query_timeline_snapshot,
+        console_send_identity_first, console_send_with_identity_first_fallback, cursor_is_after,
+        dedupe_console_members_by_identity, externalize_image_upload_placeholders,
+        externalize_single_image_upload, handle_console_aggregator_rpc,
+        project_console_members_from_handle, query_timeline_snapshot,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -4268,16 +4354,22 @@ mod tests {
     use bytes::Bytes;
     use meerkat::{AgentFactory, Config, build_ephemeral_service};
     use meerkat_client::TestClient;
+    use meerkat_core::types::HandlingMode;
     use meerkat_mob::ProfileName;
     use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
     use serde_json::{Value, json};
     use std::collections::BTreeMap;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     struct BlockingIdentityBridge {
         deliver_calls: Arc<AtomicUsize>,
+    }
+
+    struct RecordingIdentityBridge {
+        session_id: meerkat_core::types::SessionId,
+        handling_modes: Arc<Mutex<Vec<HandlingMode>>>,
     }
 
     #[async_trait::async_trait]
@@ -4314,6 +4406,68 @@ mod tests {
         ) -> Result<meerkat_core::types::SessionId, BridgeError> {
             self.deliver_calls.fetch_add(1, Ordering::SeqCst);
             std::future::pending().await
+        }
+
+        async fn checkpoint_session(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<SessionSnapshot, BridgeError> {
+            Err(BridgeError::Mob("checkpoint not used in test".to_string()))
+        }
+
+        async fn retire_member(&self, _runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SessionBridge for RecordingIdentityBridge {
+        async fn create_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            Ok(session_id.clone())
+        }
+
+        async fn resume_session(
+            &self,
+            _identity: &AgentIdentity,
+            _runtime_id: &AgentRuntimeId,
+            _spec: &DurableAgentSpec,
+            _draft: &AgentBuildDraft,
+            session_id: &meerkat_core::types::SessionId,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<ResumeSessionOutcome, BridgeError> {
+            Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            })
+        }
+
+        async fn deliver(
+            &self,
+            runtime_id: &AgentRuntimeId,
+            content: &meerkat_core::ContentInput,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            self.deliver_with_mode(runtime_id, content, HandlingMode::Queue)
+                .await
+        }
+
+        async fn deliver_with_mode(
+            &self,
+            _runtime_id: &AgentRuntimeId,
+            _content: &meerkat_core::ContentInput,
+            handling_mode: HandlingMode,
+        ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+            self.handling_modes
+                .lock()
+                .map_err(|_| BridgeError::Mob("handling modes mutex poisoned".to_string()))?
+                .push(handling_mode);
+            Ok(self.session_id.clone())
         }
 
         async fn checkpoint_session(
@@ -4540,6 +4694,77 @@ comms = true
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_first_console_send_falls_back_to_member_only_spawned_worker()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let (_temp_dir, mob_runtime) =
+            build_empty_console_test_runtime("identity-send-member-only-test").await?;
+        let identity_runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-member-only-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: None,
+            default_timeout: None,
+        }));
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let events = ConsoleEventStore::new();
+        aggregator.register_runtime_handles_with_policy(
+            "identity-first",
+            "",
+            mob_runtime.clone(),
+            Some(identity_runtime.clone()),
+            events.clone(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        mob_runtime
+            .handle()
+            .spawn_spec(SpawnMemberSpec::from_wire(
+                "worker".to_string(),
+                "agent:member-only".to_string(),
+                Some("You are a member-only spawned worker.".into()),
+                None,
+                None,
+            ))
+            .await?;
+
+        let accepted = console_send_with_identity_first_fallback(
+            &aggregator,
+            identity_runtime,
+            Some(&events),
+            crate::console_aggregator::ConsoleSendRequest {
+                identity: "agent:member-only".to_string(),
+                content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                    "hello spawned worker".to_string(),
+                ))?,
+                origin: "test".to_string(),
+                idempotency_key: "member-only-idem-1".to_string(),
+                handling_mode: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(accepted.identity, "agent:member-only");
+        assert!(accepted.session_id.is_some());
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent:member-only".to_string()),
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        assert!(
+            page.frames.iter().any(|frame| frame.kind == "user_input"),
+            "fallback send should persist a user input frame for the member-only worker: {page:#?}"
+        );
+
+        let _ = mob_runtime.handle().stop().await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn identity_first_console_send_returns_before_bridge_delivery_completes()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -4625,6 +4850,198 @@ comms = true
         .is_err()
         {
             return Err("delivery should be spawned in the background".into());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identity_first_console_steer_waits_for_bridge_delivery()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:slow-steer-console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:slow-steer-console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let deliver_calls = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-slow-steer-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(BlockingIdentityBridge {
+                deliver_calls: deliver_calls.clone(),
+            })),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            console_send_identity_first(
+                &aggregator,
+                runtime,
+                None,
+                crate::console_aggregator::ConsoleSendRequest {
+                    identity: identity.as_str().to_string(),
+                    content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                        "hello slow steer bridge".to_string(),
+                    ))?,
+                    origin: "test".to_string(),
+                    idempotency_key: "idem-slow-steer-bridge".to_string(),
+                    handling_mode: Some("steer".to_string()),
+                },
+            ),
+        )
+        .await;
+
+        if result.is_ok() {
+            return Err("steer send must wait for bridge delivery admission".into());
+        }
+        assert_eq!(
+            deliver_calls.load(Ordering::SeqCst),
+            1,
+            "steer delivery should have reached the bridge before the console response waits"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identity_first_console_send_forwards_handling_mode()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:mode-console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:mode-console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let handling_modes = Arc::new(Mutex::new(Vec::new()));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-mode-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(RecordingIdentityBridge {
+                session_id: record.session_id.clone(),
+                handling_modes: handling_modes.clone(),
+            })),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let accepted = console_send_identity_first(
+            &aggregator,
+            runtime,
+            None,
+            crate::console_aggregator::ConsoleSendRequest {
+                identity: identity.as_str().to_string(),
+                content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                    "hello steer bridge".to_string(),
+                ))?,
+                origin: "test".to_string(),
+                idempotency_key: "idem-steer-bridge".to_string(),
+                handling_mode: Some("steer".to_string()),
+            },
+        )
+        .await?;
+
+        if tokio::time::timeout(Duration::from_millis(100), async {
+            loop {
+                if handling_modes
+                    .lock()
+                    .map(|modes| modes.contains(&HandlingMode::Steer))
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_err()
+        {
+            return Err("identity-first console send should forward steer mode".into());
+        }
+
+        let terminal_frame = tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                let page = aggregator
+                    .query_timeline(ConsoleTimelineQuery {
+                        identity: Some(identity.as_str().to_string()),
+                        ..ConsoleTimelineQuery::default()
+                    })
+                    .await
+                    .map_err(|err| format!("query timeline: {err}"))?;
+                if page.frames.iter().any(|frame| {
+                    frame.kind == "interaction_complete"
+                        && frame.interaction_id.as_deref() == Some(accepted.interaction_id.as_str())
+                        && frame.payload.get("reason").and_then(Value::as_str)
+                            == Some("steer_delivered")
+                }) {
+                    return Ok::<(), String>(());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        match terminal_frame {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => {
+                return Err(
+                    "identity-first steer send should terminalize its console interaction".into(),
+                );
+            }
         }
         Ok(())
     }

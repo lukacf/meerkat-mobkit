@@ -1,0 +1,51 @@
+[package]
+name = "meerkat-mob-mcp"
+description = "MCP tool surface for Meerkat Mob"
+version = "0.6.22"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "rkat-mob-mcp"
+path = "src/main.rs"
+
+[dependencies]
+meerkat-core = { workspace = true }
+meerkat-contracts = { workspace = true, features = ["schema"] }
+meerkat = { workspace = true, default-features = false }
+meerkat-mob = { workspace = true }
+meerkat-runtime = { workspace = true }
+meerkat-client = { workspace = true }
+async-trait = { workspace = true }
+indexmap = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio_with_wasm = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+
+[package.metadata.cargo-machete]
+ignored = ["chrono", "meerkat-client", "thiserror", "tempfile"]  # proc macros / transitive
+
+[lints]
+workspace = true

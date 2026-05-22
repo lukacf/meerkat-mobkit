@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use meerkat_core::types::HandlingMode;
 use meerkat_mobkit::identity_first::contracts::{
     AgentCustomizer, ContinuityStore, LeaseProvider, TopologyProvider,
 };
@@ -901,6 +902,125 @@ async fn identity_first_runtime_lazy_register_does_not_load_snapshots_or_spawn_m
 }
 
 #[tokio::test]
+async fn identity_first_runtime_lazy_snapshot_missing_record_stays_materializable() {
+    struct SnapshotMissingStore {
+        record: ContinuityRecord,
+        load_snapshot_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ContinuityStore for SnapshotMissingStore {
+        async fn resolve_many(
+            &self,
+            identities: &[AgentIdentity],
+        ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+            Ok(identities
+                .iter()
+                .map(|identity| {
+                    (
+                        identity.clone(),
+                        ContinuityResolveState::Broken {
+                            failure: ContinuityFailure {
+                                identity: identity.clone(),
+                                kind: ContinuityFailureKind::SnapshotMissing,
+                                record: Some(self.record.clone()),
+                                detail: "snapshot presence query missed the row".to_string(),
+                            },
+                        },
+                    )
+                })
+                .collect())
+        }
+
+        async fn load_session_snapshot(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+            self.load_snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(SessionSnapshot {
+                data: b"recovered snapshot".to_vec(),
+            }))
+        }
+
+        async fn save_session_snapshot(
+            &self,
+            _identity: &AgentIdentity,
+            _session_id: &meerkat_core::types::SessionId,
+            _generation: ContinuityGeneration,
+            _version: CheckpointVersion,
+            _fencing_token: FencingToken,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+
+        async fn upsert_continuity_record(
+            &self,
+            _record: &ContinuityRecord,
+            _fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+
+        async fn delete_continuity_record(
+            &self,
+            _identity: &AgentIdentity,
+            _fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+    }
+
+    let record = make_record("agent:recoverable", 0, 7);
+    let store = Arc::new(SnapshotMissingStore {
+        record: record.clone(),
+        load_snapshot_calls: AtomicUsize::new(0),
+    });
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::new()),
+        bridge.clone(),
+    );
+
+    let result = lazy_register_flow(&runtime, &[make_spec("agent:recoverable")], None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result.outcomes.get(&make_identity("agent:recoverable")),
+        Some(RestoreOutcome::Dormant {
+            record: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:recoverable"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Dormant
+    );
+    assert_eq!(store.load_snapshot_calls.load(Ordering::SeqCst), 0);
+
+    let materialized = runtime
+        .materialize(&make_identity("agent:recoverable"))
+        .await
+        .unwrap();
+    assert_eq!(materialized.session_id, record.session_id);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(store.load_snapshot_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:recoverable"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Active
+    );
+}
+
+#[tokio::test]
 async fn identity_first_runtime_lazy_first_send_materializes_only_target_once() {
     let store = Arc::new(CountingContinuityStore::new());
     let lease = Arc::new(LocalLeaseProvider::new());
@@ -1112,6 +1232,97 @@ async fn identity_first_runtime_lazy_first_send_materializes_reachable_peers_and
             "rt:review:singleton:0".to_string()
         )),
         "review must be concretely wired to initiative:beta, got {wires:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_steer_send_does_not_wait_for_reachable_peer_materialization() {
+    struct StaticTopology(Vec<(&'static str, &'static str)>);
+
+    #[async_trait]
+    impl TopologyProvider for StaticTopology {
+        async fn compute_edges(
+            &self,
+            _target_identities: &[AgentIdentity],
+            _context: &TopologyContext,
+        ) -> Result<Vec<ManagedPeerEdge>, TopologyError> {
+            self.0
+                .iter()
+                .map(|(a, b)| {
+                    ManagedPeerEdge::new(make_identity(a), make_identity(b))
+                        .map_err(|err| TopologyError::InvalidEdge(format!("{err}")))
+                })
+                .collect()
+        }
+    }
+
+    let store = Arc::new(CountingContinuityStore::new());
+    let lease = Arc::new(LocalLeaseProvider::new());
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(store.clone(), lease, bridge.clone());
+    let peer_record = make_record("initiative:slow-peer", 0, 1);
+    store
+        .upsert_continuity_record(&peer_record, FencingToken::new(1))
+        .await
+        .unwrap();
+    store
+        .save_session_snapshot(
+            &make_identity("initiative:slow-peer"),
+            &peer_record.session_id,
+            peer_record.generation,
+            CheckpointVersion::new(2),
+            FencingToken::new(1),
+            &SessionSnapshot {
+                data: b"slow peer snapshot".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    lazy_register_flow(
+        &runtime,
+        &[
+            make_spec("deep-investigator:singleton"),
+            make_spec("initiative:slow-peer"),
+        ],
+        Some(&StaticTopology(vec![(
+            "deep-investigator:singleton",
+            "initiative:slow-peer",
+        )])),
+    )
+    .await
+    .unwrap();
+    runtime
+        .materialize(&make_identity("deep-investigator:singleton"))
+        .await
+        .unwrap();
+    bridge.set_resume_delay(Duration::from_secs(5)).await;
+
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        runtime.send_with_mode(
+            &make_identity("deep-investigator:singleton"),
+            &make_content(),
+            HandlingMode::Steer,
+        ),
+    )
+    .await
+    .expect("steer send must not wait for reachable peer materialization")
+    .unwrap();
+
+    assert_eq!(bridge.deliver_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        bridge.resume_calls.load(Ordering::SeqCst),
+        0,
+        "steer delivery should not synchronously hydrate the slow peer"
+    );
+    assert_eq!(
+        runtime
+            .status(&make_identity("initiative:slow-peer"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Dormant
     );
 }
 

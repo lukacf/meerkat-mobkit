@@ -54,6 +54,8 @@ pub struct ReplaySanitizingLlmClient {
     inner: Arc<dyn LlmClient>,
 }
 
+type SharedDefaultLlmClientSlot = Arc<std::sync::RwLock<Option<Arc<dyn LlmClient>>>>;
+
 impl ReplaySanitizingLlmClient {
     pub fn new(inner: Arc<dyn LlmClient>) -> Self {
         Self { inner }
@@ -275,7 +277,6 @@ impl ImplicitDelegateRetirementOverrides {
 
 struct AutoWireParentMobToolsFactory {
     inner: Arc<dyn meerkat_core::service::MobToolsFactory>,
-    state: Arc<meerkat_mob_mcp::MobMcpState>,
     implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
 }
 
@@ -287,15 +288,9 @@ impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
         args: meerkat_core::service::MobToolsBuildArgs,
     ) -> Result<Arc<dyn meerkat_core::AgentToolDispatcher>, Box<dyn std::error::Error + Send + Sync>>
     {
-        let owner_identity = args
-            .comms_name
-            .as_deref()
-            .and_then(owner_identity_from_comms_name);
         let inner = self.inner.build_mob_tools(args).await?;
         Ok(Arc::new(AutoWireParentMobToolDispatcher {
             inner,
-            state: Arc::clone(&self.state),
-            owner_identity,
             implicit_delegate_retirement_overrides: self
                 .implicit_delegate_retirement_overrides
                 .clone(),
@@ -305,8 +300,6 @@ impl meerkat_core::service::MobToolsFactory for AutoWireParentMobToolsFactory {
 
 struct AutoWireParentMobToolDispatcher {
     inner: Arc<dyn meerkat_core::AgentToolDispatcher>,
-    state: Arc<meerkat_mob_mcp::MobMcpState>,
-    owner_identity: Option<String>,
     implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides,
 }
 
@@ -320,6 +313,8 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             .map(|tool| {
                 if tool.name == "delegate" {
                     Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
+                } else if tool.name == "mob_spawn_member" {
+                    Arc::new(mob_spawn_tool_def_with_idle_retire_secs(tool))
                 } else {
                     Arc::clone(tool)
                 }
@@ -338,28 +333,50 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         if call.name != "mob_spawn_member" {
             return self.inner.dispatch(call).await;
         }
+        self.dispatch_mob_spawn_member(call).await
+    }
 
+    fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn bind_ops_lifecycle(
+        self: Arc<Self>,
+        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        owner_bridge_session_id: meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError> {
+        let owned = Arc::try_unwrap(self)
+            .map_err(|_| meerkat_core::agent::OpsLifecycleBindError::SharedOwnership)?;
+        let outcome = owned
+            .inner
+            .bind_ops_lifecycle(registry, owner_bridge_session_id)?;
+        let was_bound = outcome.was_bound();
+        let dispatcher = Arc::new(Self {
+            inner: outcome.into_dispatcher(),
+            implicit_delegate_retirement_overrides: owned.implicit_delegate_retirement_overrides,
+        });
+        Ok(if was_bound {
+            meerkat_core::agent::BindOutcome::Bound(dispatcher)
+        } else {
+            meerkat_core::agent::BindOutcome::Skipped(dispatcher)
+        })
+    }
+}
+
+impl AutoWireParentMobToolDispatcher {
+    async fn dispatch_mob_spawn_member(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
         let mut args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
-        let mut auto_wire_parent = true;
+        let idle_retire_override = delegate_idle_retire_override_from_args(call.name, &mut args)?;
         if let Some(object) = args.as_object_mut() {
-            auto_wire_parent = object
-                .get("auto_wire_parent")
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
             object
                 .entry("auto_wire_parent".to_string())
                 .or_insert(Value::Bool(true));
         }
-        let mob_id = args
-            .get("mob_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let member_id = args
-            .get("member_id")
-            .and_then(Value::as_str)
-            .map(str::to_string);
         let args = serde_json::value::RawValue::from_string(args.to_string()).map_err(|error| {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
@@ -369,31 +386,12 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             args: &args,
         };
         let outcome = self.inner.dispatch(call).await?;
-        if auto_wire_parent
-            && let (Some(mob_id), Some(member_id), Some(owner_identity)) =
-                (mob_id, member_id, self.owner_identity.as_deref())
-            && member_id != owner_identity
-        {
-            self.state
-                .mob_wire(
-                    &meerkat_mob::MobId::from(mob_id.as_str()),
-                    meerkat_mob::AgentIdentity::from(member_id.as_str()),
-                    meerkat_mob::PeerTarget::Local(meerkat_mob::AgentIdentity::from(
-                        owner_identity,
-                    )),
-                )
-                .await
-                .map_err(|error| {
-                    meerkat_core::ToolError::execution_failed(format!(
-                        "spawned member but failed to wire to spawning agent: {error}"
-                    ))
-                })?;
-        }
+        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override)
+            .await;
+
         Ok(outcome)
     }
-}
 
-impl AutoWireParentMobToolDispatcher {
     async fn dispatch_delegate(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
@@ -412,6 +410,17 @@ impl AutoWireParentMobToolDispatcher {
         };
         let outcome = self.inner.dispatch(call).await?;
 
+        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override)
+            .await;
+
+        Ok(outcome)
+    }
+
+    async fn register_idle_retire_override_from_outcome(
+        &self,
+        outcome: &meerkat_core::ToolDispatchOutcome,
+        idle_retire_override: Option<DelegateIdleRetireOverride>,
+    ) {
         if !outcome.result.is_error
             && let Some(override_policy) = idle_retire_override
             && let Ok(payload) = serde_json::from_str::<Value>(&outcome.result.text_content())
@@ -424,8 +433,110 @@ impl AutoWireParentMobToolDispatcher {
                 .set(mob_id, member_id, override_policy)
                 .await;
         }
+    }
+}
 
-        Ok(outcome)
+struct DefinitionSeededRealmProfileStore {
+    inner: Arc<dyn meerkat_mob::RealmProfileStore>,
+    profiles: BTreeMap<String, Profile>,
+}
+
+impl DefinitionSeededRealmProfileStore {
+    fn new(
+        definition: &MobDefinition,
+        inner: Arc<dyn meerkat_mob::RealmProfileStore>,
+    ) -> Option<Self> {
+        let profiles = definition
+            .profiles
+            .iter()
+            .filter_map(|(name, binding)| {
+                binding
+                    .as_inline()
+                    .cloned()
+                    .map(|profile| (name.to_string(), profile))
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        (!profiles.is_empty()).then_some(Self { inner, profiles })
+    }
+
+    fn stored(&self, name: &str, profile: &Profile) -> meerkat_mob::StoredRealmProfile {
+        let now = chrono::Utc::now();
+        meerkat_mob::StoredRealmProfile {
+            name: name.to_string(),
+            profile: profile.clone(),
+            revision: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+impl meerkat_mob::RealmProfileStore for DefinitionSeededRealmProfileStore {
+    async fn create(
+        &self,
+        name: &str,
+        profile: &Profile,
+    ) -> Result<meerkat_mob::StoredRealmProfile, meerkat_mob::MobStoreError> {
+        if self.profiles.contains_key(name) {
+            return Err(meerkat_mob::MobStoreError::CasConflict(format!(
+                "realm profile already exists: {name}"
+            )));
+        }
+        self.inner.create(name, profile).await
+    }
+
+    async fn get(
+        &self,
+        name: &str,
+    ) -> Result<Option<meerkat_mob::StoredRealmProfile>, meerkat_mob::MobStoreError> {
+        if let Some(profile) = self.profiles.get(name) {
+            return Ok(Some(self.stored(name, profile)));
+        }
+        self.inner.get(name).await
+    }
+
+    async fn list(
+        &self,
+    ) -> Result<Vec<meerkat_mob::StoredRealmProfile>, meerkat_mob::MobStoreError> {
+        let mut merged = self.inner.list().await?;
+        merged.retain(|profile| !self.profiles.contains_key(profile.name.as_str()));
+        merged.extend(
+            self.profiles
+                .iter()
+                .map(|(name, profile)| self.stored(name, profile)),
+        );
+        merged.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(merged)
+    }
+
+    async fn update(
+        &self,
+        name: &str,
+        profile: &Profile,
+        expected_revision: u64,
+    ) -> Result<meerkat_mob::StoredRealmProfile, meerkat_mob::MobStoreError> {
+        if self.profiles.contains_key(name) {
+            return Err(meerkat_mob::MobStoreError::CasConflict(format!(
+                "realm profile '{name}' is provided by the mob definition"
+            )));
+        }
+        self.inner.update(name, profile, expected_revision).await
+    }
+
+    async fn delete(
+        &self,
+        name: &str,
+        expected_revision: u64,
+    ) -> Result<meerkat_mob::StoredRealmProfile, meerkat_mob::MobStoreError> {
+        if self.profiles.contains_key(name) {
+            return Err(meerkat_mob::MobStoreError::CasConflict(format!(
+                "realm profile '{name}' is provided by the mob definition"
+            )));
+        }
+        self.inner.delete(name, expected_revision).await
     }
 }
 
@@ -486,34 +597,80 @@ fn delegate_tool_def_with_idle_retire_secs(
     patched
 }
 
-fn owner_identity_from_comms_name(name: &str) -> Option<String> {
-    name.rsplit('/')
-        .next()
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
+fn mob_spawn_tool_def_with_idle_retire_secs(
+    tool: &meerkat_core::types::ToolDef,
+) -> meerkat_core::types::ToolDef {
+    let mut patched = tool.clone();
+    if !patched.description.contains("IDLE RETIREMENT:") {
+        patched.description.push_str(
+            "\n\nIDLE RETIREMENT:\n\
+             Omit idle_retire_secs to leave this spawned member out of auto-retirement. \
+             Pass an integer number of seconds to retire the member after it has been \
+             idle for that long. Pass null to explicitly disable auto-retirement.",
+        );
+    }
+    if let Some(properties) = patched
+        .input_schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        properties
+            .entry("idle_retire_secs".to_string())
+            .or_insert_with(|| {
+                serde_json::json!({
+                    "description": "Opt this spawned member into idle auto-retirement. Omit to keep the member indefinitely, use an integer number of seconds to retire after that much idle time, or null to explicitly disable auto-retirement.",
+                    "anyOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "null"}
+                    ]
+                })
+            });
+    }
+    patched
 }
 
 fn install_agent_mob_tools(
+    definition: &MobDefinition,
     slot: Arc<std::sync::RwLock<Option<Arc<dyn meerkat_core::service::MobToolsFactory>>>>,
     session_service: Arc<dyn MobSessionService>,
 ) -> (
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
+    SharedDefaultLlmClientSlot,
 ) {
-    let state = Arc::new(meerkat_mob_mcp::MobMcpState::new(session_service));
+    let default_llm_client_slot = Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
+    let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
+    let mut state = meerkat_mob_mcp::MobMcpState::new(session_service);
+    if let Some(base_store) = state.realm_profile_store().cloned()
+        && let Some(store) = DefinitionSeededRealmProfileStore::new(definition, base_store)
+    {
+        state = state.with_realm_profile_store(Some(Arc::new(store)));
+    }
+    state = state
+        .with_realm_skill_sources(definition.skills.clone())
+        .with_default_llm_client_provider(Some(Arc::new(move || {
+            default_llm_client_provider_slot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })));
+    let state = Arc::new(state);
     let implicit_delegate_retirement_overrides = ImplicitDelegateRetirementOverrides::default();
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
         Arc::clone(&state),
     ));
     let factory = Arc::new(AutoWireParentMobToolsFactory {
         inner,
-        state: Arc::clone(&state),
         implicit_delegate_retirement_overrides: implicit_delegate_retirement_overrides.clone(),
     });
     *slot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
-    (state, implicit_delegate_retirement_overrides)
+    (
+        state,
+        implicit_delegate_retirement_overrides,
+        default_llm_client_slot,
+    )
 }
 
 #[cfg(test)]
@@ -1313,6 +1470,42 @@ macro_rules! delegate_mob_session_service {
                     .apply_runtime_system_context_for_turn(session_id, appends)
                     .await
             }
+            async fn stage_runtime_system_context_for_active_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+            ) -> Result<Option<Vec<u8>>, SessionError> {
+                self.inner
+                    .stage_runtime_system_context_for_active_turn(
+                        session_id,
+                        expected_run_id,
+                        appends,
+                    )
+                    .await
+            }
+            async fn discard_runtime_system_context_for_active_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
+                idempotency_keys: Vec<String>,
+            ) -> Result<(), SessionError> {
+                self.inner
+                    .discard_runtime_system_context_for_active_turn(
+                        session_id,
+                        expected_run_id,
+                        idempotency_keys,
+                    )
+                    .await
+            }
+            async fn active_turn_system_context_boundary_available(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<bool>, SessionError> {
+                self.inner
+                    .active_turn_system_context_boundary_available(session_id)
+                    .await
+            }
             async fn discard_live_session(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -1661,6 +1854,38 @@ impl MobSessionService for AfterCreateMobSessionService {
             .apply_runtime_system_context_for_turn(session_id, appends)
             .await
     }
+    async fn stage_runtime_system_context_for_active_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+    ) -> Result<Option<Vec<u8>>, SessionError> {
+        self.inner
+            .stage_runtime_system_context_for_active_turn(session_id, expected_run_id, appends)
+            .await
+    }
+    async fn discard_runtime_system_context_for_active_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
+        idempotency_keys: Vec<String>,
+    ) -> Result<(), SessionError> {
+        self.inner
+            .discard_runtime_system_context_for_active_turn(
+                session_id,
+                expected_run_id,
+                idempotency_keys,
+            )
+            .await
+    }
+    async fn active_turn_system_context_boundary_available(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<bool>, SessionError> {
+        self.inner
+            .active_turn_system_context_boundary_available(session_id)
+            .await
+    }
     async fn discard_live_session(
         &self,
         session_id: &meerkat_core::types::SessionId,
@@ -1692,6 +1917,7 @@ pub struct MobBootstrapSpec {
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     pub(crate) implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
+    pub(crate) agent_mob_default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -1723,6 +1949,7 @@ impl MobBootstrapSpec {
             binary_blob_store: None,
             agent_mob_mcp_state: None,
             implicit_delegate_retirement_overrides: None,
+            agent_mob_default_llm_client_slot: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -1892,11 +2119,15 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: runtime_adapter.clone(),
         }) as Arc<dyn MobSessionService>;
-        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
-            install_agent_mob_tools(mob_tools_slot, Arc::clone(&session_service));
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2040,11 +2271,15 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
-        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
-            install_agent_mob_tools(mob_tools_slot, Arc::clone(&session_service));
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2150,11 +2385,15 @@ impl MobBootstrapSpec {
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
         }) as Arc<dyn MobSessionService>;
-        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
-            install_agent_mob_tools(mob_tools_slot, Arc::clone(&session_service));
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2277,6 +2516,16 @@ impl MobRuntime {
         let agent_mob_mcp_state = spec.agent_mob_mcp_state.clone();
         let implicit_delegate_retirement_overrides =
             spec.implicit_delegate_retirement_overrides.clone();
+        let default_llm_client = spec
+            .options
+            .default_llm_client
+            .clone()
+            .map(ReplaySanitizingLlmClient::wrap);
+        if let Some(slot) = spec.agent_mob_default_llm_client_slot.as_ref() {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = default_llm_client.clone();
+        }
         let effective_runtime_adapter = spec
             .runtime_adapter
             .clone()
@@ -2299,8 +2548,8 @@ impl MobRuntime {
             .allow_ephemeral_sessions(spec.options.allow_ephemeral_sessions)
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
 
-        if let Some(client) = spec.options.default_llm_client {
-            builder = builder.with_default_llm_client(ReplaySanitizingLlmClient::wrap(client));
+        if let Some(client) = default_llm_client {
+            builder = builder.with_default_llm_client(client);
         }
 
         let handle = builder.create().await?;
@@ -2693,6 +2942,94 @@ mod tests {
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn mob_spawn_tool_schema_exposes_opt_in_idle_retire_secs() {
+        let tool = meerkat_core::types::ToolDef::new(
+            "mob_spawn_member",
+            "Spawn member",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "profile": {"type": "string"},
+                    "member_id": {"type": "string"}
+                },
+                "required": ["profile", "member_id"]
+            }),
+        );
+
+        let patched = mob_spawn_tool_def_with_idle_retire_secs(&tool);
+        let idle_retire_secs = &patched.input_schema["properties"]["idle_retire_secs"];
+
+        assert!(
+            patched
+                .description
+                .contains("Omit idle_retire_secs to leave this spawned member out")
+        );
+        assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
+        assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
+        assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[tokio::test]
+    async fn auto_wire_wrapper_preserves_ops_lifecycle_binding() {
+        use meerkat_core::AgentToolDispatcher;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct BindAwareDispatcher {
+            bound: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl meerkat_core::AgentToolDispatcher for BindAwareDispatcher {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                Vec::<Arc<meerkat_core::types::ToolDef>>::new().into()
+            }
+
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Err(meerkat_core::ToolError::not_found(call.name))
+            }
+
+            fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+                meerkat_core::agent::DispatcherCapabilities {
+                    ops_lifecycle: true,
+                }
+            }
+
+            fn bind_ops_lifecycle(
+                self: Arc<Self>,
+                _registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+                _owner_bridge_session_id: meerkat_core::types::SessionId,
+            ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError>
+            {
+                self.bound.store(true, Ordering::SeqCst);
+                Ok(meerkat_core::agent::BindOutcome::Bound(self))
+            }
+        }
+
+        let bound = Arc::new(AtomicBool::new(false));
+        let dispatcher = Arc::new(AutoWireParentMobToolDispatcher {
+            inner: Arc::new(BindAwareDispatcher {
+                bound: Arc::clone(&bound),
+            }),
+            implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides::default(),
+        });
+
+        assert!(dispatcher.capabilities().ops_lifecycle);
+        let outcome = dispatcher
+            .bind_ops_lifecycle(
+                Arc::new(meerkat_runtime::ops_lifecycle::RuntimeOpsLifecycleRegistry::new()),
+                meerkat_core::types::SessionId::new(),
+            )
+            .expect("wrapper should delegate ops lifecycle binding");
+
+        assert!(outcome.was_bound());
+        assert!(bound.load(Ordering::SeqCst));
+        assert!(outcome.into_dispatcher().capabilities().ops_lifecycle);
     }
 
     #[test]
@@ -3501,6 +3838,34 @@ realm_profile = "worker-v2"
             self.record("archive_with_mob_lifecycle_authority");
             Ok(())
         }
+
+        async fn stage_runtime_system_context_for_active_turn(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _expected_run_id: &meerkat_core::lifecycle::RunId,
+            _appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+        ) -> Result<Option<Vec<u8>>, SessionError> {
+            self.record("stage_runtime_system_context_for_active_turn");
+            Ok(Some(b"snapshot".to_vec()))
+        }
+
+        async fn discard_runtime_system_context_for_active_turn(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _expected_run_id: &meerkat_core::lifecycle::RunId,
+            _idempotency_keys: Vec<String>,
+        ) -> Result<(), SessionError> {
+            self.record("discard_runtime_system_context_for_active_turn");
+            Ok(())
+        }
+
+        async fn active_turn_system_context_boundary_available(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<bool>, SessionError> {
+            self.record("active_turn_system_context_boundary_available");
+            Ok(Some(true))
+        }
     }
 
     #[tokio::test]
@@ -3529,9 +3894,42 @@ realm_profile = "worker-v2"
         .expect("stage_tool_results should forward to inner service");
 
         assert_eq!(staged.accepted_result_count, 7);
+        let boundary_available = wrapped
+            .active_turn_system_context_boundary_available(&session_id)
+            .await
+            .expect("active-turn boundary probe should forward");
+        assert_eq!(boundary_available, Some(true));
+        let snapshot = wrapped
+            .stage_runtime_system_context_for_active_turn(
+                &session_id,
+                &meerkat_core::lifecycle::RunId::new(),
+                vec![meerkat_core::session::PendingSystemContextAppend {
+                    text: "steer".to_string(),
+                    source: Some("test".to_string()),
+                    idempotency_key: Some("test".to_string()),
+                    accepted_at: meerkat_core::time_compat::SystemTime::now(),
+                }],
+            )
+            .await
+            .expect("active-turn staging should forward");
+        assert_eq!(snapshot.as_deref(), Some(&b"snapshot"[..]));
+        wrapped
+            .discard_runtime_system_context_for_active_turn(
+                &session_id,
+                &meerkat_core::lifecycle::RunId::new(),
+                vec!["test".to_string()],
+            )
+            .await
+            .expect("active-turn rollback should forward");
         assert_eq!(
             probe.calls(),
-            vec!["archive_with_mob_lifecycle_authority", "stage_tool_results",]
+            vec![
+                "archive_with_mob_lifecycle_authority",
+                "stage_tool_results",
+                "active_turn_system_context_boundary_available",
+                "stage_runtime_system_context_for_active_turn",
+                "discard_runtime_system_context_for_active_turn",
+            ]
         );
     }
 
@@ -3617,6 +4015,108 @@ realm_profile = "worker-v2"
             spec.session_service.runtime_adapter().is_some(),
             "session service must still expose a runtime adapter so autonomous-host comms can wire"
         );
+    }
+
+    #[tokio::test]
+    async fn agent_mob_tools_expose_definition_profiles_as_realm_profiles() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"test\"\n\n[profiles.investigation-worker]\nmodel = \"gpt-5.5\"\n[profiles.investigation-worker.tools]\ncomms = true\nmob = true\n\n[profiles.person-worker]\nmodel = \"gpt-5.5\"\n[profiles.person-worker.tools]\ncomms = true\n",
+        ) else {
+            panic!("failed to parse mob definition with worker profiles");
+        };
+
+        let spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            None,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        let state = spec
+            .agent_mob_mcp_state
+            .expect("agent mob MCP state should be installed");
+
+        let profiles = state
+            .realm_profile_list()
+            .await
+            .expect("definition profiles should list through agent mob tools");
+        let names = profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            names.contains(&"investigation-worker"),
+            "definition profiles must be visible to mob_profile_list so agents can create mobs that reference them"
+        );
+        assert!(names.contains(&"person-worker"));
+
+        let worker = state
+            .realm_profile_get("investigation-worker")
+            .await
+            .expect("definition profile lookup should succeed")
+            .expect("definition profile should exist");
+        assert_eq!(worker.profile.model, "gpt-5.5");
+        assert_eq!(
+            worker.revision, 0,
+            "definition-backed profiles are immutable runtime seeds, not persisted realm revisions"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_created_mobs_can_spawn_definition_seeded_realm_profiles() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("{e}"));
+        let store_path = dir.path().to_path_buf();
+        let Ok(parent_definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"parent\"\n\n[profiles.investigation-worker]\nmodel = \"gpt-5.5\"\n[profiles.investigation-worker.tools]\ncomms = true\nmob = true\n",
+        ) else {
+            panic!("failed to parse parent mob definition");
+        };
+
+        let mut spec = MobBootstrapSpec::ephemeral_runtime_backed_inner(
+            parent_definition,
+            meerkat_mob::MobStorage::in_memory(),
+            store_path,
+            4,
+            None,
+            None,
+            None,
+            CapabilityFlags::default(),
+            None,
+        );
+        spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
+        let runtime = MobRuntime::bootstrap(spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let state = runtime
+            .agent_mob_mcp_state
+            .clone()
+            .expect("agent mob MCP state should be installed");
+        let Ok(child_definition) = meerkat_mob::MobDefinition::from_toml(
+            "[mob]\nid = \"child\"\n\n[profiles.investigation-worker]\nrealm_profile = \"investigation-worker\"\n",
+        ) else {
+            panic!("failed to parse child mob definition");
+        };
+
+        let mob_id = state
+            .mob_create_definition(child_definition)
+            .await
+            .expect("child mob should be created");
+        state
+            .mob_spawn_spec(
+                &mob_id,
+                SpawnMemberSpec::new(
+                    ProfileName::from("investigation-worker"),
+                    meerkat_mob::AgentIdentity::from("investigation-worker:one"),
+                ),
+            )
+            .await
+            .expect("created mob should resolve definition-seeded realm profile at spawn time");
     }
 
     #[tokio::test]

@@ -32,11 +32,11 @@ import {
   buildRoutingSectionView,
   buildSidebarViewState,
   createUserEntry,
+  appendOptimisticConversationEntry,
   inferResponsePhaseFromFrames,
   mapFramesToTimelineEntries,
   optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
-  sortConversationTimelineEntries,
   type MobKitDockTarget,
   type OptimisticUserMessage,
 } from "./lib/adapters";
@@ -627,11 +627,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   function busyTransitionForFrame(frame: ConsoleFrame): boolean | null {
-    if (
-      frame.event === "user_input" ||
-      frame.event === "interaction_started" ||
-      frame.event === "run_started"
-    ) {
+    if (frame.event === "user_input") {
+      return isTerminalUserInputStatus(frame.status) ? false : true;
+    }
+    if (frame.event === "interaction_started" || frame.event === "run_started") {
       return true;
     }
     if (
@@ -646,6 +645,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       return false;
     }
     return null;
+  }
+
+  function isTerminalUserInputStatus(status?: string): boolean {
+    return status === "completed" || status === "delivery_failed" || status === "failed";
   }
 
   function busyTransitionSortRank(frame: ConsoleFrame): number {
@@ -838,20 +841,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // Persistence: localStorage under `mobkit-pending-stack:<identity>`.
   // Cross-tab sync: a `storage` event listener mirrors changes from
   // other tabs into the in-memory ref. Items in transient animation
-  // states (entering/promoting/trashing/draining) are stripped before
-  // persisting so the next reload doesn't render mid-animation rows.
+  // states are stripped or leased before persisting so reloads do not
+  // resurrect an in-flight animation without the timer that owned it.
   // ──────────────────────────────────────────────────────────────
   const pendingStackRef = React.useRef<Record<string, PendingItem[]>>({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
+  const PENDING_DRAIN_CLAIM_TTL_MS = 15_000;
   const stackKeyFor = (identity: string) =>
     `${PENDING_STACK_KEY_PREFIX}${identity}`;
 
-  function loadPendingStack(identity: string): PendingItem[] {
+  function loadPendingStack(
+    identity: string,
+    opts: { preserveFreshDraining?: boolean } = {},
+  ): PendingItem[] {
     try {
       const raw = localStorage.getItem(stackKeyFor(identity));
       if (!raw) return [];
       const parsed = JSON.parse(raw) as unknown;
       if (!Array.isArray(parsed)) return [];
+      const now = Date.now();
       return parsed
         .filter((it): it is PendingItem => {
           if (!it || typeof it !== "object") return false;
@@ -862,7 +870,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             typeof r.addedAt === "number"
           );
         })
-        .map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+        .map((it) => {
+          const r = it as Record<string, unknown>;
+          const drainClaimedAt =
+            typeof r.drainClaimedAt === "number"
+              ? r.drainClaimedAt
+              : undefined;
+          const freshDrainClaim =
+            opts.preserveFreshDraining === true &&
+            r.status === "draining" &&
+            typeof r.drainClaim === "string" &&
+            typeof drainClaimedAt === "number" &&
+            now - drainClaimedAt < PENDING_DRAIN_CLAIM_TTL_MS;
+          return {
+            id: it.id,
+            text: it.text,
+            addedAt: it.addedAt,
+            status: freshDrainClaim ? ("draining" as const) : null,
+            drainClaim: freshDrainClaim ? r.drainClaim : undefined,
+            drainClaimedAt: freshDrainClaim ? drainClaimedAt : undefined,
+          };
+        });
     } catch {
       return [];
     }
@@ -870,16 +898,27 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function persistPendingStack(identity: string, items: PendingItem[]) {
     try {
-      // Strip transient animation flags before persisting — the next
-      // reload would otherwise paint a row mid-fade.
+      // Strip purely visual transient flags before persisting. Keep fresh
+      // draining claims so multiple open tabs do not all auto-drain the same
+      // queued item when they observe the same busy→idle transition.
       const clean = items
         .filter(
           (it) =>
             it.status !== "trashing" &&
-            it.status !== "draining" &&
             it.status !== "promoting",
         )
-        .map((it) => ({ id: it.id, text: it.text, addedAt: it.addedAt }));
+        .map((it) => ({
+          id: it.id,
+          text: it.text,
+          addedAt: it.addedAt,
+          ...(it.status === "draining"
+            ? {
+                status: "draining",
+                drainClaim: it.drainClaim,
+                drainClaimedAt: it.drainClaimedAt,
+              }
+            : {}),
+        }));
       if (clean.length === 0) {
         localStorage.removeItem(stackKeyFor(identity));
       } else {
@@ -916,7 +955,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const onStorage = (e: StorageEvent) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
-      pendingStackRef.current[identity] = loadPendingStack(identity);
+      pendingStackRef.current[identity] = loadPendingStack(identity, {
+        preserveFreshDraining: true,
+      });
       forceRender();
     };
     window.addEventListener("storage", onStorage);
@@ -1057,6 +1098,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const elapsedMs = Date.now() - (phaseSinceByKey.current[panelKey] ?? 0);
     switch (frame.event) {
       case "user_input":
+        if (isTerminalUserInputStatus(frame.status)) return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, "waiting");
       case "interaction_started":
         return commitPanelPhase(panelKey, "waiting");
       case "tool_call_requested":
@@ -1850,14 +1893,39 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (!text && attachments.length === 0) return false;
 
     const stack = getPendingStack(identity);
-    const shouldQueue = isIdentityBusy(identity) || stack.length > 0;
+    const visiblePhase =
+      phaseValueByKey.current[panelKey] ?? phaseRef.current[panelKey] ?? null;
+    const agentPhase =
+      agentsRef.current.find((candidate) =>
+        [candidate.identity, candidate.member_id, candidate.agent_id].includes(
+          identity,
+        ),
+      )?.response_phase ?? null;
+    const shouldQueue =
+      isIdentityBusy(identity) ||
+      visiblePhase !== null ||
+      agentPhase !== null ||
+      stack.length > 0;
+
+    const clearSubmittedDraft = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== rawDraft) return current;
+        return { ...current, [panelKey]: "" };
+      });
+    };
+    const restoreSubmittedDraftIfEmpty = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== "") return current;
+        return { ...current, [panelKey]: rawDraft };
+      });
+    };
 
     if (!shouldQueue || attachments.length > 0) {
       // Idle + empty stack: bypass straight to the wire.
       // Clear the text before awaiting the RPC so a busy runtime cannot
       // freeze the visible composer with the just-submitted draft still in it.
       if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       }
       const sent = await submitMessageNow(
         panelId,
@@ -1867,9 +1935,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         attachments,
       );
       if (sent) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       } else if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: rawDraft }));
+        restoreSubmittedDraftIfEmpty();
       }
       return sent;
     }
@@ -1882,7 +1950,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ...prev,
       { id: newId, text, addedAt: Date.now(), status: "entering" },
     ]);
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    clearSubmittedDraft();
     window.setTimeout(() => {
       setPendingStack(identity, (prev) =>
         prev.map((it) =>
@@ -1909,6 +1977,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         false)
       : false;
   const animMs = (ms: number) => (reducedMotion ? 0 : ms);
+  const pendingDrainOwnerRef = React.useRef(
+    `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+  );
 
   function findChatTargetFor(
     identity: string,
@@ -2022,12 +2093,12 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   /// Auto-drain hook — fires when an identity transitions busy→idle
   /// AND has pending items. Pops the head, plays the drain animation,
-  /// then submits via `submitMessageNow` with mode `Queue`. The next
-  /// `interaction_started` will flip identityBusyRef back to true,
-  /// so the remaining queue waits for the next idle window.
+  /// then submits via `submitMessageNow` with normal queue handling.
   function maybeDrainHead(identity: string) {
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
+    const target = findChatTargetFor(identity);
+    if (!target) return;
     // Only drain if no item is already mid-drain or mid-promotion.
     if (
       stack.some((it) => it.status === "draining" || it.status === "promoting")
@@ -2035,24 +2106,42 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       return;
     const head = stack.find((it) => !it.status || it.status === "entering");
     if (!head) return;
+    const drainClaim = `${pendingDrainOwnerRef.current}:${head.id}:${Date.now().toString(36)}`;
+    const drainClaimedAt = Date.now();
     setPendingStack(identity, (prev) =>
       prev.map((it) =>
-        it.id === head.id ? { ...it, status: "draining" } : it,
+        it.id === head.id
+          ? { ...it, status: "draining", drainClaim, drainClaimedAt }
+          : it,
       ),
     );
     window.setTimeout(() => {
-      setPendingStack(identity, (prev) =>
-        prev.filter((it) => it.id !== head.id),
-      );
+      const persistedHead = loadPendingStack(identity, {
+        preserveFreshDraining: true,
+      }).find((it) => it.id === head.id);
+      if (persistedHead?.drainClaim !== drainClaim) return;
       const target = findChatTargetFor(identity);
-      if (target) {
-        void submitMessageNow(
-          target.panelId,
-          target.target,
-          head.text,
-          "queue",
+      if (!target) {
+        setPendingStack(identity, (prev) =>
+          prev.map((it) =>
+            it.id === head.id && it.drainClaim === drainClaim
+              ? { ...it, status: null, drainClaim: undefined }
+              : it,
+          ),
         );
+        return;
       }
+      setPendingStack(identity, (prev) =>
+        prev.filter(
+          (it) => it.id !== head.id || it.drainClaim !== drainClaim,
+        ),
+      );
+      void submitMessageNow(
+        target.panelId,
+        target.target,
+        head.text,
+        "queue",
+      );
     }, animMs(420));
   }
 
@@ -2287,11 +2376,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
 
+    // `conversationEntries` are already in canonical frame/cursor order.
+    // Re-sorting rendered entries by createdAt can move terminal history
+    // text above live tool cards when those timestamps differ.
     const entries = sanitizeConversationEntries(
-      sortConversationTimelineEntries([
-        ...conversationEntries,
-        ...(optimisticEntry ? [optimisticEntry] : []),
-      ]),
+      appendOptimisticConversationEntry(conversationEntries, optimisticEntry),
     );
 
     const conversation = buildConversationViewState({
@@ -2307,10 +2396,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       phaseRef.current,
       panelKey,
     );
+    const honorLocalPhase = hasLocalPhase && (isSending || optimisticEntry !== null);
     const phase = resolvePanelResponsePhase({
       frames: sortedFrames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)),
-      localPhase: phaseRef.current[panelKey] ?? null,
-      hasLocalPhase,
+      localPhase: honorLocalPhase ? phaseRef.current[panelKey] ?? null : null,
+      hasLocalPhase: honorLocalPhase,
       serverPhase: agent?.response_phase ?? null,
     });
     const canRespawn =

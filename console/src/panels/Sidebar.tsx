@@ -178,6 +178,11 @@ function findSpawnHost(a: ConsoleAgent, agents: ConsoleAgent[], commander: Conso
   );
   if (commanderHost) return commanderHost;
 
+  const wiredNonWorkerHost = agents.find((candidate) =>
+    candidate.member_id !== a.member_id && !isWorkerish(candidate) && isWiredTo(a, candidate),
+  );
+  if (wiredNonWorkerHost) return wiredNonWorkerHost;
+
   const workerHost = agents.find((candidate) =>
     candidate.member_id !== a.member_id && isWorkerish(candidate) && isWiredTo(a, candidate),
   );
@@ -253,16 +258,21 @@ function configuredAgentGroup(
 ): string | null {
   const selectors = configuredSelectors(config, "group_by");
   if (selectors.length === 0) return null;
+  const chain: ConsoleAgent[] = [];
   let current: ConsoleAgent | undefined = agent;
   const seen = new Set<string>();
-  while (current) {
-    const value = firstConfiguredValue(current, selectors);
-    if (value) return value;
-    if (!parentById || !byId || seen.has(current.member_id)) break;
+  while (current && !seen.has(current.member_id)) {
     seen.add(current.member_id);
+    chain.push(current);
+    if (!parentById || !byId) break;
     const parentId = parentById.get(current.member_id);
     if (!parentId) break;
     current = byId.get(parentId);
+  }
+  const searchOrder = chain.length > 1 ? [...chain].reverse() : chain;
+  for (const candidate of searchOrder) {
+    const value = firstConfiguredValue(candidate, selectors);
+    if (value) return value;
   }
   return config?.fallback_group?.trim() || "Agents";
 }

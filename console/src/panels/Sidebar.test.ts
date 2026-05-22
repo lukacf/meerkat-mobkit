@@ -79,6 +79,78 @@ test("sidebar resolves worker-spawned workers under their worker host", () => {
   );
 });
 
+test("sidebar nests workers under wired non-worker hosts", () => {
+  const investigator: ConsoleAgent = {
+    agent_id: "rt:deep-investigator:singleton:0",
+    member_id: "rt:deep-investigator:singleton:0",
+    identity: "deep-investigator:singleton",
+    label: "Deep Investigator",
+    kind: "mob_agent",
+    role: "deep-investigator",
+    group: "Coordinators",
+    wired_to: ["investigation-worker-daily-candy"],
+  };
+  const worker: ConsoleAgent = {
+    agent_id: "investigation-worker-daily-candy",
+    member_id: "investigation-worker-daily-candy",
+    identity: "investigation-worker-daily-candy",
+    label: "investigation-worker-daily-candy",
+    kind: "mob_agent",
+    role: "investigation-worker",
+    group: "worker",
+    wired_to: ["deep-investigator:singleton"],
+  };
+  const agents = [worker, investigator];
+
+  assert.equal(__sidebarTest.findSpawnHost(worker, agents, null)?.member_id, "rt:deep-investigator:singleton:0");
+  assert.deepEqual(
+    __sidebarTest.groupSidebarAgents(agents).get("Coordinators")?.map((row) => [
+      row.agent.member_id,
+      row.depth,
+    ]),
+    [
+      ["rt:deep-investigator:singleton:0", 0],
+      ["investigation-worker-daily-candy", 1],
+    ],
+  );
+});
+
+test("sidebar configured grouping keeps spawned investigation workers under their coordinator host", () => {
+  const investigator: ConsoleAgent = {
+    agent_id: "rt:deep-investigator:singleton:0",
+    member_id: "rt:deep-investigator:singleton:0",
+    identity: "deep-investigator:singleton",
+    label: "Deep Investigator",
+    kind: "mob_agent",
+    role: "deep-investigator",
+    group: "Coordinators",
+    wired_to: ["investigation-worker-nested-spawn-1"],
+  };
+  const worker: ConsoleAgent = {
+    agent_id: "investigation-worker-nested-spawn-1",
+    member_id: "investigation-worker-nested-spawn-1",
+    identity: "investigation-worker-nested-spawn-1",
+    label: "investigation-worker-nested-spawn-1",
+    kind: "mob_agent",
+    role: "investigation-worker",
+    group: "investigation-worker",
+    wired_to: ["deep-investigator:singleton"],
+  };
+  const grouped = __sidebarTest.groupSidebarAgents([worker, investigator], {
+    group_by: ["labels.console_group", "group", "role"],
+    section_order: ["Coordinators", "investigation-worker"],
+  });
+
+  assert.equal(grouped.has("investigation-worker"), false);
+  assert.deepEqual(
+    grouped.get("Coordinators")?.map((row) => [row.agent.member_id, row.depth]),
+    [
+      ["rt:deep-investigator:singleton:0", 0],
+      ["investigation-worker-nested-spawn-1", 1],
+    ],
+  );
+});
+
 test("sidebar resolves worker-spawned workers from implicit delegate parent refs", () => {
   const commander: ConsoleAgent = {
     agent_id: "incident-commander",

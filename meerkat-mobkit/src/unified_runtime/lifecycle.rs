@@ -212,10 +212,15 @@ impl UnifiedRuntime {
     /// consumers will never see agent responses.
     pub async fn drain_mob_agent_events(&self) -> Result<(), UnifiedRuntimeError> {
         let mut disconnected = false;
-        let mut ingress_guard = self
-            .mob_event_ingress
-            .try_lock()
-            .map_err(|_| UnifiedRuntimeError::RuntimeShuttingDown)?;
+        let mut ingress_guard = match self.mob_event_ingress.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                // A previous drain tick may still be projecting a burst of
+                // events. Skip this tick instead of killing the host-owned
+                // background drain task.
+                return Ok(());
+            }
+        };
         let ingress = match ingress_guard.as_mut() {
             Some(i) => i,
             None => return Ok(()),
@@ -268,9 +273,6 @@ impl UnifiedRuntime {
     pub(super) async fn close_event_router(&self) {
         let ingress = self.mob_event_ingress.lock().await.take();
         match ingress {
-            Some(MobEventIngress::Pull(router)) => {
-                router.cancel();
-            }
             Some(MobEventIngress::Forwarder(forwarder)) => {
                 let task = forwarder.task;
                 task.abort();
@@ -290,10 +292,6 @@ impl UnifiedRuntime {
         ingress: &mut MobEventIngress,
     ) -> Option<Result<EventEnvelope<UnifiedEvent>, TryRecvError>> {
         Some(match ingress {
-            MobEventIngress::Pull(router) => router
-                .event_rx
-                .try_recv()
-                .map(super::attributed_event_to_unified),
             MobEventIngress::Forwarder(forwarder) => forwarder.event_rx.try_recv(),
         })
     }

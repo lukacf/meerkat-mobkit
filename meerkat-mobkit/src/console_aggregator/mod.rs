@@ -8,10 +8,11 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::future::join_all;
+use meerkat_core::types::HandlingMode;
 use meerkat_core::{ContentInput, Message};
-use meerkat_mob::MobHandle;
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
+use meerkat_mob::{MobError, MobHandle};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Semaphore, broadcast, oneshot};
@@ -19,7 +20,7 @@ use tokio::sync::{Semaphore, broadcast, oneshot};
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
 use crate::mob_handle_runtime::{
-    MobRuntime, assert_member_accepts_images, send_message_on_mob_with_mode,
+    MobRuntime, MobRuntimeError, assert_member_accepts_images, send_message_on_mob_with_mode,
 };
 use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
@@ -734,7 +735,9 @@ impl MobKitConsoleAggregator {
             .map_err(ConsoleSendError::State)?;
         let session_id = resolved
             .handle
-            .resolve_bridge_session_id(&MeerkatId::from(resolved.runtime_identity.as_str()))
+            .resolve_bridge_session_id_observation(&MeerkatId::from(
+                resolved.runtime_identity.as_str(),
+            ))
             .await
             .map(|sid| sid.to_string());
         let mut new_frame = NewConsoleFrame {
@@ -959,6 +962,37 @@ impl MobKitConsoleAggregator {
         Ok(())
     }
 
+    pub async fn mark_interaction_delivered(
+        &self,
+        input_frame_id: &str,
+    ) -> Result<(), ConsoleSendError> {
+        update_frame_status_and_emit(&self.inner, input_frame_id, ConsoleFrameStatus::Delivered)
+            .await
+            .map_err(ConsoleSendError::Log)?;
+        Ok(())
+    }
+
+    pub async fn mark_steer_interaction_delivered(
+        &self,
+        input_frame_id: &str,
+        interaction_id: &str,
+    ) -> Result<(), ConsoleSendError> {
+        let Some(updated) = update_frame_status_and_emit(
+            &self.inner,
+            input_frame_id,
+            ConsoleFrameStatus::Delivered,
+        )
+        .await
+        .map_err(ConsoleSendError::Log)?
+        else {
+            return Ok(());
+        };
+        append_steer_delivery_terminal(&self.inner, &updated, interaction_id)
+            .await
+            .map_err(ConsoleSendError::Log)?;
+        Ok(())
+    }
+
     pub async fn binary_blob_store_for_identity(
         &self,
         identity: &str,
@@ -1033,7 +1067,7 @@ impl MobKitConsoleAggregator {
             {
                 let session_id = resolved
                     .handle
-                    .resolve_bridge_session_id(&resolved.member.agent_identity)
+                    .resolve_bridge_session_id_observation(&resolved.member.agent_identity)
                     .await
                     .map(|sid| sid.to_string())
                     .unwrap_or_default();
@@ -1185,7 +1219,7 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     let mut resolved = Vec::new();
     let primary_handle = entry.runtime.handle();
     let primary_mob_id = primary_handle.mob_id().to_string();
-    for member in primary_handle.list_members_including_retiring().await {
+    for member in primary_handle.list_members_observation_snapshot().await {
         resolved.push(ResolvedConsoleMember {
             entry: entry.clone(),
             handle: primary_handle.clone(),
@@ -1200,14 +1234,11 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
     if !entry.visibility_policy.include_implicit_delegate_members() {
         return resolved;
     }
-    for (mob_id, _state) in state.mob_list().await {
+    for (mob_id, handle) in state.mob_handles_snapshot().await {
         if mob_id.as_str() == primary_mob_id {
             continue;
         }
-        let Ok(handle) = state.handle_for(&mob_id).await else {
-            continue;
-        };
-        for member in handle.list_members_including_retiring().await {
+        for member in handle.list_members_observation_snapshot().await {
             resolved.push(ResolvedConsoleMember {
                 entry: entry.clone(),
                 handle: handle.clone(),
@@ -1234,7 +1265,7 @@ async fn dispatch_message_to_resolved_member(
     .await
     {
         Ok(session_id) => Ok(session_id),
-        Err(err) if err.to_string().contains("not externally addressable") => {
+        Err(err) if is_not_externally_addressable(&err) => {
             let member = resolved
                 .handle
                 .member(&mid)
@@ -1246,13 +1277,20 @@ async fn dispatch_message_to_resolved_member(
                 .map_err(|err| err.to_string())?;
             resolved
                 .handle
-                .resolve_bridge_session_id(&mid)
+                .resolve_bridge_session_id_observation(&mid)
                 .await
                 .map(|sid| sid.to_string())
                 .ok_or_else(|| "member has no bridge session after internal turn".to_string())
         }
         Err(err) => Err(err.to_string()),
     }
+}
+
+fn is_not_externally_addressable(err: &MobRuntimeError) -> bool {
+    matches!(
+        err,
+        MobRuntimeError::Mob(MobError::NotExternallyAddressable(_))
+    )
 }
 
 fn spawn_console_send_dispatch(
@@ -1279,6 +1317,17 @@ fn spawn_console_send_dispatch(
                         frame_id = %user_frame.id,
                         error = %err,
                         "failed to update console send delivery status"
+                    );
+                }
+                if handling_mode == HandlingMode::Steer
+                    && let Err(err) =
+                        append_steer_delivery_terminal(&inner, &user_frame, &interaction_id).await
+                {
+                    tracing::warn!(
+                        frame_id = %user_frame.id,
+                        interaction_id = %interaction_id,
+                        error = %err,
+                        "failed to append console steer terminal frame"
                     );
                 }
             }
@@ -1328,6 +1377,42 @@ fn spawn_console_send_dispatch(
             }
         }
     });
+}
+
+async fn append_steer_delivery_terminal(
+    inner: &AggregatorInner,
+    user_frame: &ConsoleFrame,
+    interaction_id: &str,
+) -> ConsoleLogResult<AppendOutcome> {
+    append_and_emit(
+        inner,
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: format!("steer-delivered:{}", user_frame.id),
+            timestamp_ms: current_time_ms(),
+            runtime_key: user_frame.runtime_key.clone(),
+            identity: user_frame.identity.clone(),
+            conversation_id: user_frame.conversation_id.clone(),
+            session_id: user_frame.session_id.clone(),
+            kind: "interaction_complete".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "reason": "steer_delivered",
+                "handling_mode": "steer",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Synthetic,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: Some(interaction_id.to_string()),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: Some(user_frame.id.clone()),
+            caused_by_frame_id: Some(user_frame.id.clone()),
+        },
+    )
+    .await
 }
 
 #[derive(Debug)]
@@ -2360,6 +2445,7 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .get("content")
             .map(stable_value_fingerprint)
             .or_else(|| payload.get("message").map(stable_value_fingerprint)),
+        "tool_execution_completed" => tool_result_fingerprint(payload),
         "text_delta" => {
             text_delta_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
         }
@@ -2368,6 +2454,19 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn tool_result_fingerprint(payload: &Value) -> Option<String> {
+    let id = payload
+        .get("tool_call_id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let result = payload
+        .get("result")
+        .or_else(|| payload.get("content"))
+        .map(stable_value_fingerprint)?;
+    Some(format!("{id}:{result}"))
 }
 
 fn assistant_terminal_fingerprint(kind: &str, payload: &Value) -> Option<String> {
@@ -2394,9 +2493,30 @@ fn text_delta_payload_text<'a>(kind: &str, payload: &'a Value) -> Option<&'a str
 }
 
 fn stable_value_fingerprint(value: &Value) -> String {
+    if let Some(text) = content_value_text(value) {
+        return normalize_transcript_fingerprint_text(&text);
+    }
     match value {
         Value::String(text) => normalize_transcript_fingerprint_text(text),
         other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+fn content_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(content_value_text)
+                .collect::<String>();
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(map) => ["text", "content", "message", "blocks"]
+            .iter()
+            .filter_map(|key| map.get(*key))
+            .find_map(content_value_text),
+        _ => None,
     }
 }
 
@@ -2509,7 +2629,7 @@ async fn identity_record_for_member(
         ConsoleVisibility::Hidden
     };
     let session_id = handle
-        .resolve_bridge_session_id(&member.agent_identity)
+        .resolve_bridge_session_id_observation(&member.agent_identity)
         .await
         .map(|sid| sid.to_string());
     let display_name = member
@@ -3641,6 +3761,13 @@ comms = true
             .await
             .expect("identity record exists");
         let session_id = record.session_id.expect("agent-a has a session");
+        wait_for_runtime_session_history_text(
+            &runtime,
+            &session_id,
+            "You are agent-a.",
+            Duration::from_secs(5),
+        )
+        .await?;
 
         let aggregator = MobKitConsoleAggregator::in_memory();
         aggregator
@@ -3719,6 +3846,48 @@ comms = true
         ))
     }
 
+    async fn wait_for_runtime_session_history_text(
+        runtime: &UnifiedRuntime,
+        session_id: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        let mut observed = Vec::new();
+        while Instant::now() < deadline {
+            let page = runtime
+                .mob_runtime()
+                .read_session_history(session_id, 0, Some(20))
+                .await
+                .map_err(|err| err.to_string())?;
+            observed = page.messages;
+            if observed.iter().enumerate().any(|(idx, message)| {
+                let Some(message) = serde_json::to_value(message).ok() else {
+                    return false;
+                };
+                frames_from_session_history_message(
+                    "runtime-a",
+                    "test/agent-a",
+                    session_id,
+                    idx,
+                    message,
+                )
+                .iter()
+                .any(|frame| {
+                    frame.kind == "user_input"
+                        && session_history_frame_content_text(frame).as_deref() == Some(expected)
+                })
+            }) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+
+        Err(format!(
+            "runtime session history text {expected:?} was not readable before watermark setup; observed messages: {observed:#?}",
+        ))
+    }
+
     async fn wait_for_identity_record(
         aggregator: &MobKitConsoleAggregator,
         identity: &str,
@@ -3746,13 +3915,21 @@ comms = true
     }
 
     fn session_history_content_text(frame: &ConsoleFrame) -> Option<String> {
-        if let Some(text) = frame.payload.get("text").and_then(Value::as_str) {
+        session_history_payload_text(&frame.payload)
+    }
+
+    fn session_history_frame_content_text(frame: &NewConsoleFrame) -> Option<String> {
+        session_history_payload_text(&frame.payload)
+    }
+
+    fn session_history_payload_text(payload: &Value) -> Option<String> {
+        if let Some(text) = payload.get("text").and_then(Value::as_str) {
             return Some(text.to_string());
         }
-        if let Some(text) = frame.payload.get("result").and_then(Value::as_str) {
+        if let Some(text) = payload.get("result").and_then(Value::as_str) {
             return Some(text.to_string());
         }
-        match frame.payload.get("content")? {
+        match payload.get("content")? {
             Value::String(text) => Some(text.clone()),
             Value::Array(blocks) => Some(
                 blocks
@@ -4084,6 +4261,72 @@ comms = true
     }
 
     #[tokio::test]
+    async fn steer_delivery_appends_terminal_control_frame() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let frame = NewConsoleFrame {
+            id: None,
+            dedupe_key: "send-steer-1".to_string(),
+            timestamp_ms: 1,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-1".to_string()),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Delivered,
+            payload: json!({
+                "content": "operator steer",
+                "handling_mode": "steer",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Send,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: Some("interaction-steer-1".to_string()),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+        let inserted = aggregator
+            .store()
+            .append_if_absent(frame)
+            .await
+            .expect("append steer input");
+
+        append_steer_delivery_terminal(&aggregator.inner, &inserted.frame, "interaction-steer-1")
+            .await
+            .expect("append steer terminal");
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                after: Some(inserted.frame.cursor.clone()),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query timeline");
+
+        assert_eq!(page.frames.len(), 1);
+        let terminal = &page.frames[0];
+        assert_eq!(terminal.kind, "interaction_complete");
+        assert_eq!(terminal.status, ConsoleFrameStatus::Completed);
+        assert_eq!(
+            terminal.interaction_id.as_deref(),
+            Some("interaction-steer-1")
+        );
+        assert_eq!(
+            terminal.parent_frame_id.as_deref(),
+            Some(inserted.frame.id.as_str())
+        );
+        assert_eq!(
+            terminal.payload.get("reason").and_then(Value::as_str),
+            Some("steer_delivered")
+        );
+    }
+
+    #[tokio::test]
     async fn history_counterpart_scan_is_not_capped_to_one_page() {
         let aggregator = MobKitConsoleAggregator::in_memory();
         for idx in 0..1_005 {
@@ -4215,6 +4458,137 @@ comms = true
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:2".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_content_block_user_prompts() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "live-user-input".to_string(),
+                timestamp_ms: 2_000,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "content": "hello from operator" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("live-user-input".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append live input");
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-user-input".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "content": [{ "type": "text", "text": "hello from operator" }]
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:2".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_live_tool_results() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "live-tool-result".to_string(),
+                timestamp_ms: 2_000,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                kind: "tool_execution_completed".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({
+                    "id": "call-1",
+                    "tool_call_id": "call-1",
+                    "result": "{ \"count\": 70 }"
+                }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("live-tool-result".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append live tool result");
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-tool-result".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "tool_execution_completed".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "id": "call-1",
+                "tool_call_id": "call-1",
+                "result": "{ \"count\": 70 }",
+                "content": [{ "type": "text", "text": "{ \"count\": 70 }" }]
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:3:0".to_string()),
             },
             source_event_id: None,
             interaction_id: None,

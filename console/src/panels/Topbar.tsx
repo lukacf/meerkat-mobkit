@@ -90,7 +90,7 @@ export function Topbar({
           data-testid="theme-toggle"
           title={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
         >
-          {theme === "dark" ? "☀ light" : "☾ dark"}
+          {theme === "dark" ? "☾ dark" : "☀ light"}
         </button>
       </div>
       {railVisible ? (
