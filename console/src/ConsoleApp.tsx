@@ -1887,12 +1887,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       agentPhase !== null ||
       stack.length > 0;
 
+    const clearSubmittedDraft = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== rawDraft) return current;
+        return { ...current, [panelKey]: "" };
+      });
+    };
+    const restoreSubmittedDraftIfEmpty = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== "") return current;
+        return { ...current, [panelKey]: rawDraft };
+      });
+    };
+
     if (!shouldQueue || attachments.length > 0) {
       // Idle + empty stack: bypass straight to the wire.
       // Clear the text before awaiting the RPC so a busy runtime cannot
       // freeze the visible composer with the just-submitted draft still in it.
       if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       }
       const sent = await submitMessageNow(
         panelId,
@@ -1902,9 +1915,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         attachments,
       );
       if (sent) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       } else if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: rawDraft }));
+        restoreSubmittedDraftIfEmpty();
       }
       return sent;
     }
@@ -1917,7 +1930,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       ...prev,
       { id: newId, text, addedAt: Date.now(), status: "entering" },
     ]);
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    clearSubmittedDraft();
     window.setTimeout(() => {
       setPendingStack(identity, (prev) =>
         prev.map((it) =>

@@ -10744,9 +10744,21 @@ function ConsoleApp({ baseUrl }) {
       )
     )?.response_phase ?? null;
     const shouldQueue = isIdentityBusy(identity) || visiblePhase !== null || agentPhase !== null || stack.length > 0;
+    const clearSubmittedDraft = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== rawDraft) return current;
+        return { ...current, [panelKey]: "" };
+      });
+    };
+    const restoreSubmittedDraftIfEmpty = () => {
+      setDraftByKey((current) => {
+        if ((current[panelKey] || "") !== "") return current;
+        return { ...current, [panelKey]: rawDraft };
+      });
+    };
     if (!shouldQueue || attachments.length > 0) {
       if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       }
       const sent = await submitMessageNow(
         panelId,
@@ -10756,9 +10768,9 @@ function ConsoleApp({ baseUrl }) {
         attachments
       );
       if (sent) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+        clearSubmittedDraft();
       } else if (attachments.length === 0) {
-        setDraftByKey((c) => ({ ...c, [panelKey]: rawDraft }));
+        restoreSubmittedDraftIfEmpty();
       }
       return sent;
     }
@@ -10767,7 +10779,7 @@ function ConsoleApp({ baseUrl }) {
       ...prev,
       { id: newId, text, addedAt: Date.now(), status: "entering" }
     ]);
-    setDraftByKey((c) => ({ ...c, [panelKey]: "" }));
+    clearSubmittedDraft();
     window.setTimeout(() => {
       setPendingStack(
         identity,
