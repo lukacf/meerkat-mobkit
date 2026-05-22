@@ -319,6 +319,23 @@ pub trait MobSessionService:
         ))
     }
 
+    async fn stage_runtime_system_context_for_active_turn(
+        &self,
+        session_id: &SessionId,
+        appends: Vec<PendingSystemContextAppend>,
+    ) -> Result<Option<Vec<u8>>, SessionError> {
+        self.apply_runtime_system_context_for_turn(session_id, appends)
+            .await?;
+        Ok(None)
+    }
+
+    async fn active_turn_system_context_boundary_available(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<Option<bool>, SessionError> {
+        Ok(None)
+    }
+
     async fn checkpoint_committed_runtime_session_snapshot(
         &self,
         _session_id: &SessionId,

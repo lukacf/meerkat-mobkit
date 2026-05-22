@@ -1390,6 +1390,23 @@ macro_rules! delegate_mob_session_service {
                     .apply_runtime_system_context_for_turn(session_id, appends)
                     .await
             }
+            async fn stage_runtime_system_context_for_active_turn(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+                appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+            ) -> Result<Option<Vec<u8>>, SessionError> {
+                self.inner
+                    .stage_runtime_system_context_for_active_turn(session_id, appends)
+                    .await
+            }
+            async fn active_turn_system_context_boundary_available(
+                &self,
+                session_id: &meerkat_core::types::SessionId,
+            ) -> Result<Option<bool>, SessionError> {
+                self.inner
+                    .active_turn_system_context_boundary_available(session_id)
+                    .await
+            }
             async fn discard_live_session(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
@@ -1736,6 +1753,23 @@ impl MobSessionService for AfterCreateMobSessionService {
     ) -> Result<(), SessionError> {
         self.inner
             .apply_runtime_system_context_for_turn(session_id, appends)
+            .await
+    }
+    async fn stage_runtime_system_context_for_active_turn(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+    ) -> Result<Option<Vec<u8>>, SessionError> {
+        self.inner
+            .stage_runtime_system_context_for_active_turn(session_id, appends)
+            .await
+    }
+    async fn active_turn_system_context_boundary_available(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<Option<bool>, SessionError> {
+        self.inner
+            .active_turn_system_context_boundary_available(session_id)
             .await
     }
     async fn discard_live_session(
@@ -3602,6 +3636,23 @@ realm_profile = "worker-v2"
             self.record("archive_with_mob_lifecycle_authority");
             Ok(())
         }
+
+        async fn stage_runtime_system_context_for_active_turn(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+            _appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
+        ) -> Result<Option<Vec<u8>>, SessionError> {
+            self.record("stage_runtime_system_context_for_active_turn");
+            Ok(Some(b"snapshot".to_vec()))
+        }
+
+        async fn active_turn_system_context_boundary_available(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<bool>, SessionError> {
+            self.record("active_turn_system_context_boundary_available");
+            Ok(Some(true))
+        }
     }
 
     #[tokio::test]
@@ -3630,9 +3681,32 @@ realm_profile = "worker-v2"
         .expect("stage_tool_results should forward to inner service");
 
         assert_eq!(staged.accepted_result_count, 7);
+        let boundary_available = wrapped
+            .active_turn_system_context_boundary_available(&session_id)
+            .await
+            .expect("active-turn boundary probe should forward");
+        assert_eq!(boundary_available, Some(true));
+        let snapshot = wrapped
+            .stage_runtime_system_context_for_active_turn(
+                &session_id,
+                vec![meerkat_core::session::PendingSystemContextAppend {
+                    text: "steer".to_string(),
+                    source: Some("test".to_string()),
+                    idempotency_key: Some("test".to_string()),
+                    accepted_at: meerkat_core::time_compat::SystemTime::now(),
+                }],
+            )
+            .await
+            .expect("active-turn staging should forward");
+        assert_eq!(snapshot.as_deref(), Some(&b"snapshot"[..]));
         assert_eq!(
             probe.calls(),
-            vec!["archive_with_mob_lifecycle_authority", "stage_tool_results",]
+            vec![
+                "archive_with_mob_lifecycle_authority",
+                "stage_tool_results",
+                "active_turn_system_context_boundary_available",
+                "stage_runtime_system_context_for_active_turn",
+            ]
         );
     }
 
