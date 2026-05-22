@@ -335,6 +335,32 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         }
         self.dispatch_mob_spawn_member(call).await
     }
+
+    fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn bind_ops_lifecycle(
+        self: Arc<Self>,
+        registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+        owner_bridge_session_id: meerkat_core::types::SessionId,
+    ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError> {
+        let owned = Arc::try_unwrap(self)
+            .map_err(|_| meerkat_core::agent::OpsLifecycleBindError::SharedOwnership)?;
+        let outcome = owned
+            .inner
+            .bind_ops_lifecycle(registry, owner_bridge_session_id)?;
+        let was_bound = outcome.was_bound();
+        let dispatcher = Arc::new(Self {
+            inner: outcome.into_dispatcher(),
+            implicit_delegate_retirement_overrides: owned.implicit_delegate_retirement_overrides,
+        });
+        Ok(if was_bound {
+            meerkat_core::agent::BindOutcome::Bound(dispatcher)
+        } else {
+            meerkat_core::agent::BindOutcome::Skipped(dispatcher)
+        })
+    }
 }
 
 impl AutoWireParentMobToolDispatcher {
@@ -2910,6 +2936,66 @@ mod tests {
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[tokio::test]
+    async fn auto_wire_wrapper_preserves_ops_lifecycle_binding() {
+        use meerkat_core::AgentToolDispatcher;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct BindAwareDispatcher {
+            bound: Arc<AtomicBool>,
+        }
+
+        #[async_trait::async_trait]
+        impl meerkat_core::AgentToolDispatcher for BindAwareDispatcher {
+            fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+                Vec::<Arc<meerkat_core::types::ToolDef>>::new().into()
+            }
+
+            async fn dispatch(
+                &self,
+                call: meerkat_core::types::ToolCallView<'_>,
+            ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+                Err(meerkat_core::ToolError::not_found(call.name))
+            }
+
+            fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+                meerkat_core::agent::DispatcherCapabilities {
+                    ops_lifecycle: true,
+                }
+            }
+
+            fn bind_ops_lifecycle(
+                self: Arc<Self>,
+                _registry: Arc<dyn meerkat_core::ops_lifecycle::OpsLifecycleRegistry>,
+                _owner_bridge_session_id: meerkat_core::types::SessionId,
+            ) -> Result<meerkat_core::agent::BindOutcome, meerkat_core::agent::OpsLifecycleBindError>
+            {
+                self.bound.store(true, Ordering::SeqCst);
+                Ok(meerkat_core::agent::BindOutcome::Bound(self))
+            }
+        }
+
+        let bound = Arc::new(AtomicBool::new(false));
+        let dispatcher = Arc::new(AutoWireParentMobToolDispatcher {
+            inner: Arc::new(BindAwareDispatcher {
+                bound: Arc::clone(&bound),
+            }),
+            implicit_delegate_retirement_overrides: ImplicitDelegateRetirementOverrides::default(),
+        });
+
+        assert!(dispatcher.capabilities().ops_lifecycle);
+        let outcome = dispatcher
+            .bind_ops_lifecycle(
+                Arc::new(meerkat_runtime::ops_lifecycle::RuntimeOpsLifecycleRegistry::new()),
+                meerkat_core::types::SessionId::new(),
+            )
+            .expect("wrapper should delegate ops lifecycle binding");
+
+        assert!(outcome.was_bound());
+        assert!(bound.load(Ordering::SeqCst));
+        assert!(outcome.into_dispatcher().capabilities().ops_lifecycle);
     }
 
     #[test]
