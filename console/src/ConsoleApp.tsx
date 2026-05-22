@@ -841,20 +841,25 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   // Persistence: localStorage under `mobkit-pending-stack:<identity>`.
   // Cross-tab sync: a `storage` event listener mirrors changes from
   // other tabs into the in-memory ref. Items in transient animation
-  // states (entering/promoting/trashing/draining) are stripped before
-  // persisting so the next reload doesn't render mid-animation rows.
+  // states are stripped or leased before persisting so reloads do not
+  // resurrect an in-flight animation without the timer that owned it.
   // ──────────────────────────────────────────────────────────────
   const pendingStackRef = React.useRef<Record<string, PendingItem[]>>({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
+  const PENDING_DRAIN_CLAIM_TTL_MS = 15_000;
   const stackKeyFor = (identity: string) =>
     `${PENDING_STACK_KEY_PREFIX}${identity}`;
 
-  function loadPendingStack(identity: string): PendingItem[] {
+  function loadPendingStack(
+    identity: string,
+    opts: { preserveFreshDraining?: boolean } = {},
+  ): PendingItem[] {
     try {
       const raw = localStorage.getItem(stackKeyFor(identity));
       if (!raw) return [];
       const parsed = JSON.parse(raw) as unknown;
       if (!Array.isArray(parsed)) return [];
+      const now = Date.now();
       return parsed
         .filter((it): it is PendingItem => {
           if (!it || typeof it !== "object") return false;
@@ -867,14 +872,23 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         })
         .map((it) => {
           const r = it as Record<string, unknown>;
+          const drainClaimedAt =
+            typeof r.drainClaimedAt === "number"
+              ? r.drainClaimedAt
+              : undefined;
+          const freshDrainClaim =
+            opts.preserveFreshDraining === true &&
+            r.status === "draining" &&
+            typeof r.drainClaim === "string" &&
+            typeof drainClaimedAt === "number" &&
+            now - drainClaimedAt < PENDING_DRAIN_CLAIM_TTL_MS;
           return {
             id: it.id,
             text: it.text,
             addedAt: it.addedAt,
-            status:
-              r.status === "draining" ? ("draining" as const) : null,
-            drainClaim:
-              typeof r.drainClaim === "string" ? r.drainClaim : undefined,
+            status: freshDrainClaim ? ("draining" as const) : null,
+            drainClaim: freshDrainClaim ? r.drainClaim : undefined,
+            drainClaimedAt: freshDrainClaim ? drainClaimedAt : undefined,
           };
         });
     } catch {
@@ -884,9 +898,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   function persistPendingStack(identity: string, items: PendingItem[]) {
     try {
-      // Strip purely visual transient flags before persisting. Keep draining
-      // claims so multiple open tabs do not all auto-drain the same queued
-      // item when they observe the same busy→idle transition.
+      // Strip purely visual transient flags before persisting. Keep fresh
+      // draining claims so multiple open tabs do not all auto-drain the same
+      // queued item when they observe the same busy→idle transition.
       const clean = items
         .filter(
           (it) =>
@@ -898,7 +912,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           text: it.text,
           addedAt: it.addedAt,
           ...(it.status === "draining"
-            ? { status: "draining", drainClaim: it.drainClaim }
+            ? {
+                status: "draining",
+                drainClaim: it.drainClaim,
+                drainClaimedAt: it.drainClaimedAt,
+              }
             : {}),
         }));
       if (clean.length === 0) {
@@ -937,7 +955,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const onStorage = (e: StorageEvent) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
-      pendingStackRef.current[identity] = loadPendingStack(identity);
+      pendingStackRef.current[identity] = loadPendingStack(identity, {
+        preserveFreshDraining: true,
+      });
       forceRender();
     };
     window.addEventListener("storage", onStorage);
@@ -2087,15 +2107,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const head = stack.find((it) => !it.status || it.status === "entering");
     if (!head) return;
     const drainClaim = `${pendingDrainOwnerRef.current}:${head.id}:${Date.now().toString(36)}`;
+    const drainClaimedAt = Date.now();
     setPendingStack(identity, (prev) =>
       prev.map((it) =>
-        it.id === head.id ? { ...it, status: "draining", drainClaim } : it,
+        it.id === head.id
+          ? { ...it, status: "draining", drainClaim, drainClaimedAt }
+          : it,
       ),
     );
     window.setTimeout(() => {
-      const persistedHead = loadPendingStack(identity).find(
-        (it) => it.id === head.id,
-      );
+      const persistedHead = loadPendingStack(identity, {
+        preserveFreshDraining: true,
+      }).find((it) => it.id === head.id);
       if (persistedHead?.drainClaim !== drainClaim) return;
       const target = findChatTargetFor(identity);
       if (!target) {

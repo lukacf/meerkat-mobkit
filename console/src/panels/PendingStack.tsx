@@ -17,6 +17,9 @@ export interface PendingItem {
   /// Without this, two open console tabs can both observe busy→idle and
   /// submit the same pending item.
   drainClaim?: string;
+  /// Wall-clock time for the drain claim. Used to expire claims whose
+  /// owning tab was closed before it submitted the queued item.
+  drainClaimedAt?: number;
 }
 
 type DropWhere = "above" | "below";

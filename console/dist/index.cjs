@@ -9989,25 +9989,30 @@ function ConsoleApp({ baseUrl }) {
   }
   const pendingStackRef = import_react22.default.useRef({});
   const PENDING_STACK_KEY_PREFIX = "mobkit-pending-stack:";
+  const PENDING_DRAIN_CLAIM_TTL_MS = 15e3;
   const stackKeyFor = (identity) => `${PENDING_STACK_KEY_PREFIX}${identity}`;
-  function loadPendingStack(identity) {
+  function loadPendingStack(identity, opts = {}) {
     try {
       const raw = localStorage.getItem(stackKeyFor(identity));
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
+      const now = Date.now();
       return parsed.filter((it) => {
         if (!it || typeof it !== "object") return false;
         const r2 = it;
         return typeof r2.id === "string" && typeof r2.text === "string" && typeof r2.addedAt === "number";
       }).map((it) => {
         const r2 = it;
+        const drainClaimedAt = typeof r2.drainClaimedAt === "number" ? r2.drainClaimedAt : void 0;
+        const freshDrainClaim = opts.preserveFreshDraining === true && r2.status === "draining" && typeof r2.drainClaim === "string" && typeof drainClaimedAt === "number" && now - drainClaimedAt < PENDING_DRAIN_CLAIM_TTL_MS;
         return {
           id: it.id,
           text: it.text,
           addedAt: it.addedAt,
-          status: r2.status === "draining" ? "draining" : null,
-          drainClaim: typeof r2.drainClaim === "string" ? r2.drainClaim : void 0
+          status: freshDrainClaim ? "draining" : null,
+          drainClaim: freshDrainClaim ? r2.drainClaim : void 0,
+          drainClaimedAt: freshDrainClaim ? drainClaimedAt : void 0
         };
       });
     } catch {
@@ -10022,7 +10027,11 @@ function ConsoleApp({ baseUrl }) {
         id: it.id,
         text: it.text,
         addedAt: it.addedAt,
-        ...it.status === "draining" ? { status: "draining", drainClaim: it.drainClaim } : {}
+        ...it.status === "draining" ? {
+          status: "draining",
+          drainClaim: it.drainClaim,
+          drainClaimedAt: it.drainClaimedAt
+        } : {}
       }));
       if (clean.length === 0) {
         localStorage.removeItem(stackKeyFor(identity));
@@ -10049,7 +10058,9 @@ function ConsoleApp({ baseUrl }) {
     const onStorage = (e) => {
       if (!e.key || !e.key.startsWith(PENDING_STACK_KEY_PREFIX)) return;
       const identity = e.key.slice(PENDING_STACK_KEY_PREFIX.length);
-      pendingStackRef.current[identity] = loadPendingStack(identity);
+      pendingStackRef.current[identity] = loadPendingStack(identity, {
+        preserveFreshDraining: true
+      });
       forceRender();
     };
     window.addEventListener("storage", onStorage);
@@ -10903,16 +10914,17 @@ function ConsoleApp({ baseUrl }) {
     const head = stack.find((it) => !it.status || it.status === "entering");
     if (!head) return;
     const drainClaim = `${pendingDrainOwnerRef.current}:${head.id}:${Date.now().toString(36)}`;
+    const drainClaimedAt = Date.now();
     setPendingStack(
       identity,
       (prev) => prev.map(
-        (it) => it.id === head.id ? { ...it, status: "draining", drainClaim } : it
+        (it) => it.id === head.id ? { ...it, status: "draining", drainClaim, drainClaimedAt } : it
       )
     );
     window.setTimeout(() => {
-      const persistedHead = loadPendingStack(identity).find(
-        (it) => it.id === head.id
-      );
+      const persistedHead = loadPendingStack(identity, {
+        preserveFreshDraining: true
+      }).find((it) => it.id === head.id);
       if (persistedHead?.drainClaim !== drainClaim) return;
       const target2 = findChatTargetFor(identity);
       if (!target2) {

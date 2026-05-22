@@ -1300,8 +1300,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 [[package]]
 name = "meerkat"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89b19a111112e0f34f662a2a8a51ec68d28d453356359454266ff4d47cadfdfe"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1340,8 +1339,7 @@ dependencies = [
 [[package]]
 name = "meerkat-anthropic"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4d3e92e5bcb94de6b15b5a038c6d66d99f73bfc6963f0c6e3fe254f8e29f211"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1363,8 +1361,7 @@ dependencies = [
 [[package]]
 name = "meerkat-auth-core"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2dbb0ee630cf5b3f391aa46fd18a10f59213023957b68d8bcc3a026e467248f9"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "axum",
@@ -1392,8 +1389,7 @@ dependencies = [
 [[package]]
 name = "meerkat-capabilities"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "121d49e6c44dbbc0d12635fd4aa580838b469417846a5a397f204d2c29bfc9fe"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "inventory",
  "meerkat-core",
@@ -1405,8 +1401,7 @@ dependencies = [
 [[package]]
 name = "meerkat-client"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe68b8b20ef015216fc7f7884208b055fe70810200127b0695ea0568a1a61301"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "meerkat-anthropic",
  "meerkat-core",
@@ -1418,8 +1413,7 @@ dependencies = [
 [[package]]
 name = "meerkat-comms"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97dd67629f98e142bd48c787e4571a32f68a04c61c186f5d2287bdc0241068c5"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1454,8 +1448,7 @@ dependencies = [
 [[package]]
 name = "meerkat-contracts"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "623efaf4a16b3dc275e0dcf84b0fbe56ca05f6b7970d441ba6443447dda9f0d1"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "base64",
  "chrono",
@@ -1473,8 +1466,7 @@ dependencies = [
 [[package]]
 name = "meerkat-core"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f390352523b72044585705c6ee70bf28ed55ce03c0d2d2483451bd5a602892d0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1503,8 +1495,7 @@ dependencies = [
 [[package]]
 name = "meerkat-gemini"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c84066b81eb2e677eb731f06655b9566f59b83d39765b6c8c73b1724ad40bf79"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1527,8 +1518,7 @@ dependencies = [
 [[package]]
 name = "meerkat-hooks"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17e0a71642050725cfc887b5110381f360083f207156496d0fab595061077ef2"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1549,8 +1539,7 @@ dependencies = [
 [[package]]
 name = "meerkat-llm-core"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c094c1ef20f9dda31d41f628be2a31c55b6c5e8b23c6af1fe1f26c4aca061bc9"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1575,8 +1564,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-derive"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce11453262c822e36df44bdf24e70ec105cc2d5ea252e68300bd4004737919ce"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "quote",
  "syn",
@@ -1585,8 +1573,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c3d562da8ce4d30585ffe10d904b6b7d3d18425e2c98d9dd32eaf459de95a2e"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "meerkat-machine-dsl-core",
 ]
@@ -1594,8 +1581,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl-core"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30b70f4d72b57c5ac9646484344f1106040642b55394959d9ecc68ca0603af09"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1605,8 +1591,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-kernels"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc533e9771add61329601ee93208996a3a62444fae38ee764c1e470a9503e2c9"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -1618,8 +1603,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-schema"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be937e36c003cd0d0bdc4f9bb8dec6c135352a6cd411408e86d138a73e25401e"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -1631,8 +1615,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mcp"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ccca5af993c0b0d7cf823d9486ee1655eb1d3329d6e6ddcc1e06f766a6cea36"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "futures",
@@ -1655,8 +1638,8 @@ dependencies = [
 [[package]]
 name = "meerkat-mob"
 version = "0.6.22"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
- "async-stream",
  "async-trait",
  "chrono",
  "futures",
@@ -1673,30 +1656,26 @@ dependencies = [
  "meerkat-machine-schema",
  "meerkat-runtime",
  "meerkat-session",
- "meerkat-store",
  "notify",
- "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "tokio_with_wasm",
  "toml",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "meerkat-mob-mcp"
 version = "0.6.22"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
- "chrono",
  "futures",
  "indexmap",
  "meerkat",
@@ -1708,7 +1687,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio_with_wasm",
@@ -1767,8 +1745,7 @@ dependencies = [
 [[package]]
 name = "meerkat-models"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e214d887d6271f2245edcbee7d5bafd83e63cded2535bfb2cc479bdd41173a1e"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "meerkat-core",
  "schemars",
@@ -1778,8 +1755,7 @@ dependencies = [
 [[package]]
 name = "meerkat-openai"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "055a511ea8be7740aeb7eb8e1a4af75c5a501c67471ebb7e3511b4cf2dc27721"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1804,8 +1780,7 @@ dependencies = [
 [[package]]
 name = "meerkat-providers"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4362a55f1544e6f4616b2e86846d999a321e894707997994785dfa577be24393"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "meerkat-auth-core",
  "meerkat-llm-core",
@@ -1814,8 +1789,7 @@ dependencies = [
 [[package]]
 name = "meerkat-runtime"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "018406b151b6d1ec4fb146afa71f0e86f1c812d8617805f0fb71cbdb4ac8dcc7"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1840,8 +1814,7 @@ dependencies = [
 [[package]]
 name = "meerkat-schedule"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e64bcf6104e185b5a1ae3124c2e9c98b2a638d8ebc841505df2ba792b8200f56"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1865,8 +1838,7 @@ dependencies = [
 [[package]]
 name = "meerkat-session"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "011168ef2fb19de7d9b1b07a791bbe17490eb4673e5dbbd702998d76b8e4b1d1"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "futures",
@@ -1890,8 +1862,7 @@ dependencies = [
 [[package]]
 name = "meerkat-skills"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7624faf636ce0783c4e1dc1cc6eae2d3f521acf19f788948c64a1d6ac39dca8"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -1913,8 +1884,7 @@ dependencies = [
 [[package]]
 name = "meerkat-store"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce295602c94eccfb05e3981d56c3c586bd63d04a15d93934e47940f8c7aeccda"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1935,8 +1905,7 @@ dependencies = [
 [[package]]
 name = "meerkat-tools"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa08dad5fba6fdf7d3639cea3a658829996685fd589d17a71d5a3c5bdc9bd966"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "base64",
@@ -1973,8 +1942,7 @@ dependencies = [
 [[package]]
 name = "meerkat-workgraph"
 version = "0.6.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d6a182339a0e6fc5a91e7c1a395645794209f58fe4450e1328d1ccbf98eb7c7"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
 dependencies = [
  "async-trait",
  "chrono",

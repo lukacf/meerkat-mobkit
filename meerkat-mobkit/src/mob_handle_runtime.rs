@@ -1473,10 +1473,15 @@ macro_rules! delegate_mob_session_service {
             async fn stage_runtime_system_context_for_active_turn(
                 &self,
                 session_id: &meerkat_core::types::SessionId,
+                expected_run_id: &meerkat_core::lifecycle::RunId,
                 appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
             ) -> Result<Option<Vec<u8>>, SessionError> {
                 self.inner
-                    .stage_runtime_system_context_for_active_turn(session_id, appends)
+                    .stage_runtime_system_context_for_active_turn(
+                        session_id,
+                        expected_run_id,
+                        appends,
+                    )
                     .await
             }
             async fn active_turn_system_context_boundary_available(
@@ -1838,10 +1843,11 @@ impl MobSessionService for AfterCreateMobSessionService {
     async fn stage_runtime_system_context_for_active_turn(
         &self,
         session_id: &meerkat_core::types::SessionId,
+        expected_run_id: &meerkat_core::lifecycle::RunId,
         appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
     ) -> Result<Option<Vec<u8>>, SessionError> {
         self.inner
-            .stage_runtime_system_context_for_active_turn(session_id, appends)
+            .stage_runtime_system_context_for_active_turn(session_id, expected_run_id, appends)
             .await
     }
     async fn active_turn_system_context_boundary_available(
@@ -3808,6 +3814,7 @@ realm_profile = "worker-v2"
         async fn stage_runtime_system_context_for_active_turn(
             &self,
             _session_id: &meerkat_core::types::SessionId,
+            _expected_run_id: &meerkat_core::lifecycle::RunId,
             _appends: Vec<meerkat_core::session::PendingSystemContextAppend>,
         ) -> Result<Option<Vec<u8>>, SessionError> {
             self.record("stage_runtime_system_context_for_active_turn");
@@ -3857,6 +3864,7 @@ realm_profile = "worker-v2"
         let snapshot = wrapped
             .stage_runtime_system_context_for_active_turn(
                 &session_id,
+                &meerkat_core::lifecycle::RunId::new(),
                 vec![meerkat_core::session::PendingSystemContextAppend {
                     text: "steer".to_string(),
                     source: Some("test".to_string()),

@@ -1,14 +1,39 @@
 [workspace]
 members = [
     "meerkat-mobkit",
-    "local-crates/meerkat-mob-0.6.22",
-    "local-crates/meerkat-mob-mcp-0.6.22",
 ]
 resolver = "2"
 
 [patch.crates-io]
-meerkat-mob-mcp = { path = "local-crates/meerkat-mob-mcp-0.6.22" }
-meerkat-mob = { path = "local-crates/meerkat-mob-0.6.22" }
+meerkat = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-anthropic = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-auth-core = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-capabilities = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-client = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-comms = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-contracts = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-core = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-gemini = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-hooks = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-llm-core = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-machine-derive = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-machine-dsl = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-machine-dsl-core = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-machine-kernels = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-machine-schema = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-mcp = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-mob = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-mob-mcp = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-models = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-openai = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-providers = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-runtime = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-schedule = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-session = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-skills = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-store = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-tools = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
+meerkat-workgraph = { git = "https://github.com/lukacf/meerkat", branch = "codex/mob-observation-nonblocking-auto-wire" }
 
 [workspace.package]
 edition = "2024"
