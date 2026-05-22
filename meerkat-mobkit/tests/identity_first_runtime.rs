@@ -901,6 +901,125 @@ async fn identity_first_runtime_lazy_register_does_not_load_snapshots_or_spawn_m
 }
 
 #[tokio::test]
+async fn identity_first_runtime_lazy_snapshot_missing_record_stays_materializable() {
+    struct SnapshotMissingStore {
+        record: ContinuityRecord,
+        load_snapshot_calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ContinuityStore for SnapshotMissingStore {
+        async fn resolve_many(
+            &self,
+            identities: &[AgentIdentity],
+        ) -> Result<BTreeMap<AgentIdentity, ContinuityResolveState>, ContinuityStoreError> {
+            Ok(identities
+                .iter()
+                .map(|identity| {
+                    (
+                        identity.clone(),
+                        ContinuityResolveState::Broken {
+                            failure: ContinuityFailure {
+                                identity: identity.clone(),
+                                kind: ContinuityFailureKind::SnapshotMissing,
+                                record: Some(self.record.clone()),
+                                detail: "snapshot presence query missed the row".to_string(),
+                            },
+                        },
+                    )
+                })
+                .collect())
+        }
+
+        async fn load_session_snapshot(
+            &self,
+            _session_id: &meerkat_core::types::SessionId,
+        ) -> Result<Option<SessionSnapshot>, ContinuityStoreError> {
+            self.load_snapshot_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(SessionSnapshot {
+                data: b"recovered snapshot".to_vec(),
+            }))
+        }
+
+        async fn save_session_snapshot(
+            &self,
+            _identity: &AgentIdentity,
+            _session_id: &meerkat_core::types::SessionId,
+            _generation: ContinuityGeneration,
+            _version: CheckpointVersion,
+            _fencing_token: FencingToken,
+            _snapshot: &SessionSnapshot,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+
+        async fn upsert_continuity_record(
+            &self,
+            _record: &ContinuityRecord,
+            _fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+
+        async fn delete_continuity_record(
+            &self,
+            _identity: &AgentIdentity,
+            _fencing_token: FencingToken,
+        ) -> Result<(), ContinuityStoreError> {
+            Ok(())
+        }
+    }
+
+    let record = make_record("agent:recoverable", 0, 7);
+    let store = Arc::new(SnapshotMissingStore {
+        record: record.clone(),
+        load_snapshot_calls: AtomicUsize::new(0),
+    });
+    let bridge = Arc::new(CountingBridge::default());
+    let runtime = make_runtime_with_bridge(
+        store.clone(),
+        Arc::new(LocalLeaseProvider::new()),
+        bridge.clone(),
+    );
+
+    let result = lazy_register_flow(&runtime, &[make_spec("agent:recoverable")], None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result.outcomes.get(&make_identity("agent:recoverable")),
+        Some(RestoreOutcome::Dormant {
+            record: Some(_),
+            ..
+        })
+    ));
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:recoverable"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Dormant
+    );
+    assert_eq!(store.load_snapshot_calls.load(Ordering::SeqCst), 0);
+
+    let materialized = runtime
+        .materialize(&make_identity("agent:recoverable"))
+        .await
+        .unwrap();
+    assert_eq!(materialized.session_id, record.session_id);
+    assert_eq!(bridge.resume_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(store.load_snapshot_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        runtime
+            .status(&make_identity("agent:recoverable"))
+            .await
+            .unwrap()
+            .state,
+        IdentityLifecycleState::Active
+    );
+}
+
+#[tokio::test]
 async fn identity_first_runtime_lazy_first_send_materializes_only_target_once() {
     let store = Arc::new(CountingContinuityStore::new());
     let lease = Arc::new(LocalLeaseProvider::new());

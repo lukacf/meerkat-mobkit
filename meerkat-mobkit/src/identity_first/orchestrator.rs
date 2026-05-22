@@ -10,9 +10,9 @@ use super::contracts::{AgentCustomizer, TopologyProvider};
 use super::runtime::{IdentityRuntime, IdentityRuntimeError};
 use super::types::{
     AgentBuildContext, AgentBuildDraft, AgentIdentity, AgentRuntimeId, CheckpointVersion,
-    ContinuityFailure, ContinuityGeneration, ContinuityRecord, ContinuityResolveState,
-    DurableAgentSpec, IdentityLifecycleState, LeaseAcquireResult, LeaseGrant, ManagedPeerEdge,
-    SessionSnapshot, TopologyContext,
+    ContinuityFailure, ContinuityFailureKind, ContinuityGeneration, ContinuityRecord,
+    ContinuityResolveState, DurableAgentSpec, IdentityLifecycleState, LeaseAcquireResult,
+    LeaseGrant, ManagedPeerEdge, SessionSnapshot, TopologyContext,
 };
 
 // ---------------------------------------------------------------------------
@@ -574,15 +574,39 @@ pub async fn lazy_register_flow(
                 );
             }
             ContinuityResolveState::Broken { failure } => {
-                runtime
-                    .register(
-                        spec.clone(),
-                        IdentityLifecycleState::Broken,
-                        failure.record.clone(),
-                        None,
-                    )
-                    .await;
-                outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure.clone()));
+                if matches!(failure.kind, ContinuityFailureKind::SnapshotMissing)
+                    && let Some(record) = failure.record.clone()
+                {
+                    if currently_active {
+                        runtime.update_spec(spec.clone()).await?;
+                    } else {
+                        runtime
+                            .register(
+                                spec.clone(),
+                                IdentityLifecycleState::Dormant,
+                                Some(record.clone()),
+                                None,
+                            )
+                            .await;
+                    }
+                    outcomes.insert(
+                        identity.clone(),
+                        RestoreOutcome::Dormant {
+                            record: Some(record),
+                            draft,
+                        },
+                    );
+                } else {
+                    runtime
+                        .register(
+                            spec.clone(),
+                            IdentityLifecycleState::Broken,
+                            failure.record.clone(),
+                            None,
+                        )
+                        .await;
+                    outcomes.insert(identity.clone(), RestoreOutcome::Broken(failure.clone()));
+                }
             }
         }
     }
