@@ -54,6 +54,8 @@ pub struct ReplaySanitizingLlmClient {
     inner: Arc<dyn LlmClient>,
 }
 
+type SharedDefaultLlmClientSlot = Arc<std::sync::RwLock<Option<Arc<dyn LlmClient>>>>;
+
 impl ReplaySanitizingLlmClient {
     pub fn new(inner: Arc<dyn LlmClient>) -> Self {
         Self { inner }
@@ -554,14 +556,24 @@ fn install_agent_mob_tools(
 ) -> (
     Arc<meerkat_mob_mcp::MobMcpState>,
     ImplicitDelegateRetirementOverrides,
+    SharedDefaultLlmClientSlot,
 ) {
+    let default_llm_client_slot = Arc::new(std::sync::RwLock::new(None::<Arc<dyn LlmClient>>));
+    let default_llm_client_provider_slot = Arc::clone(&default_llm_client_slot);
     let mut state = meerkat_mob_mcp::MobMcpState::new(session_service);
     if let Some(base_store) = state.realm_profile_store().cloned()
         && let Some(store) = DefinitionSeededRealmProfileStore::new(definition, base_store)
     {
         state = state.with_realm_profile_store(Some(Arc::new(store)));
     }
-    state = state.with_realm_skill_sources(definition.skills.clone());
+    state = state
+        .with_realm_skill_sources(definition.skills.clone())
+        .with_default_llm_client_provider(Some(Arc::new(move || {
+            default_llm_client_provider_slot
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })));
     let state = Arc::new(state);
     let implicit_delegate_retirement_overrides = ImplicitDelegateRetirementOverrides::default();
     let inner = Arc::new(meerkat_mob_mcp::AgentMobToolSurfaceFactory::new(
@@ -574,7 +586,11 @@ fn install_agent_mob_tools(
     *slot
         .write()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(factory);
-    (state, implicit_delegate_retirement_overrides)
+    (
+        state,
+        implicit_delegate_retirement_overrides,
+        default_llm_client_slot,
+    )
 }
 
 #[cfg(test)]
@@ -1753,6 +1769,7 @@ pub struct MobBootstrapSpec {
     pub binary_blob_store: Option<Arc<dyn BinaryBlobStore>>,
     pub(crate) agent_mob_mcp_state: Option<Arc<meerkat_mob_mcp::MobMcpState>>,
     pub(crate) implicit_delegate_retirement_overrides: Option<ImplicitDelegateRetirementOverrides>,
+    pub(crate) agent_mob_default_llm_client_slot: Option<SharedDefaultLlmClientSlot>,
     pub options: MobBootstrapOptions,
     /// Explicit runtime adapter — bypasses `session_service.runtime_adapter()`.
     ///
@@ -1784,6 +1801,7 @@ impl MobBootstrapSpec {
             binary_blob_store: None,
             agent_mob_mcp_state: None,
             implicit_delegate_retirement_overrides: None,
+            agent_mob_default_llm_client_slot: None,
             options: MobBootstrapOptions {
                 allow_ephemeral_sessions: true,
                 notify_orchestrator_on_resume: true,
@@ -1953,11 +1971,15 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: runtime_adapter.clone(),
         }) as Arc<dyn MobSessionService>;
-        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
-            install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.runtime_adapter = runtime_adapter;
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2101,11 +2123,15 @@ impl MobBootstrapSpec {
             after_create_hook,
             runtime_adapter_override: None,
         }) as Arc<dyn MobSessionService>;
-        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
-            install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2211,11 +2237,15 @@ impl MobBootstrapSpec {
             after_create_hook: Some(combined_after_create_hook),
             runtime_adapter_override: Some(runtime_adapter.clone()),
         }) as Arc<dyn MobSessionService>;
-        let (agent_mob_mcp_state, implicit_delegate_retirement_overrides) =
-            install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
+        let (
+            agent_mob_mcp_state,
+            implicit_delegate_retirement_overrides,
+            agent_mob_default_llm_client_slot,
+        ) = install_agent_mob_tools(&definition, mob_tools_slot, Arc::clone(&session_service));
         let mut spec = Self::new(definition, storage, session_service);
         spec.agent_mob_mcp_state = Some(agent_mob_mcp_state);
         spec.implicit_delegate_retirement_overrides = Some(implicit_delegate_retirement_overrides);
+        spec.agent_mob_default_llm_client_slot = Some(agent_mob_default_llm_client_slot);
         spec.runtime_adapter = Some(runtime_adapter);
         spec.binary_blob_store = Some(binary_blob_store);
         spec
@@ -2338,6 +2368,16 @@ impl MobRuntime {
         let agent_mob_mcp_state = spec.agent_mob_mcp_state.clone();
         let implicit_delegate_retirement_overrides =
             spec.implicit_delegate_retirement_overrides.clone();
+        let default_llm_client = spec
+            .options
+            .default_llm_client
+            .clone()
+            .map(ReplaySanitizingLlmClient::wrap);
+        if let Some(slot) = spec.agent_mob_default_llm_client_slot.as_ref() {
+            *slot
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = default_llm_client.clone();
+        }
         let effective_runtime_adapter = spec
             .runtime_adapter
             .clone()
@@ -2360,8 +2400,8 @@ impl MobRuntime {
             .allow_ephemeral_sessions(spec.options.allow_ephemeral_sessions)
             .notify_orchestrator_on_resume(spec.options.notify_orchestrator_on_resume);
 
-        if let Some(client) = spec.options.default_llm_client {
-            builder = builder.with_default_llm_client(ReplaySanitizingLlmClient::wrap(client));
+        if let Some(client) = default_llm_client {
+            builder = builder.with_default_llm_client(client);
         }
 
         let handle = builder.create().await?;
@@ -3753,8 +3793,12 @@ realm_profile = "worker-v2"
             None,
         );
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
-        let state = spec
+        let runtime = MobRuntime::bootstrap(spec)
+            .await
+            .unwrap_or_else(|e| panic!("{e}"));
+        let state = runtime
             .agent_mob_mcp_state
+            .clone()
             .expect("agent mob MCP state should be installed");
         let Ok(child_definition) = meerkat_mob::MobDefinition::from_toml(
             "[mob]\nid = \"child\"\n\n[profiles.investigation-worker]\nrealm_profile = \"investigation-worker\"\n",
