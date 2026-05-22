@@ -10764,7 +10764,7 @@ function ConsoleApp({ baseUrl }) {
         panelId,
         target,
         text,
-        "steer",
+        "queue",
         attachments
       );
       if (sent) {
@@ -10932,7 +10932,7 @@ function ConsoleApp({ baseUrl }) {
         target2.panelId,
         target2.target,
         head.text,
-        "steer"
+        "queue"
       );
     }, animMs(420));
   }

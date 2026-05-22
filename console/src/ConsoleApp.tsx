@@ -1911,7 +1911,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         panelId,
         target,
         text,
-        "steer",
+        "queue",
         attachments,
       );
       if (sent) {
@@ -2073,10 +2073,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   /// Auto-drain hook — fires when an identity transitions busy→idle
   /// AND has pending items. Pops the head, plays the drain animation,
-  /// then submits via `submitMessageNow` with mode `Steer`. At this point
-  /// the UI has already serialized the pending stack and the agent is idle,
-  /// so the drained item should start as the next user turn immediately
-  /// rather than entering the runtime's deferred queue lane.
+  /// then submits via `submitMessageNow` with normal queue handling.
   function maybeDrainHead(identity: string) {
     const stack = getPendingStack(identity);
     if (stack.length === 0) return;
@@ -2120,7 +2117,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         target.panelId,
         target.target,
         head.text,
-        "steer",
+        "queue",
       );
     }, animMs(420));
   }

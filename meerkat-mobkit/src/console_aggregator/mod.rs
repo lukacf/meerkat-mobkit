@@ -8,6 +8,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures::future::join_all;
+use meerkat_core::types::HandlingMode;
 use meerkat_core::{ContentInput, Message};
 use meerkat_mob::ids::MeerkatId;
 use meerkat_mob::runtime::MobMemberListEntry;
@@ -1297,6 +1298,17 @@ fn spawn_console_send_dispatch(
                         "failed to update console send delivery status"
                     );
                 }
+                if handling_mode == HandlingMode::Steer
+                    && let Err(err) =
+                        append_steer_delivery_terminal(&inner, &user_frame, &interaction_id).await
+                {
+                    tracing::warn!(
+                        frame_id = %user_frame.id,
+                        interaction_id = %interaction_id,
+                        error = %err,
+                        "failed to append console steer terminal frame"
+                    );
+                }
             }
             Err(err) => {
                 let _ = dispatching.apply(SendTransition::MarkDeliveryFailed);
@@ -1344,6 +1356,42 @@ fn spawn_console_send_dispatch(
             }
         }
     });
+}
+
+async fn append_steer_delivery_terminal(
+    inner: &AggregatorInner,
+    user_frame: &ConsoleFrame,
+    interaction_id: &str,
+) -> ConsoleLogResult<AppendOutcome> {
+    append_and_emit(
+        inner,
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: format!("steer-delivered:{}", user_frame.id),
+            timestamp_ms: current_time_ms(),
+            runtime_key: user_frame.runtime_key.clone(),
+            identity: user_frame.identity.clone(),
+            conversation_id: user_frame.conversation_id.clone(),
+            session_id: user_frame.session_id.clone(),
+            kind: "interaction_complete".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "reason": "steer_delivered",
+                "handling_mode": "steer",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Synthetic,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: Some(interaction_id.to_string()),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: Some(user_frame.id.clone()),
+            caused_by_frame_id: Some(user_frame.id.clone()),
+        },
+    )
+    .await
 }
 
 #[derive(Debug)]
@@ -4153,6 +4201,72 @@ comms = true
                 .and_then(|frame| frame.get("status"))
                 .and_then(Value::as_str),
             Some("delivered")
+        );
+    }
+
+    #[tokio::test]
+    async fn steer_delivery_appends_terminal_control_frame() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let frame = NewConsoleFrame {
+            id: None,
+            dedupe_key: "send-steer-1".to_string(),
+            timestamp_ms: 1,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-1".to_string()),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Delivered,
+            payload: json!({
+                "content": "operator steer",
+                "handling_mode": "steer",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Send,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: Some("interaction-steer-1".to_string()),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+        let inserted = aggregator
+            .store()
+            .append_if_absent(frame)
+            .await
+            .expect("append steer input");
+
+        append_steer_delivery_terminal(&aggregator.inner, &inserted.frame, "interaction-steer-1")
+            .await
+            .expect("append steer terminal");
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                after: Some(inserted.frame.cursor.clone()),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query timeline");
+
+        assert_eq!(page.frames.len(), 1);
+        let terminal = &page.frames[0];
+        assert_eq!(terminal.kind, "interaction_complete");
+        assert_eq!(terminal.status, ConsoleFrameStatus::Completed);
+        assert_eq!(
+            terminal.interaction_id.as_deref(),
+            Some("interaction-steer-1")
+        );
+        assert_eq!(
+            terminal.parent_frame_id.as_deref(),
+            Some(inserted.frame.id.as_str())
+        );
+        assert_eq!(
+            terminal.payload.get("reason").and_then(Value::as_str),
+            Some("steer_delivered")
         );
     }
 
