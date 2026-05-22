@@ -2445,6 +2445,7 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
             .get("content")
             .map(stable_value_fingerprint)
             .or_else(|| payload.get("message").map(stable_value_fingerprint)),
+        "tool_execution_completed" => tool_result_fingerprint(payload),
         "text_delta" => {
             text_delta_payload_text(kind, payload).map(normalize_transcript_fingerprint_text)
         }
@@ -2453,6 +2454,19 @@ fn transcript_fingerprint(kind: &str, payload: &Value) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn tool_result_fingerprint(payload: &Value) -> Option<String> {
+    let id = payload
+        .get("tool_call_id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let result = payload
+        .get("result")
+        .or_else(|| payload.get("content"))
+        .map(stable_value_fingerprint)?;
+    Some(format!("{id}:{result}"))
 }
 
 fn assistant_terminal_fingerprint(kind: &str, payload: &Value) -> Option<String> {
@@ -2479,9 +2493,30 @@ fn text_delta_payload_text<'a>(kind: &str, payload: &'a Value) -> Option<&'a str
 }
 
 fn stable_value_fingerprint(value: &Value) -> String {
+    if let Some(text) = content_value_text(value) {
+        return normalize_transcript_fingerprint_text(&text);
+    }
     match value {
         Value::String(text) => normalize_transcript_fingerprint_text(text),
         other => serde_json::to_string(other).unwrap_or_default(),
+    }
+}
+
+fn content_value_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(content_value_text)
+                .collect::<String>();
+            (!text.is_empty()).then_some(text)
+        }
+        Value::Object(map) => ["text", "content", "message", "blocks"]
+            .iter()
+            .filter_map(|key| map.get(*key))
+            .find_map(content_value_text),
+        _ => None,
     }
 }
 
@@ -4423,6 +4458,137 @@ comms = true
             source: ConsoleFrameSource {
                 kind: ConsoleFrameSourceKind::SessionHistory,
                 source_cursor: Some("session-a:2".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_content_block_user_prompts() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "live-user-input".to_string(),
+                timestamp_ms: 2_000,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "content": "hello from operator" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("live-user-input".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append live input");
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-user-input".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "user_input".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "content": [{ "type": "text", "text": "hello from operator" }]
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:2".to_string()),
+            },
+            source_event_id: None,
+            interaction_id: None,
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: None,
+            caused_by_frame_id: None,
+        };
+
+        assert!(
+            history_frame_has_existing_counterpart(&aggregator.inner, &history)
+                .await
+                .expect("counterpart scan")
+        );
+    }
+
+    #[tokio::test]
+    async fn history_counterpart_scan_matches_live_tool_results() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "live-tool-result".to_string(),
+                timestamp_ms: 2_000,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                kind: "tool_execution_completed".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({
+                    "id": "call-1",
+                    "tool_call_id": "call-1",
+                    "result": "{ \"count\": 70 }"
+                }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("live-tool-result".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append live tool result");
+
+        let history = NewConsoleFrame {
+            id: None,
+            dedupe_key: "history-tool-result".to_string(),
+            timestamp_ms: 3_000,
+            runtime_key: "runtime-a".to_string(),
+            identity: "agent-a".to_string(),
+            conversation_id: Some("agent-a".to_string()),
+            session_id: Some("session-a".to_string()),
+            kind: "tool_execution_completed".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "id": "call-1",
+                "tool_call_id": "call-1",
+                "result": "{ \"count\": 70 }",
+                "content": [{ "type": "text", "text": "{ \"count\": 70 }" }]
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::SessionHistory,
+                source_cursor: Some("session-a:3:0".to_string()),
             },
             source_event_id: None,
             interaction_id: None,
