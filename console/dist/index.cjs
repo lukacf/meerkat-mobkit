@@ -8593,7 +8593,6 @@ function ChatPane({
     try {
       const sent = await onSend(files);
       if (sent) {
-        onDraftChange("");
         staged.forEach((item) => URL.revokeObjectURL(item.previewUrl));
         onStagedChange([]);
         setAttachmentError(null);
