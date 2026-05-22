@@ -751,6 +751,57 @@ async fn console_send_identity_first(
             .map_err(ConsoleSendError::State)?;
     }
 
+    if handling_mode == meerkat_core::types::HandlingMode::Steer {
+        match identity_runtime
+            .send_with_mode(&identity, &content, handling_mode)
+            .await
+        {
+            Ok(_) => {
+                if let Err(err) = aggregator
+                    .mark_steer_interaction_delivered(
+                        &accepted.input_frame_id,
+                        &accepted.interaction_id,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        identity = %identity,
+                        error = %err,
+                        "console identity-first steer was admitted but delivery status projection failed"
+                    );
+                }
+            }
+            Err(err) => {
+                let _ = aggregator
+                    .mark_interaction_delivery_failed(&accepted.input_frame_id)
+                    .await;
+                if let Some(events) = console_events {
+                    events
+                        .record_lifecycle(
+                            identity.as_str(),
+                            "interaction_failed",
+                            json!({
+                                "interaction_id": accepted.interaction_id,
+                                "origin": request.origin,
+                                "error": err.to_string(),
+                            }),
+                        )
+                        .await;
+                }
+                tracing::warn!(
+                    identity = %identity,
+                    error = %err,
+                    "console identity-first steer was accepted but delivery failed"
+                );
+                return Err(identity_runtime_error_to_console_send_error(
+                    identity.as_str(),
+                    err,
+                ));
+            }
+        }
+        return Ok(accepted);
+    }
+
     let dispatch_aggregator = aggregator.clone();
     let dispatch_events = console_events.cloned();
     let dispatch_identity = identity.clone();
@@ -763,19 +814,10 @@ async fn console_send_identity_first(
             .await
         {
             Ok(_) => {
-                let delivered = if handling_mode == meerkat_core::types::HandlingMode::Steer {
-                    dispatch_aggregator
-                        .mark_steer_interaction_delivered(
-                            &dispatch_accepted.input_frame_id,
-                            &dispatch_accepted.interaction_id,
-                        )
-                        .await
-                } else {
-                    dispatch_aggregator
-                        .mark_interaction_delivered(&dispatch_accepted.input_frame_id)
-                        .await
-                };
-                if let Err(err) = delivered {
+                if let Err(err) = dispatch_aggregator
+                    .mark_interaction_delivered(&dispatch_accepted.input_frame_id)
+                    .await
+                {
                     tracing::warn!(
                         identity = %dispatch_identity,
                         error = %err,
@@ -4809,6 +4851,83 @@ comms = true
         {
             return Err("delivery should be spawned in the background".into());
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn identity_first_console_steer_waits_for_bridge_delivery()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let identity = AgentIdentity::parse("agent:slow-steer-console")?;
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:slow-steer-console:0")?,
+            session_id: meerkat_core::types::SessionId::new(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let deliver_calls = Arc::new(AtomicUsize::new(0));
+        let runtime = Arc::new(IdentityRuntime::new(IdentityRuntimeConfig {
+            continuity_store: Arc::new(LocalContinuityStore::in_memory()?),
+            lease_provider: Arc::new(LocalLeaseProvider::new()),
+            runtime_instance_id: "console-slow-steer-send-test".to_string(),
+            has_runtime_store: true,
+            durability_policy: DurabilityPolicy::SyncWriteThrough,
+            bridge: Some(Arc::new(BlockingIdentityBridge {
+                deliver_calls: deliver_calls.clone(),
+            })),
+            default_timeout: None,
+        }));
+        runtime
+            .register(
+                DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: ProfileName::from("default"),
+                    addressability: AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                IdentityLifecycleState::Active,
+                Some(record),
+                Some(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: FencingToken::new(7),
+                    ttl: Duration::from_mins(1),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            console_send_identity_first(
+                &aggregator,
+                runtime,
+                None,
+                crate::console_aggregator::ConsoleSendRequest {
+                    identity: identity.as_str().to_string(),
+                    content: serde_json::to_value(meerkat_core::ContentInput::Text(
+                        "hello slow steer bridge".to_string(),
+                    ))?,
+                    origin: "test".to_string(),
+                    idempotency_key: "idem-slow-steer-bridge".to_string(),
+                    handling_mode: Some("steer".to_string()),
+                },
+            ),
+        )
+        .await;
+
+        if result.is_ok() {
+            return Err("steer send must wait for bridge delivery admission".into());
+        }
+        assert_eq!(
+            deliver_calls.load(Ordering::SeqCst),
+            1,
+            "steer delivery should have reached the bridge before the console response waits"
+        );
         Ok(())
     }
 
