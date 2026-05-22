@@ -1083,7 +1083,13 @@ impl IdentityRuntime {
         if should_materialize {
             self.materialize(identity).await?;
         }
-        self.materialize_reachable_peers(identity).await?;
+        // Live steers are latency-sensitive operator input for an already
+        // active turn. Ordinary sends may hydrate the reachable topology first,
+        // but a steer must reach the current session boundary before the tool
+        // turn resumes; background/full-fleet materialization owns the peers.
+        if handling_mode != HandlingMode::Steer {
+            self.materialize_reachable_peers(identity).await?;
+        }
 
         let (token, runtime_id) = {
             let entries = self.entries.read().await;
