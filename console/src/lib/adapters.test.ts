@@ -531,6 +531,36 @@ test("mapFramesToTimelineEntries renders terminal completion without streamed de
   );
 });
 
+test("mapFramesToTimelineEntries hides steer delivery terminal control frames", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "review",
+      member_id: "review",
+      label: "Review Agent",
+      kind: "identity",
+    },
+    [
+      {
+        id: "evt-1",
+        event: "user_input",
+        interactionId: "interaction-1",
+        data: { text: "Steer this", handling_mode: "steer" },
+      },
+      {
+        id: "evt-2",
+        event: "interaction_complete",
+        interactionId: "interaction-1",
+        data: { reason: "steer_delivered", handling_mode: "steer" },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  assert.notEqual(entries[0]?.identity.role, "assistant");
+  assert.match("text" in entries[0] ? entries[0].text : "", /Steer this/);
+  assert.doesNotMatch("text" in entries[0] ? entries[0].text : "", /steer_delivered/);
+});
+
 test("mapFramesToTimelineEntries renders image-tool turns without duplicating final text", () => {
   const entries = mapFramesToTimelineEntries(
     {

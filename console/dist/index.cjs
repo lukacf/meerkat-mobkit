@@ -2482,6 +2482,12 @@ function summarizeFrameData(data) {
   }
   return String(data ?? "");
 }
+function isSteerDeliveryTerminalFrame(frame) {
+  if (frame.event !== "interaction_complete") return false;
+  if (!frame.data || typeof frame.data !== "object") return false;
+  const record = frame.data;
+  return record.reason === "steer_delivered";
+}
 function eventSortRank(event) {
   switch (event) {
     case "user_input":
@@ -2885,6 +2891,7 @@ function renderPeerEntry(frame, entryId) {
 }
 function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   if (frame.event === "interaction_complete") {
+    if (isSteerDeliveryTerminalFrame(frame)) return null;
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
     const peer = parsePeerSummary(text);
@@ -2926,6 +2933,7 @@ function renderTerminalEntry(agent, frame, entryId, streamedText = "") {
   return null;
 }
 function terminalFrameVisibleText(frame) {
+  if (isSteerDeliveryTerminalFrame(frame)) return "";
   if (frame.event === "text_complete") {
     const record = frame.data && typeof frame.data === "object" ? frame.data : null;
     if (typeof record?.content === "string") return record.content;

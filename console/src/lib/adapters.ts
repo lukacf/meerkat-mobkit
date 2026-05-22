@@ -369,6 +369,13 @@ function summarizeFrameData(data: unknown): string {
   return String(data ?? "");
 }
 
+function isSteerDeliveryTerminalFrame(frame: Pick<ConsoleFrame, "event" | "data">): boolean {
+  if (frame.event !== "interaction_complete") return false;
+  if (!frame.data || typeof frame.data !== "object") return false;
+  const record = frame.data as Record<string, unknown>;
+  return record.reason === "steer_delivered";
+}
+
 function eventSortRank(event: string | undefined): number {
   switch (event) {
     case "user_input":
@@ -941,6 +948,7 @@ function renderTerminalEntry(
   streamedText = "",
 ): ConversationTimelineEntry | null {
   if (frame.event === "interaction_complete") {
+    if (isSteerDeliveryTerminalFrame(frame)) return null;
     const text = summarizeFrameData(frame.data).trim();
     if (!text) return null;
 
@@ -989,6 +997,7 @@ function renderTerminalEntry(
 }
 
 function terminalFrameVisibleText(frame: ConsoleFrame): string {
+  if (isSteerDeliveryTerminalFrame(frame)) return "";
   if (frame.event === "text_complete") {
     const record = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : null;
     if (typeof record?.content === "string") return record.content;
