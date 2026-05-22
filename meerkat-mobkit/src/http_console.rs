@@ -763,9 +763,25 @@ async fn console_send_identity_first(
             .await
         {
             Ok(_) => {
-                let _ = dispatch_aggregator
-                    .mark_interaction_delivered(&dispatch_accepted.input_frame_id)
-                    .await;
+                let delivered = if handling_mode == meerkat_core::types::HandlingMode::Steer {
+                    dispatch_aggregator
+                        .mark_steer_interaction_delivered(
+                            &dispatch_accepted.input_frame_id,
+                            &dispatch_accepted.interaction_id,
+                        )
+                        .await
+                } else {
+                    dispatch_aggregator
+                        .mark_interaction_delivered(&dispatch_accepted.input_frame_id)
+                        .await
+                };
+                if let Err(err) = delivered {
+                    tracing::warn!(
+                        identity = %dispatch_identity,
+                        error = %err,
+                        "console identity-first send was accepted but delivery status projection failed"
+                    );
+                }
             }
             Err(err) => {
                 let _ = dispatch_aggregator
@@ -4844,7 +4860,7 @@ comms = true
             .await;
 
         let aggregator = MobKitConsoleAggregator::in_memory();
-        console_send_identity_first(
+        let accepted = console_send_identity_first(
             &aggregator,
             runtime,
             None,
@@ -4876,6 +4892,37 @@ comms = true
         .is_err()
         {
             return Err("identity-first console send should forward steer mode".into());
+        }
+
+        let terminal_frame = tokio::time::timeout(Duration::from_millis(500), async {
+            loop {
+                let page = aggregator
+                    .query_timeline(ConsoleTimelineQuery {
+                        identity: Some(identity.as_str().to_string()),
+                        ..ConsoleTimelineQuery::default()
+                    })
+                    .await
+                    .map_err(|err| format!("query timeline: {err}"))?;
+                if page.frames.iter().any(|frame| {
+                    frame.kind == "interaction_complete"
+                        && frame.interaction_id.as_deref() == Some(accepted.interaction_id.as_str())
+                        && frame.payload.get("reason").and_then(Value::as_str)
+                            == Some("steer_delivered")
+                }) {
+                    return Ok::<(), String>(());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        match terminal_frame {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => {
+                return Err(
+                    "identity-first steer send should terminalize its console interaction".into(),
+                );
+            }
         }
         Ok(())
     }

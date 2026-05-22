@@ -972,6 +972,27 @@ impl MobKitConsoleAggregator {
         Ok(())
     }
 
+    pub async fn mark_steer_interaction_delivered(
+        &self,
+        input_frame_id: &str,
+        interaction_id: &str,
+    ) -> Result<(), ConsoleSendError> {
+        let Some(updated) = update_frame_status_and_emit(
+            &self.inner,
+            input_frame_id,
+            ConsoleFrameStatus::Delivered,
+        )
+        .await
+        .map_err(ConsoleSendError::Log)?
+        else {
+            return Ok(());
+        };
+        append_steer_delivery_terminal(&self.inner, &updated, interaction_id)
+            .await
+            .map_err(ConsoleSendError::Log)?;
+        Ok(())
+    }
+
     pub async fn binary_blob_store_for_identity(
         &self,
         identity: &str,
