@@ -6932,7 +6932,7 @@ function Topbar({
         onClick: onToggleTheme,
         "data-testid": "theme-toggle",
         title: `Switch to ${theme === "dark" ? "light" : "dark"} mode`,
-        children: theme === "dark" ? "\u2600 light" : "\u263E dark"
+        children: theme === "dark" ? "\u263E dark" : "\u2600 light"
       }
     ) }),
     railVisible ? /* @__PURE__ */ (0, import_jsx_runtime25.jsx)(
