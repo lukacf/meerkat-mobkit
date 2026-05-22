@@ -1300,7 +1300,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 [[package]]
 name = "meerkat"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1339,7 +1339,7 @@ dependencies = [
 [[package]]
 name = "meerkat-anthropic"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1361,7 +1361,7 @@ dependencies = [
 [[package]]
 name = "meerkat-auth-core"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "axum",
@@ -1389,7 +1389,7 @@ dependencies = [
 [[package]]
 name = "meerkat-capabilities"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "inventory",
  "meerkat-core",
@@ -1401,7 +1401,7 @@ dependencies = [
 [[package]]
 name = "meerkat-client"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "meerkat-anthropic",
  "meerkat-core",
@@ -1413,7 +1413,7 @@ dependencies = [
 [[package]]
 name = "meerkat-comms"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "base64",
@@ -1448,7 +1448,7 @@ dependencies = [
 [[package]]
 name = "meerkat-contracts"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "base64",
  "chrono",
@@ -1466,7 +1466,7 @@ dependencies = [
 [[package]]
 name = "meerkat-core"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "base64",
@@ -1495,7 +1495,7 @@ dependencies = [
 [[package]]
 name = "meerkat-gemini"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1518,7 +1518,7 @@ dependencies = [
 [[package]]
 name = "meerkat-hooks"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1539,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "meerkat-llm-core"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1564,7 +1564,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-derive"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "quote",
  "syn",
@@ -1573,7 +1573,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "meerkat-machine-dsl-core",
 ]
@@ -1581,7 +1581,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-dsl-core"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1591,7 +1591,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-kernels"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -1603,7 +1603,7 @@ dependencies = [
 [[package]]
 name = "meerkat-machine-schema"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "indexmap",
  "meerkat-core",
@@ -1615,7 +1615,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mcp"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "futures",
@@ -1638,7 +1638,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mob"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1673,7 +1673,7 @@ dependencies = [
 [[package]]
 name = "meerkat-mob-mcp"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "futures",
@@ -1745,7 +1745,7 @@ dependencies = [
 [[package]]
 name = "meerkat-models"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "meerkat-core",
  "schemars",
@@ -1755,7 +1755,7 @@ dependencies = [
 [[package]]
 name = "meerkat-openai"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1780,7 +1780,7 @@ dependencies = [
 [[package]]
 name = "meerkat-providers"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "meerkat-auth-core",
  "meerkat-llm-core",
@@ -1789,7 +1789,7 @@ dependencies = [
 [[package]]
 name = "meerkat-runtime"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1814,7 +1814,7 @@ dependencies = [
 [[package]]
 name = "meerkat-schedule"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1838,7 +1838,7 @@ dependencies = [
 [[package]]
 name = "meerkat-session"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "futures",
@@ -1862,7 +1862,7 @@ dependencies = [
 [[package]]
 name = "meerkat-skills"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "indexmap",
@@ -1884,7 +1884,7 @@ dependencies = [
 [[package]]
 name = "meerkat-store"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1905,7 +1905,7 @@ dependencies = [
 [[package]]
 name = "meerkat-tools"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "base64",
@@ -1942,7 +1942,7 @@ dependencies = [
 [[package]]
 name = "meerkat-workgraph"
 version = "0.6.22"
-source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#7e94862f76234a2d731b9aec05204e1f46bffee0"
+source = "git+https://github.com/lukacf/meerkat?branch=codex%2Fmob-observation-nonblocking-auto-wire#c9ceda6fab5395fb43a532dabdcbe577cf778356"
 dependencies = [
  "async-trait",
  "chrono",
