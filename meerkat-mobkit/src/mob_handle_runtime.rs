@@ -313,6 +313,8 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             .map(|tool| {
                 if tool.name == "delegate" {
                     Arc::new(delegate_tool_def_with_idle_retire_secs(tool))
+                } else if tool.name == "mob_spawn_member" {
+                    Arc::new(mob_spawn_tool_def_with_idle_retire_secs(tool))
                 } else {
                     Arc::clone(tool)
                 }
@@ -331,10 +333,19 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
         if call.name != "mob_spawn_member" {
             return self.inner.dispatch(call).await;
         }
+        self.dispatch_mob_spawn_member(call).await
+    }
+}
 
+impl AutoWireParentMobToolDispatcher {
+    async fn dispatch_mob_spawn_member(
+        &self,
+        call: meerkat_core::types::ToolCallView<'_>,
+    ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
         let mut args = serde_json::from_str::<Value>(call.args.get()).map_err(|error| {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
+        let idle_retire_override = delegate_idle_retire_override_from_args(call.name, &mut args)?;
         if let Some(object) = args.as_object_mut() {
             object
                 .entry("auto_wire_parent".to_string())
@@ -348,11 +359,13 @@ impl meerkat_core::AgentToolDispatcher for AutoWireParentMobToolDispatcher {
             name: call.name,
             args: &args,
         };
-        self.inner.dispatch(call).await
-    }
-}
+        let outcome = self.inner.dispatch(call).await?;
+        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override)
+            .await;
 
-impl AutoWireParentMobToolDispatcher {
+        Ok(outcome)
+    }
+
     async fn dispatch_delegate(
         &self,
         call: meerkat_core::types::ToolCallView<'_>,
@@ -371,6 +384,17 @@ impl AutoWireParentMobToolDispatcher {
         };
         let outcome = self.inner.dispatch(call).await?;
 
+        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override)
+            .await;
+
+        Ok(outcome)
+    }
+
+    async fn register_idle_retire_override_from_outcome(
+        &self,
+        outcome: &meerkat_core::ToolDispatchOutcome,
+        idle_retire_override: Option<DelegateIdleRetireOverride>,
+    ) {
         if !outcome.result.is_error
             && let Some(override_policy) = idle_retire_override
             && let Ok(payload) = serde_json::from_str::<Value>(&outcome.result.text_content())
@@ -383,8 +407,6 @@ impl AutoWireParentMobToolDispatcher {
                 .set(mob_id, member_id, override_policy)
                 .await;
         }
-
-        Ok(outcome)
     }
 }
 
@@ -539,6 +561,38 @@ fn delegate_tool_def_with_idle_retire_secs(
             .or_insert_with(|| {
                 serde_json::json!({
                     "description": "Override idle auto-retirement for this helper. Omit to use the runtime default, use an integer number of seconds to override, or null to disable auto-retirement for this helper.",
+                    "anyOf": [
+                        {"type": "integer", "minimum": 0},
+                        {"type": "null"}
+                    ]
+                })
+            });
+    }
+    patched
+}
+
+fn mob_spawn_tool_def_with_idle_retire_secs(
+    tool: &meerkat_core::types::ToolDef,
+) -> meerkat_core::types::ToolDef {
+    let mut patched = tool.clone();
+    if !patched.description.contains("IDLE RETIREMENT:") {
+        patched.description.push_str(
+            "\n\nIDLE RETIREMENT:\n\
+             Omit idle_retire_secs to leave this spawned member out of auto-retirement. \
+             Pass an integer number of seconds to retire the member after it has been \
+             idle for that long. Pass null to explicitly disable auto-retirement.",
+        );
+    }
+    if let Some(properties) = patched
+        .input_schema
+        .get_mut("properties")
+        .and_then(Value::as_object_mut)
+    {
+        properties
+            .entry("idle_retire_secs".to_string())
+            .or_insert_with(|| {
+                serde_json::json!({
+                    "description": "Opt this spawned member into idle auto-retirement. Omit to keep the member indefinitely, use an integer number of seconds to retire after that much idle time, or null to explicitly disable auto-retirement.",
                     "anyOf": [
                         {"type": "integer", "minimum": 0},
                         {"type": "null"}
@@ -2825,6 +2879,34 @@ mod tests {
         let idle_retire_secs = &patched.input_schema["properties"]["idle_retire_secs"];
 
         assert!(patched.description.contains("IDLE RETIREMENT:"));
+        assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
+        assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
+        assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
+    }
+
+    #[test]
+    fn mob_spawn_tool_schema_exposes_opt_in_idle_retire_secs() {
+        let tool = meerkat_core::types::ToolDef::new(
+            "mob_spawn_member",
+            "Spawn member",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "profile": {"type": "string"},
+                    "member_id": {"type": "string"}
+                },
+                "required": ["profile", "member_id"]
+            }),
+        );
+
+        let patched = mob_spawn_tool_def_with_idle_retire_secs(&tool);
+        let idle_retire_secs = &patched.input_schema["properties"]["idle_retire_secs"];
+
+        assert!(
+            patched
+                .description
+                .contains("Omit idle_retire_secs to leave this spawned member out")
+        );
         assert_eq!(idle_retire_secs["anyOf"][0]["type"], "integer");
         assert_eq!(idle_retire_secs["anyOf"][0]["minimum"], 0);
         assert_eq!(idle_retire_secs["anyOf"][1]["type"], "null");
