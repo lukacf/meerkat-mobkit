@@ -1632,9 +1632,10 @@ async fn backfill_one_session_history(
         }
         for (idx, message) in messages.iter().enumerate() {
             let absolute_offset = base_offset + idx;
-            let frames = frames_from_session_history_message(
+            let frames = frames_from_session_history_message_with_namespace(
                 &entry.runtime_key,
                 &record.identity,
+                &entry.identity_namespace,
                 &session_id,
                 absolute_offset,
                 message.clone(),
@@ -2192,9 +2193,28 @@ fn frame_from_session_history_message(
         .next()
 }
 
+#[cfg(test)]
 fn frames_from_session_history_message(
     runtime_key: &str,
     identity: &str,
+    session_id: &str,
+    offset: usize,
+    message: Value,
+) -> Vec<NewConsoleFrame> {
+    frames_from_session_history_message_with_namespace(
+        runtime_key,
+        identity,
+        "",
+        session_id,
+        offset,
+        message,
+    )
+}
+
+fn frames_from_session_history_message_with_namespace(
+    runtime_key: &str,
+    identity: &str,
+    identity_namespace: &str,
     session_id: &str,
     offset: usize,
     message: Value,
@@ -2330,6 +2350,7 @@ fn frames_from_session_history_message(
         frames.extend(spawn_initial_message_frames_from_assistant(
             runtime_key,
             identity,
+            identity_namespace,
             session_id,
             offset,
             assistant,
@@ -2342,6 +2363,7 @@ fn frames_from_session_history_message(
 fn spawn_initial_message_frames_from_assistant(
     runtime_key: &str,
     parent_identity: &str,
+    identity_namespace: &str,
     session_id: &str,
     offset: usize,
     assistant: &meerkat_core::types::BlockAssistantMessage,
@@ -2360,6 +2382,7 @@ fn spawn_initial_message_frames_from_assistant(
                 .into_iter()
                 .enumerate()
         {
+            let target_identity = apply_namespace(&target_identity, identity_namespace);
             let message_content = match &initial_message {
                 Value::String(text) => json!([
                     {
@@ -2859,7 +2882,10 @@ fn member_is_addressable(member: &MobMemberListEntry) -> bool {
 
 fn apply_namespace(identity: &str, namespace: &str) -> String {
     let namespace = namespace.trim().trim_matches('/');
-    if namespace.is_empty() {
+    if namespace.is_empty()
+        || identity == namespace
+        || identity.starts_with(&format!("{namespace}/"))
+    {
         identity.to_string()
     } else {
         format!("{namespace}/{identity}")
@@ -5252,6 +5278,133 @@ comms = true
                 .all(|frame| frame.identity == "review:singleton"),
             "child initial messages must not leak into parent timeline: {:#?}",
             parent_page.frames
+        );
+    }
+
+    #[test]
+    fn session_history_projection_applies_namespace_to_spawned_child_identity() {
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "test/review:singleton",
+            "test",
+            "session-a",
+            10,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    {
+                        "block_type": "tool_use",
+                        "data": {
+                            "id": "call-spawn-many",
+                            "name": "mob_spawn_member",
+                            "args": {
+                                "specs": [
+                                    {
+                                        "agent_identity": "review-worker-alpha",
+                                        "profile": "review-worker",
+                                        "initial_message": "Review Initiative Alpha."
+                                    },
+                                    {
+                                        "agent_identity": "test/review-worker-beta",
+                                        "profile": "review-worker",
+                                        "initial_message": "Review Initiative Beta."
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.100Z"
+            }),
+        );
+
+        let child_identities = frames
+            .iter()
+            .filter(|frame| frame.kind == "user_input")
+            .map(|frame| frame.identity.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            child_identities,
+            vec!["test/review-worker-alpha", "test/review-worker-beta"]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_timeline_matches_namespaced_spawn_initial_message_identity() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .identity_read_model
+            .replace(vec![
+                identity_record_for_test("test/review:singleton"),
+                identity_record_for_test("test/review-worker-alpha"),
+            ])
+            .await;
+        let frames = frames_from_session_history_message_with_namespace(
+            "runtime-a",
+            "test/review:singleton",
+            "test",
+            "session-a",
+            11,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    {
+                        "block_type": "tool_use",
+                        "data": {
+                            "id": "call-spawn",
+                            "name": "mob_spawn_member",
+                            "args": {
+                                "agent_identity": "review-worker-alpha",
+                                "profile": "review-worker",
+                                "initial_message": "Review Initiative Alpha."
+                            }
+                        }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.110Z"
+            }),
+        );
+        for frame in frames {
+            aggregator
+                .store()
+                .append_if_absent(frame)
+                .await
+                .expect("append projected namespaced session-history frame");
+        }
+
+        let namespaced_child_page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("test/review-worker-alpha".to_string()),
+                limit: 20,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query namespaced child timeline");
+        assert_eq!(namespaced_child_page.frames.len(), 1);
+        assert_eq!(
+            namespaced_child_page.frames[0].identity,
+            "test/review-worker-alpha"
+        );
+        assert_eq!(
+            namespaced_child_page.frames[0].payload["message"]["content"],
+            "Review Initiative Alpha."
+        );
+
+        let raw_child_page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("review-worker-alpha".to_string()),
+                limit: 20,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query raw child timeline");
+        assert!(
+            raw_child_page.frames.is_empty(),
+            "raw unnamespaced query must not see namespaced synthetic frames: {:#?}",
+            raw_child_page.frames
         );
     }
 
