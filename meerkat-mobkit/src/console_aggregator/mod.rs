@@ -2882,10 +2882,7 @@ fn member_is_addressable(member: &MobMemberListEntry) -> bool {
 
 fn apply_namespace(identity: &str, namespace: &str) -> String {
     let namespace = namespace.trim().trim_matches('/');
-    if namespace.is_empty()
-        || identity == namespace
-        || identity.starts_with(&format!("{namespace}/"))
-    {
+    if namespace.is_empty() || identity.starts_with(&format!("{namespace}/")) {
         identity.to_string()
     } else {
         format!("{namespace}/{identity}")
@@ -5406,6 +5403,21 @@ comms = true
             "raw unnamespaced query must not see namespaced synthetic frames: {:#?}",
             raw_child_page.frames
         );
+    }
+
+    #[test]
+    fn namespace_helpers_preserve_namespace_named_member_identity() {
+        assert_eq!(apply_namespace("test", "test"), "test/test");
+        assert_eq!(
+            strip_namespace("test/test", "test").as_deref(),
+            Some("test")
+        );
+        assert_eq!(apply_namespace("test/worker", "test"), "test/worker");
+        assert_eq!(
+            strip_namespace("test/worker", "test").as_deref(),
+            Some("worker")
+        );
+        assert_eq!(strip_namespace("test", "test"), None);
     }
 
     #[test]
