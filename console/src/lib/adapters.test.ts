@@ -218,6 +218,38 @@ test("mapFramesToTimelineEntries renders run_started parent prompts as the inbou
   );
 });
 
+test("mapFramesToTimelineEntries preserves repeated identical run_started parent prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "person-worker-alpha",
+      member_id: "person-worker-alpha",
+      label: "Person Worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "run-started-1",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-23T20:29:50.000Z"),
+        data: { prompt: "continue" },
+      },
+      {
+        id: "run-started-2",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-23T20:30:50.000Z"),
+        data: { prompt: "continue" },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.deepEqual(
+    entries.map((entry) => ("text" in entry ? entry.text : "")),
+    ["continue", "continue"],
+  );
+});
+
 test("mapFramesToTimelineEntries suppresses duplicate terminal text after streamed deltas", () => {
   const entries = mapFramesToTimelineEntries(
     {

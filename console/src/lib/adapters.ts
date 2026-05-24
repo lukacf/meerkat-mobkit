@@ -1280,15 +1280,17 @@ function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntr
   if (frame.sourceKind === "session_history" && /^You are\b/i.test(signature)) {
     return `history-kickoff:${signature}`;
   }
-  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
-  return signature ? `content:${timestamp}:${signature}` : "";
+  const occurrence =
+    typeof frame.timestampMs === "number"
+      ? `ts:${frame.timestampMs}`
+      : frame.cursor
+        ? `cursor:${frame.cursor}`
+        : `frame:${frame.id}`;
+  return signature ? `content:${occurrence}:${signature}` : "";
 }
 
 function userPromptDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntry): string {
-  const interactionId = frame.interactionId?.trim();
-  if (interactionId) return `interaction:${interactionId}`;
-  const signature = userEntryTextSignature(entry);
-  return signature ? `prompt:${normalizeComparableText(signature)}` : "";
+  return userEntryDedupeKey(frame, entry);
 }
 
 function renderRunStartedPromptEntries(
