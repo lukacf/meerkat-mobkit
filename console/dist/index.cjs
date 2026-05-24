@@ -2492,6 +2492,7 @@ function eventSortRank(event) {
   switch (event) {
     case "user_input":
     case "interaction_started":
+    case "run_started":
       return 0;
     case "tool_call_requested":
     case "tool_call":
@@ -2517,7 +2518,7 @@ function eventSortRank(event) {
   }
 }
 function isInteractionStartEvent(event) {
-  return event === "user_input" || event === "interaction_started";
+  return event === "user_input" || event === "interaction_started" || event === "run_started";
 }
 function cursorSeq(cursor) {
   if (!cursor) return null;
@@ -2545,15 +2546,10 @@ function sortFramesForTranscript(frames) {
     if (leftGroupTs !== rightGroupTs) {
       return leftGroupTs - rightGroupTs;
     }
-    const leftCursor = cursorSeq(left.frame.cursor);
-    const rightCursor = cursorSeq(right.frame.cursor);
-    if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
-      return leftCursor - rightCursor;
-    }
     if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
       const leftStarts = isInteractionStartEvent(left.frame.event);
       const rightStarts = isInteractionStartEvent(right.frame.event);
-      if (leftStarts !== rightStarts && (leftCursor === null || rightCursor === null)) {
+      if (leftStarts !== rightStarts) {
         return leftStarts ? -1 : 1;
       }
     }
@@ -2568,6 +2564,11 @@ function sortFramesForTranscript(frames) {
       if (leftRank !== rightRank) {
         return leftRank - rightRank;
       }
+    }
+    const leftCursor = cursorSeq(left.frame.cursor);
+    const rightCursor = cursorSeq(right.frame.cursor);
+    if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
+      return leftCursor - rightCursor;
     }
     return left.index - right.index;
   }).map(({ frame }) => frame);
@@ -3151,8 +3152,11 @@ function userEntryDedupeKey(frame, entry) {
   if (frame.sourceKind === "session_history" && /^You are\b/i.test(signature)) {
     return `history-kickoff:${signature}`;
   }
-  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
-  return signature ? `content:${timestamp}:${signature}` : "";
+  const occurrence = typeof frame.timestampMs === "number" ? `ts:${frame.timestampMs}` : frame.cursor ? `cursor:${frame.cursor}` : `frame:${frame.id}`;
+  return signature ? `content:${occurrence}:${signature}` : "";
+}
+function userPromptDedupeKey(frame, entry) {
+  return userEntryDedupeKey(frame, entry);
 }
 function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
@@ -3165,8 +3169,16 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   }
   const createdAt = isoFromTimestampMs(frame.timestampMs);
   const entries = [];
-  void options;
-  void createdAt;
+  if (!options.suppressEmbeddedRpcPrompt) {
+    entries.push({
+      kind: "message",
+      id: entryId,
+      identity: USER_IDENTITY,
+      variant: "plain",
+      ...createdAt ? { createdAt } : {},
+      text: prompt
+    });
+  }
   return entries;
 }
 function extractTextFromContentBlocks(blocks) {
@@ -3679,10 +3691,17 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "run_started") {
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
-        suppressEmbeddedRpcPrompt: options.renderInteractionStartsAsUser === true || options.suppressEmbeddedRunStartedPrompt === true
+        suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true
       });
       if (promptEntries.length > 0) {
-        entries.push(...promptEntries);
+        for (const promptEntry of promptEntries) {
+          const userKey = userPromptDedupeKey(frame, promptEntry);
+          if (userKey && emittedUserInputs.has(userKey)) {
+            continue;
+          }
+          if (userKey) emittedUserInputs.add(userKey);
+          entries.push(promptEntry);
+        }
         continue;
       }
     }
@@ -3876,9 +3895,46 @@ function resolvePanelResponsePhase(args) {
     return args.localPhase ?? null;
   }
   if (args.frames.length > 0) {
-    return inferResponsePhaseFromFrames(args.frames, null);
+    const localPhase = inferResponsePhaseFromFrames(args.frames, null);
+    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
+      return args.serverPhase;
+    }
+    return localPhase;
   }
   return args.serverPhase ?? null;
+}
+function latestRoutableFrameIsTerminal(frames) {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    const frame = frames[index];
+    switch (frame.event) {
+      case "user_input":
+        return isTerminalUserInputStatus(frame.status);
+      case "text_complete":
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+      case "message_delivery_failed":
+        return true;
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data : {};
+        const stopReason = data.stop_reason ?? data.stopReason;
+        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+      }
+      case "interaction_started":
+      case "run_started":
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+      case "text_delta":
+        return false;
+      default:
+        break;
+    }
+  }
+  return false;
 }
 function buildConversationViewState(args) {
   const groups = groupConversationTimelineEntries(args.entries);
@@ -9967,12 +10023,12 @@ function ConsoleApp({ baseUrl }) {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events.map((frame, index) => ({ frame, index })).sort((a, b) => {
-      const ca = cursorSeq2(a.frame.cursor);
-      const cb = cursorSeq2(b.frame.cursor);
-      if (ca !== null && cb !== null && ca !== cb) return ca - cb;
       const ta = typeof a.frame.timestampMs === "number" ? a.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       const tb = typeof b.frame.timestampMs === "number" ? b.frame.timestampMs : Number.MAX_SAFE_INTEGER;
       if (ta !== tb) return ta - tb;
+      const ca = cursorSeq2(a.frame.cursor);
+      const cb = cursorSeq2(b.frame.cursor);
+      if (ca !== null && cb !== null && ca !== cb) return ca - cb;
       return a.index - b.index;
     }).map((entry) => entry.frame);
   }

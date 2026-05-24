@@ -135,7 +135,12 @@ function startMockConsoleServer(port, options = {}) {
     "base64",
   );
   const timelineFrames = Array.isArray(options.timelineFrames) ? options.timelineFrames : [];
+  const timelineFramesByIdentity =
+    options.timelineFramesByIdentity && typeof options.timelineFramesByIdentity === "object"
+      ? options.timelineFramesByIdentity
+      : {};
   const includeImageAgent = options.includeImageAgent === true;
+  const includeBusyWorker = options.includeBusyWorker === true;
   const requests = [];
 
   const server = http.createServer((req, res) => {
@@ -198,6 +203,13 @@ function startMockConsoleServer(port, options = {}) {
               addressability: "addressable",
               model_capabilities: { image_input: true },
             }] : []),
+            ...(includeBusyWorker ? [{
+              identity: "person-worker-alpha",
+              display_name: "Person Worker Alpha",
+              profile: "person-worker",
+              state: "running",
+              addressability: "addressable",
+            }] : []),
           ],
         }));
         return;
@@ -245,6 +257,20 @@ function startMockConsoleServer(port, options = {}) {
                   affordances: { can_send_message: true },
                   model_capabilities: { image_input: true },
                 }] : []),
+                ...(includeBusyWorker ? [{
+                  agent_id: "person-worker-alpha",
+                  member_id: "person-worker-alpha",
+                  identity: "person-worker-alpha",
+                  label: "Person Worker Alpha",
+                  kind: "identity",
+                  profile: "person-worker",
+                  role: "person-worker",
+                  group: "Workers",
+                  state: "active",
+                  addressable: true,
+                  response_phase: "tool-executing",
+                  affordances: { can_send_message: true },
+                }] : []),
               ],
             },
           },
@@ -270,6 +296,15 @@ function startMockConsoleServer(port, options = {}) {
                 labels: {},
                 model_capabilities: { image_input: true },
               }] : []),
+              ...(includeBusyWorker ? [{
+                identity: "person-worker-alpha",
+                display_name: "Person Worker Alpha",
+                profile: "person-worker",
+                state: "active",
+                response_phase: "tool-executing",
+                addressability: "addressable",
+                labels: {},
+              }] : []),
             ],
           },
         }));
@@ -280,13 +315,18 @@ function startMockConsoleServer(port, options = {}) {
         const rpcId = payload.id || "rpc";
         if (payload.method === "mobkit/console/query_timeline") {
           const identity = payload.params?.identity;
+          const framesForIdentity =
+            typeof identity === "string" && Array.isArray(timelineFramesByIdentity[identity])
+              ? timelineFramesByIdentity[identity]
+              : null;
+          const frames = framesForIdentity || (identity === "image-agent" ? timelineFrames : []);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
             jsonrpc: "2.0",
             id: rpcId,
             result: {
-              frames: identity === "image-agent" ? timelineFrames : [],
-              next_cursor: timelineFrames.length > 0 ? "console:image:3" : null,
+              frames,
+              next_cursor: frames.length > 0 ? frames[frames.length - 1].cursor || null : null,
             },
           }));
           return;
@@ -720,11 +760,117 @@ async function runComposerPasteAttachmentProof() {
   }
 }
 
+async function runBusyWorkerConsoleProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T20:29:50.000Z");
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": [
+        {
+          id: "worker-tool-first-in-cursor-order",
+          kind: "tool_call_requested",
+          identity: "person-worker-alpha",
+          timestamp_ms: baseTs + 1000,
+          cursor: "console:worker:10",
+          payload: {
+            id: "call-king-search-1",
+            name: "king_search",
+            arguments: { query: "Andreas Holmen" },
+          },
+        },
+        {
+          id: "worker-run-started-backfilled-late",
+          kind: "run_started",
+          identity: "person-worker-alpha",
+          timestamp_ms: baseTs,
+          cursor: "console:worker:11",
+          payload: {
+            prompt: "Parent audit request: inspect Andreas Holmen for CTO Integration.",
+          },
+        },
+        {
+          id: "worker-tool-done-no-terminal-yet",
+          kind: "tool_execution_completed",
+          identity: "person-worker-alpha",
+          timestamp_ms: baseTs + 2000,
+          cursor: "console:worker:12",
+          payload: {
+            id: "call-king-search-1",
+            name: "king_search",
+            result: "ok",
+          },
+        },
+      ],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    await page.waitForSelector('[data-testid="chat-pane:person-worker-alpha"]', { timeout: 30_000 });
+
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Parent audit request: inspect Andreas Holmen for CTO Integration.").waitFor({ timeout: 10_000 });
+    await pane.getByText("king_search").first().waitFor({ timeout: 10_000 });
+    await page.waitForSelector('[data-testid="chat-typing:person-worker-alpha"]', { timeout: 10_000 });
+
+    const bodyText = await pane.innerText();
+    const promptIndex = bodyText.indexOf("Parent audit request: inspect Andreas Holmen for CTO Integration.");
+    const toolIndex = bodyText.indexOf("king_search");
+    assert(promptIndex >= 0, `missing parent prompt in worker transcript: ${bodyText}`);
+    assert(toolIndex >= 0, `missing tool card in worker transcript: ${bodyText}`);
+    assert(
+      promptIndex < toolIndex,
+      `parent prompt must render before tool activity even when backfilled late: ${bodyText}`,
+    );
+    assert(bodyText.includes("working"), `busy worker must show working indicator: ${bodyText}`);
+
+    await page.locator('[data-testid="chat-composer:person-worker-alpha"]').fill("Please prioritize this audit note.");
+    await page.locator('[data-testid="chat-send:person-worker-alpha"]').click();
+    await page.waitForSelector('[data-testid="pending-stack"]', { timeout: 10_000 });
+    await pane.getByText("Please prioritize this audit note.").waitFor({ timeout: 10_000 });
+    await page.waitForSelector('[data-testid^="pending-steer:"]', { timeout: 10_000 });
+    await page.locator('[data-testid^="pending-steer:"]').first().click();
+    await page.waitForTimeout(500);
+
+    const steerRequest = server.requests.find((request) =>
+      request.url === "/console/rpc" &&
+      request.body.includes('"method":"mobkit/console/send"') &&
+      request.body.includes('"identity":"person-worker-alpha"') &&
+      request.body.includes('"handling_mode":"steer"') &&
+      request.body.includes("Please prioritize this audit note.")
+    );
+    assert(
+      steerRequest,
+      `queued busy-worker draft was not promoted through canonical steer send; saw ${JSON.stringify(server.requests, null, 2)}`,
+    );
+
+    process.stdout.write("browser busy worker queue/steer ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function main() {
-  await runReferenceBrowserProof();
+  const repoCargo = path.join(repoRoot, "scripts", "repo-cargo");
+  if (fs.existsSync(repoCargo)) {
+    await runReferenceBrowserProof();
+  } else {
+    process.stdout.write("browser reference proof skipped: MobKit workspace scripts unavailable in vendored package\n");
+  }
   await runCanonicalSendBrowserProof();
   await runImageRenderingBrowserProof();
   await runComposerPasteAttachmentProof();
+  await runBusyWorkerConsoleProof();
 }
 
 main().catch((error) => {

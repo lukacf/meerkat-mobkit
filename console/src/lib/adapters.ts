@@ -380,6 +380,7 @@ function eventSortRank(event: string | undefined): number {
   switch (event) {
     case "user_input":
     case "interaction_started":
+    case "run_started":
       return 0;
     case "tool_call_requested":
     case "tool_call":
@@ -406,7 +407,7 @@ function eventSortRank(event: string | undefined): number {
 }
 
 function isInteractionStartEvent(event: string | undefined): boolean {
-  return event === "user_input" || event === "interaction_started";
+  return event === "user_input" || event === "interaction_started" || event === "run_started";
 }
 
 function cursorSeq(cursor: string | undefined): number | null {
@@ -443,15 +444,10 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
       if (leftGroupTs !== rightGroupTs) {
         return leftGroupTs - rightGroupTs;
       }
-      const leftCursor = cursorSeq(left.frame.cursor);
-      const rightCursor = cursorSeq(right.frame.cursor);
-      if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
-        return leftCursor - rightCursor;
-      }
       if (leftInteraction && rightInteraction && leftInteraction === rightInteraction) {
         const leftStarts = isInteractionStartEvent(left.frame.event);
         const rightStarts = isInteractionStartEvent(right.frame.event);
-        if (leftStarts !== rightStarts && (leftCursor === null || rightCursor === null)) {
+        if (leftStarts !== rightStarts) {
           return leftStarts ? -1 : 1;
         }
       }
@@ -466,6 +462,11 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
         if (leftRank !== rightRank) {
           return leftRank - rightRank;
         }
+      }
+      const leftCursor = cursorSeq(left.frame.cursor);
+      const rightCursor = cursorSeq(right.frame.cursor);
+      if (leftCursor !== null && rightCursor !== null && leftCursor !== rightCursor) {
+        return leftCursor - rightCursor;
       }
       return left.index - right.index;
     })
@@ -1279,8 +1280,17 @@ function userEntryDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntr
   if (frame.sourceKind === "session_history" && /^You are\b/i.test(signature)) {
     return `history-kickoff:${signature}`;
   }
-  const timestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : "";
-  return signature ? `content:${timestamp}:${signature}` : "";
+  const occurrence =
+    typeof frame.timestampMs === "number"
+      ? `ts:${frame.timestampMs}`
+      : frame.cursor
+        ? `cursor:${frame.cursor}`
+        : `frame:${frame.id}`;
+  return signature ? `content:${occurrence}:${signature}` : "";
+}
+
+function userPromptDedupeKey(frame: ConsoleFrame, entry: ConversationTimelineEntry): string {
+  return userEntryDedupeKey(frame, entry);
 }
 
 function renderRunStartedPromptEntries(
@@ -1299,8 +1309,16 @@ function renderRunStartedPromptEntries(
   const createdAt = isoFromTimestampMs(frame.timestampMs);
   const entries: ConversationTimelineEntry[] = [];
 
-  void options;
-  void createdAt;
+  if (!options.suppressEmbeddedRpcPrompt) {
+    entries.push({
+      kind: "message",
+      id: entryId,
+      identity: USER_IDENTITY,
+      variant: "plain",
+      ...(createdAt ? { createdAt } : {}),
+      text: prompt,
+    });
+  }
 
   return entries;
 }
@@ -2035,12 +2053,17 @@ export function mapFramesToTimelineEntries(
     if (frame.event === "run_started") {
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
-        suppressEmbeddedRpcPrompt:
-          options.renderInteractionStartsAsUser === true
-          || options.suppressEmbeddedRunStartedPrompt === true,
+        suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
       });
       if (promptEntries.length > 0) {
-        entries.push(...promptEntries);
+        for (const promptEntry of promptEntries) {
+          const userKey = userPromptDedupeKey(frame, promptEntry);
+          if (userKey && emittedUserInputs.has(userKey)) {
+            continue;
+          }
+          if (userKey) emittedUserInputs.add(userKey);
+          entries.push(promptEntry);
+        }
         continue;
       }
     }
@@ -2322,9 +2345,47 @@ export function resolvePanelResponsePhase(args: {
     return args.localPhase ?? null;
   }
   if (args.frames.length > 0) {
-    return inferResponsePhaseFromFrames(args.frames, null);
+    const localPhase = inferResponsePhaseFromFrames(args.frames, null);
+    if (args.serverPhase && localPhase === null && !latestRoutableFrameIsTerminal(args.frames)) {
+      return args.serverPhase;
+    }
+    return localPhase;
   }
   return args.serverPhase ?? null;
+}
+
+function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
+  for (let index = frames.length - 1; index >= 0; index -= 1) {
+    const frame = frames[index];
+    switch (frame.event) {
+      case "user_input":
+        return isTerminalUserInputStatus(frame.status);
+      case "text_complete":
+      case "interaction_complete":
+      case "interaction_failed":
+      case "run_completed":
+      case "run_failed":
+      case "message_delivery_failed":
+        return true;
+      case "turn_completed": {
+        const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
+        const stopReason = data.stop_reason ?? data.stopReason;
+        return typeof stopReason === "string" ? stopReason !== "tool_use" : true;
+      }
+      case "interaction_started":
+      case "run_started":
+      case "tool_call_requested":
+      case "tool_call":
+      case "tool_execution_started":
+      case "tool_result_received":
+      case "tool_execution_completed":
+      case "text_delta":
+        return false;
+      default:
+        break;
+    }
+  }
+  return false;
 }
 
 export function buildConversationViewState(args: {

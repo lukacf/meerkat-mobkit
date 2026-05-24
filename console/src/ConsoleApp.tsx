@@ -776,18 +776,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return request;
   }
 
-  /// Render-time chat view: aggregate cursor is the canonical order. The
-  /// server admits user input before dispatch, so cursor order preserves
-  /// causality without timestamp-only restore drift.
+  /// Render-time chat view: transcript time is the primary order. Aggregate
+  /// cursor order is useful for replay paging, but it can arrive out of
+  /// conversational order when delayed peer-message/session-history frames are
+  /// backfilled after newer tool or completion frames. Use cursor only as a
+  /// stable tie-breaker for same-timestamp frames.
   function getSortedFrames(identity: string): ConsoleFrame[] {
     const log = identityLogRef.current[identity];
     if (!log) return [];
     return log.events
       .map((frame, index) => ({ frame, index }))
       .sort((a, b) => {
-        const ca = cursorSeq(a.frame.cursor);
-        const cb = cursorSeq(b.frame.cursor);
-        if (ca !== null && cb !== null && ca !== cb) return ca - cb;
         const ta =
           typeof a.frame.timestampMs === "number"
             ? a.frame.timestampMs
@@ -797,6 +796,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             ? b.frame.timestampMs
             : Number.MAX_SAFE_INTEGER;
         if (ta !== tb) return ta - tb;
+        const ca = cursorSeq(a.frame.cursor);
+        const cb = cursorSeq(b.frame.cursor);
+        if (ca !== null && cb !== null && ca !== cb) return ca - cb;
         return a.index - b.index;
       })
       .map((entry) => entry.frame);
@@ -2376,9 +2378,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     );
     const optimisticEntry = optimisticUser ? optimisticUser.entry : null;
 
-    // `conversationEntries` are already in canonical frame/cursor order.
-    // Re-sorting rendered entries by createdAt can move terminal history
-    // text above live tool cards when those timestamps differ.
+    // `conversationEntries` are already in transcript order. Re-sorting
+    // rendered entries by createdAt here would lose the adapter's
+    // same-turn grouping/tie-break rules.
     const entries = sanitizeConversationEntries(
       appendOptimisticConversationEntry(conversationEntries, optimisticEntry),
     );
