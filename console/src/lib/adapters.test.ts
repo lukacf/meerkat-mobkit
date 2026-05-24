@@ -175,6 +175,49 @@ test("mapFramesToTimelineEntries renders a partial assistant message while delta
   assert.equal(text, "Status is stable.");
 });
 
+test("mapFramesToTimelineEntries renders run_started parent prompts as the inbound turn", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "person-worker-alpha",
+      member_id: "person-worker-alpha",
+      label: "Person Worker",
+      kind: "identity",
+    },
+    [
+      {
+        id: "tool-first-in-cursor-order",
+        event: "tool_call_requested",
+        cursor: "console:10",
+        timestampMs: 200,
+        data: { id: "call-1", name: "king_search", arguments: "{}" },
+      },
+      {
+        id: "run-started-backfilled-late",
+        event: "run_started",
+        cursor: "console:11",
+        timestampMs: 100,
+        data: {
+          prompt: "Peer message from parent: audit this person",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.kind, "message");
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal("text" in entries[0]! ? entries[0].text : "", "Peer message from parent: audit this person");
+  assert.equal(entries[1]?.kind, "message");
+  assert.equal(entries[1]?.identity.role, "assistant");
+  assert.equal(
+    entries[1] && "blocks" in entries[1] && Array.isArray(entries[1].blocks)
+      ? entries[1].blocks[0]?.type
+      : "",
+    "tool-call",
+  );
+});
+
 test("mapFramesToTimelineEntries suppresses duplicate terminal text after streamed deltas", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -487,6 +530,18 @@ test("resolvePanelResponsePhase lets local terminal history clear stale server p
       serverPhase: "generating",
     }),
     null,
+  );
+
+  assert.equal(
+    resolvePanelResponsePhase({
+      frames: [
+        { id: "evt-1", event: "run_started", timestampMs: 1, data: { prompt: "Work" } },
+        { id: "evt-2", event: "tool_call_requested", timestampMs: 2, data: { name: "king_search" } },
+        { id: "evt-3", event: "tool_execution_completed", timestampMs: 3, data: {} },
+      ],
+      serverPhase: "tool-executing",
+    }),
+    "tool-executing",
   );
 
   assert.equal(
@@ -887,7 +942,7 @@ test("sortConversationTimelineEntries orders accepted user frames before later a
   assert.deepEqual(entries.map((entry) => entry.id), ["user-1", "assistant-1"]);
 });
 
-test("appendOptimisticConversationEntry preserves canonical tool/text frame order", () => {
+test("appendOptimisticConversationEntry preserves timestamp transcript order", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "deep-investigator",
@@ -942,7 +997,7 @@ test("appendOptimisticConversationEntry preserves canonical tool/text frame orde
       }
       return "text" in entry ? entry.text : "rich";
     }),
-    ["tool", "I checked the initiative list.", "optimistic"],
+    ["I checked the initiative list.", "tool", "optimistic"],
   );
 });
 
@@ -1823,7 +1878,7 @@ test("mapFramesToTimelineEntries treats spawn-looking interaction prompts as use
   );
 });
 
-test("mapFramesToTimelineEntries does not parse inbound comms requests from run_started prompts", () => {
+test("mapFramesToTimelineEntries renders inbound comms run_started prompts as user work", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "scribe",
@@ -1849,11 +1904,16 @@ test("mapFramesToTimelineEntries does not parse inbound comms requests from run_
     ],
   );
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.id, "scribe");
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(
+    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    "[COMMS REQUEST from incident-command-center/incident_commander/incident-commander]\nIntent: request_summary\nBody: Summarize the incident.",
+  );
+  assert.equal(entries[1]?.identity.id, "scribe");
 });
 
-test("mapFramesToTimelineEntries does not parse inbound one-line peer messages from run_started prompts", () => {
+test("mapFramesToTimelineEntries renders inbound one-line peer run_started prompts as user work", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "scribe",
@@ -1880,8 +1940,13 @@ test("mapFramesToTimelineEntries does not parse inbound one-line peer messages f
     { renderInteractionStartsAsUser: true },
   );
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.id, "scribe");
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(
+    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    "[COMMS MESSAGE from incident-command-center/commander/incident-commander] Please describe what you see in the attached image.",
+  );
+  assert.equal(entries[1]?.identity.id, "scribe");
 });
 
 test("mapFramesToTimelineEntries renders inbound comms-looking user-input frames as operator chat", () => {
@@ -2537,7 +2602,7 @@ test("mapFramesToTimelineEntries deduplicates repeated session-history kickoff p
   assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", prompt);
 });
 
-test("mapFramesToTimelineEntries does not parse inbound peer messages from content-block run_started prompts", () => {
+test("mapFramesToTimelineEntries renders inbound content-block run_started prompts as user work", () => {
   const entries = mapFramesToTimelineEntries(
     {
       agent_id: "scribe",
@@ -2568,8 +2633,13 @@ test("mapFramesToTimelineEntries does not parse inbound peer messages from conte
     { renderInteractionStartsAsUser: true },
   );
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]?.identity.id, "scribe");
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.role, "user");
+  assert.equal(
+    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    "[COMMS MESSAGE from incident-command-center/commander/incident-commander]\nPlease describe this generated self-portrait image.",
+  );
+  assert.equal(entries[1]?.identity.id, "scribe");
 });
 
 test("mapFramesToTimelineEntries orders persisted interaction history by interaction semantics, not raw arrival order", () => {

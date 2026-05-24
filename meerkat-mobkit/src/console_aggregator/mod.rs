@@ -2304,7 +2304,7 @@ fn frames_from_session_history_message(
         ),
         Message::System(_) | Message::ToolResults { .. } => return Vec::new(),
     };
-    vec![NewConsoleFrame {
+    let mut frames = vec![NewConsoleFrame {
         id: None,
         dedupe_key: format!("session-history:{runtime_key}:{session_id}:{offset}:{payload_hash}"),
         timestamp_ms,
@@ -2325,7 +2325,103 @@ fn frames_from_session_history_message(
         run_id: None,
         parent_frame_id: None,
         caused_by_frame_id: None,
-    }]
+    }];
+    if let Message::BlockAssistant(assistant) = &parsed {
+        frames.extend(spawn_initial_message_frames_from_assistant(
+            runtime_key,
+            identity,
+            session_id,
+            offset,
+            assistant,
+            &payload_hash,
+        ));
+    }
+    frames
+}
+
+fn spawn_initial_message_frames_from_assistant(
+    runtime_key: &str,
+    parent_identity: &str,
+    session_id: &str,
+    offset: usize,
+    assistant: &meerkat_core::types::BlockAssistantMessage,
+    payload_hash: &str,
+) -> Vec<NewConsoleFrame> {
+    assistant
+        .tool_calls()
+        .enumerate()
+        .filter_map(|(idx, tool)| {
+            if tool.name != "mob_spawn_member" && tool.name != "spawn_member" {
+                return None;
+            }
+            let args = serde_json::from_str::<Value>(tool.args.get()).ok()?;
+            let target_identity = args
+                .get("member_id")
+                .or_else(|| args.get("agent_identity"))
+                .and_then(Value::as_str)?
+                .trim();
+            if target_identity.is_empty() {
+                return None;
+            }
+            let initial_message = args
+                .get("initial_message")
+                .or_else(|| args.get("task"))?
+                .clone();
+            let message_content = match &initial_message {
+                Value::String(text) => json!([
+                    {
+                        "type": "text",
+                        "text": text,
+                    }
+                ]),
+                other => other.clone(),
+            };
+            let message = match &initial_message {
+                Value::String(text) => json!({
+                    "role": "user",
+                    "content": text,
+                    "created_at": assistant.created_at,
+                }),
+                other => json!({
+                    "role": "user",
+                    "content": other,
+                    "created_at": assistant.created_at,
+                }),
+            };
+            Some(NewConsoleFrame {
+                id: None,
+                dedupe_key: format!(
+                    "session-history:{runtime_key}:{session_id}:{offset}:spawn-initial:{idx}:{payload_hash}"
+                ),
+                timestamp_ms: assistant.created_at.timestamp_millis().max(0) as u64,
+                runtime_key: runtime_key.to_string(),
+                identity: target_identity.to_string(),
+                conversation_id: Some(target_identity.to_string()),
+                session_id: None,
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Completed,
+                payload: json!({
+                    "content": message_content,
+                    "message": message,
+                    "source_event_type": "session_history_spawn_initial_message",
+                    "type": "session_history",
+                    "tool_call_id": tool.id,
+                    "parent_identity": parent_identity,
+                    "via_tool": tool.name,
+                }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::SessionHistory,
+                    source_cursor: Some(format!("{session_id}:{offset}:spawn-initial:{idx}")),
+                },
+                source_event_id: None,
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+        })
+        .collect()
 }
 
 fn session_history_user_message_is_scaffold(message: &Value) -> bool {
@@ -4945,6 +5041,50 @@ comms = true
         );
         assert_eq!(frame.source.kind, ConsoleFrameSourceKind::SessionHistory);
         assert_eq!(frame.timestamp_ms, 50);
+    }
+
+    #[test]
+    fn session_history_projection_surfaces_spawn_initial_message_on_child_timeline() {
+        let frames = frames_from_session_history_message(
+            "runtime-a",
+            "review:singleton",
+            "session-a",
+            7,
+            json!({
+                "role": "block_assistant",
+                "blocks": [
+                    {
+                        "block_type": "tool_use",
+                        "data": {
+                            "id": "call-spawn",
+                            "name": "mob_spawn_member",
+                            "args": {
+                                "member_id": "review-worker-alpha",
+                                "profile": "review-worker",
+                                "initial_message": "Review Initiative Alpha and save the result."
+                            }
+                        }
+                    }
+                ],
+                "stop_reason": "tool_use",
+                "created_at": "1970-01-01T00:00:00.070Z"
+            }),
+        );
+
+        assert_eq!(frames.len(), 2);
+        let child = frames
+            .iter()
+            .find(|frame| frame.identity == "review-worker-alpha")
+            .expect("spawned member initial message frame");
+        assert_eq!(child.kind, "user_input");
+        assert_eq!(child.timestamp_ms, 70);
+        assert_eq!(
+            child.payload["message"]["content"],
+            "Review Initiative Alpha and save the result."
+        );
+        assert_eq!(child.payload["parent_identity"], "review:singleton");
+        assert_eq!(child.payload["via_tool"], "mob_spawn_member");
+        assert_eq!(child.source.kind, ConsoleFrameSourceKind::SessionHistory);
     }
 
     #[test]
