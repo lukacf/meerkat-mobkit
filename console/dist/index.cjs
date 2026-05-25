@@ -9961,7 +9961,7 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       return true;
     }
-    if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
+    if (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame) || frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
       return false;
     }
     return null;

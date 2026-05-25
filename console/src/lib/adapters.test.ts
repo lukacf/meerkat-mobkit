@@ -536,6 +536,14 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
   assert.equal(
     inferResponsePhaseFromFrames([
       { id: "evt-1", event: "tool_execution_completed", data: {} },
+      { id: "evt-2", event: "turn_completed", data: { stop_reason: "end_turn" } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "tool_execution_completed", data: {} },
       { id: "evt-2", event: "reasoning_delta", data: { delta: "Planning next step" } },
     ]),
     "generating",

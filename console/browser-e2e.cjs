@@ -1097,6 +1097,122 @@ async function runToolOnlyWorkerBusyQueueProof() {
   }
 }
 
+async function runToolOnlyWorkerTerminalClearsBusyProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T20:55:00.000Z");
+  const sendText = "This should send immediately after terminal turn_completed.";
+  const server = await startMockConsoleServer(port, {
+    includeToolOnlyWorker: true,
+    timelineFramesByIdentity: {
+      "tool-only-worker": [
+        {
+          id: "terminal-tool-only-parent-handoff",
+          kind: "user_input",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs,
+          cursor: "console:tool-only-terminal:1",
+          payload: {
+            content: "Parent handoff: run one short terminal tool-only check.",
+          },
+        },
+        {
+          id: "terminal-tool-only-tool-call",
+          kind: "tool_call_requested",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 1_000,
+          cursor: "console:tool-only-terminal:2",
+          payload: {
+            id: "call-king-search-2",
+            name: "king_search",
+            arguments: { query: "terminal tool-only check" },
+          },
+        },
+        {
+          id: "terminal-tool-only-tool-done",
+          kind: "tool_execution_completed",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 2_000,
+          cursor: "console:tool-only-terminal:3",
+          payload: {
+            id: "call-king-search-2",
+            name: "king_search",
+            result: "ok",
+          },
+        },
+        {
+          id: "terminal-tool-only-turn-completed",
+          kind: "turn_completed",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 3_000,
+          cursor: "console:tool-only-terminal:4",
+          payload: {
+            stop_reason: "end_turn",
+          },
+        },
+      ],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Tool Only Worker" }).click();
+    await page.waitForSelector('[data-testid="chat-pane:tool-only-worker"]', { timeout: 30_000 });
+
+    const pane = page.locator('[data-testid="chat-pane:tool-only-worker"]');
+    await pane.getByText("Parent handoff: run one short terminal tool-only check.").waitFor({ timeout: 10_000 });
+    await pane.getByText("king_search").first().waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(500);
+
+    const terminalText = await pane.innerText();
+    assert(
+      !terminalText.includes("working"),
+      `terminal tool-only turn must clear visible working indicator: ${terminalText}`,
+    );
+    assert.equal(
+      await page.locator('[data-testid="chat-typing:tool-only-worker"]').count(),
+      0,
+      "terminal turn_completed must remove typing indicator",
+    );
+
+    await page.locator('[data-testid="chat-composer:tool-only-worker"]').fill(sendText);
+    await page.locator('[data-testid="chat-send:tool-only-worker"]').click();
+    await page.waitForTimeout(500);
+
+    assert.equal(
+      await page.locator('[data-testid="pending-stack"]').count(),
+      0,
+      "terminal turn_completed must clear hidden busy state so drafts do not queue",
+    );
+
+    const directSend = server.requests.find((request) =>
+      request.url === "/console/rpc" &&
+      request.body.includes('"method":"mobkit/console/send"') &&
+      request.body.includes('"identity":"tool-only-worker"') &&
+      request.body.includes(sendText)
+    );
+    assert(
+      directSend,
+      `idle terminal tool-only worker did not send directly; saw ${JSON.stringify(server.requests, null, 2)}`,
+    );
+    assert(
+      !directSend.body.includes('"handling_mode":"steer"'),
+      `idle terminal tool-only worker incorrectly sent as steer: ${directSend.body}`,
+    );
+
+    process.stdout.write("browser tool-only terminal clears busy ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runChatPaneAutoScrollProof() {
   const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:40:00.000Z");
@@ -1281,6 +1397,7 @@ async function main() {
   await runComposerPasteAttachmentProof();
   await runBusyWorkerConsoleProof();
   await runToolOnlyWorkerBusyQueueProof();
+  await runToolOnlyWorkerTerminalClearsBusyProof();
   await runChatPaneAutoScrollProof();
   await runRunStartedClearsOptimisticPromptProof();
 }

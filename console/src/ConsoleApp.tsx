@@ -655,6 +655,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       return true;
     }
     if (
+      (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame)) ||
       frame.event === "interaction_complete" ||
       frame.event === "interaction_failed" ||
       frame.event === "run_completed" ||
