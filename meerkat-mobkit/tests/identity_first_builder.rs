@@ -345,34 +345,45 @@ fn continuity_record(identity: &str) -> ContinuityRecord {
 }
 
 /// Helper: assert builder.build() returns Err and the error message contains the given substring.
-async fn assert_build_err_contains(builder: UnifiedRuntimeBuilder, expected: &str) {
-    match builder.build().await {
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                msg.contains(expected),
-                "expected error containing {expected:?}, got: {msg}"
-            );
+fn assert_build_err_contains<'a>(
+    builder: UnifiedRuntimeBuilder,
+    expected: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+    Box::pin(async move {
+        match builder.build().await {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains(expected),
+                    "expected error containing {expected:?}, got: {msg}"
+                );
+            }
+            Ok(_) => panic!("expected builder error containing {expected:?}, but build succeeded"),
         }
-        Ok(_) => panic!("expected builder error containing {expected:?}, but build succeeded"),
-    }
+    })
 }
 
 /// Helper: assert builder.build() returns Err and the error message does NOT contain either substring.
-async fn assert_build_err_not_contains(builder: UnifiedRuntimeBuilder, not_a: &str, not_b: &str) {
-    match builder.build().await {
-        Err(e) => {
-            let msg = e.to_string();
-            assert!(
-                !msg.contains(not_a) && !msg.contains(not_b),
-                "expected error NOT containing {not_a:?} or {not_b:?}, got: {msg}"
-            );
+fn assert_build_err_not_contains<'a>(
+    builder: UnifiedRuntimeBuilder,
+    not_a: &'a str,
+    not_b: &'a str,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+    Box::pin(async move {
+        match builder.build().await {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    !msg.contains(not_a) && !msg.contains(not_b),
+                    "expected error NOT containing {not_a:?} or {not_b:?}, got: {msg}"
+                );
+            }
+            Ok(_) => {
+                // If it somehow succeeded, that's fine for this assertion
+                // (the point was that it shouldn't fail with conflicting config)
+            }
         }
-        Ok(_) => {
-            // If it somehow succeeded, that's fine for this assertion
-            // (the point was that it shouldn't fail with conflicting config)
-        }
-    }
+    })
 }
 
 // ===========================================================================

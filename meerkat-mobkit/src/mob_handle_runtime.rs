@@ -2015,6 +2015,7 @@ impl MobBootstrapSpec {
             store_path,
             max_sessions,
             session_store,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -2044,6 +2045,7 @@ impl MobBootstrapSpec {
             store_path,
             max_sessions,
             session_store,
+            Config::default(),
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
@@ -2057,6 +2059,7 @@ impl MobBootstrapSpec {
         store_path: PathBuf,
         max_sessions: usize,
         session_store: Option<Arc<dyn AgentSessionStore>>,
+        config: Config,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -2084,7 +2087,6 @@ impl MobBootstrapSpec {
         if let Some(machine) = runtime_adapter.clone() {
             factory = factory.with_image_generation_machine(machine);
         }
-        let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
         if let Some(store) = session_store {
@@ -2153,6 +2155,7 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -2183,6 +2186,7 @@ impl MobBootstrapSpec {
             max_sessions,
             session_store,
             None,
+            Config::default(),
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
@@ -2197,6 +2201,7 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         session_store: Arc<dyn SessionStore>,
         custom_blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+        config: Config,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
@@ -2251,7 +2256,6 @@ impl MobBootstrapSpec {
         if caps.image_generation {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
-        let config = Config::default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
@@ -2293,12 +2297,12 @@ impl MobBootstrapSpec {
         max_sessions: usize,
         custom_session_store: Option<Arc<dyn SessionStore>>,
         custom_blob_store: Option<Arc<dyn meerkat_core::BlobStore>>,
+        config: Config,
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
-        let config = Config::default();
         let session_store: Arc<dyn SessionStore> = custom_session_store
             .clone()
             .unwrap_or_else(|| Arc::new(meerkat_store::MemoryStore::new()));
@@ -4003,6 +4007,7 @@ realm_profile = "worker-v2"
             4,
             None,
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -4034,6 +4039,7 @@ realm_profile = "worker-v2"
             4,
             None,
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -4085,6 +4091,7 @@ realm_profile = "worker-v2"
             4,
             None,
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -4136,6 +4143,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store.clone()),
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -4186,6 +4194,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store.clone()),
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -4221,6 +4230,7 @@ realm_profile = "worker-v2"
             4,
             Some(custom_store),
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,
@@ -4266,6 +4276,7 @@ realm_profile = "worker-v2"
             store_path,
             4,
             None,
+            Config::default(),
             None,
             CapabilityFlags::default(),
             None,

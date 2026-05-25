@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
+use meerkat::Config as MeerkatConfig;
 use meerkat_client::LlmClient;
 use meerkat_mob::{MobDefinition, MobStorage, SpawnMemberSpec};
 
@@ -73,6 +74,7 @@ pub struct UnifiedRuntimeBuilder {
     default_llm_client: Option<Arc<dyn LlmClient>>,
     max_sessions: Option<usize>,
     capability_flags: CapabilityFlags,
+    meerkat_config: Option<MeerkatConfig>,
 
     // --- Identity-first external path ---
     continuity_store: Option<Arc<dyn crate::identity_first::contracts::ContinuityStore>>,
@@ -276,6 +278,15 @@ impl UnifiedRuntimeBuilder {
     /// visibility decision.
     pub fn image_generation(mut self, enabled: bool) -> Self {
         self.capability_flags.image_generation = enabled;
+        self
+    }
+
+    /// Set the Meerkat session-build configuration used for definition-based
+    /// runtimes. This is the right place for embedding apps to tune Meerkat
+    /// mechanics such as session compaction without changing app policy or
+    /// forking the lower-level runtime.
+    pub fn meerkat_config(mut self, config: MeerkatConfig) -> Self {
+        self.meerkat_config = Some(config);
         self
     }
 
@@ -795,6 +806,7 @@ impl UnifiedRuntimeBuilder {
         caps.image_generation |=
             crate::mob_handle_runtime::mob_definition_may_use_image_generation(&definition);
         let max_sessions = self.max_sessions.unwrap_or(DEFAULT_MAX_SESSIONS);
+        let meerkat_config = self.meerkat_config.clone().unwrap_or_default();
         if max_sessions == 0 {
             return Err(UnifiedRuntimeBuilderError::ConflictingConfiguration(
                 "max_sessions() must be greater than 0".to_string(),
@@ -858,6 +870,7 @@ impl UnifiedRuntimeBuilder {
                 max_sessions,
                 session_store,
                 self.blob_store.clone(),
+                meerkat_config,
                 hook,
                 caps,
                 after_hook.clone(),
@@ -877,6 +890,7 @@ impl UnifiedRuntimeBuilder {
                 max_sessions,
                 self.custom_session_store.clone(),
                 self.blob_store.clone(),
+                meerkat_config,
                 hook,
                 caps,
                 after_hook,
@@ -895,6 +909,7 @@ impl UnifiedRuntimeBuilder {
                 max_sessions,
                 self.custom_session_store.clone(),
                 self.blob_store.clone(),
+                meerkat_config,
                 hook,
                 caps,
                 after_hook,
@@ -1007,6 +1022,37 @@ runtime_mode = "autonomous_host"
             blocked.to_string().contains("Max sessions reached (65/65)"),
             "unexpected capacity error: {blocked}",
         );
+    }
+
+    #[tokio::test]
+    async fn definition_based_ephemeral_spec_accepts_meerkat_config() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-meerkat-config"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+"#,
+        )
+        .expect("definition parses");
+        let mut config = MeerkatConfig::default();
+        config.compaction.auto_compact_threshold = 42_000;
+        config.compaction.auto_compact_threshold_explicit = true;
+
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .meerkat_config(config)
+            .max_sessions(1);
+        let spec = builder.resolve_mob_spec().await.expect("spec resolves");
+
+        SessionService::create_session(
+            spec.session_service.as_ref(),
+            deferred_capacity_request("custom config session"),
+        )
+        .await
+        .expect("custom Meerkat config should still build sessions");
     }
 
     #[tokio::test]
