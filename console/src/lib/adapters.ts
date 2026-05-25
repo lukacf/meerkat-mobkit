@@ -430,17 +430,23 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
     }
   }
 
+  const transcriptGroupTimestamp = (frame: ConsoleFrame): number => {
+    const interactionId = frame.interactionId?.trim() || "";
+    const ownTimestamp =
+      typeof frame.timestampMs === "number"
+        ? frame.timestampMs
+        : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) return ownTimestamp;
+    return interactionStartMs.get(interactionId) ?? ownTimestamp;
+  };
+
   return frames
     .map((frame, index) => ({ frame, index }))
     .sort((left, right) => {
       const leftInteraction = left.frame.interactionId?.trim() || "";
       const rightInteraction = right.frame.interactionId?.trim() || "";
-      const leftGroupTs =
-        (leftInteraction && interactionStartMs.get(leftInteraction))
-        ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
-      const rightGroupTs =
-        (rightInteraction && interactionStartMs.get(rightInteraction))
-        ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+      const leftGroupTs = transcriptGroupTimestamp(left.frame);
+      const rightGroupTs = transcriptGroupTimestamp(right.frame);
       if (leftGroupTs !== rightGroupTs) {
         return leftGroupTs - rightGroupTs;
       }

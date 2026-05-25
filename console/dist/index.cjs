@@ -2538,11 +2538,17 @@ function sortFramesForTranscript(frames) {
       interactionStartMs.set(interactionId, timestampMs);
     }
   }
+  const transcriptGroupTimestamp = (frame) => {
+    const interactionId = frame.interactionId?.trim() || "";
+    const ownTimestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) return ownTimestamp;
+    return interactionStartMs.get(interactionId) ?? ownTimestamp;
+  };
   return frames.map((frame, index) => ({ frame, index })).sort((left, right) => {
     const leftInteraction = left.frame.interactionId?.trim() || "";
     const rightInteraction = right.frame.interactionId?.trim() || "";
-    const leftGroupTs = (leftInteraction && interactionStartMs.get(leftInteraction)) ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
-    const rightGroupTs = (rightInteraction && interactionStartMs.get(rightInteraction)) ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+    const leftGroupTs = transcriptGroupTimestamp(left.frame);
+    const rightGroupTs = transcriptGroupTimestamp(right.frame);
     if (leftGroupTs !== rightGroupTs) {
       return leftGroupTs - rightGroupTs;
     }
@@ -8535,7 +8541,23 @@ function ChatPane({
   stackSlot
 }) {
   const bodyRef = import_react19.default.useRef(null);
-  import_react19.default.useEffect(() => {
+  const messages = import_react19.default.useMemo(() => {
+    return buildChatMessages(entries);
+  }, [entries]);
+  const scrollSignature = import_react19.default.useMemo(() => {
+    const last = messages[messages.length - 1];
+    const lastTextLength = last?.text?.length ?? 0;
+    const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : 0;
+    return [
+      identity,
+      messages.length,
+      last?.id ?? "",
+      lastTextLength,
+      lastBlockLength,
+      phase ?? ""
+    ].join(":");
+  }, [identity, messages, phase]);
+  import_react19.default.useLayoutEffect(() => {
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -8543,12 +8565,13 @@ function ChatPane({
       }
     };
     resetTranscriptScroll();
-    const frame = window.requestAnimationFrame(resetTranscriptScroll);
-    return () => window.cancelAnimationFrame(frame);
-  }, [entries.length, phase]);
-  const messages = import_react19.default.useMemo(() => {
-    return buildChatMessages(entries);
-  }, [entries]);
+    const firstFrame = window.requestAnimationFrame(resetTranscriptScroll);
+    const secondFrame = window.requestAnimationFrame(resetTranscriptScroll);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [scrollSignature]);
   const transcriptText = import_react19.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
@@ -9859,10 +9882,11 @@ function ConsoleApp({ baseUrl }) {
     });
   }
   function clearOptimisticUserByContent(identity, frame) {
-    if (frame.event !== "interaction_started" && frame.event !== "user_input")
+    if (frame.event !== "interaction_started" && frame.event !== "user_input" && frame.event !== "run_started")
       return;
     const record = frame.data && typeof frame.data === "object" ? frame.data : {};
-    const content = typeof record.content === "string" ? record.content.trim() : "";
+    const contentValue = frame.event === "run_started" ? record.prompt : record.content;
+    const content = typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content) return;
     const clearedPanelKeys = [];
     for (const [panelKey, optimistic] of Object.entries(
@@ -9913,7 +9937,7 @@ function ConsoleApp({ baseUrl }) {
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
-    if ((frame.event === "interaction_started" || frame.event === "user_input") && frame.interactionId) {
+    if ((frame.event === "interaction_started" || frame.event === "user_input" || frame.event === "run_started") && frame.interactionId) {
       clearOptimisticUserByInteraction(frame.interactionId);
     } else {
       clearOptimisticUserByContent(identity, frame);

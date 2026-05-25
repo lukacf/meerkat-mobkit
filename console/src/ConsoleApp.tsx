@@ -535,14 +535,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     frame: ConsoleFrame,
   ): void {
-    if (frame.event !== "interaction_started" && frame.event !== "user_input")
+    if (
+      frame.event !== "interaction_started" &&
+      frame.event !== "user_input" &&
+      frame.event !== "run_started"
+    )
       return;
     const record =
       frame.data && typeof frame.data === "object"
         ? (frame.data as Record<string, unknown>)
         : {};
+    const contentValue = frame.event === "run_started"
+      ? record.prompt
+      : record.content;
     const content =
-      typeof record.content === "string" ? record.content.trim() : "";
+      typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content) return;
     const clearedPanelKeys: string[] = [];
     for (const [panelKey, optimistic] of Object.entries(
@@ -616,7 +623,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
     if (
-      (frame.event === "interaction_started" || frame.event === "user_input") &&
+      (frame.event === "interaction_started" ||
+        frame.event === "user_input" ||
+        frame.event === "run_started") &&
       frame.interactionId
     ) {
       clearOptimisticUserByInteraction(frame.interactionId);

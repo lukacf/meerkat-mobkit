@@ -2765,6 +2765,79 @@ test("mapFramesToTimelineEntries keeps accepted user input before the later assi
   );
 });
 
+test("mapFramesToTimelineEntries keeps no-interaction peer turns after the originating user turn", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "review",
+      member_id: "review:singleton",
+      label: "Review Agent",
+      kind: "identity",
+    },
+    [
+      {
+        id: "peer-result-started",
+        cursor: "console:1141",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-25T10:43:26.000Z"),
+        data: {
+          prompt:
+            "Peer message from ob3/review-worker/review-worker-vibe-forward-chat-review-fix: { result: true }",
+        },
+      },
+      {
+        id: "peer-result-complete",
+        cursor: "console:3106",
+        event: "interaction_complete",
+        timestampMs: Date.parse("2026-05-25T10:43:49.000Z"),
+        data: {
+          result:
+            "Tool progress: Full review result forwarded to the Vibe Forward initiative agent.",
+        },
+      },
+      {
+        id: "operator-prompt",
+        cursor: "console:425",
+        event: "user_input",
+        interactionId: "console-interaction-review",
+        timestampMs: Date.parse("2026-05-25T10:42:04.000Z"),
+        data: {
+          content:
+            "Console chat smoke chat-review-fix: run a fresh OSIR review for initiative Vibe Forward.",
+        },
+      },
+      {
+        id: "operator-handoff",
+        cursor: "console:923",
+        event: "interaction_complete",
+        interactionId: "console-interaction-review",
+        timestampMs: Date.parse("2026-05-25T10:42:23.000Z"),
+        data: {
+          result:
+            "Tool progress: Spawned exactly one review-worker. Worker handoff.",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const texts = entries.map((entry) =>
+    "text" in entry
+      ? entry.text
+      : "blocks" in entry
+        ? JSON.stringify(entry.blocks)
+        : "",
+  );
+  const promptIndex = texts.findIndex((text) => text.includes("Console chat smoke"));
+  const handoffIndex = texts.findIndex((text) => text.includes("Worker handoff"));
+  const peerIndex = texts.findIndex((text) => text.includes("Peer message from ob3/review-worker"));
+  const finalIndex = texts.findIndex((text) => text.includes("Full review result forwarded"));
+
+  assert(promptIndex >= 0, `missing operator prompt: ${texts.join("\n---\n")}`);
+  assert(handoffIndex > promptIndex, `handoff must follow prompt: ${texts.join("\n---\n")}`);
+  assert(peerIndex > handoffIndex, `peer turn must follow originating turn: ${texts.join("\n---\n")}`);
+  assert(finalIndex > peerIndex, `final result must follow peer turn: ${texts.join("\n---\n")}`);
+});
+
 test("mapFramesToTimelineEntries decodes stringified delta payloads from persisted history", () => {
   const entries = mapFramesToTimelineEntries(
     {

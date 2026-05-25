@@ -135,9 +135,17 @@ function startMockConsoleServer(port, options = {}) {
     "base64",
   );
   const timelineFrames = Array.isArray(options.timelineFrames) ? options.timelineFrames : [];
+  const timelineStreamFrames = Array.isArray(options.timelineStreamFrames)
+    ? options.timelineStreamFrames
+    : [];
   const timelineFramesByIdentity =
     options.timelineFramesByIdentity && typeof options.timelineFramesByIdentity === "object"
       ? options.timelineFramesByIdentity
+      : {};
+  const timelineFramesAfterSendByIdentity =
+    options.timelineFramesAfterSendByIdentity &&
+    typeof options.timelineFramesAfterSendByIdentity === "object"
+      ? options.timelineFramesAfterSendByIdentity
       : {};
   const includeImageAgent = options.includeImageAgent === true;
   const includeBusyWorker = options.includeBusyWorker === true;
@@ -341,14 +349,27 @@ function startMockConsoleServer(port, options = {}) {
           return;
         }
         if (payload.method === "mobkit/console/send") {
+          const identity = payload.params?.identity;
+          if (
+            typeof identity === "string" &&
+            Array.isArray(timelineFramesAfterSendByIdentity[identity])
+          ) {
+            const existing = Array.isArray(timelineFramesByIdentity[identity])
+              ? timelineFramesByIdentity[identity]
+              : [];
+            timelineFramesByIdentity[identity] = [
+              ...existing,
+              ...timelineFramesAfterSendByIdentity[identity],
+            ];
+          }
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
             jsonrpc: "2.0",
             id: rpcId,
             result: {
               accepted: true,
-              interaction_id: `turn-${payload.params.identity || "unknown"}`,
-              identity: payload.params.identity,
+              interaction_id: `turn-${identity || "unknown"}`,
+              identity,
             },
           }));
           return;
@@ -408,12 +429,32 @@ function startMockConsoleServer(port, options = {}) {
       }
       if (method === "GET" && url.startsWith("/console/timeline/stream")) {
         res.writeHead(200, { "content-type": "text/event-stream" });
-        res.end([
-          "id: timeline-empty-1",
-          "event: keep-alive",
-          'data: {"frame_version":1,"id":"timeline-empty-1","kind":"keep-alive","timestamp_ms":1,"payload":{}}',
-          "",
-        ].join("\n"));
+        if (timelineStreamFrames.length === 0) {
+          res.end([
+            "id: timeline-empty-1",
+            "event: keep-alive",
+            'data: {"frame_version":1,"id":"timeline-empty-1","kind":"keep-alive","timestamp_ms":1,"payload":{}}',
+            "",
+          ].join("\n"));
+          return;
+        }
+        let index = 0;
+        const writeNext = () => {
+          if (index >= timelineStreamFrames.length) {
+            res.end();
+            return;
+          }
+          const frame = timelineStreamFrames[index];
+          index += 1;
+          res.write([
+            `id: ${frame.id || `timeline-live-${index}`}`,
+            `event: ${frame.kind || frame.event || "message"}`,
+            `data: ${JSON.stringify({ type: "console_frame", frame })}`,
+            "",
+          ].join("\n"));
+          setTimeout(writeNext, frame.delay_ms || 50);
+        };
+        setTimeout(writeNext, options.timelineStreamInitialDelayMs || 150);
         return;
       }
       if (method === "POST" && url === "/interactions/stream") {
@@ -860,6 +901,159 @@ async function runBusyWorkerConsoleProof() {
   }
 }
 
+async function runChatPaneAutoScrollProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T20:40:00.000Z");
+  const historyFrames = Array.from({ length: 48 }, (_, index) => ({
+    id: `history-line-${index}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `history-turn-${index}`,
+    timestamp_ms: baseTs + index * 1_000,
+    cursor: `console:auto:${index}`,
+    payload: {
+      text: `Historical worker line ${index + 1}: enough transcript content to require scrolling.`,
+    },
+  }));
+  const growingFrame = {
+    id: "growing-answer",
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: "growing-answer-turn",
+    timestamp_ms: baseTs + 55_000,
+    cursor: "console:auto:growing",
+    payload: {
+      text: "Live auto-scroll proof begins.",
+    },
+  };
+  const liveUpdates = [
+    {
+      id: "live-autoscroll-frame-update",
+      kind: "frame_updated",
+      identity: "person-worker-alpha",
+      timestamp_ms: baseTs + 60_000,
+      cursor: "console:auto:live:update",
+      payload: {
+        frame: {
+          ...growingFrame,
+          payload: {
+            text:
+              "Live auto-scroll proof begins. The chat pane should remain stuck to the bottom while this same assistant message grows. AUTO_SCROLL_FINAL_VISIBLE",
+          },
+        },
+      },
+    },
+  ];
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": [...historyFrames, growingFrame],
+    },
+    timelineStreamFrames: liveUpdates,
+    timelineStreamInitialDelayMs: 2_000,
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Historical worker line 48").waitFor({ timeout: 10_000 });
+    await pane.getByText("AUTO_SCROLL_FINAL_VISIBLE").waitFor({ timeout: 10_000 });
+    const body = pane.locator(".conv__body");
+    const scrollState = await body.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+      text: node.textContent || "",
+    }));
+    const distanceFromBottom =
+      scrollState.scrollHeight - scrollState.clientHeight - scrollState.scrollTop;
+    assert(
+      distanceFromBottom <= 4,
+      `chat pane did not stay pinned to latest transcript content; distance=${distanceFromBottom} state=${JSON.stringify(scrollState)}`,
+    );
+
+    process.stdout.write("browser chat pane auto-scroll ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runRunStartedClearsOptimisticPromptProof() {
+  const port = await reservePort();
+  const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
+  const baseTs = Date.parse("2026-05-23T20:45:00.000Z");
+  const server = await startMockConsoleServer(port, {
+    timelineFramesAfterSendByIdentity: {
+      "identity:luka": [
+        {
+          id: "order-proof-run-started",
+          kind: "run_started",
+          identity: "identity:luka",
+          interaction_id: "turn-identity:luka",
+          timestamp_ms: baseTs,
+          cursor: "console:order:1",
+          payload: { prompt },
+        },
+        {
+          id: "order-proof-complete",
+          kind: "interaction_complete",
+          identity: "identity:luka",
+          interaction_id: "turn-identity:luka",
+          timestamp_ms: baseTs + 2_000,
+          cursor: "console:order:2",
+          payload: { text: "ORDER_PROOF_FINAL visible after the prompt." },
+        },
+      ],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await openSidebarAgentChat(page, "Identity Luka");
+    await page.waitForSelector('[data-testid="chat-pane:identity:luka"]', { timeout: 30_000 });
+    await fillComposer(page, prompt);
+    await clickSend(page);
+
+    const pane = page.locator('[data-testid="chat-pane:identity:luka"]');
+    await pane.getByText("ORDER_PROOF_FINAL").waitFor({ timeout: 10_000 });
+    const bodyText = await pane.innerText();
+    const promptMatches = bodyText.match(/ORDER_PROOF send this once/g) || [];
+    assert.equal(
+      promptMatches.length,
+      1,
+      `run_started should replace the optimistic prompt instead of leaving a duplicate tail prompt: ${bodyText}`,
+    );
+    const promptIndex = bodyText.indexOf(prompt);
+    const finalIndex = bodyText.indexOf("ORDER_PROOF_FINAL");
+    assert(promptIndex >= 0, `missing run_started prompt: ${bodyText}`);
+    assert(finalIndex >= 0, `missing final response: ${bodyText}`);
+    assert(
+      promptIndex < finalIndex,
+      `operator prompt must render before the final response: ${bodyText}`,
+    );
+
+    process.stdout.write("browser run_started optimistic cleanup ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function main() {
   const repoCargo = path.join(repoRoot, "scripts", "repo-cargo");
   if (fs.existsSync(repoCargo)) {
@@ -871,6 +1065,8 @@ async function main() {
   await runImageRenderingBrowserProof();
   await runComposerPasteAttachmentProof();
   await runBusyWorkerConsoleProof();
+  await runChatPaneAutoScrollProof();
+  await runRunStartedClearsOptimisticPromptProof();
 }
 
 main().catch((error) => {

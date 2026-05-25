@@ -492,7 +492,27 @@ export function ChatPane({
   stackSlot,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
+
+  const messages = React.useMemo(() => {
+    return buildChatMessages(entries);
+  }, [entries]);
+  const scrollSignature = React.useMemo(() => {
+    const last = messages[messages.length - 1];
+    const lastTextLength = last?.text?.length ?? 0;
+    const lastBlockLength = last?.blocks
+      ? JSON.stringify(last.blocks).length
+      : 0;
+    return [
+      identity,
+      messages.length,
+      last?.id ?? "",
+      lastTextLength,
+      lastBlockLength,
+      phase ?? "",
+    ].join(":");
+  }, [identity, messages, phase]);
+
+  React.useLayoutEffect(() => {
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -500,13 +520,14 @@ export function ChatPane({
       }
     };
     resetTranscriptScroll();
-    const frame = window.requestAnimationFrame(resetTranscriptScroll);
-    return () => window.cancelAnimationFrame(frame);
-  }, [entries.length, phase]);
+    const firstFrame = window.requestAnimationFrame(resetTranscriptScroll);
+    const secondFrame = window.requestAnimationFrame(resetTranscriptScroll);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [scrollSignature]);
 
-  const messages = React.useMemo(() => {
-    return buildChatMessages(entries);
-  }, [entries]);
   const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
