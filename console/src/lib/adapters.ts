@@ -430,17 +430,23 @@ function sortFramesForTranscript(frames: ConsoleFrame[]): ConsoleFrame[] {
     }
   }
 
+  const transcriptGroupTimestamp = (frame: ConsoleFrame): number => {
+    const interactionId = frame.interactionId?.trim() || "";
+    const ownTimestamp =
+      typeof frame.timestampMs === "number"
+        ? frame.timestampMs
+        : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) return ownTimestamp;
+    return interactionStartMs.get(interactionId) ?? ownTimestamp;
+  };
+
   return frames
     .map((frame, index) => ({ frame, index }))
     .sort((left, right) => {
       const leftInteraction = left.frame.interactionId?.trim() || "";
       const rightInteraction = right.frame.interactionId?.trim() || "";
-      const leftGroupTs =
-        (leftInteraction && interactionStartMs.get(leftInteraction))
-        ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
-      const rightGroupTs =
-        (rightInteraction && interactionStartMs.get(rightInteraction))
-        ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+      const leftGroupTs = transcriptGroupTimestamp(left.frame);
+      const rightGroupTs = transcriptGroupTimestamp(right.frame);
       if (leftGroupTs !== rightGroupTs) {
         return leftGroupTs - rightGroupTs;
       }
@@ -2302,11 +2308,17 @@ export function inferResponsePhaseFromFrames(
         break;
       case "tool_result_received":
       case "tool_execution_completed":
-        // Tool has just finished — no tool is currently executing.
-        // The next event (text_delta or another tool_call_requested) will
-        // set the appropriate phase. If nothing follows, the indicator
-        // correctly resolves to idle even when no run_completed arrives.
-        phase = null;
+        // A completed tool is not the same as a completed turn. In spawned
+        // worker histories the runtime may not project run_started/
+        // interaction_started, so keep the pane busy until text/run terminal
+        // evidence arrives; otherwise operator sends bypass the local queue.
+        phase = "waiting";
+        break;
+      case "reasoning_delta":
+        phase = "generating";
+        break;
+      case "reasoning_complete":
+        phase = "waiting";
         break;
       case "text_delta":
         phase = "generating";
@@ -2379,6 +2391,8 @@ function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
       case "tool_execution_started":
       case "tool_result_received":
       case "tool_execution_completed":
+      case "reasoning_delta":
+      case "reasoning_complete":
       case "text_delta":
         return false;
       default:

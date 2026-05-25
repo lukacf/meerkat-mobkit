@@ -295,6 +295,8 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "assistant_image_appended",
   "text_delta",
   "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
   "turn_completed",
   "tool_call_requested",
   "tool_call",
@@ -535,14 +537,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     frame: ConsoleFrame,
   ): void {
-    if (frame.event !== "interaction_started" && frame.event !== "user_input")
+    if (
+      frame.event !== "interaction_started" &&
+      frame.event !== "user_input" &&
+      frame.event !== "run_started"
+    )
       return;
     const record =
       frame.data && typeof frame.data === "object"
         ? (frame.data as Record<string, unknown>)
         : {};
+    const contentValue = frame.event === "run_started"
+      ? record.prompt
+      : record.content;
     const content =
-      typeof record.content === "string" ? record.content.trim() : "";
+      typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content) return;
     const clearedPanelKeys: string[] = [];
     for (const [panelKey, optimistic] of Object.entries(
@@ -616,7 +625,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
     if (
-      (frame.event === "interaction_started" || frame.event === "user_input") &&
+      (frame.event === "interaction_started" ||
+        frame.event === "user_input" ||
+        frame.event === "run_started") &&
       frame.interactionId
     ) {
       clearOptimisticUserByInteraction(frame.interactionId);
@@ -630,10 +641,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (frame.event === "user_input") {
       return isTerminalUserInputStatus(frame.status) ? false : true;
     }
-    if (frame.event === "interaction_started" || frame.event === "run_started") {
+    if (
+      frame.event === "interaction_started" ||
+      frame.event === "run_started" ||
+      frame.event === "reasoning_delta" ||
+      frame.event === "reasoning_complete" ||
+      frame.event === "tool_call_requested" ||
+      frame.event === "tool_call" ||
+      frame.event === "tool_execution_started" ||
+      frame.event === "tool_result_received" ||
+      frame.event === "tool_execution_completed"
+    ) {
       return true;
     }
     if (
+      (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame)) ||
       frame.event === "interaction_complete" ||
       frame.event === "interaction_failed" ||
       frame.event === "run_completed" ||
@@ -1114,12 +1136,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return commitPanelPhase(panelKey, "tool-executing");
       case "tool_result_received":
       case "tool_execution_completed":
-        // Tool has just finished — no tool is currently executing. Clear
-        // the phase; the next event (text_delta or another tool_call_*)
-        // will set the right one. Without this, a run that ends on a tool
-        // call leaves the indicator stuck at "tool-executing" indefinitely
-        // when no run_completed frame follows.
-        return commitPanelPhase(panelKey, null);
+        // A completed tool means this specific operation is done, but the
+        // agent turn is still active until a terminal text/run frame arrives.
+        // Keep the pane visibly busy so mid-turn sends queue instead of
+        // slipping into the runtime as a live boundary input.
+        return commitPanelPhase(panelKey, "waiting");
+      case "reasoning_delta":
+        return commitPanelPhase(panelKey, "generating");
+      case "reasoning_complete":
+        return commitPanelPhase(panelKey, "waiting");
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r = Math.max(0, 300 - elapsedMs);
@@ -1823,7 +1848,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
             (f) =>
-              (f.event === "interaction_started" || f.event === "user_input") &&
+              (f.event === "interaction_started" ||
+                f.event === "user_input" ||
+                f.event === "run_started") &&
               f.interactionId === result.interaction_id,
           );
           if (matched) {
@@ -1849,7 +1876,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           // the send and the RPC response — reconcile retroactively.
           const matched = log.events.some(
             (f) =>
-              (f.event === "interaction_started" || f.event === "user_input") &&
+              (f.event === "interaction_started" ||
+                f.event === "user_input" ||
+                f.event === "run_started") &&
               f.interactionId === result.interaction_id,
           );
           if (matched) {

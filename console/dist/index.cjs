@@ -2538,11 +2538,17 @@ function sortFramesForTranscript(frames) {
       interactionStartMs.set(interactionId, timestampMs);
     }
   }
+  const transcriptGroupTimestamp = (frame) => {
+    const interactionId = frame.interactionId?.trim() || "";
+    const ownTimestamp = typeof frame.timestampMs === "number" ? frame.timestampMs : Number.MAX_SAFE_INTEGER;
+    if (!interactionId) return ownTimestamp;
+    return interactionStartMs.get(interactionId) ?? ownTimestamp;
+  };
   return frames.map((frame, index) => ({ frame, index })).sort((left, right) => {
     const leftInteraction = left.frame.interactionId?.trim() || "";
     const rightInteraction = right.frame.interactionId?.trim() || "";
-    const leftGroupTs = (leftInteraction && interactionStartMs.get(leftInteraction)) ?? (typeof left.frame.timestampMs === "number" ? left.frame.timestampMs : Number.MAX_SAFE_INTEGER);
-    const rightGroupTs = (rightInteraction && interactionStartMs.get(rightInteraction)) ?? (typeof right.frame.timestampMs === "number" ? right.frame.timestampMs : Number.MAX_SAFE_INTEGER);
+    const leftGroupTs = transcriptGroupTimestamp(left.frame);
+    const rightGroupTs = transcriptGroupTimestamp(right.frame);
     if (leftGroupTs !== rightGroupTs) {
       return leftGroupTs - rightGroupTs;
     }
@@ -3863,7 +3869,13 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
         break;
       case "tool_result_received":
       case "tool_execution_completed":
-        phase = null;
+        phase = "waiting";
+        break;
+      case "reasoning_delta":
+        phase = "generating";
+        break;
+      case "reasoning_complete":
+        phase = "waiting";
         break;
       case "text_delta":
         phase = "generating";
@@ -3928,6 +3940,8 @@ function latestRoutableFrameIsTerminal(frames) {
       case "tool_execution_started":
       case "tool_result_received":
       case "tool_execution_completed":
+      case "reasoning_delta":
+      case "reasoning_complete":
       case "text_delta":
         return false;
       default:
@@ -8535,7 +8549,23 @@ function ChatPane({
   stackSlot
 }) {
   const bodyRef = import_react19.default.useRef(null);
-  import_react19.default.useEffect(() => {
+  const messages = import_react19.default.useMemo(() => {
+    return buildChatMessages(entries);
+  }, [entries]);
+  const scrollSignature = import_react19.default.useMemo(() => {
+    const last = messages[messages.length - 1];
+    const lastTextLength = last?.text?.length ?? 0;
+    const lastBlockLength = last?.blocks ? JSON.stringify(last.blocks).length : 0;
+    return [
+      identity,
+      messages.length,
+      last?.id ?? "",
+      lastTextLength,
+      lastBlockLength,
+      phase ?? ""
+    ].join(":");
+  }, [identity, messages, phase]);
+  import_react19.default.useLayoutEffect(() => {
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -8543,12 +8573,13 @@ function ChatPane({
       }
     };
     resetTranscriptScroll();
-    const frame = window.requestAnimationFrame(resetTranscriptScroll);
-    return () => window.cancelAnimationFrame(frame);
-  }, [entries.length, phase]);
-  const messages = import_react19.default.useMemo(() => {
-    return buildChatMessages(entries);
-  }, [entries]);
+    const firstFrame = window.requestAnimationFrame(resetTranscriptScroll);
+    const secondFrame = window.requestAnimationFrame(resetTranscriptScroll);
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      window.cancelAnimationFrame(secondFrame);
+    };
+  }, [scrollSignature]);
   const transcriptText = import_react19.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
@@ -9670,6 +9701,8 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "assistant_image_appended",
   "text_delta",
   "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
   "turn_completed",
   "tool_call_requested",
   "tool_call",
@@ -9859,10 +9892,11 @@ function ConsoleApp({ baseUrl }) {
     });
   }
   function clearOptimisticUserByContent(identity, frame) {
-    if (frame.event !== "interaction_started" && frame.event !== "user_input")
+    if (frame.event !== "interaction_started" && frame.event !== "user_input" && frame.event !== "run_started")
       return;
     const record = frame.data && typeof frame.data === "object" ? frame.data : {};
-    const content = typeof record.content === "string" ? record.content.trim() : "";
+    const contentValue = frame.event === "run_started" ? record.prompt : record.content;
+    const content = typeof contentValue === "string" ? contentValue.trim() : "";
     if (!content) return;
     const clearedPanelKeys = [];
     for (const [panelKey, optimistic] of Object.entries(
@@ -9913,7 +9947,7 @@ function ConsoleApp({ baseUrl }) {
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
-    if ((frame.event === "interaction_started" || frame.event === "user_input") && frame.interactionId) {
+    if ((frame.event === "interaction_started" || frame.event === "user_input" || frame.event === "run_started") && frame.interactionId) {
       clearOptimisticUserByInteraction(frame.interactionId);
     } else {
       clearOptimisticUserByContent(identity, frame);
@@ -9924,10 +9958,10 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "user_input") {
       return isTerminalUserInputStatus2(frame.status) ? false : true;
     }
-    if (frame.event === "interaction_started" || frame.event === "run_started") {
+    if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       return true;
     }
-    if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
+    if (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame) || frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
       return false;
     }
     return null;
@@ -10226,7 +10260,11 @@ function ConsoleApp({ baseUrl }) {
         return commitPanelPhase(panelKey, "tool-executing");
       case "tool_result_received":
       case "tool_execution_completed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, "waiting");
+      case "reasoning_delta":
+        return commitPanelPhase(panelKey, "generating");
+      case "reasoning_complete":
+        return commitPanelPhase(panelKey, "waiting");
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r2 = Math.max(0, 300 - elapsedMs);
@@ -10745,7 +10783,7 @@ function ConsoleApp({ baseUrl }) {
         if (optimisticUser) {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
+            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
           );
           if (matched) {
             optimisticUser.objectUrls?.forEach(
@@ -10767,7 +10805,7 @@ function ConsoleApp({ baseUrl }) {
         if (optimisticUser) {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
+            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
           );
           if (matched) {
             optimisticUser.objectUrls?.forEach(
