@@ -13,6 +13,7 @@ import {
   optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
   sortConversationTimelineEntries,
+  systemNoticeClearsBusyState,
 } from "./adapters";
 
 function typedCommsNotice(args: {
@@ -537,6 +538,22 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
     inferResponsePhaseFromFrames([
       { id: "evt-1", event: "tool_execution_completed", data: {} },
       { id: "evt-2", event: "turn_completed", data: { stop_reason: "end_turn" } },
+    ]),
+    null,
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "tool_execution_completed", data: {} },
+      {
+        id: "evt-2",
+        event: "system_notice",
+        data: {
+          blocks: [{
+            content: [{ type: "text", text: "Peer message from worker:\nDone." }],
+          }],
+        },
+      },
     ]),
     null,
   );
@@ -2181,6 +2198,40 @@ test("mapFramesToTimelineEntries renders live typed comms system notices as comm
   assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
 });
 
+test("mapFramesToTimelineEntries renders live untyped peer system notices", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "deep-investigator",
+      member_id: "deep-investigator",
+      label: "Deep Investigator",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-untyped-peer-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-23T21:10:00.000Z"),
+        data: {
+          blocks: [{
+            content: [{
+              type: "text",
+              text: "Peer message from ob3/investigation-worker/investigation-worker-live-proof:\nLIVE_PEER_NOTICE landed in the parent chat.",
+            }],
+          }],
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  const text = entries[0] && "blocks" in entries[0] && entries[0].blocks?.[0]?.type === "paragraph"
+    ? entries[0].blocks[0].text
+    : "";
+  assert.match(text, /LIVE_PEER_NOTICE landed in the parent chat/);
+});
+
 test("mapFramesToTimelineEntries renders live tool-config system notices as metadata", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -2292,6 +2343,95 @@ test("mapFramesToTimelineEntries renders live non-comms system notices without t
   assert.equal(
     runtimeBlock?.type === "paragraph" ? runtimeBlock.text : "",
     "Runtime recovered from transient stream lag",
+  );
+});
+
+test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", () => {
+  const activeToolFrames = [
+    {
+      id: "tool-start",
+      event: "tool_execution_started" as const,
+      timestampMs: 1,
+      data: { name: "king_search" },
+    },
+    {
+      id: "tool-done",
+      event: "tool_execution_completed" as const,
+      timestampMs: 2,
+      data: { name: "king_search", result: "ok" },
+    },
+  ];
+  const runtimeNotice = {
+    id: "runtime-notice",
+    event: "system_notice" as const,
+    timestampMs: 3,
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "generic",
+        body: "Runtime recovered from transient stream lag",
+        blocks: [{
+          type: "runtime_notice",
+          category: "stream",
+          detail: "Runtime recovered from transient stream lag",
+        }],
+      },
+    },
+  };
+  const toolConfigNotice = {
+    id: "tool-config-notice",
+    event: "system_notice" as const,
+    timestampMs: 4,
+    data: {
+      role: "system_notice",
+      kind: "tool_scope",
+      body: "Deferred catalog changed at turn boundary: new deferred tools available: docs_search",
+      blocks: [{ type: "tool_config", payload: { operation: "reload" } }],
+    },
+  };
+  const commsNotice = {
+    id: "comms-notice",
+    event: "system_notice" as const,
+    timestampMs: 5,
+    data: {
+      message: typedCommsNotice({
+        peer: "ob3/delegate/worker",
+        body: "Peer result landed.",
+      }),
+    },
+  };
+  const untypedPeerNotice = {
+    id: "untyped-peer-notice",
+    event: "system_notice" as const,
+    timestampMs: 6,
+    data: {
+      blocks: [{
+        content: [{
+          type: "text",
+          text: "Peer message from ob3/worker:\nFinished.",
+        }],
+      }],
+    },
+  };
+
+  assert.equal(systemNoticeClearsBusyState(runtimeNotice), false);
+  assert.equal(systemNoticeClearsBusyState(toolConfigNotice), false);
+  assert.equal(systemNoticeClearsBusyState(commsNotice), true);
+  assert.equal(systemNoticeClearsBusyState(untypedPeerNotice), true);
+  assert.equal(
+    inferResponsePhaseFromFrames([...activeToolFrames, runtimeNotice], null),
+    "waiting",
+    "runtime notices must not make an active tool turn look idle",
+  );
+  assert.equal(
+    inferResponsePhaseFromFrames([...activeToolFrames, toolConfigNotice], null),
+    "waiting",
+    "tool-config notices must not make an active tool turn look idle",
+  );
+  assert.equal(
+    inferResponsePhaseFromFrames([...activeToolFrames, commsNotice], "waiting"),
+    null,
+    "peer/comms notices still clear completed peer-send busy state",
   );
 });
 

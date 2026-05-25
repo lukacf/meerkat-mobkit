@@ -1213,6 +1213,120 @@ async function runToolOnlyWorkerTerminalClearsBusyProof() {
   }
 }
 
+async function runNonCommsSystemNoticeDoesNotClearBusyProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T20:57:00.000Z");
+  const queuedText = "Queue me after runtime metadata while the worker is still busy.";
+  const server = await startMockConsoleServer(port, {
+    includeToolOnlyWorker: true,
+    timelineFramesByIdentity: {
+      "tool-only-worker": [
+        {
+          id: "notice-tool-only-parent-handoff",
+          kind: "user_input",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs,
+          cursor: "console:tool-only-notice:1",
+          payload: {
+            content: "Parent handoff: keep running after metadata notice.",
+          },
+        },
+        {
+          id: "notice-tool-only-tool-call",
+          kind: "tool_call_requested",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 1_000,
+          cursor: "console:tool-only-notice:2",
+          payload: {
+            id: "call-king-search-3",
+            name: "king_search",
+            arguments: { query: "runtime metadata notice check" },
+          },
+        },
+        {
+          id: "notice-tool-only-tool-done",
+          kind: "tool_execution_completed",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 2_000,
+          cursor: "console:tool-only-notice:3",
+          payload: {
+            id: "call-king-search-3",
+            name: "king_search",
+            result: "ok",
+          },
+        },
+      ],
+    },
+    timelineStreamFrames: [
+      {
+        id: "notice-tool-only-runtime-notice",
+        kind: "system_notice",
+        identity: "tool-only-worker",
+        timestamp_ms: baseTs + 3_000,
+        cursor: "console:tool-only-notice:4",
+        payload: {
+          message: {
+            role: "system_notice",
+            kind: "generic",
+            body: "Runtime recovered from transient stream lag",
+            blocks: [{
+              type: "runtime_notice",
+              category: "stream",
+              detail: "Runtime recovered from transient stream lag",
+            }],
+          },
+        },
+      },
+    ],
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Tool Only Worker" }).click();
+    await page.waitForSelector('[data-testid="chat-pane:tool-only-worker"]', { timeout: 30_000 });
+
+    const pane = page.locator('[data-testid="chat-pane:tool-only-worker"]');
+    await pane.getByText("Parent handoff: keep running after metadata notice.").waitFor({ timeout: 10_000 });
+    await pane.getByText("king_search").first().waitFor({ timeout: 10_000 });
+    await pane.getByText("Runtime recovered from transient stream lag").waitFor({ timeout: 10_000 });
+    await page.waitForSelector('[data-testid="chat-typing:tool-only-worker"]', { timeout: 10_000 });
+
+    const noticeText = await pane.innerText();
+    assert(
+      noticeText.includes("working"),
+      `non-comms system_notice must not clear busy state during an active turn: ${noticeText}`,
+    );
+
+    await page.locator('[data-testid="chat-composer:tool-only-worker"]').fill(queuedText);
+    await page.locator('[data-testid="chat-send:tool-only-worker"]').click();
+    await page.waitForSelector('[data-testid="pending-stack"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-testid^="pending-steer:"]', { timeout: 10_000 });
+
+    const directSend = server.requests.find((request) =>
+      request.url === "/console/rpc" &&
+      request.body.includes('"method":"mobkit/console/send"') &&
+      request.body.includes('"identity":"tool-only-worker"') &&
+      request.body.includes(queuedText)
+    );
+    assert(
+      !directSend,
+      `non-comms system_notice cleared hidden busy state and sent immediately: ${JSON.stringify(server.requests, null, 2)}`,
+    );
+
+    process.stdout.write("browser non-comms system_notice stays busy ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runChatPaneAutoScrollProof() {
   const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:40:00.000Z");
@@ -1385,6 +1499,212 @@ async function runRunStartedClearsOptimisticPromptProof() {
   }
 }
 
+async function runUserInputEchoClearsOptimisticPromptProof() {
+  const port = await reservePort();
+  const prompt = "USER_INPUT_ECHO_PROOF should render once after the send race.";
+  const baseTs = Date.parse("2026-05-23T21:20:00.000Z");
+  const server = await startMockConsoleServer(port, {
+    // Reproduce the send/SSE race for the canonical console user_input
+    // echo. This is distinct from run_started: the echoed frame already has
+    // an interaction id, but the optimistic entry may not yet have received
+    // that id from the still-in-flight send RPC.
+    consoleSendResponseDelayMs: 400,
+    timelineStreamFramesDuringSendByIdentity: {
+      "identity:luka": [
+        {
+          id: "user-input-echo-proof",
+          kind: "user_input",
+          identity: "identity:luka",
+          interaction_id: "turn-identity:luka",
+          timestamp_ms: baseTs,
+          cursor: "console:user-input-echo:1",
+          payload: {
+            content: prompt,
+            handling_mode: "queue",
+            origin: "console:panel-race",
+          },
+          status: "delivered",
+        },
+      ],
+    },
+    timelineFramesAfterSendByIdentity: {
+      "identity:luka": [
+        {
+          id: "user-input-echo-complete",
+          kind: "interaction_complete",
+          identity: "identity:luka",
+          interaction_id: "turn-identity:luka",
+          timestamp_ms: baseTs + 2_000,
+          cursor: "console:user-input-echo:2",
+          payload: { text: "USER_INPUT_ECHO_FINAL visible after one prompt." },
+        },
+      ],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await openSidebarAgentChat(page, "Identity Luka");
+    await page.waitForSelector('[data-testid="chat-pane:identity:luka"]', { timeout: 30_000 });
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (server.requests.some((request) => request.url.startsWith("/console/timeline/stream"))) {
+        break;
+      }
+      await sleep(50);
+    }
+    assert(
+      server.requests.some((request) => request.url.startsWith("/console/timeline/stream")),
+      `timeline stream was not connected before send: ${JSON.stringify(server.requests, null, 2)}`,
+    );
+    await fillComposer(page, prompt);
+    await clickSend(page);
+
+    const pane = page.locator('[data-testid="chat-pane:identity:luka"]');
+    await pane.getByText("USER_INPUT_ECHO_FINAL").waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(600);
+    const bodyText = await pane.innerText();
+    const promptMatches = bodyText.match(/USER_INPUT_ECHO_PROOF/g) || [];
+    assert.equal(
+      promptMatches.length,
+      1,
+      `user_input echo should replace the optimistic prompt instead of duplicating it: ${bodyText}`,
+    );
+
+    process.stdout.write("browser user_input optimistic cleanup ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runLiveSystemNoticeAppearsInOpenChatProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T21:10:00.000Z");
+  const server = await startMockConsoleServer(port, {
+    timelineFramesByIdentity: {
+      "identity:luka": [
+        {
+          id: "live-peer-prior-tool-completed",
+          kind: "tool_execution_completed",
+          identity: "identity:luka",
+          timestamp_ms: baseTs - 1_000,
+          cursor: "console:peer-live:0",
+          payload: {
+            id: "call-send-message",
+            name: "send_message",
+            result: "sent",
+          },
+        },
+      ],
+    },
+    timelineStreamFrames: [
+      {
+        id: "live-peer-system-notice",
+        kind: "system_notice",
+        identity: "identity:luka",
+        timestamp_ms: baseTs,
+        cursor: "console:peer-live:1",
+        payload: {
+          blocks: [{
+            content: [{
+              type: "text",
+              text: "Peer message from ob3/investigation-worker/investigation-worker-live-proof:\nLIVE_PEER_NOTICE landed in the parent chat.",
+            }],
+          }],
+        },
+      },
+    ],
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await openSidebarAgentChat(page, "Identity Luka");
+    const pane = page.locator('[data-testid="chat-pane:identity:luka"]');
+    await pane.getByText("LIVE_PEER_NOTICE landed in the parent chat").waitFor({
+      timeout: 10_000,
+    });
+    const bodyText = await pane.innerText();
+    assert(
+      bodyText.includes("Received from") || bodyText.includes("LIVE_PEER_NOTICE"),
+      `live system_notice must route into the open chat pane, not only Signals: ${bodyText}`,
+    );
+    assert(
+      !(await pane.locator('[data-testid="chat-typing:identity:luka"]').count()),
+      `live system_notice should clear stale tool-completed busy state: ${bodyText}`,
+    );
+    assert(
+      !bodyText.includes("working"),
+      `live system_notice should not leave the parent pane visibly busy: ${bodyText}`,
+    );
+
+    process.stdout.write("browser live system_notice chat routing ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runConsoleMountsWithoutCryptoRandomUuidProof() {
+  const port = await reservePort();
+  const server = await startMockConsoleServer(port);
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message || String(error)));
+    await page.addInitScript(() => {
+      const cryptoObject = globalThis.crypto;
+      if (!cryptoObject) return;
+      try {
+        Object.defineProperty(cryptoObject, "randomUUID", {
+          configurable: true,
+          value: undefined,
+        });
+      } catch (_) {
+        try {
+          delete cryptoObject.randomUUID;
+        } catch (_) {
+          // Best effort: older browsers may expose a non-configurable property.
+        }
+      }
+    });
+
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.locator('[data-testid="meerkat-console"]').waitFor({ timeout: 10_000 });
+    const labels = await sidebarLabels(page);
+    assert(
+      labels.some((label) => label.includes("Identity Luka")),
+      `console should mount and render agents without crypto.randomUUID; labels=${JSON.stringify(labels)}`,
+    );
+    assert.equal(
+      errors.filter((message) => message.includes("randomUUID")).length,
+      0,
+      `console should not throw randomUUID page errors: ${JSON.stringify(errors)}`,
+    );
+
+    process.stdout.write("browser missing crypto.randomUUID mount ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function main() {
   const repoCargo = path.join(repoRoot, "scripts", "repo-cargo");
   if (fs.existsSync(repoCargo)) {
@@ -1398,8 +1718,12 @@ async function main() {
   await runBusyWorkerConsoleProof();
   await runToolOnlyWorkerBusyQueueProof();
   await runToolOnlyWorkerTerminalClearsBusyProof();
+  await runNonCommsSystemNoticeDoesNotClearBusyProof();
   await runChatPaneAutoScrollProof();
   await runRunStartedClearsOptimisticPromptProof();
+  await runUserInputEchoClearsOptimisticPromptProof();
+  await runLiveSystemNoticeAppearsInOpenChatProof();
+  await runConsoleMountsWithoutCryptoRandomUuidProof();
 }
 
 main().catch((error) => {
