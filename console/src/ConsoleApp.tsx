@@ -295,6 +295,8 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "assistant_image_appended",
   "text_delta",
   "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
   "turn_completed",
   "tool_call_requested",
   "tool_call",
@@ -639,7 +641,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (frame.event === "user_input") {
       return isTerminalUserInputStatus(frame.status) ? false : true;
     }
-    if (frame.event === "interaction_started" || frame.event === "run_started") {
+    if (
+      frame.event === "interaction_started" ||
+      frame.event === "run_started" ||
+      frame.event === "reasoning_delta" ||
+      frame.event === "reasoning_complete" ||
+      frame.event === "tool_call_requested" ||
+      frame.event === "tool_call" ||
+      frame.event === "tool_execution_started" ||
+      frame.event === "tool_result_received" ||
+      frame.event === "tool_execution_completed"
+    ) {
       return true;
     }
     if (
@@ -1123,12 +1135,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return commitPanelPhase(panelKey, "tool-executing");
       case "tool_result_received":
       case "tool_execution_completed":
-        // Tool has just finished — no tool is currently executing. Clear
-        // the phase; the next event (text_delta or another tool_call_*)
-        // will set the right one. Without this, a run that ends on a tool
-        // call leaves the indicator stuck at "tool-executing" indefinitely
-        // when no run_completed frame follows.
-        return commitPanelPhase(panelKey, null);
+        // A completed tool means this specific operation is done, but the
+        // agent turn is still active until a terminal text/run frame arrives.
+        // Keep the pane visibly busy so mid-turn sends queue instead of
+        // slipping into the runtime as a live boundary input.
+        return commitPanelPhase(panelKey, "waiting");
+      case "reasoning_delta":
+        return commitPanelPhase(panelKey, "generating");
+      case "reasoning_complete":
+        return commitPanelPhase(panelKey, "waiting");
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r = Math.max(0, 300 - elapsedMs);

@@ -155,6 +155,7 @@ function startMockConsoleServer(port, options = {}) {
   const streamClients = new Set();
   const includeImageAgent = options.includeImageAgent === true;
   const includeBusyWorker = options.includeBusyWorker === true;
+  const includeToolOnlyWorker = options.includeToolOnlyWorker === true;
   const requests = [];
 
   function writeTimelineStreamFrame(res, frame, index) {
@@ -249,6 +250,13 @@ function startMockConsoleServer(port, options = {}) {
               state: "running",
               addressability: "addressable",
             }] : []),
+            ...(includeToolOnlyWorker ? [{
+              identity: "tool-only-worker",
+              display_name: "Tool Only Worker",
+              profile: "investigation-worker",
+              state: "running",
+              addressability: "addressable",
+            }] : []),
           ],
         }));
         return;
@@ -296,6 +304,19 @@ function startMockConsoleServer(port, options = {}) {
                   affordances: { can_send_message: true },
                   model_capabilities: { image_input: true },
                 }] : []),
+                ...(includeToolOnlyWorker ? [{
+                  agent_id: "tool-only-worker",
+                  member_id: "tool-only-worker",
+                  identity: "tool-only-worker",
+                  label: "Tool Only Worker",
+                  kind: "identity",
+                  profile: "investigation-worker",
+                  role: "investigation-worker",
+                  group: "Workers",
+                  state: "active",
+                  addressable: true,
+                  affordances: { can_send_message: true },
+                }] : []),
                 ...(includeBusyWorker ? [{
                   agent_id: "person-worker-alpha",
                   member_id: "person-worker-alpha",
@@ -341,6 +362,14 @@ function startMockConsoleServer(port, options = {}) {
                 profile: "person-worker",
                 state: "active",
                 response_phase: "tool-executing",
+                addressability: "addressable",
+                labels: {},
+              }] : []),
+              ...(includeToolOnlyWorker ? [{
+                identity: "tool-only-worker",
+                display_name: "Tool Only Worker",
+                profile: "investigation-worker",
+                state: "active",
                 addressability: "addressable",
                 labels: {},
               }] : []),
@@ -950,6 +979,124 @@ async function runBusyWorkerConsoleProof() {
   }
 }
 
+async function runToolOnlyWorkerBusyQueueProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T20:50:00.000Z");
+  const queuedText = "Queue me while the tool-only worker is busy.";
+  const server = await startMockConsoleServer(port, {
+    includeToolOnlyWorker: true,
+    timelineFramesByIdentity: {
+      "tool-only-worker": [
+        {
+          id: "tool-only-parent-handoff",
+          kind: "user_input",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs,
+          cursor: "console:tool-only:1",
+          payload: {
+            content: "Parent handoff: investigate Daily Candy build with Bazel.",
+          },
+        },
+        {
+          id: "tool-only-tool-call",
+          kind: "tool_call_requested",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 1_000,
+          cursor: "console:tool-only:2",
+          payload: {
+            id: "call-king-search-1",
+            name: "king_search",
+            arguments: { query: "Daily Candy build with Bazel" },
+          },
+        },
+        {
+          id: "tool-only-tool-done",
+          kind: "tool_execution_completed",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 2_000,
+          cursor: "console:tool-only:3",
+          payload: {
+            id: "call-king-search-1",
+            name: "king_search",
+            result: "ok",
+          },
+        },
+        {
+          id: "tool-only-reasoning",
+          kind: "reasoning_delta",
+          identity: "tool-only-worker",
+          timestamp_ms: baseTs + 3_000,
+          cursor: "console:tool-only:4",
+          payload: {
+            delta: "Reviewing search results before the next tool call.",
+          },
+        },
+      ],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Tool Only Worker" }).click();
+    await page.waitForSelector('[data-testid="chat-pane:tool-only-worker"]', { timeout: 30_000 });
+
+    const pane = page.locator('[data-testid="chat-pane:tool-only-worker"]');
+    await pane.getByText("Parent handoff: investigate Daily Candy build with Bazel.").waitFor({ timeout: 10_000 });
+    await pane.getByText("king_search").first().waitFor({ timeout: 10_000 });
+    await page.waitForSelector('[data-testid="chat-typing:tool-only-worker"]', { timeout: 10_000 });
+
+    const beforeSendText = await pane.innerText();
+    assert(
+      beforeSendText.includes("working"),
+      `tool-only active turn must show working indicator without run_started/response_phase: ${beforeSendText}`,
+    );
+
+    await page.locator('[data-testid="chat-composer:tool-only-worker"]').fill(queuedText);
+    await page.locator('[data-testid="chat-send:tool-only-worker"]').click();
+    await page.waitForSelector('[data-testid="pending-stack"]', { timeout: 10_000 });
+    await page.waitForSelector('[data-testid^="pending-steer:"]', { timeout: 10_000 });
+    await pane.getByText(queuedText).waitFor({ timeout: 10_000 });
+
+    const directSend = server.requests.find((request) =>
+      request.url === "/console/rpc" &&
+      request.body.includes('"method":"mobkit/console/send"') &&
+      request.body.includes('"identity":"tool-only-worker"') &&
+      request.body.includes(queuedText)
+    );
+    assert(
+      !directSend,
+      `busy tool-only worker accepted draft immediately instead of queueing it: ${JSON.stringify(server.requests, null, 2)}`,
+    );
+
+    await page.locator('[data-testid^="pending-steer:"]').first().click();
+    await page.waitForTimeout(500);
+
+    const steerRequest = server.requests.find((request) =>
+      request.url === "/console/rpc" &&
+      request.body.includes('"method":"mobkit/console/send"') &&
+      request.body.includes('"identity":"tool-only-worker"') &&
+      request.body.includes('"handling_mode":"steer"') &&
+      request.body.includes(queuedText)
+    );
+    assert(
+      steerRequest,
+      `queued tool-only worker draft was not promoted through canonical steer send; saw ${JSON.stringify(server.requests, null, 2)}`,
+    );
+
+    process.stdout.write("browser tool-only worker busy queue ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runChatPaneAutoScrollProof() {
   const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:40:00.000Z");
@@ -1133,6 +1280,7 @@ async function main() {
   await runImageRenderingBrowserProof();
   await runComposerPasteAttachmentProof();
   await runBusyWorkerConsoleProof();
+  await runToolOnlyWorkerBusyQueueProof();
   await runChatPaneAutoScrollProof();
   await runRunStartedClearsOptimisticPromptProof();
 }

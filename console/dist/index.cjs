@@ -3869,7 +3869,13 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
         break;
       case "tool_result_received":
       case "tool_execution_completed":
-        phase = null;
+        phase = "waiting";
+        break;
+      case "reasoning_delta":
+        phase = "generating";
+        break;
+      case "reasoning_complete":
+        phase = "waiting";
         break;
       case "text_delta":
         phase = "generating";
@@ -3934,6 +3940,8 @@ function latestRoutableFrameIsTerminal(frames) {
       case "tool_execution_started":
       case "tool_result_received":
       case "tool_execution_completed":
+      case "reasoning_delta":
+      case "reasoning_complete":
       case "text_delta":
         return false;
       default:
@@ -9693,6 +9701,8 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "assistant_image_appended",
   "text_delta",
   "text_complete",
+  "reasoning_delta",
+  "reasoning_complete",
   "turn_completed",
   "tool_call_requested",
   "tool_call",
@@ -9948,7 +9958,7 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "user_input") {
       return isTerminalUserInputStatus2(frame.status) ? false : true;
     }
-    if (frame.event === "interaction_started" || frame.event === "run_started") {
+    if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       return true;
     }
     if (frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
@@ -10250,7 +10260,11 @@ function ConsoleApp({ baseUrl }) {
         return commitPanelPhase(panelKey, "tool-executing");
       case "tool_result_received":
       case "tool_execution_completed":
-        return commitPanelPhase(panelKey, null);
+        return commitPanelPhase(panelKey, "waiting");
+      case "reasoning_delta":
+        return commitPanelPhase(panelKey, "generating");
+      case "reasoning_complete":
+        return commitPanelPhase(panelKey, "waiting");
       case "text_delta": {
         if (currentPhase === "tool-executing") {
           const r2 = Math.max(0, 300 - elapsedMs);

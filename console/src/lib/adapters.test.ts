@@ -510,10 +510,10 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
   );
 
   // Tool-completion events should not claim "tool-executing" — at that
-  // instant no tool is running. Without this, a stream that ends on
-  // tool_execution_completed (e.g., agent finishes by saving a result and
-  // no subsequent run_completed event fires) leaves the indicator stuck
-  // at "...working" indefinitely.
+  // instant no tool is running — but they must still keep the turn visibly
+  // active until terminal text/run evidence arrives. Spawned workers can
+  // lack run_started/interaction_started projections; clearing here lets
+  // operator sends bypass the local queue while the worker is still active.
   assert.equal(
     inferResponsePhaseFromFrames([
       { id: "evt-1", event: "text_delta", data: { delta: "Done." } },
@@ -522,7 +522,7 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
       { id: "evt-4", event: "tool_execution_started", data: {} },
       { id: "evt-5", event: "tool_execution_completed", data: {} },
     ]),
-    null,
+    "waiting",
   );
 
   assert.equal(
@@ -530,7 +530,15 @@ test("inferResponsePhaseFromFrames clears working state on terminal text and ter
       { id: "evt-1", event: "tool_call_requested", data: { name: "save_investigation_result" } },
       { id: "evt-2", event: "tool_result_received", data: {} },
     ]),
-    null,
+    "waiting",
+  );
+
+  assert.equal(
+    inferResponsePhaseFromFrames([
+      { id: "evt-1", event: "tool_execution_completed", data: {} },
+      { id: "evt-2", event: "reasoning_delta", data: { delta: "Planning next step" } },
+    ]),
+    "generating",
   );
 
   // A new tool call after a completed one should re-arm the indicator.
@@ -573,7 +581,7 @@ test("resolvePanelResponsePhase lets local terminal history clear stale server p
       ],
       serverPhase: "tool-executing",
     }),
-    "tool-executing",
+    "waiting",
   );
 
   assert.equal(
