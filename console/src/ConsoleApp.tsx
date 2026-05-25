@@ -1832,7 +1832,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
             (f) =>
-              (f.event === "interaction_started" || f.event === "user_input") &&
+              (f.event === "interaction_started" ||
+                f.event === "user_input" ||
+                f.event === "run_started") &&
               f.interactionId === result.interaction_id,
           );
           if (matched) {
@@ -1858,7 +1860,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           // the send and the RPC response — reconcile retroactively.
           const matched = log.events.some(
             (f) =>
-              (f.event === "interaction_started" || f.event === "user_input") &&
+              (f.event === "interaction_started" ||
+                f.event === "user_input" ||
+                f.event === "run_started") &&
               f.interactionId === result.interaction_id,
           );
           if (matched) {

@@ -147,9 +147,40 @@ function startMockConsoleServer(port, options = {}) {
     typeof options.timelineFramesAfterSendByIdentity === "object"
       ? options.timelineFramesAfterSendByIdentity
       : {};
+  const timelineStreamFramesDuringSendByIdentity =
+    options.timelineStreamFramesDuringSendByIdentity &&
+    typeof options.timelineStreamFramesDuringSendByIdentity === "object"
+      ? options.timelineStreamFramesDuringSendByIdentity
+      : {};
+  const streamClients = new Set();
   const includeImageAgent = options.includeImageAgent === true;
   const includeBusyWorker = options.includeBusyWorker === true;
   const requests = [];
+
+  function writeTimelineStreamFrame(res, frame, index) {
+    res.write([
+      `id: ${frame.id || `timeline-live-${index}`}`,
+      `event: ${frame.kind || frame.event || "message"}`,
+      `data: ${JSON.stringify({ type: "console_frame", frame })}`,
+      "",
+      "",
+    ].join("\n"));
+  }
+
+  function emitDuringSendFrames(identity) {
+    const frames =
+      typeof identity === "string" && Array.isArray(timelineStreamFramesDuringSendByIdentity[identity])
+        ? timelineStreamFramesDuringSendByIdentity[identity]
+        : [];
+    if (frames.length === 0 || streamClients.size === 0) return;
+    let index = 0;
+    for (const res of streamClients) {
+      for (const frame of frames) {
+        index += 1;
+        writeTimelineStreamFrame(res, frame, `during-send-${index}`);
+      }
+    }
+  }
 
   const server = http.createServer((req, res) => {
     const method = req.method || "GET";
@@ -362,8 +393,8 @@ function startMockConsoleServer(port, options = {}) {
               ...timelineFramesAfterSendByIdentity[identity],
             ];
           }
-          res.writeHead(200, { "content-type": "application/json" });
-          res.end(JSON.stringify({
+          emitDuringSendFrames(identity);
+          const sendResponse = JSON.stringify({
             jsonrpc: "2.0",
             id: rpcId,
             result: {
@@ -371,7 +402,16 @@ function startMockConsoleServer(port, options = {}) {
               interaction_id: `turn-${identity || "unknown"}`,
               identity,
             },
-          }));
+          });
+          const writeSendResponse = () => {
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(sendResponse);
+          };
+          if (options.consoleSendResponseDelayMs) {
+            setTimeout(writeSendResponse, options.consoleSendResponseDelayMs);
+          } else {
+            writeSendResponse();
+          }
           return;
         }
         if (payload.method === "mobkit/interact") {
@@ -429,6 +469,20 @@ function startMockConsoleServer(port, options = {}) {
       }
       if (method === "GET" && url.startsWith("/console/timeline/stream")) {
         res.writeHead(200, { "content-type": "text/event-stream" });
+        streamClients.add(res);
+        res.on("close", () => {
+          streamClients.delete(res);
+        });
+        if (Object.keys(timelineStreamFramesDuringSendByIdentity).length > 0) {
+          res.write([
+            "id: timeline-ready-1",
+            "event: keep-alive",
+            'data: {"frame_version":1,"id":"timeline-ready-1","kind":"keep-alive","timestamp_ms":1,"payload":{}}',
+            "",
+            "",
+          ].join("\n"));
+          return;
+        }
         if (timelineStreamFrames.length === 0) {
           res.end([
             "id: timeline-empty-1",
@@ -446,12 +500,7 @@ function startMockConsoleServer(port, options = {}) {
           }
           const frame = timelineStreamFrames[index];
           index += 1;
-          res.write([
-            `id: ${frame.id || `timeline-live-${index}`}`,
-            `event: ${frame.kind || frame.event || "message"}`,
-            `data: ${JSON.stringify({ type: "console_frame", frame })}`,
-            "",
-          ].join("\n"));
+          writeTimelineStreamFrame(res, frame, index);
           setTimeout(writeNext, frame.delay_ms || 50);
         };
         setTimeout(writeNext, options.timelineStreamInitialDelayMs || 150);
@@ -992,7 +1041,11 @@ async function runRunStartedClearsOptimisticPromptProof() {
   const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
   const baseTs = Date.parse("2026-05-23T20:45:00.000Z");
   const server = await startMockConsoleServer(port, {
-    timelineFramesAfterSendByIdentity: {
+    // Reproduce the send/SSE race: run_started arrives on the live stream
+    // while the console send RPC is still in flight, before the optimistic
+    // entry has the interaction id from the response.
+    consoleSendResponseDelayMs: 400,
+    timelineStreamFramesDuringSendByIdentity: {
       "identity:luka": [
         {
           id: "order-proof-run-started",
@@ -1003,6 +1056,10 @@ async function runRunStartedClearsOptimisticPromptProof() {
           cursor: "console:order:1",
           payload: { prompt },
         },
+      ],
+    },
+    timelineFramesAfterSendByIdentity: {
+      "identity:luka": [
         {
           id: "order-proof-complete",
           kind: "interaction_complete",
@@ -1024,11 +1081,22 @@ async function runRunStartedClearsOptimisticPromptProof() {
 
     await openSidebarAgentChat(page, "Identity Luka");
     await page.waitForSelector('[data-testid="chat-pane:identity:luka"]', { timeout: 30_000 });
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      if (server.requests.some((request) => request.url.startsWith("/console/timeline/stream"))) {
+        break;
+      }
+      await sleep(50);
+    }
+    assert(
+      server.requests.some((request) => request.url.startsWith("/console/timeline/stream")),
+      `timeline stream was not connected before send: ${JSON.stringify(server.requests, null, 2)}`,
+    );
     await fillComposer(page, prompt);
     await clickSend(page);
 
     const pane = page.locator('[data-testid="chat-pane:identity:luka"]');
     await pane.getByText("ORDER_PROOF_FINAL").waitFor({ timeout: 10_000 });
+    await page.waitForTimeout(600);
     const bodyText = await pane.innerText();
     const promptMatches = bodyText.match(/ORDER_PROOF send this once/g) || [];
     assert.equal(

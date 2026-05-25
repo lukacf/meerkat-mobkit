@@ -10769,7 +10769,7 @@ function ConsoleApp({ baseUrl }) {
         if (optimisticUser) {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
+            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
           );
           if (matched) {
             optimisticUser.objectUrls?.forEach(
@@ -10791,7 +10791,7 @@ function ConsoleApp({ baseUrl }) {
         if (optimisticUser) {
           optimisticUser.interactionId = result.interaction_id;
           const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input") && f.interactionId === result.interaction_id
+            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
           );
           if (matched) {
             optimisticUser.objectUrls?.forEach(
