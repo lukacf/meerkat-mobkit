@@ -156,6 +156,27 @@ fn phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced(
     }
     assert!(modules_response.body["modules"].is_array());
 
+    let send_error_codes = artifact["surfaces"]["rpc"]["methods"]["mobkit/console/send"]["errors"]
+        [0]["codes"]
+        .as_array()
+        .expect("send error codes must be present");
+    assert!(
+        !send_error_codes.contains(&json!(
+            meerkat_mobkit::CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE
+        )),
+        "send must not advertise timeline replay errors"
+    );
+    let query_timeline_error_codes = artifact["surfaces"]["rpc"]["methods"]
+        ["mobkit/console/query_timeline"]["errors"][0]["codes"]
+        .as_array()
+        .expect("query_timeline error codes must be present");
+    assert!(
+        query_timeline_error_codes.contains(&json!(
+            meerkat_mobkit::CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE
+        )),
+        "query_timeline must advertise timeline replay errors"
+    );
+
     let timeline_path = artifact["surfaces"]["sse"]["timeline"]["path"]
         .as_str()
         .expect("timeline path must be present");

@@ -159,6 +159,47 @@ test("queryTimeline normalizes replayable frame update markers", async () => {
   }
 });
 
+test("queryTimeline exposes typed replay-unavailable RPC errors", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id: "mobkit/console/query_timeline:1",
+    error: {
+      code: -32013,
+      message: "query_timeline failed: replay unavailable",
+      data: {
+        error: "replay_unavailable",
+        stream: "timeline",
+        requested_cursor: "console:500",
+        latest_cursor: "console:42",
+      },
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      queryTimeline("http://127.0.0.1:7000", { after: "console:500" }, 10),
+      (error: unknown) => {
+        const replay = error as Error & {
+          replayError?: { stream?: string; requested_last_event_id?: string; latest_event_id?: string };
+          timelineReplayUnavailable?: boolean;
+        };
+        assert.equal(replay.timelineReplayUnavailable, true);
+        assert.equal(replay.replayError?.stream, "timeline");
+        assert.equal(replay.replayError?.requested_last_event_id, "console:500");
+        assert.equal(replay.replayError?.latest_event_id, "console:42");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("sendConsole posts idempotent console send RPC", async () => {
   const originalFetch = globalThis.fetch;
   let body = "";
@@ -284,12 +325,14 @@ test("parseSseFrames unwraps aggregate frame update events", () => {
 test("subscribeTimelineEvents reconnects with the latest aggregate cursor", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
   const seen: string[] = [];
   let unsubscribe = () => {};
 
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
     if (calls.length === 1) {
       return new Response([
         "id: console:10",
@@ -321,7 +364,8 @@ test("subscribeTimelineEvents reconnects with the latest aggregate cursor", asyn
     });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A10");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, [undefined, "console:10"]);
     assert.deepEqual(seen, ["snapshot_complete", "text_complete"]);
   } finally {
     unsubscribe();
@@ -332,12 +376,14 @@ test("subscribeTimelineEvents reconnects with the latest aggregate cursor", asyn
 test("subscribeTimelineEvents recovers from stale timeline cursors", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
   const seen: string[] = [];
   let unsubscribe = () => {};
 
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
     if (calls.length === 1) {
       return new Response(JSON.stringify({
         error: "replay_unavailable",
@@ -371,8 +417,9 @@ test("subscribeTimelineEvents recovers from stale timeline cursors", async () =>
       },
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
-    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream?after=bad");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A99");
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, ["bad", "console:99"]);
     assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
   } finally {
     unsubscribe();
@@ -383,12 +430,14 @@ test("subscribeTimelineEvents recovers from stale timeline cursors", async () =>
 test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
   const seen: string[] = [];
   let unsubscribe = () => {};
 
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
     if (calls.length === 1) {
       return new Response([
         "event: replay_unavailable",
@@ -423,7 +472,8 @@ test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", asy
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A99");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, [undefined, "console:99"]);
     assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
   } finally {
     unsubscribe();
@@ -434,12 +484,14 @@ test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", asy
 test("subscribeTimelineEvents reconnects from the last delivered cursor after stream end", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
   const seen: string[] = [];
   let unsubscribe = () => {};
 
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
     if (calls.length === 1) {
       return new Response([
         "id: console:41",
@@ -475,7 +527,8 @@ test("subscribeTimelineEvents reconnects from the last delivered cursor after st
     );
     await new Promise((resolve) => setTimeout(resolve, 500));
     assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A41");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, [undefined, "console:41"]);
     assert.deepEqual(seen, ["text_complete:console:41", "text_complete:console:42"]);
   } finally {
     unsubscribe();

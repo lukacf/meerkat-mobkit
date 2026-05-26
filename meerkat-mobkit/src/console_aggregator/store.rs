@@ -34,6 +34,12 @@ pub trait ConsoleLogStore: Send + Sync {
         &self,
         query: ConsoleTimelineWindowQuery,
     ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+        if query.mode != ConsoleTimelineMode::Since || query.before.is_some() {
+            return Err(std::io::Error::other(
+                "console log store must implement query_windowed_frames for v0.4 timeline windows",
+            )
+            .into());
+        }
         let page = self
             .query_frames(ConsoleTimelineQuery {
                 identity: query.identity,
@@ -230,78 +236,72 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             }
             true
         };
-        let candidate_seqs = if query.identity.is_some() && query.conversation_id.is_some() {
-            let identity_seqs = state
-                .identity_to_seqs
-                .get(query.identity.as_deref().unwrap_or_default());
-            let conversation_seqs = state
-                .conversation_to_seqs
-                .get(query.conversation_id.as_deref().unwrap_or_default());
-            match (identity_seqs, conversation_seqs) {
+        if let (Some(identity), Some(conversation_id)) =
+            (query.identity.as_deref(), query.conversation_id.as_deref())
+        {
+            let identity_seqs = state.identity_to_seqs.get(identity);
+            let conversation_seqs = state.conversation_to_seqs.get(conversation_id);
+            return match (identity_seqs, conversation_seqs) {
                 (Some(left), Some(right)) if left.len() <= right.len() => {
-                    left.iter().copied().collect::<Vec<_>>()
+                    Ok(in_memory_window_from_seq_iters(
+                        &state,
+                        query.mode,
+                        (limit, scan_limit),
+                        left.iter().copied().filter(|seq| right.contains(seq)),
+                        left.iter().rev().copied().filter(|seq| right.contains(seq)),
+                        left.iter().rev().copied().filter(|seq| right.contains(seq)),
+                        &frame_matches,
+                    ))
                 }
-                (Some(_), Some(right)) => right.iter().copied().collect::<Vec<_>>(),
-                _ => Vec::new(),
-            }
-        } else if let Some(identity) = query.identity.as_deref() {
-            state
-                .identity_to_seqs
-                .get(identity)
-                .map(|seqs| seqs.iter().copied().collect::<Vec<_>>())
-                .unwrap_or_default()
-        } else if let Some(conversation_id) = query.conversation_id.as_deref() {
-            state
-                .conversation_to_seqs
-                .get(conversation_id)
-                .map(|seqs| seqs.iter().copied().collect::<Vec<_>>())
-                .unwrap_or_default()
-        } else {
-            state.frames.keys().copied().collect::<Vec<_>>()
-        };
-        let latest_cursor = candidate_seqs.iter().rev().find_map(|seq| {
-            let frame = state.frames.get(seq)?;
-            frame_matches(*seq, frame).then(|| frame.cursor.clone())
-        });
-        let mut frames = match query.mode {
-            ConsoleTimelineMode::Since => candidate_seqs
-                .iter()
-                .filter_map(|seq| {
-                    let frame = state.frames.get(seq)?;
-                    frame_matches(*seq, frame).then(|| frame.clone())
-                })
-                .take(scan_limit)
-                .collect::<Vec<_>>(),
-            ConsoleTimelineMode::Recent => {
-                let mut frames = candidate_seqs
-                    .iter()
-                    .rev()
-                    .filter_map(|seq| {
-                        let frame = state.frames.get(seq)?;
-                        frame_matches(*seq, frame).then(|| frame.clone())
-                    })
-                    .take(scan_limit)
-                    .collect::<Vec<_>>();
-                frames.reverse();
-                frames
-            }
-        };
-        let exhausted = frames.len() <= limit;
-        if frames.len() > limit {
-            match query.mode {
-                ConsoleTimelineMode::Since => frames.truncate(limit),
-                ConsoleTimelineMode::Recent => {
-                    frames.remove(0);
-                }
-            }
+                (Some(left), Some(right)) => Ok(in_memory_window_from_seq_iters(
+                    &state,
+                    query.mode,
+                    (limit, scan_limit),
+                    right.iter().copied().filter(|seq| left.contains(seq)),
+                    right.iter().rev().copied().filter(|seq| left.contains(seq)),
+                    right.iter().rev().copied().filter(|seq| left.contains(seq)),
+                    &frame_matches,
+                )),
+                _ => Ok(empty_window()),
+            };
         }
-        let next_cursor = frames.last().map(|frame| frame.cursor.clone());
-        Ok(ConsoleTimelineWindowPage {
-            frames,
-            next_cursor,
-            latest_cursor,
-            exhausted,
-        })
+        if let Some(identity) = query.identity.as_deref() {
+            let Some(seqs) = state.identity_to_seqs.get(identity) else {
+                return Ok(empty_window());
+            };
+            return Ok(in_memory_window_from_seq_iters(
+                &state,
+                query.mode,
+                (limit, scan_limit),
+                seqs.iter().copied(),
+                seqs.iter().rev().copied(),
+                seqs.iter().rev().copied(),
+                &frame_matches,
+            ));
+        }
+        if let Some(conversation_id) = query.conversation_id.as_deref() {
+            let Some(seqs) = state.conversation_to_seqs.get(conversation_id) else {
+                return Ok(empty_window());
+            };
+            return Ok(in_memory_window_from_seq_iters(
+                &state,
+                query.mode,
+                (limit, scan_limit),
+                seqs.iter().copied(),
+                seqs.iter().rev().copied(),
+                seqs.iter().rev().copied(),
+                &frame_matches,
+            ));
+        }
+        Ok(in_memory_window_from_seq_iters(
+            &state,
+            query.mode,
+            (limit, scan_limit),
+            state.frames.keys().copied(),
+            state.frames.keys().rev().copied(),
+            state.frames.keys().rev().copied(),
+            &frame_matches,
+        ))
     }
 
     async fn frame_by_dedupe_key(
@@ -375,6 +375,76 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             .watermarks
             .get(&(runtime_key.to_string(), source_kind.as_str().to_string()))
             .cloned())
+    }
+}
+
+fn empty_window() -> ConsoleTimelineWindowPage {
+    ConsoleTimelineWindowPage {
+        frames: Vec::new(),
+        next_cursor: None,
+        latest_cursor: None,
+        exhausted: true,
+    }
+}
+
+fn in_memory_window_from_seq_iters<IForward, IReverse, ILatest, F>(
+    state: &InMemoryState,
+    mode: ConsoleTimelineMode,
+    limits: (usize, usize),
+    forward_iter: IForward,
+    reverse_iter: IReverse,
+    mut latest_iter: ILatest,
+    frame_matches: &F,
+) -> ConsoleTimelineWindowPage
+where
+    IForward: Iterator<Item = u64>,
+    IReverse: Iterator<Item = u64>,
+    ILatest: Iterator<Item = u64>,
+    F: Fn(u64, &ConsoleFrame) -> bool,
+{
+    let (limit, scan_limit) = limits;
+    let mut frames = match mode {
+        ConsoleTimelineMode::Since => forward_iter
+            .filter_map(|seq| {
+                let frame = state.frames.get(&seq)?;
+                frame_matches(seq, frame).then(|| frame.clone())
+            })
+            .take(scan_limit)
+            .collect::<Vec<_>>(),
+        ConsoleTimelineMode::Recent => {
+            let mut frames = reverse_iter
+                .filter_map(|seq| {
+                    let frame = state.frames.get(&seq)?;
+                    frame_matches(seq, frame).then(|| frame.clone())
+                })
+                .take(scan_limit)
+                .collect::<Vec<_>>();
+            frames.reverse();
+            frames
+        }
+    };
+    let exhausted = frames.len() <= limit;
+    if frames.len() > limit {
+        match mode {
+            ConsoleTimelineMode::Since => frames.truncate(limit),
+            ConsoleTimelineMode::Recent => {
+                frames.remove(0);
+            }
+        }
+    }
+    let next_cursor = frames.last().map(|frame| frame.cursor.clone());
+    let latest_cursor = match mode {
+        ConsoleTimelineMode::Since => latest_iter.find_map(|seq| {
+            let frame = state.frames.get(&seq)?;
+            frame_matches(seq, frame).then(|| frame.cursor.clone())
+        }),
+        ConsoleTimelineMode::Recent => next_cursor.clone(),
+    };
+    ConsoleTimelineWindowPage {
+        frames,
+        next_cursor,
+        latest_cursor,
+        exhausted,
     }
 }
 
@@ -893,6 +963,68 @@ mod tests {
 
     use super::*;
 
+    struct LegacyQueryOnlyStore;
+
+    #[async_trait::async_trait]
+    impl ConsoleLogStore for LegacyQueryOnlyStore {
+        async fn append_if_absent(
+            &self,
+            _frame: NewConsoleFrame,
+        ) -> ConsoleLogResult<AppendOutcome> {
+            Err(boxed_error("not implemented for test"))
+        }
+
+        async fn update_frame_status(
+            &self,
+            _frame_id: &str,
+            _status: ConsoleFrameStatus,
+        ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+            Err(boxed_error("not implemented for test"))
+        }
+
+        async fn query_frames(
+            &self,
+            _query: ConsoleTimelineQuery,
+        ) -> ConsoleLogResult<ConsoleTimelinePage> {
+            Ok(ConsoleTimelinePage {
+                frames: Vec::new(),
+                next_cursor: None,
+            })
+        }
+
+        async fn frame_by_dedupe_key(
+            &self,
+            _dedupe_key: &str,
+        ) -> ConsoleLogResult<Option<ConsoleFrame>> {
+            Err(boxed_error("not implemented for test"))
+        }
+
+        async fn latest_cursor(&self) -> ConsoleLogResult<Option<ConsoleCursor>> {
+            Ok(None)
+        }
+
+        async fn clear_frames(&self) -> ConsoleLogResult<()> {
+            Ok(())
+        }
+
+        async fn record_source_watermark(
+            &self,
+            _runtime_key: &str,
+            _source_kind: ConsoleFrameSourceKind,
+            _source_cursor: &str,
+        ) -> ConsoleLogResult<()> {
+            Ok(())
+        }
+
+        async fn source_watermark(
+            &self,
+            _runtime_key: &str,
+            _source_kind: ConsoleFrameSourceKind,
+        ) -> ConsoleLogResult<Option<String>> {
+            Ok(None)
+        }
+    }
+
     fn sample_frame(dedupe_key: &str, identity: &str) -> NewConsoleFrame {
         NewConsoleFrame {
             id: None,
@@ -916,6 +1048,48 @@ mod tests {
             parent_frame_id: None,
             caused_by_frame_id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn legacy_store_default_rejects_v04_window_queries_loudly() {
+        let store = LegacyQueryOnlyStore;
+
+        let err = store
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
+                mode: ConsoleTimelineMode::Recent,
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect_err("legacy stores must implement recent windows explicitly");
+        assert!(
+            err.to_string()
+                .contains("must implement query_windowed_frames")
+        );
+
+        let err = store
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
+                mode: ConsoleTimelineMode::Since,
+                before: Some(ConsoleCursor::from_seq(10)),
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect_err("legacy stores must implement before windows explicitly");
+        assert!(
+            err.to_string()
+                .contains("must implement query_windowed_frames")
+        );
+
+        let page = store
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
+                mode: ConsoleTimelineMode::Since,
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("legacy since-only fallback remains source-compatible");
+        assert!(page.frames.is_empty());
     }
 
     #[tokio::test]

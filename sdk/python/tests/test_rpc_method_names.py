@@ -436,7 +436,12 @@ def test_console_timeline_replay_unavailable_uses_distinct_typed_error():
         {
             "code": -32013,
             "message": "query_timeline failed: replay unavailable",
-            "data": {"error": "replay_unavailable"},
+            "data": {
+                "error": "replay_unavailable",
+                "stream": "timeline",
+                "requested_cursor": "console:500",
+                "latest_cursor": "console:42",
+            },
         },
         request_id="rid",
         method="mobkit/console/query_timeline",
@@ -445,6 +450,8 @@ def test_console_timeline_replay_unavailable_uses_distinct_typed_error():
     assert isinstance(err, ConsoleTimelineReplayUnavailableError)
     assert err.code == -32013
     assert err.method == "mobkit/console/query_timeline"
+    assert err.data["requested_cursor"] == "console:500"
+    assert err.data["latest_cursor"] == "console:42"
 
 
 @pytest.mark.asyncio

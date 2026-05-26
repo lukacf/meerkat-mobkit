@@ -691,7 +691,7 @@ impl MobKitConsoleAggregator {
                             visible_frames.push(frame);
                             if visible_frames.len() >= requested_limit {
                                 since_stopped_at_visible_limit = true;
-                                exhausted = page.exhausted;
+                                exhausted = false;
                                 break;
                             }
                         }
@@ -726,6 +726,10 @@ impl MobKitConsoleAggregator {
                 visible_frames = visible_frames.split_off(visible_frames.len() - requested_limit);
             }
             if !anchor_frames.is_empty() {
+                let anchor_cursors = anchor_frames
+                    .iter()
+                    .map(|frame| frame.cursor.clone())
+                    .collect::<Vec<_>>();
                 let mut merged = anchor_frames;
                 for frame in visible_frames {
                     if !merged
@@ -737,6 +741,28 @@ impl MobKitConsoleAggregator {
                 }
                 merged.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
                 visible_frames = merged;
+                if visible_frames.len() > requested_limit {
+                    let mut anchors = Vec::new();
+                    let mut tail = Vec::new();
+                    for frame in visible_frames {
+                        if anchor_cursors.contains(&frame.cursor) {
+                            anchors.push(frame);
+                        } else {
+                            tail.push(frame);
+                        }
+                    }
+                    visible_frames = if anchors.len() >= requested_limit {
+                        anchors.split_off(anchors.len() - requested_limit)
+                    } else {
+                        let keep_tail = requested_limit.saturating_sub(anchors.len());
+                        if tail.len() > keep_tail {
+                            tail = tail.split_off(tail.len() - keep_tail);
+                        }
+                        anchors.extend(tail);
+                        anchors.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+                        anchors
+                    };
+                }
             }
         }
 
@@ -3425,6 +3451,13 @@ mod tests {
             self.inner.query_frames(query).await
         }
 
+        async fn query_windowed_frames(
+            &self,
+            query: ConsoleTimelineWindowQuery,
+        ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+            self.inner.query_windowed_frames(query).await
+        }
+
         async fn frame_by_dedupe_key(
             &self,
             dedupe_key: &str,
@@ -3916,6 +3949,92 @@ comms = true
             .expect("query timeline");
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].kind, "text_delta");
+    }
+
+    #[tokio::test]
+    async fn identity_recent_anchor_respects_query_limit() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "anchored-user-input".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "content": "anchor me" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::Synthetic,
+                    source_cursor: None,
+                },
+                source_event_id: Some("anchored-user-input".to_string()),
+                interaction_id: Some("turn-a".to_string()),
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append anchor");
+        for idx in 2..=40 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("noisy-tail-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "reasoning_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("noisy-tail-{idx}")),
+                    interaction_id: Some("turn-a".to_string()),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append noisy tail");
+        }
+
+        let page = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 5,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query recent identity timeline");
+
+        assert_eq!(
+            page.frames.len(),
+            5,
+            "identity anchor merge must not exceed the requested limit"
+        );
+        assert!(
+            page.frames
+                .iter()
+                .any(|frame| frame.dedupe_key == "anchored-user-input"),
+            "the bounded result should still retain the useful turn anchor: {:#?}",
+            page.frames
+        );
+        assert_eq!(
+            page.frames.last().and_then(|frame| frame.cursor.seq()),
+            Some(40)
+        );
     }
 
     #[tokio::test]

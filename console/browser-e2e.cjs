@@ -228,7 +228,7 @@ function startMockConsoleServer(port, options = {}) {
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
-      requests.push({ method, url, body });
+      requests.push({ method, url, body, headers: req.headers });
 
       if (method === "GET" && url === "/console") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -1533,10 +1533,10 @@ async function runGlobalTimelineRecentSeedProof() {
       server.requests.some(
         (request) =>
           request.method === "GET" &&
-          request.url.startsWith("/console/timeline/stream") &&
-          request.url.includes("after=console%3A1201"),
+          request.url === "/console/timeline/stream" &&
+          request.headers?.["last-event-id"] === "console:1201",
       ),
-      `expected timeline stream to continue after recent tail cursor; requests=${JSON.stringify(server.requests, null, 2)}`,
+      `expected timeline stream to continue after recent tail cursor via Last-Event-ID; requests=${JSON.stringify(server.requests, null, 2)}`,
     );
 
     process.stdout.write("browser global timeline recent seed ok\n");

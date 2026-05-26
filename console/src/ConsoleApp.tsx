@@ -61,6 +61,7 @@ import type {
   ConsoleFrame,
   ConsoleGatingActionPayload,
   ConsoleModulesResponse,
+  ConsoleReplayUnavailablePayload,
   ConsoleTimelinePage,
   ConsoleTopologyNode,
 } from "./types";
@@ -1674,7 +1675,26 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           if (reconcileServerLog(identity, page.frames, page.available)) {
             changed = true;
           }
-        } catch {
+        } catch (error) {
+          const replay = error as Error & {
+            replayError?: ConsoleReplayUnavailablePayload;
+            timelineReplayUnavailable?: boolean;
+          };
+          if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
+            log.latestTimelineCursor = undefined;
+            try {
+              const page = await queryIdentityTimelinePage(identity, {
+                mode: "recent",
+                limit: 200,
+              });
+              if (reconcileServerLog(identity, page.frames, page.available)) {
+                changed = true;
+              }
+            } catch {
+              // Keep the panel usable; the next refresh will retry.
+            }
+            continue;
+          }
           // Keep the panel usable; the next refresh will retry.
         }
       }

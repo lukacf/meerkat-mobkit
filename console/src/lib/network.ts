@@ -248,6 +248,21 @@ async function rpc<T>(
       (error as Error & { rpcError?: ConsoleGatewayInteractionRejectedError }).rpcError = typedError;
       throw error;
     }
+    const replayError = normalizeReplayUnavailableError(result.error.data) as ConsoleReplayUnavailablePayload | null;
+    if (replayError || result.error.code === -32013) {
+      const error = new Error(
+        `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`,
+      );
+      const annotated = error as Error & {
+        replayError?: ConsoleReplayUnavailablePayload;
+        timelineReplayUnavailable?: boolean;
+      };
+      if (replayError) {
+        annotated.replayError = replayError;
+      }
+      annotated.timelineReplayUnavailable = true;
+      throw error;
+    }
     throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
 
@@ -628,11 +643,10 @@ export async function callConsoleRpc<T>(
   return rpc<T>(baseUrl, method, params);
 }
 
-function timelineStreamPath(target: { identity?: string; conversationId?: string; after?: string }): string {
+function timelineStreamPath(target: { identity?: string; conversationId?: string }): string {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  if (target.after?.trim()) params.set("after", target.after.trim());
   return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 
@@ -675,10 +689,14 @@ export function subscribeTimelineEvents(
     while (!stopped) {
       controller = new AbortController();
       try {
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (after) {
+          headers["Last-Event-ID"] = after;
+        }
         await streamFramesFromResponse(
-          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+          await fetch(`${baseUrl}${timelineStreamPath(target)}`, {
             method: "GET",
-            headers: { "content-type": "application/json" },
+            headers,
             signal: controller.signal,
           }),
           {
