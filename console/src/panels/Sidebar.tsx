@@ -612,7 +612,7 @@ export function Sidebar({
       const list = grouped.get(bucket) || [];
       const sectionConfig = sectionConfigFor(bucket, grouping);
       if (list.length === 0 && !sectionConfig) continue;
-      const collapsedSection = collapsedSections.has(bucket);
+      const collapsedSection = q ? false : collapsedSections.has(bucket);
       rows.push({
         kind: "section",
         key: `section:${bucket}`,

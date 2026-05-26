@@ -1638,6 +1638,72 @@ function isExternalEventOnlySystemNotice(message: unknown): boolean {
   return sawExternalEventBlock;
 }
 
+function systemNoticeMessageRecord(frame: ConsoleFrame): Record<string, unknown> | null {
+  if (frame.event !== "system_notice" || !frame.data || typeof frame.data !== "object") {
+    return null;
+  }
+  const data = frame.data as Record<string, unknown>;
+  if (data.message && typeof data.message === "object") {
+    return data.message as Record<string, unknown>;
+  }
+  return data;
+}
+
+function systemNoticeBlockRecords(record: Record<string, unknown>): Record<string, unknown>[] {
+  const blocks = record.blocks;
+  if (!Array.isArray(blocks)) return [];
+  return blocks.filter((block): block is Record<string, unknown> => (
+    Boolean(block) && typeof block === "object"
+  ));
+}
+
+function legacyPeerNoticeTextCandidates(record: Record<string, unknown>): string[] {
+  const candidates: string[] = [];
+  const body = textFromUnknown(record.body).trim();
+  if (body) candidates.push(body);
+  for (const block of systemNoticeBlockRecords(record)) {
+    const blockText = typedNoticeBlockText(block).trim();
+    if (blockText) candidates.push(blockText);
+    const content = block.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item as Record<string, unknown>;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText) candidates.push(itemText);
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown((data as Record<string, unknown>).text).trim();
+        if (dataText) candidates.push(dataText);
+      }
+    }
+  }
+  return candidates;
+}
+
+function isLegacyPeerNoticeText(text: string): boolean {
+  return /^(Peer message from|\[COMMS (?:MESSAGE|REQUEST)\b)/i.test(text.trim());
+}
+
+function canUseLegacyPeerNoticeText(record: Record<string, unknown>): boolean {
+  const kind = textFromUnknown(record.kind);
+  if (kind && kind !== "generic") return false;
+  const blockTypes = systemNoticeBlockRecords(record)
+    .map((block) => textFromUnknown(block.type))
+    .filter(Boolean);
+  return blockTypes.every((type) => type === "text");
+}
+
+export function systemNoticeClearsBusyState(frame: ConsoleFrame): boolean {
+  const record = systemNoticeMessageRecord(frame);
+  if (!record || isExternalEventOnlySystemNotice(record)) return false;
+  if (textFromUnknown(record.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record);
+  if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
+  if (!canUseLegacyPeerNoticeText(record)) return false;
+  return legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
+}
+
 function typedSystemNoticeBlocksToRich(
   blocks: unknown,
   body: unknown,
@@ -1703,6 +1769,11 @@ function typedSystemNoticeBlocksToRich(
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
       const text = typedNoticeBlockText(record) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text });
+      continue;
+    }
+    const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
+    if (contentBlocks.length > 0) {
+      rich.push(...contentBlocks);
       continue;
     }
     rich.push({ type: "divider", text: typedNoticeBlockText(record) || "Runtime metadata" });
@@ -2330,6 +2401,9 @@ export function inferResponsePhaseFromFrames(
       case "run_failed":
         phase = null;
         break;
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) phase = null;
+        break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
         const stopReason = data.stop_reason ?? data.stopReason;
@@ -2379,6 +2453,8 @@ function latestRoutableFrameIsTerminal(frames: ConsoleFrame[]): boolean {
       case "run_failed":
       case "message_delivery_failed":
         return true;
+      case "system_notice":
+        return systemNoticeClearsBusyState(frame);
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data as Record<string, unknown> : {};
         const stopReason = data.stop_reason ?? data.stopReason;

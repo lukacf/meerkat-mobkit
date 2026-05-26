@@ -24,6 +24,14 @@ fn is_missing_event_injector_error(error: &str) -> bool {
     error.contains("missing event injector capability")
 }
 
+fn is_missing_bridge_session_snapshot_error(error: &str) -> bool {
+    error.contains("missing bridge session snapshot")
+}
+
+fn is_repairable_bridge_delivery_error(error: &str) -> bool {
+    is_missing_event_injector_error(error) || is_missing_bridge_session_snapshot_error(error)
+}
+
 fn is_archive_not_found_cleanup_error(error: &str) -> bool {
     (error.contains("ArchiveSession failed")
         && error.contains("NotFound for registered runtime session"))
@@ -489,11 +497,11 @@ impl SessionBridge for MobSessionBridge {
         // identity is Addressable or InternalOnly.
         match submit_internal_bridge_work(&self.handle, &mid, content, HandlingMode::Queue).await {
             Ok(()) => {}
-            Err(err) if is_missing_event_injector_error(&err.to_string()) => {
+            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
                     error = %err,
-                    "identity bridge delivery found a stale dispatch capability; repairing member before retry"
+                    "identity bridge delivery found stale runtime state; repairing member before retry"
                 );
                 match self.handle.respawn(mid.clone(), None).await {
                     Ok(_) => {}
@@ -558,11 +566,11 @@ impl SessionBridge for MobSessionBridge {
 
         match submit_internal_bridge_work(&self.handle, &mid, content, handling_mode).await {
             Ok(()) => {}
-            Err(err) if is_missing_event_injector_error(&err.to_string()) => {
+            Err(err) if is_repairable_bridge_delivery_error(&err.to_string()) => {
                 tracing::warn!(
                     runtime_id = %runtime_id,
                     error = %err,
-                    "identity bridge delivery found a stale dispatch capability; repairing member before retry"
+                    "identity bridge delivery found stale runtime state; repairing member before retry"
                 );
                 match self.handle.respawn(mid.clone(), None).await {
                     Ok(_) => {}
@@ -845,6 +853,24 @@ mod tests {
                 .and_then(|labels| labels.get("team"))
                 .map(String::as_str),
             Some("ops")
+        );
+    }
+
+    #[test]
+    fn bridge_delivery_repair_covers_missing_bridge_session_snapshot() {
+        let error = "session bridge mob error: member rt:review:singleton:0 failed to restore session 019e5fc2-dad4-77e2-abbe-a8a66bc15f66: missing bridge session snapshot for '019e5fc2-dad4-77e2-abbe-a8a66bc15f66'";
+
+        assert!(
+            is_repairable_bridge_delivery_error(error),
+            "stale bridge-session bindings should be repaired before retrying delivery"
+        );
+        assert!(
+            is_repairable_bridge_delivery_error("missing event injector capability for member"),
+            "existing stale event-injector repair path must remain covered"
+        );
+        assert!(
+            !is_repairable_bridge_delivery_error("model provider returned rate limit"),
+            "ordinary turn failures must not trigger member repair"
         );
     }
 }

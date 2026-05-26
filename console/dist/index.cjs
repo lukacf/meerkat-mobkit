@@ -3396,6 +3396,62 @@ function isExternalEventOnlySystemNotice(message) {
   }
   return sawExternalEventBlock;
 }
+function systemNoticeMessageRecord(frame) {
+  if (frame.event !== "system_notice" || !frame.data || typeof frame.data !== "object") {
+    return null;
+  }
+  const data = frame.data;
+  if (data.message && typeof data.message === "object") {
+    return data.message;
+  }
+  return data;
+}
+function systemNoticeBlockRecords(record) {
+  const blocks = record.blocks;
+  if (!Array.isArray(blocks)) return [];
+  return blocks.filter((block) => Boolean(block) && typeof block === "object");
+}
+function legacyPeerNoticeTextCandidates(record) {
+  const candidates = [];
+  const body = textFromUnknown(record.body).trim();
+  if (body) candidates.push(body);
+  for (const block of systemNoticeBlockRecords(record)) {
+    const blockText = typedNoticeBlockText(block).trim();
+    if (blockText) candidates.push(blockText);
+    const content = block.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText) candidates.push(itemText);
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown(data.text).trim();
+        if (dataText) candidates.push(dataText);
+      }
+    }
+  }
+  return candidates;
+}
+function isLegacyPeerNoticeText(text) {
+  return /^(Peer message from|\[COMMS (?:MESSAGE|REQUEST)\b)/i.test(text.trim());
+}
+function canUseLegacyPeerNoticeText(record) {
+  const kind = textFromUnknown(record.kind);
+  if (kind && kind !== "generic") return false;
+  const blockTypes = systemNoticeBlockRecords(record).map((block) => textFromUnknown(block.type)).filter(Boolean);
+  return blockTypes.every((type) => type === "text");
+}
+function systemNoticeClearsBusyState(frame) {
+  const record = systemNoticeMessageRecord(frame);
+  if (!record || isExternalEventOnlySystemNotice(record)) return false;
+  if (textFromUnknown(record.kind) === "comms") return true;
+  const blocks = systemNoticeBlockRecords(record);
+  if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
+  if (!canUseLegacyPeerNoticeText(record)) return false;
+  return legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
+}
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
   const rich = [];
   const bodyText = textFromUnknown(body);
@@ -3413,8 +3469,8 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
       const kind = textFromUnknown(record.kind) || "message";
       const intent = textFromUnknown(record.intent);
       const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
-      const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
-      const contentText = contentBlocks.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
+      const contentBlocks2 = typedNoticeContentBlocks(record.content, blobBaseUrl);
+      const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
       const displayBody = (contentText || typedNoticeBlockText(record)).replace(/^Peer\s+(?:message|request|response)\s+from\s+[^\n:]+:\s*/i, "").trim();
       rich.push({
         type: "tool-call",
@@ -3427,7 +3483,7 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
         ...intent ? { peerIntent: intent } : {},
         peerBody: displayBody || void 0
       });
-      rich.push(...contentBlocks.filter((item) => item.type !== "paragraph"));
+      rich.push(...contentBlocks2.filter((item) => item.type !== "paragraph"));
       continue;
     }
     if (type === "external_event") {
@@ -3443,6 +3499,11 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
     if (type === "background_job" || type === "auth" || type === "runtime_notice") {
       const text = typedNoticeBlockText(record) || type.replace(/_/g, " ");
       rich.push({ type: "paragraph", text });
+      continue;
+    }
+    const contentBlocks = typedNoticeContentBlocks(record.content, blobBaseUrl);
+    if (contentBlocks.length > 0) {
+      rich.push(...contentBlocks);
       continue;
     }
     rich.push({ type: "divider", text: typedNoticeBlockText(record) || "Runtime metadata" });
@@ -3887,6 +3948,9 @@ function inferResponsePhaseFromFrames(frames, fallback = null) {
       case "run_failed":
         phase = null;
         break;
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) phase = null;
+        break;
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
         const stopReason = data.stop_reason ?? data.stopReason;
@@ -3928,6 +3992,8 @@ function latestRoutableFrameIsTerminal(frames) {
       case "run_failed":
       case "message_delivery_failed":
         return true;
+      case "system_notice":
+        return systemNoticeClearsBusyState(frame);
       case "turn_completed": {
         const data = frame.data && typeof frame.data === "object" ? frame.data : {};
         const stopReason = data.stop_reason ?? data.stopReason;
@@ -4531,6 +4597,41 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
     stopped = true;
     controller?.abort();
   };
+}
+
+// src/lib/id.ts
+function randomUuidFromValues(cryptoSource) {
+  if (typeof cryptoSource.getRandomValues !== "function") {
+    return null;
+  }
+  try {
+    const bytes = cryptoSource.getRandomValues(new Uint8Array(16));
+    bytes[6] = bytes[6] & 15 | 64;
+    bytes[8] = bytes[8] & 63 | 128;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+    return [
+      hex.slice(0, 4).join(""),
+      hex.slice(4, 6).join(""),
+      hex.slice(6, 8).join(""),
+      hex.slice(8, 10).join(""),
+      hex.slice(10, 16).join("")
+    ].join("-");
+  } catch {
+    return null;
+  }
+}
+function createConsoleId(prefix = "console", cryptoSource = typeof globalThis.crypto !== "undefined" ? globalThis.crypto : void 0) {
+  if (cryptoSource && typeof cryptoSource.randomUUID === "function") {
+    try {
+      return `${prefix}-${cryptoSource.randomUUID()}`;
+    } catch {
+    }
+  }
+  const generated = cryptoSource ? randomUuidFromValues(cryptoSource) : null;
+  if (generated) {
+    return `${prefix}-${generated}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 // src/lib/pane-resize.ts
@@ -7509,7 +7610,7 @@ function Sidebar({
       const list = grouped.get(bucket) || [];
       const sectionConfig = sectionConfigFor(bucket, grouping);
       if (list.length === 0 && !sectionConfig) continue;
-      const collapsedSection = collapsedSections.has(bucket);
+      const collapsedSection = q ? false : collapsedSections.has(bucket);
       rows.push({
         kind: "section",
         key: `section:${bucket}`,
@@ -9651,13 +9752,7 @@ function normalizeConsoleInspectResult(value) {
 var DEFAULT_APPROVER_ID = "console-ops-lead";
 var DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
 function createIdempotencyKey() {
-  try {
-    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-      return crypto.randomUUID();
-    }
-  } catch {
-  }
-  return `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return createConsoleId("console");
 }
 function dockLayoutStorageKey(baseUrl, experience) {
   const runtimeId = experience?.runtime_id?.trim();
@@ -9713,6 +9808,7 @@ var PANEL_ROUTABLE_EVENTS = /* @__PURE__ */ new Set([
   "run_completed",
   "run_failed",
   "message_delivery_failed",
+  "system_notice",
   "frame_updated"
 ]);
 var HISTORY_REFRESH_EVENTS = /* @__PURE__ */ new Set([
@@ -9875,6 +9971,7 @@ function ConsoleApp({ baseUrl }) {
         return next;
       });
     }
+    return clearedPanelKeys.length > 0;
   }
   function clearSendingPanelsForIdentity(identity) {
     if (!identity.trim()) return;
@@ -9893,11 +9990,11 @@ function ConsoleApp({ baseUrl }) {
   }
   function clearOptimisticUserByContent(identity, frame) {
     if (frame.event !== "interaction_started" && frame.event !== "user_input" && frame.event !== "run_started")
-      return;
+      return false;
     const record = frame.data && typeof frame.data === "object" ? frame.data : {};
     const contentValue = frame.event === "run_started" ? record.prompt : record.content;
     const content = typeof contentValue === "string" ? contentValue.trim() : "";
-    if (!content) return;
+    if (!content) return false;
     const clearedPanelKeys = [];
     for (const [panelKey, optimistic] of Object.entries(
       optimisticUserByPanelKeyRef.current
@@ -9918,6 +10015,13 @@ function ConsoleApp({ baseUrl }) {
         return next;
       });
     }
+    return clearedPanelKeys.length > 0;
+  }
+  function clearOptimisticUserForFrame(identity, frame) {
+    if ((frame.event === "interaction_started" || frame.event === "user_input" || frame.event === "run_started") && frame.interactionId && clearOptimisticUserByInteraction(frame.interactionId)) {
+      return;
+    }
+    clearOptimisticUserByContent(identity, frame);
   }
   function frameKey(frame) {
     if (frame.id) return frame.id;
@@ -9938,6 +10042,7 @@ function ConsoleApp({ baseUrl }) {
             ...log.events[existingIndex],
             ...updated
           };
+          clearOptimisticUserForFrame(identity, updated);
           return true;
         }
       }
@@ -9947,11 +10052,7 @@ function ConsoleApp({ baseUrl }) {
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
-    if ((frame.event === "interaction_started" || frame.event === "user_input" || frame.event === "run_started") && frame.interactionId) {
-      clearOptimisticUserByInteraction(frame.interactionId);
-    } else {
-      clearOptimisticUserByContent(identity, frame);
-    }
+    clearOptimisticUserForFrame(identity, frame);
     return true;
   }
   function busyTransitionForFrame(frame) {
@@ -9961,7 +10062,7 @@ function ConsoleApp({ baseUrl }) {
     if (frame.event === "interaction_started" || frame.event === "run_started" || frame.event === "reasoning_delta" || frame.event === "reasoning_complete" || frame.event === "tool_call_requested" || frame.event === "tool_call" || frame.event === "tool_execution_started" || frame.event === "tool_result_received" || frame.event === "tool_execution_completed") {
       return true;
     }
-    if (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame) || frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "message_delivery_failed") {
+    if (frame.event === "turn_completed" && isTerminalTurnCompletedFrame(frame) || frame.event === "interaction_complete" || frame.event === "interaction_failed" || frame.event === "run_completed" || frame.event === "run_failed" || frame.event === "system_notice" && systemNoticeClearsBusyState(frame) || frame.event === "message_delivery_failed") {
       return false;
     }
     return null;
@@ -10178,7 +10279,7 @@ function ConsoleApp({ baseUrl }) {
   const dockLayoutRestoring = import_react22.default.useRef(false);
   const dock = useConsoleDockController({
     createPanelState: ({ target }) => ({
-      id: `panel-${crypto.randomUUID()}`,
+      id: createConsoleId("panel"),
       target: target || null,
       mode: "console"
     })
@@ -10285,6 +10386,9 @@ function ConsoleApp({ baseUrl }) {
       case "run_completed":
       case "run_failed":
         return commitPanelPhase(panelKey, null);
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, null);
+        return false;
       case "turn_completed":
         if (isTerminalTurnCompletedFrame(frame)) return commitPanelPhase(panelKey, null);
         return false;

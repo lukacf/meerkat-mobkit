@@ -70,6 +70,7 @@ pub struct UnifiedRuntimeBuilder {
     persistent_state_path: Option<PathBuf>,
     session_hook: Option<Arc<dyn SessionHook>>,
     custom_session_store: Option<Arc<dyn meerkat::SessionStore>>,
+    meerkat_config: Option<meerkat::Config>,
     default_llm_client: Option<Arc<dyn LlmClient>>,
     max_sessions: Option<usize>,
     capability_flags: CapabilityFlags,
@@ -142,6 +143,17 @@ impl UnifiedRuntimeBuilder {
     /// (provides durable sessions without local mob storage).
     pub fn session_store(mut self, store: Arc<dyn meerkat::SessionStore>) -> Self {
         self.custom_session_store = Some(store);
+        self
+    }
+
+    /// Set the Meerkat agent factory configuration used by builder-created
+    /// session services.
+    ///
+    /// Applications with long-lived durable coordinator agents can use this to
+    /// tune session compaction and other factory-level Meerkat behavior without
+    /// constructing a full `MobBootstrapSpec` by hand.
+    pub fn meerkat_config(mut self, config: meerkat::Config) -> Self {
+        self.meerkat_config = Some(config);
         self
     }
 
@@ -861,6 +873,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook.clone(),
+                self.meerkat_config.clone(),
             )
         } else if let Some(ref scratch_dir) = self.scratch_dir {
             std::fs::create_dir_all(scratch_dir).map_err(|e| {
@@ -880,6 +893,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook,
+                self.meerkat_config.clone(),
             )
         } else {
             // Ephemeral: create a temp dir that lives as long as the runtime.
@@ -898,6 +912,7 @@ impl UnifiedRuntimeBuilder {
                 hook,
                 caps,
                 after_hook,
+                self.meerkat_config.clone(),
             );
             spec._ephemeral_dir = Some(Arc::new(temp_dir));
             spec
@@ -1007,6 +1022,38 @@ runtime_mode = "autonomous_host"
             blocked.to_string().contains("Max sessions reached (65/65)"),
             "unexpected capacity error: {blocked}",
         );
+    }
+
+    #[tokio::test]
+    async fn definition_based_spec_accepts_custom_meerkat_config() {
+        let definition = meerkat_mob::MobDefinition::from_toml(
+            r#"
+[mob]
+id = "builder-custom-config"
+
+[profiles.worker]
+model = "gpt-5.5"
+runtime_mode = "autonomous_host"
+"#,
+        )
+        .expect("definition parses");
+        let mut config = meerkat::Config::default();
+        config.compaction.auto_compact_threshold = 42_000;
+        config.compaction.auto_compact_threshold_explicit = true;
+        config.compaction.recent_turn_budget = 2;
+
+        let builder = UnifiedRuntimeBuilder::default()
+            .definition(definition)
+            .meerkat_config(config)
+            .max_sessions(1);
+        let spec = builder.resolve_mob_spec().await.expect("spec resolves");
+
+        SessionService::create_session(
+            spec.session_service.as_ref(),
+            deferred_capacity_request("custom config session"),
+        )
+        .await
+        .expect("custom Meerkat config should still build a usable session service");
     }
 
     #[tokio::test]

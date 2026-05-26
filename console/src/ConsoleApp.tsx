@@ -37,6 +37,7 @@ import {
   mapFramesToTimelineEntries,
   optimisticUserMessageForPanel,
   resolvePanelResponsePhase,
+  systemNoticeClearsBusyState,
   type MobKitDockTarget,
   type OptimisticUserMessage,
 } from "./lib/adapters";
@@ -50,6 +51,7 @@ import {
   sendConsoleMultipart,
   subscribeTimelineEvents,
 } from "./lib/network";
+import { createConsoleId } from "./lib/id";
 import { findPaneResizeRoot } from "./lib/pane-resize";
 import { Icon, SpriteSheet } from "./icon";
 import type {
@@ -230,17 +232,7 @@ const DEFAULT_APPROVER_ID = "console-ops-lead";
 const DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
 
 function createIdempotencyKey(): string {
-  try {
-    if (
-      typeof crypto !== "undefined" &&
-      typeof crypto.randomUUID === "function"
-    ) {
-      return crypto.randomUUID();
-    }
-  } catch {
-    // Fall through to timestamp-based key.
-  }
-  return `console-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return createConsoleId("console");
 }
 
 function dockLayoutStorageKey(
@@ -307,6 +299,7 @@ const PANEL_ROUTABLE_EVENTS = new Set([
   "run_completed",
   "run_failed",
   "message_delivery_failed",
+  "system_notice",
   "frame_updated",
 ]);
 const HISTORY_REFRESH_EVENTS = new Set([
@@ -498,7 +491,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return log;
   }
 
-  function clearOptimisticUserByInteraction(interactionId: string): void {
+  function clearOptimisticUserByInteraction(interactionId: string): boolean {
     const clearedPanelKeys: string[] = [];
     for (const [panelKey, optimistic] of Object.entries(
       optimisticUserByPanelKeyRef.current,
@@ -515,6 +508,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return next;
       });
     }
+    return clearedPanelKeys.length > 0;
   }
 
   function clearSendingPanelsForIdentity(identity: string): void {
@@ -536,13 +530,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   function clearOptimisticUserByContent(
     identity: string,
     frame: ConsoleFrame,
-  ): void {
+  ): boolean {
     if (
       frame.event !== "interaction_started" &&
       frame.event !== "user_input" &&
       frame.event !== "run_started"
     )
-      return;
+      return false;
     const record =
       frame.data && typeof frame.data === "object"
         ? (frame.data as Record<string, unknown>)
@@ -552,7 +546,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       : record.content;
     const content =
       typeof contentValue === "string" ? contentValue.trim() : "";
-    if (!content) return;
+    if (!content) return false;
     const clearedPanelKeys: string[] = [];
     for (const [panelKey, optimistic] of Object.entries(
       optimisticUserByPanelKeyRef.current,
@@ -576,6 +570,20 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         return next;
       });
     }
+    return clearedPanelKeys.length > 0;
+  }
+
+  function clearOptimisticUserForFrame(identity: string, frame: ConsoleFrame): void {
+    if (
+      (frame.event === "interaction_started" ||
+        frame.event === "user_input" ||
+        frame.event === "run_started") &&
+      frame.interactionId &&
+      clearOptimisticUserByInteraction(frame.interactionId)
+    ) {
+      return;
+    }
+    clearOptimisticUserByContent(identity, frame);
   }
 
   /// Stable identity for a frame across RPC and SSE pipelines. Both
@@ -615,6 +623,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
             ...log.events[existingIndex],
             ...updated,
           };
+          clearOptimisticUserForFrame(identity, updated);
           return true;
         }
       }
@@ -624,16 +633,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (log.byKey.has(key)) return false;
     log.byKey.set(key, log.events.length);
     log.events.push(frame);
-    if (
-      (frame.event === "interaction_started" ||
-        frame.event === "user_input" ||
-        frame.event === "run_started") &&
-      frame.interactionId
-    ) {
-      clearOptimisticUserByInteraction(frame.interactionId);
-    } else {
-      clearOptimisticUserByContent(identity, frame);
-    }
+    clearOptimisticUserForFrame(identity, frame);
     return true;
   }
 
@@ -660,6 +660,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       frame.event === "interaction_failed" ||
       frame.event === "run_completed" ||
       frame.event === "run_failed" ||
+      (frame.event === "system_notice" && systemNoticeClearsBusyState(frame)) ||
       frame.event === "message_delivery_failed"
     ) {
       // Queue draining follows run-level terminals so server-side
@@ -1034,7 +1035,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
   const dock = useConsoleDockController<MobKitDockTarget>({
     createPanelState: ({ target }) => ({
-      id: `panel-${crypto.randomUUID()}`,
+      id: createConsoleId("panel"),
       target: target || null,
       mode: "console" as const,
     }),
@@ -1165,6 +1166,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       case "run_completed":
       case "run_failed":
         return commitPanelPhase(panelKey, null);
+      case "system_notice":
+        if (systemNoticeClearsBusyState(frame)) return commitPanelPhase(panelKey, null);
+        return false;
       case "turn_completed":
         if (isTerminalTurnCompletedFrame(frame)) return commitPanelPhase(panelKey, null);
         return false;
