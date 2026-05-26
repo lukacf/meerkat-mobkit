@@ -1083,11 +1083,14 @@ fn explicit_identity_query_needs_session_history_backfill(frames: &[ConsoleFrame
     if frames.is_empty() {
         return true;
     }
-    if frames
+    let latest_session_history_timestamp_ms = frames
         .iter()
-        .any(|frame| frame.source.kind == ConsoleFrameSourceKind::SessionHistory)
-    {
-        return false;
+        .filter(|frame| frame.source.kind == ConsoleFrameSourceKind::SessionHistory)
+        .map(|frame| frame.timestamp_ms)
+        .max();
+    if let Some(latest_timestamp_ms) = latest_session_history_timestamp_ms {
+        return current_time_ms().saturating_sub(latest_timestamp_ms)
+            >= SESSION_HISTORY_GROWING_REFRESH_TTL_MS;
     }
     frames.iter().any(|frame| {
         matches!(
@@ -3984,6 +3987,108 @@ comms = true
         Ok(())
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_identity_query_refreshes_stale_existing_session_history() -> Result<(), String>
+    {
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let runtime = build_single_member_runtime().await;
+        let entry = runtime_entry_for_test("runtime-a", &runtime);
+        let resolved = member_sources_for_entry(&entry)
+            .await
+            .into_iter()
+            .find(|candidate| candidate.member.agent_identity.as_str() == "agent-a")
+            .expect("agent-a member exists");
+        let record = identity_record_for_member(&entry, &resolved.handle, &resolved.member)
+            .await
+            .expect("identity record exists");
+        let session_id = record.session_id.expect("agent-a has a session");
+        wait_for_runtime_session_history_text(
+            &runtime,
+            &session_id,
+            "You are agent-a.",
+            Duration::from_secs(5),
+        )
+        .await?;
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+
+        store
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "stale-session-history-agent-a".to_string(),
+                timestamp_ms: 10,
+                runtime_key: "runtime-a".to_string(),
+                identity: "test/agent-a".to_string(),
+                conversation_id: Some("test/agent-a".to_string()),
+                session_id: Some(session_id.clone()),
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({
+                    "text": "stale projected history",
+                    "type": "user_input",
+                }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::SessionHistory,
+                    source_cursor: Some("stale-session-history-agent-a".to_string()),
+                },
+                source_event_id: Some("stale-session-history-agent-a".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append stale history frame");
+
+        let fresh_prompt = "fresh prompt after stale history";
+        let sent_session_id = send_message_on_mob_with_mode(
+            &runtime.mob_handle(),
+            "agent-a",
+            ContentInput::Text(fresh_prompt.to_string()),
+            meerkat_core::types::HandlingMode::Queue,
+        )
+        .await
+        .expect("direct member send succeeds");
+        assert_eq!(sent_session_id, session_id);
+        wait_for_runtime_session_history_text(
+            &runtime,
+            &session_id,
+            fresh_prompt,
+            Duration::from_secs(5),
+        )
+        .await?;
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("test/agent-a".to_string()),
+                limit: 50,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query child timeline");
+
+        assert!(
+            page.frames.iter().any(|frame| {
+                frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                    && session_history_content_text(frame).as_deref() == Some(fresh_prompt)
+            }),
+            "explicit identity query should refresh stale history and include the fresh prompt; frames: {:#?}",
+            page.frames
+        );
+        assert!(
+            store.source_watermark_calls() > 0,
+            "stale existing session history should force a targeted source refresh"
+        );
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
     async fn wait_for_session_history_text(
         aggregator: &MobKitConsoleAggregator,
         identity: &str,
@@ -4065,8 +4170,10 @@ comms = true
                 )
                 .iter()
                 .any(|frame| {
-                    frame.kind == "user_input"
-                        && session_history_frame_content_text(frame).as_deref() == Some(expected)
+                    matches!(
+                        frame.kind.as_str(),
+                        "user_input" | "system_notice" | "interaction_complete"
+                    ) && session_history_frame_content_text(frame).as_deref() == Some(expected)
                 })
             }) {
                 return Ok(());
@@ -4118,6 +4225,9 @@ comms = true
             return Some(text.to_string());
         }
         if let Some(text) = payload.get("result").and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
+        if let Some(text) = payload.get("body").and_then(Value::as_str) {
             return Some(text.to_string());
         }
         match payload.get("content")? {
