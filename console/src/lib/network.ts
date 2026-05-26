@@ -428,9 +428,28 @@ async function streamFramesFromResponse(
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
 
+  const replayUnavailableError = (frame: ConsoleFrame): Error | null => {
+    if (frame.event !== "replay_unavailable") {
+      return null;
+    }
+    const replayError = normalizeReplayUnavailableError(frame.data) as ConsoleReplayUnavailablePayload | null;
+    if (!replayError) {
+      return new Error("timeline stream replay unavailable");
+    }
+    const error = new Error(
+      `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`,
+    );
+    (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
+    return error;
+  };
+
   if (!response.body || typeof response.body.getReader !== "function") {
     const frames = parseSseFrames(await response.text());
     for (const frame of frames) {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         options.onFrame?.(frame);
       }
@@ -455,6 +474,10 @@ async function streamFramesFromResponse(
       frameBuffer += chunk;
       let sawTerminal = false;
       frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+        const replayError = replayUnavailableError(frame);
+        if (replayError) {
+          throw replayError;
+        }
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
@@ -470,12 +493,20 @@ async function streamFramesFromResponse(
     const finalChunk = decoder.decode();
     frameBuffer += finalChunk;
     frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
       }
     });
     flushTrailingSseBlock(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);

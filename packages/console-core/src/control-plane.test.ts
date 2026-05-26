@@ -215,6 +215,36 @@ test("normalize inspect views and typed console errors", () => {
   );
 
   assert.deepEqual(
+    normalizeReplayUnavailableError({
+      type: "replay_unavailable",
+      requested_cursor: "lagged:10",
+      latest_cursor: "console:99",
+    }),
+    {
+      error: "replay_unavailable",
+      stream: "timeline",
+      requested_last_event_id: "lagged:10",
+      latest_event_id: "console:99",
+    },
+  );
+
+  assert.equal(
+    normalizeReplayUnavailableError({
+      error: "replay_unavailable",
+      requested_cursor: "bad",
+    }),
+    null,
+  );
+  assert.equal(
+    normalizeReplayUnavailableError({
+      error: "replay_unavailable",
+      latest_cursor: "console:99",
+    }),
+    null,
+  );
+  assert.equal(normalizeReplayUnavailableError({ error: "replay_unavailable" }), null);
+
+  assert.deepEqual(
     normalizeConsoleInteractionRejectedError({
       code: -32002,
       message: " identity not addressable ",

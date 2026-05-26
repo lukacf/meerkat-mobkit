@@ -302,7 +302,7 @@ function startMockConsoleServer(port, options = {}) {
       if (method === "GET" && url === "/console/experience") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
-          contract_version: "0.3.0",
+          contract_version: "0.4.0",
           agent_sidebar: {
             panel_id: "console.agent_sidebar",
             schema_version: "1",

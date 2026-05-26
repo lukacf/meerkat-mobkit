@@ -512,7 +512,10 @@ export function normalizeRoutingSectionView(value: unknown): RoutingSectionView 
 
 export function normalizeReplayUnavailableError(value: unknown): ReplayUnavailableError | null {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record || record.error !== "replay_unavailable") {
+  if (
+    !record ||
+    (record.error !== "replay_unavailable" && record.type !== "replay_unavailable")
+  ) {
     return null;
   }
   const explicitStream =
@@ -525,7 +528,7 @@ export function normalizeReplayUnavailableError(value: unknown): ReplayUnavailab
     trimString(record.latest_event_id) || trimString(record.latest_cursor);
   const stream =
     explicitStream ||
-    (requested.startsWith("console:") || latest.startsWith("console:") ? "timeline" : null);
+    (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
   }

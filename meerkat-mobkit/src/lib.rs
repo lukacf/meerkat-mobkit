@@ -47,11 +47,11 @@ pub use console_aggregator::{
     ConsoleInteractionAccepted as ConsoleTimelineInteractionAccepted, ConsoleLogError,
     ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleRuntimeRegistration,
     ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelinePage,
-    ConsoleTimelineQuery, ConsoleVisibility, ConsoleVisibilityPolicy,
-    HideImplicitDelegateMembersConsoleVisibilityPolicy, InMemoryConsoleLogStore,
-    MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect, ReplaySubscriptionState,
-    ReplaySubscriptionTransition, SendEffect, SendState, SendTransition, SourceIngestionEffect,
-    SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
+    ConsoleTimelineQuery, ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, ConsoleVisibility,
+    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    InMemoryConsoleLogStore, MobKitConsoleAggregator, NewConsoleFrame, ReplaySubscriptionEffect,
+    ReplaySubscriptionState, ReplaySubscriptionTransition, SendEffect, SendState, SendTransition,
+    SourceIngestionEffect, SourceIngestionState, SourceIngestionTransition, SqliteConsoleLogStore,
 };
 pub use console_config::{
     ConsoleActionsUiConfig, ConsoleAgentBadgeConfig, ConsoleAgentListConfig,

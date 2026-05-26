@@ -10,14 +10,14 @@ MobKit exposes its full operational API over JSON-RPC 2.0 via stdio. This is the
 
 - **Transport:** JSON lines over stdio (one JSON object per line)
 - **Version:** JSON-RPC 2.0
-- **Contract version:** `0.1.0`
+- **Contract version:** `0.4.0`
 
 ### Capabilities handshake
 
 The first line from the MobKit process is a capabilities declaration:
 
 ```json
-{"contract_version": "0.1.0"}
+{"contract_version": "0.4.0"}
 ```
 
 Clients must validate the contract version before sending requests.

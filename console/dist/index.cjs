@@ -304,13 +304,13 @@ function normalizeRoutingSectionView(value) {
 }
 function normalizeReplayUnavailableError(value) {
   const record = value && typeof value === "object" ? value : null;
-  if (!record || record.error !== "replay_unavailable") {
+  if (!record || record.error !== "replay_unavailable" && record.type !== "replay_unavailable") {
     return null;
   }
   const explicitStream = record.stream === "identity" || record.stream === "all_events" || record.stream === "timeline" ? record.stream : null;
   const requested = trimString(record.requested_last_event_id) || trimString(record.requested_cursor);
   const latest = trimString(record.latest_event_id) || trimString(record.latest_cursor);
-  const stream = explicitStream || (requested.startsWith("console:") || latest.startsWith("console:") ? "timeline" : null);
+  const stream = explicitStream || (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
   }
@@ -4396,9 +4396,27 @@ async function streamFramesFromResponse(response, options = {}) {
     }
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
+  const replayUnavailableError = (frame) => {
+    if (frame.event !== "replay_unavailable") {
+      return null;
+    }
+    const replayError = normalizeReplayUnavailableError(frame.data);
+    if (!replayError) {
+      return new Error("timeline stream replay unavailable");
+    }
+    const error = new Error(
+      `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`
+    );
+    error.replayError = replayError;
+    return error;
+  };
   if (!response.body || typeof response.body.getReader !== "function") {
     const frames2 = parseSseFrames(await response.text());
     for (const frame of frames2) {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         options.onFrame?.(frame);
       }
@@ -4419,6 +4437,10 @@ async function streamFramesFromResponse(response, options = {}) {
       frameBuffer += chunk;
       let sawTerminal = false;
       frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+        const replayError = replayUnavailableError(frame);
+        if (replayError) {
+          throw replayError;
+        }
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
@@ -4434,12 +4456,20 @@ async function streamFramesFromResponse(response, options = {}) {
     const finalChunk = decoder.decode();
     frameBuffer += finalChunk;
     frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
       }
     });
     flushTrailingSseBlock(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);

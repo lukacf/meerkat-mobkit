@@ -162,7 +162,8 @@ Browser E2E:
 
 Stress target:
 
-- Tests should cover at least Fugue scale, 10x Fugue scale, and a 100x-scale synthetic log with sparse identity frames.
+- CI tests should include at least one 250k-frame synthetic log with sparse identity frames.
+- Manual or release-candidate stress should cover 10x-100x Fugue scale before relying on this path for much larger production logs.
 
 ## Rollout Plan
 

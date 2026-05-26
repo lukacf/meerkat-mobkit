@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use super::types::{
     AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleTimelineMode, ConsoleTimelinePage,
-    ConsoleTimelineQuery, NewConsoleFrame,
+    ConsoleTimelineQuery, ConsoleTimelineWindowPage, ConsoleTimelineWindowQuery, NewConsoleFrame,
 };
 
 pub type ConsoleLogResult<T> = Result<T, ConsoleLogError>;
@@ -29,6 +29,26 @@ pub trait ConsoleLogStore: Send + Sync {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage>;
+
+    async fn query_windowed_frames(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+        let page = self
+            .query_frames(ConsoleTimelineQuery {
+                identity: query.identity,
+                conversation_id: query.conversation_id,
+                after: query.after,
+                limit: query.limit,
+            })
+            .await?;
+        Ok(ConsoleTimelineWindowPage {
+            latest_cursor: page.next_cursor.clone(),
+            exhausted: false,
+            frames: page.frames,
+            next_cursor: page.next_cursor,
+        })
+    }
 
     async fn frame_by_dedupe_key(&self, dedupe_key: &str)
     -> ConsoleLogResult<Option<ConsoleFrame>>;
@@ -156,6 +176,17 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
+        let page = self.query_windowed_frames(query.into()).await?;
+        Ok(ConsoleTimelinePage {
+            frames: page.frames,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    async fn query_windowed_frames(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
         let after_seq = query.after.as_ref().map(cursor_seq).transpose()?;
         let before_seq = query.before.as_ref().map(cursor_seq).transpose()?;
         let limit = normalize_limit(query.limit);
@@ -219,7 +250,7 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             }
         }
         let next_cursor = frames.last().map(|frame| frame.cursor.clone());
-        Ok(ConsoleTimelinePage {
+        Ok(ConsoleTimelineWindowPage {
             frames,
             next_cursor,
             latest_cursor,
@@ -402,6 +433,17 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
+        let page = self.query_windowed_frames(query.into()).await?;
+        Ok(ConsoleTimelinePage {
+            frames: page.frames,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    async fn query_windowed_frames(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
         let after_seq = query.after.as_ref().map(cursor_seq_i64).transpose()?;
         let before_seq = query.before.as_ref().map(cursor_seq_i64).transpose()?;
         let limit = normalize_limit(query.limit);
@@ -468,7 +510,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             query.conversation_id.as_deref(),
         )?;
         let next_cursor = frames.last().map(|frame| frame.cursor.clone());
-        Ok(ConsoleTimelinePage {
+        Ok(ConsoleTimelineWindowPage {
             frames,
             next_cursor,
             latest_cursor,
@@ -867,11 +909,11 @@ mod tests {
             .expect("append third");
 
         let page = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 after: Some(first.frame.cursor),
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query");
@@ -890,11 +932,11 @@ mod tests {
         }
 
         let page = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Recent,
                 limit: 3,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query recent");
@@ -916,12 +958,12 @@ mod tests {
         assert!(!page.exhausted);
 
         let older = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Recent,
                 before: page.frames.first().map(|frame| frame.cursor.clone()),
                 limit: 3,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query older");
@@ -950,11 +992,11 @@ mod tests {
         }
 
         let page = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Recent,
                 limit: 2,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query recent");
@@ -967,12 +1009,12 @@ mod tests {
         );
 
         let older = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Recent,
                 before: page.frames.first().map(|frame| frame.cursor.clone()),
                 limit: 2,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query older");
@@ -1001,11 +1043,11 @@ mod tests {
         }
 
         let first = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Recent,
                 limit: 200,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query recent");
@@ -1013,12 +1055,12 @@ mod tests {
         assert_eq!(first.frames[0].dedupe_key, "event-201");
 
         let older = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Recent,
                 before: first.frames.first().map(|frame| frame.cursor.clone()),
                 limit: 200,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query older");
@@ -1036,20 +1078,20 @@ mod tests {
             .expect("append frame");
 
         let err = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 after: Some(ConsoleCursor::from("console:9223372036854775808")),
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect_err("oversized after cursor should be rejected");
         assert!(err.to_string().contains("out of range"));
 
         let err = store
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 before: Some(ConsoleCursor::from("console:9223372036854775808")),
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect_err("oversized before cursor should be rejected");
@@ -1100,10 +1142,10 @@ mod tests {
 
         let reopened = SqliteConsoleLogStore::open(&path).expect("open second handle");
         let page = reopened
-            .query_frames(ConsoleTimelineQuery {
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query frames");

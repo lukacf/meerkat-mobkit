@@ -30,8 +30,9 @@ use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_val
 use crate::console_aggregator::{
     AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleLogResult,
     ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
-    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleVisibilityPolicy,
-    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
+    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineWindowQuery,
+    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
+    MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -602,7 +603,7 @@ async fn console_timeline_handler(
         );
     };
     let timeline_query = timeline_query_from_http(query, None);
-    match aggregator.query_timeline(timeline_query).await {
+    match aggregator.query_timeline_windowed(timeline_query).await {
         Ok(page) => (
             StatusCode::OK,
             Json::<Value>(serde_json::to_value(page).unwrap_or_else(|_| json!({ "frames": [] }))),
@@ -989,11 +990,12 @@ async fn console_timeline_stream_handler(
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     let event = ConsoleTimelineEvent::ReplayUnavailable {
                         requested_cursor: format!("lagged:{skipped}"),
-                        latest_cursor: None,
+                        latest_cursor: aggregator.latest_cursor().await.ok().flatten(),
                     };
                     if let Some(sse) = sse_event_from_timeline_event(&event) {
                         yield Ok::<Event, Infallible>(sse);
                     }
+                    break;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -1029,10 +1031,10 @@ async fn console_identity_timeline_stream_handler(
 fn timeline_query_from_http(
     query: ConsoleTimelineHttpQuery,
     fallback_after: Option<String>,
-) -> ConsoleTimelineQuery {
+) -> ConsoleTimelineWindowQuery {
     let after = query.after.or(fallback_after).map(ConsoleCursor::from);
     let before = query.before.map(ConsoleCursor::from);
-    ConsoleTimelineQuery {
+    ConsoleTimelineWindowQuery {
         identity: query
             .identity
             .map(|value| value.trim().to_string())
@@ -1050,9 +1052,10 @@ fn timeline_query_from_http(
 
 async fn query_timeline_snapshot(
     aggregator: &MobKitConsoleAggregator,
-    mut query: ConsoleTimelineQuery,
+    mut query: ConsoleTimelineWindowQuery,
 ) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
     const DEFAULT_SNAPSHOT_LIMIT: usize = 200;
+    const MAX_SINCE_SNAPSHOT_PAGES: usize = 100;
     query.limit = if query.limit == 0 {
         DEFAULT_SNAPSHOT_LIMIT
     } else {
@@ -1062,12 +1065,53 @@ async fn query_timeline_snapshot(
         query.mode = ConsoleTimelineMode::Recent;
     }
     let mode = query.mode;
-    let page = aggregator.query_timeline(query).await?;
-    let cursor = match mode {
-        ConsoleTimelineMode::Recent => page.latest_cursor.or(page.next_cursor),
-        ConsoleTimelineMode::Since => page.next_cursor.or(page.latest_cursor),
-    };
-    Ok((page.frames, cursor))
+    match mode {
+        ConsoleTimelineMode::Recent => {
+            let page = aggregator.query_timeline_windowed(query).await?;
+            Ok((page.frames, page.latest_cursor.or(page.next_cursor)))
+        }
+        ConsoleTimelineMode::Since => {
+            if let (Some(after), Some(latest)) =
+                (query.after.as_ref(), aggregator.latest_cursor().await?)
+                && let (Some(after_seq), Some(latest_seq)) = (after.seq(), latest.seq())
+                && after_seq > latest_seq
+            {
+                return Err(std::io::Error::other(
+                    "timeline replay cursor is beyond the current store frontier",
+                )
+                .into());
+            }
+            let mut frames = Vec::new();
+            let mut cursor = query.after.clone();
+            let mut latest_cursor = None;
+            for _ in 0..MAX_SINCE_SNAPSHOT_PAGES {
+                let page = aggregator.query_timeline_windowed(query.clone()).await?;
+                latest_cursor = page.latest_cursor.clone().or(latest_cursor);
+                if !page.frames.is_empty() {
+                    cursor = page
+                        .next_cursor
+                        .clone()
+                        .or_else(|| page.frames.last().map(|frame| frame.cursor.clone()));
+                    frames.extend(page.frames);
+                } else if page.next_cursor.is_some() {
+                    cursor = page.next_cursor.clone();
+                }
+                if page.exhausted || page.next_cursor.is_none() {
+                    return Ok((frames, cursor.or(latest_cursor)));
+                }
+                if page.next_cursor == query.after {
+                    return Err(
+                        std::io::Error::other("timeline replay made no cursor progress").into(),
+                    );
+                }
+                query.after = page.next_cursor;
+            }
+            Err(
+                std::io::Error::other("timeline replay backlog exceeds snapshot page budget")
+                    .into(),
+            )
+        }
+    }
 }
 
 fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::response::Response {
@@ -2064,16 +2108,17 @@ async fn handle_console_aggregator_rpc(
             }
         }
         "mobkit/console/query_timeline" => {
-            let query: ConsoleTimelineQuery = match serde_json::from_value(request.params.clone()) {
-                Ok(query) => query,
-                Err(err) => {
-                    return invalid_params(response_id, format!("invalid query params: {err}"));
-                }
-            };
+            let query: ConsoleTimelineWindowQuery =
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(query) => query,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid query params: {err}"));
+                    }
+                };
             let Some(aggregator) = &console_aggregator else {
                 return console_aggregator_unavailable(response_id);
             };
-            match aggregator.query_timeline(query).await {
+            match aggregator.query_timeline_windowed(query).await {
                 Ok(page) => response_value(
                     response_id,
                     Some(serde_json::to_value(page).unwrap_or(Value::Null)),
@@ -2372,12 +2417,13 @@ async fn handle_console_runtime_rpc(
             }
         }
         "mobkit/console/query_timeline" => {
-            let query: ConsoleTimelineQuery = match serde_json::from_value(request.params.clone()) {
-                Ok(query) => query,
-                Err(err) => {
-                    return invalid_params(response_id, format!("invalid query params: {err}"));
-                }
-            };
+            let query: ConsoleTimelineWindowQuery =
+                match serde_json::from_value(request.params.clone()) {
+                    Ok(query) => query,
+                    Err(err) => {
+                        return invalid_params(response_id, format!("invalid query params: {err}"));
+                    }
+                };
             let Some(aggregator) = &console_aggregator else {
                 return response_value(
                     response_id,
@@ -2389,7 +2435,7 @@ async fn handle_console_runtime_rpc(
                     }),
                 );
             };
-            match aggregator.query_timeline(query).await {
+            match aggregator.query_timeline_windowed(query).await {
                 Ok(page) => response_value(
                     response_id,
                     Some(serde_json::to_value(page).unwrap_or(Value::Null)),
@@ -4273,7 +4319,7 @@ mod tests {
     };
     use crate::console_aggregator::{
         ConsoleCursor, ConsoleFrameSource, ConsoleFrameSourceKind, ConsoleFrameStatus,
-        ConsoleTimelineQuery, MobKitConsoleAggregator, NewConsoleFrame,
+        ConsoleTimelineQuery, ConsoleTimelineWindowQuery, MobKitConsoleAggregator, NewConsoleFrame,
     };
     use crate::identity_first::{
         AgentAddressability, AgentBuildDraft, AgentIdentity, AgentRuntimeId, BridgeError,
@@ -5372,7 +5418,7 @@ comms = true
     async fn fresh_timeline_snapshot_reads_tail_without_full_log_replay()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let aggregator = MobKitConsoleAggregator::in_memory();
-        for idx in 0..25_000 {
+        for idx in 0..250_000 {
             aggregator
                 .store()
                 .append_if_absent(NewConsoleFrame {
@@ -5402,20 +5448,20 @@ comms = true
 
         let (frames, cursor) = query_timeline_snapshot(
             &aggregator,
-            ConsoleTimelineQuery {
+            ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 after: None,
                 limit: 200,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             },
         )
         .await?;
 
         assert!(!frames.is_empty());
-        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(25_000));
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(250_000));
         assert_eq!(
             frames.last().and_then(|frame| frame.cursor.seq()),
-            Some(25_000)
+            Some(250_000)
         );
         Ok(())
     }
@@ -5479,11 +5525,11 @@ comms = true
 
         let (frames, cursor) = query_timeline_snapshot(
             &aggregator,
-            ConsoleTimelineQuery {
+            ConsoleTimelineWindowQuery {
                 identity: Some("sparse-agent".to_string()),
                 after: None,
                 limit: 200,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             },
         )
         .await?;
@@ -5561,11 +5607,11 @@ comms = true
 
         let (frames, cursor) = query_timeline_snapshot(
             &aggregator,
-            ConsoleTimelineQuery {
+            ConsoleTimelineWindowQuery {
                 identity: Some("review-worker-a".to_string()),
                 after: None,
                 limit: 200,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             },
         )
         .await?;
@@ -5586,7 +5632,7 @@ comms = true
     }
 
     #[tokio::test]
-    async fn timeline_snapshot_clamps_requested_limit_to_store_page_size()
+    async fn timeline_snapshot_drains_since_backlog_across_store_pages()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let aggregator = MobKitConsoleAggregator::in_memory();
         for idx in 0..2_500 {
@@ -5619,25 +5665,81 @@ comms = true
 
         let (frames, cursor) = query_timeline_snapshot(
             &aggregator,
-            ConsoleTimelineQuery {
+            ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 after: Some(ConsoleCursor::from("console:100")),
                 limit: 5_000,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             },
         )
         .await?;
 
-        assert_eq!(frames.len(), 1_000);
+        assert_eq!(frames.len(), 2_400);
         assert_eq!(
             frames.first().and_then(|frame| frame.cursor.seq()),
             Some(101)
         );
         assert_eq!(
             frames.last().and_then(|frame| frame.cursor.seq()),
-            Some(1_100)
+            Some(2_500)
         );
-        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1_100));
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(2_500));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn timeline_snapshot_rejects_after_cursor_beyond_store_frontier()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "stale-frontier-event".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Completed,
+                payload: json!({ "delta": 1 }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("stale-frontier-event".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+
+        let err = match query_timeline_snapshot(
+            &aggregator,
+            ConsoleTimelineWindowQuery {
+                after: Some(ConsoleCursor::from("console:99")),
+                limit: 200,
+                ..ConsoleTimelineWindowQuery::default()
+            },
+        )
+        .await
+        {
+            Ok(_) => {
+                return Err(
+                    std::io::Error::other("future cursor must be replay-unavailable").into(),
+                );
+            }
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("beyond the current store frontier"),
+            "unexpected error: {err}"
+        );
         Ok(())
     }
 

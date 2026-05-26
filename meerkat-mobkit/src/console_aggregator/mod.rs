@@ -38,8 +38,8 @@ pub use types::{
     AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted, ConsoleReplayUnavailable, ConsoleSendRequest, ConsoleTimelineEvent,
-    ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleVisibility,
-    NewConsoleFrame,
+    ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
+    ConsoleTimelineWindowQuery, ConsoleVisibility, NewConsoleFrame,
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
@@ -565,24 +565,35 @@ impl MobKitConsoleAggregator {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
-        let explicit_identity = query.identity.clone();
-        let mut probe_query = query.clone();
-        probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
-        let page = self.inner.store.query_frames(probe_query).await?;
+        let page = self.query_timeline_windowed(query.into()).await?;
+        Ok(ConsoleTimelinePage {
+            frames: page.frames,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    pub async fn query_timeline_windowed(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
         if query.after.is_none()
             && query.before.is_none()
-            && let Some(identity) = explicit_identity.clone()
-            && explicit_identity_query_needs_session_history_backfill(&page.frames)
+            && let Some(identity) = query.identity.clone()
         {
-            backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
+            let mut probe_query = query.clone();
+            probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
+            let page = self.inner.store.query_windowed_frames(probe_query).await?;
+            if explicit_identity_query_needs_session_history_backfill(&page.frames) {
+                backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
+            }
         }
         self.query_timeline_visible(query).await
     }
 
     async fn query_timeline_visible(
         &self,
-        query: ConsoleTimelineQuery,
-    ) -> ConsoleLogResult<ConsoleTimelinePage> {
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
         let requested_limit = query.limit.clamp(1, TIMELINE_RAW_SCAN_PAGE_LIMIT);
         let mut scan_query = query.clone();
         scan_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
@@ -599,7 +610,11 @@ impl MobKitConsoleAggregator {
         let mut scanned = 0usize;
 
         loop {
-            let page = self.inner.store.query_frames(scan_query.clone()).await?;
+            let page = self
+                .inner
+                .store
+                .query_windowed_frames(scan_query.clone())
+                .await?;
             latest_cursor = latest_cursor.or(page.latest_cursor.clone());
             if page.frames.is_empty() {
                 exhausted = true;
@@ -701,7 +716,7 @@ impl MobKitConsoleAggregator {
             }
         }
 
-        Ok(ConsoleTimelinePage {
+        Ok(ConsoleTimelineWindowPage {
             frames: visible_frames,
             next_cursor: match query.mode {
                 ConsoleTimelineMode::Since if since_stopped_at_visible_limit => {
@@ -2709,7 +2724,6 @@ async fn history_frame_has_existing_counterpart(
                 conversation_id: frame.conversation_id.clone(),
                 after,
                 limit: 1_000,
-                ..ConsoleTimelineQuery::default()
             })
             .await?;
         for existing in &page.frames {
@@ -3978,11 +3992,11 @@ comms = true
             .expect("append visible frame");
 
         let page = aggregator
-            .query_timeline(ConsoleTimelineQuery {
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Since,
                 limit: 1,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query timeline");
@@ -4028,11 +4042,11 @@ comms = true
         }
 
         let first = aggregator
-            .query_timeline(ConsoleTimelineQuery {
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Since,
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query first page");
@@ -4043,12 +4057,12 @@ comms = true
         );
 
         let second = aggregator
-            .query_timeline(ConsoleTimelineQuery {
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Since,
                 after: first.next_cursor,
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query second page");
@@ -4101,12 +4115,12 @@ comms = true
             .expect("append frame");
 
         let page = aggregator
-            .query_timeline(ConsoleTimelineQuery {
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
                 identity: Some("agent-a".to_string()),
                 mode: ConsoleTimelineMode::Since,
                 after: Some(inserted.frame.cursor),
                 limit: 10,
-                ..ConsoleTimelineQuery::default()
+                ..ConsoleTimelineWindowQuery::default()
             })
             .await
             .expect("query continuation");
@@ -4118,6 +4132,26 @@ comms = true
             "empty since continuation must not synchronously force session-history backfill"
         );
         let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[test]
+    fn legacy_timeline_struct_literals_remain_source_compatible() {
+        let query = ConsoleTimelineQuery {
+            identity: Some("agent-a".to_string()),
+            conversation_id: None,
+            after: Some(ConsoleCursor::from("console:1")),
+            limit: 10,
+        };
+        let page = ConsoleTimelinePage {
+            frames: Vec::new(),
+            next_cursor: query.after.clone(),
+        };
+
+        assert_eq!(query.limit, 10);
+        assert_eq!(
+            page.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(1)
+        );
     }
 
     #[tokio::test]

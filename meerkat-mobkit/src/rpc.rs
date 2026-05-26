@@ -52,7 +52,7 @@ use session_store_methods::{
 use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
-pub const MOBKIT_CONTRACT_VERSION: &str = "0.3.0";
+pub const MOBKIT_CONTRACT_VERSION: &str = "0.4.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
