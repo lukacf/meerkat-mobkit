@@ -3411,15 +3411,37 @@ function systemNoticeBlockRecords(record) {
   if (!Array.isArray(blocks)) return [];
   return blocks.filter((block) => Boolean(block) && typeof block === "object");
 }
-function flattenSystemNoticeText(value, depth = 0) {
-  if (depth > 6 || value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => flattenSystemNoticeText(item, depth + 1)).filter(Boolean).join("\n");
+function legacyPeerNoticeTextCandidates(record) {
+  const candidates = [];
+  const body = textFromUnknown(record.body).trim();
+  if (body) candidates.push(body);
+  for (const block of systemNoticeBlockRecords(record)) {
+    const blockText = typedNoticeBlockText(block).trim();
+    if (blockText) candidates.push(blockText);
+    const content = block.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText) candidates.push(itemText);
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown(data.text).trim();
+        if (dataText) candidates.push(dataText);
+      }
+    }
   }
-  if (typeof value !== "object") return "";
-  return Object.values(value).map((item) => flattenSystemNoticeText(item, depth + 1)).filter(Boolean).join("\n");
+  return candidates;
+}
+function isLegacyPeerNoticeText(text) {
+  return /^(Peer message from|\[COMMS (?:MESSAGE|REQUEST)\b)/i.test(text.trim());
+}
+function canUseLegacyPeerNoticeText(record) {
+  const kind = textFromUnknown(record.kind);
+  if (kind && kind !== "generic") return false;
+  const blockTypes = systemNoticeBlockRecords(record).map((block) => textFromUnknown(block.type)).filter(Boolean);
+  return blockTypes.every((type) => type === "text");
 }
 function systemNoticeClearsBusyState(frame) {
   const record = systemNoticeMessageRecord(frame);
@@ -3427,8 +3449,8 @@ function systemNoticeClearsBusyState(frame) {
   if (textFromUnknown(record.kind) === "comms") return true;
   const blocks = systemNoticeBlockRecords(record);
   if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
-  const text = flattenSystemNoticeText(record);
-  return /\b(Peer message from|\[COMMS MESSAGE\b)/i.test(text);
+  if (!canUseLegacyPeerNoticeText(record)) return false;
+  return legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
   const rich = [];

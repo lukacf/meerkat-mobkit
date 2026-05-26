@@ -1280,11 +1280,11 @@ async function runNonCommsSystemNoticeDoesNotClearBusyProof() {
           message: {
             role: "system_notice",
             kind: "generic",
-            body: "Runtime recovered from transient stream lag",
+            body: "Received from runtime control plane: recovered from transient stream lag",
             blocks: [{
               type: "runtime_notice",
               category: "stream",
-              detail: "Runtime recovered from transient stream lag",
+              detail: "Received from runtime control plane: recovered from transient stream lag",
             }],
           },
         },
@@ -1305,7 +1305,7 @@ async function runNonCommsSystemNoticeDoesNotClearBusyProof() {
     const pane = page.locator('[data-testid="chat-pane:tool-only-worker"]');
     await pane.getByText("Parent handoff: keep running after metadata notice.").waitFor({ timeout: 10_000 });
     await pane.getByText("king_search").first().waitFor({ timeout: 10_000 });
-    await pane.getByText("Runtime recovered from transient stream lag").waitFor({ timeout: 10_000 });
+    await pane.getByText("Received from runtime control plane").waitFor({ timeout: 10_000 });
     await page.waitForSelector('[data-testid="chat-typing:tool-only-worker"]', { timeout: 10_000 });
 
     const noticeText = await pane.innerText();

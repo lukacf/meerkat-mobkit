@@ -1657,18 +1657,41 @@ function systemNoticeBlockRecords(record: Record<string, unknown>): Record<strin
   ));
 }
 
-function flattenSystemNoticeText(value: unknown, depth = 0): string {
-  if (depth > 6 || value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (Array.isArray(value)) {
-    return value.map((item) => flattenSystemNoticeText(item, depth + 1)).filter(Boolean).join("\n");
+function legacyPeerNoticeTextCandidates(record: Record<string, unknown>): string[] {
+  const candidates: string[] = [];
+  const body = textFromUnknown(record.body).trim();
+  if (body) candidates.push(body);
+  for (const block of systemNoticeBlockRecords(record)) {
+    const blockText = typedNoticeBlockText(block).trim();
+    if (blockText) candidates.push(blockText);
+    const content = block.content;
+    if (!Array.isArray(content)) continue;
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item as Record<string, unknown>;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText) candidates.push(itemText);
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown((data as Record<string, unknown>).text).trim();
+        if (dataText) candidates.push(dataText);
+      }
+    }
   }
-  if (typeof value !== "object") return "";
-  return Object.values(value as Record<string, unknown>)
-    .map((item) => flattenSystemNoticeText(item, depth + 1))
-    .filter(Boolean)
-    .join("\n");
+  return candidates;
+}
+
+function isLegacyPeerNoticeText(text: string): boolean {
+  return /^(Peer message from|\[COMMS (?:MESSAGE|REQUEST)\b)/i.test(text.trim());
+}
+
+function canUseLegacyPeerNoticeText(record: Record<string, unknown>): boolean {
+  const kind = textFromUnknown(record.kind);
+  if (kind && kind !== "generic") return false;
+  const blockTypes = systemNoticeBlockRecords(record)
+    .map((block) => textFromUnknown(block.type))
+    .filter(Boolean);
+  return blockTypes.every((type) => type === "text");
 }
 
 export function systemNoticeClearsBusyState(frame: ConsoleFrame): boolean {
@@ -1677,8 +1700,8 @@ export function systemNoticeClearsBusyState(frame: ConsoleFrame): boolean {
   if (textFromUnknown(record.kind) === "comms") return true;
   const blocks = systemNoticeBlockRecords(record);
   if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
-  const text = flattenSystemNoticeText(record);
-  return /\b(Peer message from|\[COMMS MESSAGE\b)/i.test(text);
+  if (!canUseLegacyPeerNoticeText(record)) return false;
+  return legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
 }
 
 function typedSystemNoticeBlocksToRich(

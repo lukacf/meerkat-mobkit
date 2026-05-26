@@ -2369,11 +2369,11 @@ test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", (
       message: {
         role: "system_notice",
         kind: "generic",
-        body: "Runtime recovered from transient stream lag",
+        body: "Received from runtime control plane: recovered from transient stream lag",
         blocks: [{
           type: "runtime_notice",
           category: "stream",
-          detail: "Runtime recovered from transient stream lag",
+          detail: "Received from runtime control plane: recovered from transient stream lag",
         }],
       },
     },
@@ -2385,8 +2385,28 @@ test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", (
     data: {
       role: "system_notice",
       kind: "tool_scope",
-      body: "Deferred catalog changed at turn boundary: new deferred tools available: docs_search",
+      body: "Peer message from tool catalog is not real comms; deferred tools available: docs_search",
       blocks: [{ type: "tool_config", payload: { operation: "reload" } }],
+    },
+  };
+  const nestedRuntimePeerPhraseNotice = {
+    id: "nested-runtime-peer-phrase-notice",
+    event: "system_notice" as const,
+    timestampMs: 4.5,
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "generic",
+        body: "Runtime metadata update",
+        blocks: [{
+          type: "runtime_notice",
+          category: "stream",
+          detail: "runtime payload mentioned Peer message from docs-worker but it is not a comms notice",
+          payload: {
+            text: "Peer message from docs-worker should not count when nested in runtime metadata",
+          },
+        }],
+      },
     },
   };
   const commsNotice = {
@@ -2434,6 +2454,7 @@ test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", (
   assert.equal(systemNoticeClearsBusyState(runtimeNotice), false);
   assert.equal(systemNoticeClearsBusyState(toolConfigNotice), false);
   assert.equal(systemNoticeClearsBusyState(runtimeReceivedNotice), false);
+  assert.equal(systemNoticeClearsBusyState(nestedRuntimePeerPhraseNotice), false);
   assert.equal(systemNoticeClearsBusyState(commsNotice), true);
   assert.equal(systemNoticeClearsBusyState(untypedPeerNotice), true);
   assert.equal(
