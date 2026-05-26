@@ -1,6 +1,6 @@
 //! Mob member lifecycle management — bootstrap, spawn, reconcile, and roster queries.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -372,6 +372,7 @@ impl AutoWireParentMobToolDispatcher {
             meerkat_core::ToolError::invalid_arguments(call.name, error.to_string())
         })?;
         let idle_retire_override = delegate_idle_retire_override_from_args(call.name, &mut args)?;
+        let idle_retire_targets = idle_retire_targets_from_spawn_args(&args);
         if let Some(object) = args.as_object_mut() {
             object
                 .entry("auto_wire_parent".to_string())
@@ -386,8 +387,12 @@ impl AutoWireParentMobToolDispatcher {
             args: &args,
         };
         let outcome = self.inner.dispatch(call).await?;
-        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override)
-            .await;
+        self.register_idle_retire_override_from_outcome(
+            &outcome,
+            idle_retire_override,
+            &idle_retire_targets,
+        )
+        .await;
 
         Ok(outcome)
     }
@@ -410,7 +415,7 @@ impl AutoWireParentMobToolDispatcher {
         };
         let outcome = self.inner.dispatch(call).await?;
 
-        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override)
+        self.register_idle_retire_override_from_outcome(&outcome, idle_retire_override, &[])
             .await;
 
         Ok(outcome)
@@ -420,20 +425,120 @@ impl AutoWireParentMobToolDispatcher {
         &self,
         outcome: &meerkat_core::ToolDispatchOutcome,
         idle_retire_override: Option<DelegateIdleRetireOverride>,
+        fallback_targets: &[IdleRetireTarget],
     ) {
-        if !outcome.result.is_error
-            && let Some(override_policy) = idle_retire_override
-            && let Ok(payload) = serde_json::from_str::<Value>(&outcome.result.text_content())
-            && let (Some(mob_id), Some(member_id)) = (
-                payload.get("mob_id").and_then(Value::as_str),
-                payload.get("agent_identity").and_then(Value::as_str),
-            )
+        if outcome.result.is_error {
+            return;
+        }
+        let Some(override_policy) = idle_retire_override else {
+            return;
+        };
+        for target in
+            idle_retire_targets_from_outcome_text(&outcome.result.text_content(), fallback_targets)
         {
             self.implicit_delegate_retirement_overrides
-                .set(mob_id, member_id, override_policy)
+                .set(&target.mob_id, &target.member_id, override_policy)
                 .await;
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct IdleRetireTarget {
+    mob_id: String,
+    member_id: String,
+}
+
+fn text_field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+}
+
+fn member_identity_field(value: &Value) -> Option<&str> {
+    text_field(value, "agent_identity")
+        .or_else(|| text_field(value, "member_id"))
+        .or_else(|| text_field(value, "identity"))
+}
+
+fn target_from_value(value: &Value, default_mob_id: Option<&str>) -> Option<IdleRetireTarget> {
+    let mob_id = text_field(value, "mob_id").or(default_mob_id)?;
+    let member_id = member_identity_field(value)?;
+    Some(IdleRetireTarget {
+        mob_id: mob_id.to_string(),
+        member_id: member_id.to_string(),
+    })
+}
+
+fn idle_retire_targets_from_spawn_args(args: &Value) -> Vec<IdleRetireTarget> {
+    let default_mob_id = text_field(args, "mob_id");
+    let mut targets = BTreeSet::new();
+    if let Some(target) = target_from_value(args, default_mob_id) {
+        targets.insert(target);
+    }
+    for key in ["specs", "members"] {
+        let Some(values) = args.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        for value in values {
+            if let Some(target) = target_from_value(value, default_mob_id) {
+                targets.insert(target);
+            }
+        }
+    }
+    targets.into_iter().collect()
+}
+
+fn target_from_result_value(
+    value: &Value,
+    fallback_targets: &[IdleRetireTarget],
+) -> Option<IdleRetireTarget> {
+    if let Some(target) = target_from_value(value, None) {
+        return Some(target);
+    }
+    let member_id = member_identity_field(value)?;
+    let mut matches = fallback_targets
+        .iter()
+        .filter(|target| target.member_id == member_id);
+    let target = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(target.clone())
+}
+
+fn collect_idle_retire_result_targets(
+    value: &Value,
+    fallback_targets: &[IdleRetireTarget],
+    targets: &mut BTreeSet<IdleRetireTarget>,
+) {
+    if let Some(target) = target_from_result_value(value, fallback_targets) {
+        targets.insert(target);
+    }
+    for key in ["members", "specs", "spawned", "results"] {
+        let Some(values) = value.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        for value in values {
+            collect_idle_retire_result_targets(value, fallback_targets, targets);
+        }
+    }
+}
+
+fn idle_retire_targets_from_outcome_text(
+    text: &str,
+    fallback_targets: &[IdleRetireTarget],
+) -> Vec<IdleRetireTarget> {
+    let Ok(payload) = serde_json::from_str::<Value>(text) else {
+        return fallback_targets.to_vec();
+    };
+    let mut targets = BTreeSet::new();
+    collect_idle_retire_result_targets(&payload, fallback_targets, &mut targets);
+    if targets.is_empty() {
+        targets.extend(fallback_targets.iter().cloned());
+    }
+    targets.into_iter().collect()
 }
 
 struct DefinitionSeededRealmProfileStore {
@@ -2928,6 +3033,35 @@ pub async fn send_message_on_mob_with_mode(
 mod tests {
     use super::*;
 
+    struct EmptyDispatcher;
+
+    #[async_trait::async_trait]
+    impl meerkat_core::AgentToolDispatcher for EmptyDispatcher {
+        fn tools(&self) -> Arc<[Arc<meerkat_core::types::ToolDef>]> {
+            Vec::<Arc<meerkat_core::types::ToolDef>>::new().into()
+        }
+
+        async fn dispatch(
+            &self,
+            call: meerkat_core::types::ToolCallView<'_>,
+        ) -> Result<meerkat_core::ToolDispatchOutcome, meerkat_core::ToolError> {
+            Err(meerkat_core::ToolError::not_found(call.name))
+        }
+
+        fn capabilities(&self) -> meerkat_core::agent::DispatcherCapabilities {
+            meerkat_core::agent::DispatcherCapabilities::default()
+        }
+    }
+
+    fn wrapper_with_overrides(
+        overrides: ImplicitDelegateRetirementOverrides,
+    ) -> AutoWireParentMobToolDispatcher {
+        AutoWireParentMobToolDispatcher {
+            inner: Arc::new(EmptyDispatcher),
+            implicit_delegate_retirement_overrides: overrides,
+        }
+    }
+
     #[test]
     fn delegate_tool_schema_exposes_idle_retire_secs() {
         let tool = meerkat_core::types::ToolDef::new(
@@ -3087,6 +3221,64 @@ mod tests {
         assert!(delegate_idle_retire_override_from_args("delegate", &mut fractional).is_err());
     }
 
+    #[test]
+    fn mob_spawn_idle_retire_targets_use_args_when_result_omits_mob_id() {
+        let args = serde_json::json!({
+            "mob_id": "ob3",
+            "profile": "review-worker",
+            "member_id": "review-worker-vibe-forward",
+        });
+        let fallback_targets = idle_retire_targets_from_spawn_args(&args);
+
+        assert_eq!(
+            fallback_targets,
+            vec![IdleRetireTarget {
+                mob_id: "ob3".to_string(),
+                member_id: "review-worker-vibe-forward".to_string(),
+            }]
+        );
+        assert_eq!(
+            idle_retire_targets_from_outcome_text(
+                r#"{"agent_identity":"review-worker-vibe-forward","member_ref":"opaque"}"#,
+                &fallback_targets,
+            ),
+            fallback_targets
+        );
+    }
+
+    #[test]
+    fn mob_spawn_idle_retire_targets_support_canonical_specs_shape() {
+        let args = serde_json::json!({
+            "mob_id": "ob3",
+            "specs": [
+                {"profile": "person-worker", "agent_identity": "person-worker-a"},
+                {"profile": "person-worker", "member_id": "person-worker-b", "mob_id": "other"}
+            ]
+        });
+        let fallback_targets = idle_retire_targets_from_spawn_args(&args);
+
+        assert_eq!(
+            fallback_targets,
+            vec![
+                IdleRetireTarget {
+                    mob_id: "ob3".to_string(),
+                    member_id: "person-worker-a".to_string(),
+                },
+                IdleRetireTarget {
+                    mob_id: "other".to_string(),
+                    member_id: "person-worker-b".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            idle_retire_targets_from_outcome_text(
+                r#"{"members":[{"agent_identity":"person-worker-a"},{"agent_identity":"person-worker-b","mob_id":"other"}]}"#,
+                &fallback_targets,
+            ),
+            fallback_targets
+        );
+    }
+
     #[tokio::test]
     async fn implicit_delegate_retirement_overrides_round_trip_per_member() {
         let overrides = ImplicitDelegateRetirementOverrides::default();
@@ -3107,6 +3299,36 @@ mod tests {
             Some(DelegateIdleRetireOverride::Disabled)
         );
         assert_eq!(overrides.get("mob-a", "worker-3").await, None);
+    }
+
+    #[tokio::test]
+    async fn mob_spawn_idle_retire_registration_uses_spawn_args_when_result_omits_mob_id() {
+        let overrides = ImplicitDelegateRetirementOverrides::default();
+        let dispatcher = wrapper_with_overrides(overrides.clone());
+        let fallback_targets = idle_retire_targets_from_spawn_args(&serde_json::json!({
+            "mob_id": "ob3",
+            "member_id": "review-worker-vibe-forward",
+        }));
+        let outcome =
+            meerkat_core::ToolDispatchOutcome::sync_result(meerkat_core::types::ToolResult::new(
+                "spawn-1".to_string(),
+                r#"{"agent_identity":"review-worker-vibe-forward","member_ref":"opaque"}"#
+                    .to_string(),
+                false,
+            ));
+
+        dispatcher
+            .register_idle_retire_override_from_outcome(
+                &outcome,
+                Some(DelegateIdleRetireOverride::Seconds(900)),
+                &fallback_targets,
+            )
+            .await;
+
+        assert_eq!(
+            overrides.get("ob3", "review-worker-vibe-forward").await,
+            Some(DelegateIdleRetireOverride::Seconds(900))
+        );
     }
 
     #[test]
