@@ -15,7 +15,7 @@ use meerkat_mob::runtime::MobMemberListEntry;
 use meerkat_mob::{MobError, MobHandle};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Semaphore, broadcast, oneshot};
+use tokio::sync::{Semaphore, broadcast};
 
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
@@ -47,7 +47,6 @@ const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
 const SESSION_HISTORY_REFRESH_TTL_MS: u64 = 30_000;
 const SESSION_HISTORY_GROWING_REFRESH_TTL_MS: u64 = 2_000;
 const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
-const EXPLICIT_IDENTITY_BACKFILL_WAIT: Duration = Duration::from_millis(750);
 const IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT: Duration = Duration::from_millis(250);
 const TIMELINE_RAW_SCAN_PAGE_LIMIT: usize = 1_000;
 const TIMELINE_MAX_RAW_SCAN_FRAMES: usize = 100_000;
@@ -576,6 +575,8 @@ impl MobKitConsoleAggregator {
         &self,
         query: ConsoleTimelineWindowQuery,
     ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+        self.reject_after_cursor_beyond_store_frontier(query.after.as_ref())
+            .await?;
         if query.after.is_none()
             && query.before.is_none()
             && let Some(identity) = query.identity.clone()
@@ -584,10 +585,33 @@ impl MobKitConsoleAggregator {
             probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
             let page = self.inner.store.query_windowed_frames(probe_query).await?;
             if explicit_identity_query_needs_session_history_backfill(&page.frames) {
-                backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
+                spawn_session_history_backfill_for_identity(self.inner.clone(), identity, true);
             }
         }
         self.query_timeline_visible(query).await
+    }
+
+    async fn reject_after_cursor_beyond_store_frontier(
+        &self,
+        after: Option<&ConsoleCursor>,
+    ) -> ConsoleLogResult<()> {
+        let Some(after_seq) = after.and_then(ConsoleCursor::seq) else {
+            return Ok(());
+        };
+        let latest_seq = self
+            .inner
+            .store
+            .latest_cursor()
+            .await?
+            .and_then(|cursor| cursor.seq())
+            .unwrap_or(0);
+        if after_seq > latest_seq {
+            return Err(std::io::Error::other(
+                "timeline replay cursor is beyond the current store frontier",
+            )
+            .into());
+        }
+        Ok(())
     }
 
     async fn query_timeline_visible(
@@ -1973,35 +1997,6 @@ fn spawn_session_history_backfill_for_identity(
         };
         spawn_session_history_backfill_target(inner, target, force_refresh);
     });
-}
-
-async fn backfill_identity_for_explicit_query(inner: Arc<AggregatorInner>, identity: String) {
-    if !inner.options.session_history_backfill_enabled {
-        return;
-    }
-    let (tx, rx) = oneshot::channel();
-    let warning_identity = identity.clone();
-    tokio::spawn(async move {
-        let result = async {
-            let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
-                return Ok(());
-            };
-            run_targeted_session_history_backfill(inner, target, true).await
-        }
-        .await
-        .map_err(|err| err.to_string());
-        let _ = tx.send(result);
-    });
-    match tokio::time::timeout(EXPLICIT_IDENTITY_BACKFILL_WAIT, rx).await {
-        Ok(Ok(Ok(())) | Err(_)) | Err(_) => {}
-        Ok(Ok(Err(err))) => {
-            tracing::warn!(
-                identity = %warning_identity,
-                error = %err,
-                "console explicit identity session-history refresh failed"
-            );
-        }
-    }
 }
 
 fn spawn_opportunistic_session_history_backfill_for_identity(
@@ -4366,14 +4361,17 @@ comms = true
         .expect("query succeeds");
 
         assert!(
-            page.frames.iter().any(|frame| {
-                frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && frame.kind == "user_input"
-                    && session_history_content_text(frame).as_deref() == Some("You are agent-a.")
-            }),
-            "explicit identity query should force-refresh stale/fresh empty watermarks; frames: {:#?}",
+            page.frames.is_empty(),
+            "empty fresh-watermark query should return promptly before async backfill; frames: {:#?}",
             page.frames
         );
+        wait_for_session_history_text(
+            &aggregator,
+            "test/agent-a",
+            "You are agent-a.",
+            Duration::from_secs(5),
+        )
+        .await?;
         let _ = runtime.mob_handle().stop().await;
         Ok(())
     }
@@ -4467,11 +4465,19 @@ comms = true
         assert!(
             page.frames.iter().any(|frame| {
                 frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && session_history_content_text(frame).as_deref() == Some(fresh_prompt)
+                    && session_history_content_text(frame).as_deref()
+                        == Some("stale projected history")
             }),
-            "explicit identity query should refresh stale history and include the fresh prompt; frames: {:#?}",
+            "explicit identity query should return existing history before async refresh; frames: {:#?}",
             page.frames
         );
+        wait_for_session_history_text(
+            &aggregator,
+            "test/agent-a",
+            fresh_prompt,
+            Duration::from_secs(5),
+        )
+        .await?;
         assert!(
             store.source_watermark_calls() > 0,
             "stale existing session history should force a targeted source refresh"
@@ -4501,7 +4507,6 @@ comms = true
             observed = page.frames;
             if observed.iter().any(|frame| {
                 frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && (frame.kind == "user_input" || frame.kind == "interaction_complete")
                     && session_history_content_text(frame).as_deref() == Some(expected)
             }) {
                 return Ok(());
@@ -4679,6 +4684,25 @@ comms = true
         assert_eq!(store.source_watermark_calls(), 0);
     }
 
+    #[tokio::test]
+    async fn query_timeline_rejects_future_cursor_after_store_reset() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let err = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                after: Some(ConsoleCursor::from("console:99")),
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect_err("future cursor on empty/reset store must be replay-unavailable");
+
+        assert!(
+            err.to_string()
+                .contains("beyond the current store frontier"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn explicit_identity_timeline_backfills_kickoff_when_live_tool_frames_arrive_first() {
         let store = Arc::new(CountingConsoleLogStore::new());
@@ -4746,23 +4770,35 @@ comms = true
             .expect("query child timeline");
 
         assert!(
-            page.frames.iter().any(|frame| {
-                frame.kind == "user_input"
-                    && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && frame.payload.to_string().contains("You are agent-a.")
-            }),
-            "explicit child timeline should include the kickoff prompt even after live tool frames: {:#?}",
-            page.frames
-        );
-        assert!(
             page.frames
                 .iter()
                 .any(|frame| frame.kind == "tool_execution_started"),
-            "live tool frame should still be present after the backfill"
+            "initial explicit child timeline should return existing store frames without waiting for session history"
         );
+
+        let mut observed_backfill = false;
+        for _ in 0..80 {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some("test/agent-a".to_string()),
+                    limit: 20,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query child timeline after scheduled backfill");
+            if page.frames.iter().any(|frame| {
+                frame.kind == "user_input"
+                    && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                    && frame.payload.to_string().contains("You are agent-a.")
+            }) {
+                observed_backfill = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         assert!(
-            store.source_watermark_calls() > 0,
-            "the regression requires an explicit session-history backfill despite a non-empty live timeline"
+            observed_backfill,
+            "scheduled explicit child timeline backfill should eventually include the kickoff prompt"
         );
         let _ = runtime.mob_handle().stop().await;
     }

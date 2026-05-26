@@ -430,3 +430,55 @@ test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test("subscribeTimelineEvents reconnects from the last delivered cursor after stream end", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const seen: string[] = [];
+  let unsubscribe = () => {};
+
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (calls.length === 1) {
+      return new Response([
+        "id: console:41",
+        "event: console_frame",
+        'data: {"type":"console_frame","frame":{"id":"console-frame-41","cursor":"console:41","dedupe_key":"event-41","timestamp_ms":41,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"before lag"},"source":{"kind":"console_event"}}}',
+        "",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response([
+      "id: console:42",
+      "event: console_frame",
+      'data: {"type":"console_frame","frame":{"id":"console-frame-42","cursor":"console:42","dedupe_key":"event-42","timestamp_ms":42,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"replayed after reconnect"},"source":{"kind":"console_event"}}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    unsubscribe = subscribeTimelineEvents(
+      "http://127.0.0.1:7000",
+      {},
+      (frame) => {
+        seen.push(`${frame.event}:${frame.cursor ?? ""}`);
+        if (frame.cursor === "console:42") {
+          unsubscribe();
+        }
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A41");
+    assert.deepEqual(seen, ["text_complete:console:41", "text_complete:console:42"]);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   RpcError,
   MobEventsStaleError,
+  ConsoleTimelineReplayUnavailableError,
   isRpcError,
   isMobEventsStaleError,
   MOB_EVENTS_STALE_CURSOR_CODE,
@@ -118,6 +119,16 @@ describe("isRpcError / isMobEventsStaleError (bug-hunt regression)", () => {
 
   it("rejects a plain Error", () => {
     assert.equal(isRpcError(new Error("nope")), false);
+  });
+
+  it("recognizes a console timeline replay-unavailable error", () => {
+    const err = new ConsoleTimelineReplayUnavailableError(
+      "replay unavailable",
+      "rid",
+      "mobkit/console/query_timeline",
+    );
+    assert.ok(isRpcError(err));
+    assert.equal(err.code, -32013);
   });
 });
 

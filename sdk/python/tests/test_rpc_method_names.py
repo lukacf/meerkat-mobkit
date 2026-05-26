@@ -427,6 +427,26 @@ async def test_query_mob_events_stale_raises_typed_error():
     assert info.value.code == -32010
 
 
+def test_console_timeline_replay_unavailable_uses_distinct_typed_error():
+    """Console timeline replay gaps must not be reified as MobEventsStaleError."""
+    from meerkat_mobkit.errors import ConsoleTimelineReplayUnavailableError
+    from meerkat_mobkit.runtime import _rpc_error_from_payload
+
+    err = _rpc_error_from_payload(
+        {
+            "code": -32013,
+            "message": "query_timeline failed: replay unavailable",
+            "data": {"error": "replay_unavailable"},
+        },
+        request_id="rid",
+        method="mobkit/console/query_timeline",
+    )
+
+    assert isinstance(err, ConsoleTimelineReplayUnavailableError)
+    assert err.code == -32013
+    assert err.method == "mobkit/console/query_timeline"
+
+
 @pytest.mark.asyncio
 async def test_wait_ready_rpc_name():
     """wait_ready must call mobkit/wait_ready and forward timeout in ms."""

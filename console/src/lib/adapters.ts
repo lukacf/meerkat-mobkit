@@ -490,6 +490,8 @@ const HIDDEN_EVENTS = new Set([
   "reasoning_complete",
   "interaction_started",
   "frame_updated",
+  "snapshot_complete",
+  "snapshot_started",
   "run_failed",
   "keep-alive",
   "tool_config_changed",

@@ -66,11 +66,14 @@ errors. SDKs surface it on `RpcError.data`.
 |------|---------|--------------|
 | `-32010` | `mob_events/{query,subscribe}` `after_seq` past `latest_cursor` (stale cursor) | `{after_cursor, latest_cursor, error: "event_query_stale"}` |
 | `-32012` | `memory/{index,query}` backend unavailable | none |
+| `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
 
 The `-32010` constant is exported from both SDKs as
 `MOB_EVENTS_STALE_CURSOR_CODE`. The Python and TypeScript SDKs auto-
 reify `-32010` errors into `MobEventsStaleError` (a typed subclass of
 `RpcError`) carrying `after_cursor` and `latest_cursor`.
+Console timeline replay failures use `CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE`
+so they are not mistaken for mob-events ledger cursor errors.
 
 ---
 

@@ -324,6 +324,8 @@ const ACTIVITY_SKIP_EVENTS = new Set([
   "text_complete",
   "reasoning_delta",
   "reasoning_complete",
+  "snapshot_complete",
+  "snapshot_started",
   "run_failed",
   "keep-alive",
   "tool_config_changed",

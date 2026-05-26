@@ -102,23 +102,6 @@
           "success": {
             "required_fields": [
               "frames"
-            ],
-            "optional_fields": [
-              "next_cursor",
-              "latest_cursor",
-              "exhausted"
-            ],
-            "request_optional_fields": [
-              "identity",
-              "conversation_id",
-              "after",
-              "before",
-              "mode",
-              "limit"
-            ],
-            "mode_values": [
-              "since",
-              "recent"
             ]
           },
           "errors": [

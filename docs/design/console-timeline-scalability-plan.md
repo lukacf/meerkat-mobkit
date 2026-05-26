@@ -1,5 +1,89 @@
 # Console Timeline Scalability Plan
 
+## Current Execution Plan: Fugue Console Recovery
+
+Date: 2026-05-26
+
+This plan tracks the fixes for the Fugue-observed console failures:
+
+- Agent rosters load, but selected agent histories can appear empty for too long.
+- Global activity starts at ancient aggregate cursors instead of recent work.
+- Cursor gaps, replay loss, and stale/future cursors can produce blank or misleading console state.
+- Console reads must keep working even when a mob actor or turn path is wedged.
+
+The working conclusion is that these issues are addressable on the MobKit side. They do not require a Meerkat JSON-RPC redesign. Meerkat owns the core agent loop and runtime event production; MobKit owns the console log store, visibility projection, REST/RPC/SSE timeline APIs, SDK error mapping, and browser rendering behavior.
+
+### Fix Tracks
+
+1. Preserve console availability independently of live actor progress.
+
+   - Keep `/console/experience`, `/console/modules`, `/console/identities`, and timeline reads on cached/store-local read models.
+   - Avoid `MobHandle::status().await`, live member inspection, or broad session-history refreshes in cold console shell paths.
+   - Use observation snapshots and bounded member refreshes only where they cannot park behind a serialized mob actor.
+
+2. Make timeline reads scalable and tail-aware.
+
+   - Support explicit `recent` and `since` modes for REST and JSON-RPC timeline queries.
+   - Use store-level reverse/indexed reads for global, identity, and conversation recent windows.
+   - Maintain in-memory identity/conversation indexes so the default store does not scan the full aggregate log for sparse identities.
+   - For SQLite, prove sparse identity and large-log behavior with indexed queries rather than relying on the smaller in-memory test path.
+
+3. Make replay semantics precise.
+
+   - Return a dedicated console timeline replay error code for stale/future/unavailable cursors; do not collide with mob-events replay errors.
+   - Reject `after` cursors beyond the current store frontier even when the store is empty after reset.
+   - Treat broadcast lag as a resumable stream interruption when persisted backlog can be replayed, not as permission to skip to the latest cursor and silently drop durable frames.
+   - Prefer `Last-Event-ID` over URL `after` when resuming SSE.
+
+4. Render identity history incrementally.
+
+   - The first bounded identity page must render immediately.
+   - Older history should be demand-driven on scroll, bounded, and cancellable.
+   - Open-panel refresh should use `since latest-known-cursor` instead of restarting old full-history paging loops.
+   - Snapshot/control frames should stay out of user-facing activity rails and chat panes.
+
+5. Keep compatibility explicit.
+
+   - Preserve v0.3 RCT artifacts as historical contracts.
+   - Put the new timeline replay error and query semantics only in the v0.4 contract.
+   - Map new replay errors in Rust, TypeScript, and Python SDK surfaces.
+   - Keep legacy `{after, limit}` callers working while the bundled console moves to explicit modes.
+
+### Required Coverage Before Release
+
+- Backend:
+  - Recent global query returns current worker frames, not cursor 0, on a large synthetic log.
+  - Sparse identity recent query avoids full aggregate replay in both in-memory and SQLite stores.
+  - `since` replay drains durable backlog across many store pages.
+  - Future/stale cursor handling is tested through the aggregator boundary, REST/RPC, and SSE.
+  - Console shell snapshot paths are actor-independent.
+
+- Frontend:
+  - Global activity seeds with recent mode.
+  - Chat renders after the first identity page before delayed older pages finish.
+  - Older-history paging preserves scroll position.
+  - Control frames and replay markers do not show as user activity.
+  - Browser E2E covers invisible cursor gaps and large late-cursor worker activity.
+
+- SDK and contract:
+  - TypeScript and Python SDKs expose typed console timeline replay errors.
+  - Runtime contract docs advertise `MOBKIT_CONTRACT_VERSION = "0.4.0"`.
+  - v0.3 contract remains byte-for-byte semantically historical, not retroactively expanded.
+
+### Release Gate
+
+The fix is not releasable until all of the following are true:
+
+- `cargo fmt --check` passes.
+- `scripts/repo-cargo clippy -p meerkat-mobkit --all-targets -- -D warnings` passes.
+- `scripts/repo-cargo test -p meerkat-mobkit` passes.
+- `npm --prefix console run phase0:types --silent` passes.
+- `npm --prefix console run e2e:browser --silent` passes.
+- Python SDK tests for error exports and RPC mapping pass.
+- TypeScript SDK build/tests pass after updating source and dist artifacts.
+- GitHub CI is green on the PR head.
+- A final review confirms no remaining path lets a wedged actor block console history, and no replay path drops persisted backlog silently.
+
 ## Context
 
 Fugue exposed a MobKit console failure mode on a moderate real deployment:

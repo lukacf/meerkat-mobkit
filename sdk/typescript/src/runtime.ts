@@ -25,8 +25,10 @@ import {
 import {
   MOB_EVENTS_STALE_CURSOR_CODE,
   CAPABILITY_UNAVAILABLE_CODE,
+  CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
   MEMORY_BACKEND_UNAVAILABLE_CODE,
   CapabilityUnavailableError,
+  ConsoleTimelineReplayUnavailableError,
   MemoryBackendUnavailableError,
   MobEventsStaleError,
   NotConnectedError,
@@ -429,6 +431,9 @@ export class MobKitRuntime {
       }
       if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
         throw new MemoryBackendUnavailableError(message, rid, method, err.data);
+      }
+      if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
+        throw new ConsoleTimelineReplayUnavailableError(message, rid, method, err.data);
       }
       const rpcError = new RpcError(code, message, rid, method, err.data);
       if (code === MOB_EVENTS_STALE_CURSOR_CODE) {
@@ -842,6 +847,9 @@ export class MobHandle {
       }
       if (code === MEMORY_BACKEND_UNAVAILABLE_CODE) {
         throw new MemoryBackendUnavailableError(message, id, method, err.data);
+      }
+      if (code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
+        throw new ConsoleTimelineReplayUnavailableError(message, id, method, err.data);
       }
       const rpcError = new RpcError(code, message, id, method, err.data);
       if (code === MOB_EVENTS_STALE_CURSOR_CODE) {

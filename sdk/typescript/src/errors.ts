@@ -60,6 +60,7 @@ export class RpcError extends MobKitError {
 export const MOB_EVENTS_STALE_CURSOR_CODE = -32010 as const;
 export const CAPABILITY_UNAVAILABLE_CODE = -32004 as const;
 export const MEMORY_BACKEND_UNAVAILABLE_CODE = -32012 as const;
+export const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013 as const;
 
 /**
  * Raised when the caller passes an `after_seq` past the current ledger
@@ -129,6 +130,18 @@ export class MemoryBackendUnavailableError extends RpcError {
   }
 }
 
+export class ConsoleTimelineReplayUnavailableError extends RpcError {
+  constructor(
+    message: string,
+    requestId: string,
+    method: string,
+    data?: unknown,
+  ) {
+    super(CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE, message, requestId, method, data);
+    this.name = "ConsoleTimelineReplayUnavailableError";
+  }
+}
+
 // -- Contract errors ------------------------------------------------------
 
 /** Raised when the SDK and runtime contract versions are incompatible. */
@@ -171,7 +184,8 @@ export function isRpcError(err: unknown): err is RpcError {
     candidate.name === "RpcError" ||
     candidate.name === "MobEventsStaleError" ||
     candidate.name === "CapabilityUnavailableError" ||
-    candidate.name === "MemoryBackendUnavailableError"
+    candidate.name === "MemoryBackendUnavailableError" ||
+    candidate.name === "ConsoleTimelineReplayUnavailableError"
   ) && typeof candidate.code === "number";
 }
 

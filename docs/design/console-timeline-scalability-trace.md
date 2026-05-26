@@ -25,7 +25,7 @@
 | INV-007 | Older-history paging must preserve the user's scroll position. | review | `ChatPane` browser behavior | `browser chat pane older history demand paging ok`; `npm --prefix console run e2e:browser --silent` | VALIDATED |
 | INV-008 | Stale timeline SSE cursors must be normalized as replay-unavailable and resubscribe at the latest cursor. | review | Console-core timeline subscription | `subscribeTimelineEvents recovers from stale timeline cursors`; `npm --prefix console run phase0:types --silent` | VALIDATED |
 | INV-009 | SSE reconnect snapshots drain persisted `since` backlog across store pages before switching to live broadcast. | review | `/console/timeline/stream` snapshot path | `timeline_snapshot_drains_since_backlog_across_store_pages`; `cargo test -p meerkat-mobkit timeline_snapshot -- --nocapture` | VALIDATED |
-| INV-010 | Timeline stream lag and future cursors are replay-unavailable, not silent loss or blank streams. | review | SSE replay client/server | `timeline_snapshot_rejects_after_cursor_beyond_store_frontier`; `subscribeTimelineEvents recovers from in-stream timeline replay gaps`; `npm --prefix console run phase0:types --silent` | VALIDATED |
+| INV-010 | Future cursors are replay-unavailable, while live stream lag reconnects from the last delivered cursor so persisted backlog can be replayed. | review | SSE replay client/server | `timeline_snapshot_rejects_after_cursor_beyond_store_frontier`; `subscribeTimelineEvents reconnects from the last delivered cursor after stream end`; `npm --prefix console run phase0:types --silent` | VALIDATED |
 | INV-011 | Public Rust timeline structs remain source-compatible while new windowed semantics are additive. | review | Rust public API | `legacy_timeline_struct_literals_remain_source_compatible`; `cargo test -p meerkat-mobkit legacy_timeline_struct_literals_remain_source_compatible -- --nocapture` | VALIDATED |
 | INV-012 | New timeline wire semantics advertise a new contract version. | review | REST/RPC/SSE contract artifact and runtime handshake | `phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced`; `contract_version` filtered tests | VALIDATED |
 
@@ -56,8 +56,10 @@
 - `npm --prefix console run e2e:browser --silent`: passed, including recent seed, recent chat, older-history paging, and scroll-preservation coverage.
 - `git diff --check`: passed.
 - Adversarial review follow-up fixed same-stream replay loss after one store page, in-stream lag recovery, future-cursor replay handling, public Rust source compatibility, and contract-version gating.
-- `cargo test -p meerkat-mobkit timeline_snapshot -- --nocapture`: 4 passed, including a 250,000-frame recent snapshot and multi-page `since` replay.
+- `cargo test -p meerkat-mobkit timeline_snapshot -- --nocapture`: 5 passed, including a 250,000-frame recent snapshot, multi-page `since` replay, and future-cursor rejection on an empty/reset store.
+- `cargo test -p meerkat-mobkit sqlite_log_queries_250k_sparse_identity_recent_window_with_index -- --nocapture`: 1 passed, including a 250,000-frame SQLite sparse-identity recent query and an `EXPLAIN QUERY PLAN` assertion on `idx_console_frames_identity_cursor`.
 - `cargo test -p meerkat-mobkit legacy_timeline_struct_literals_remain_source_compatible -- --nocapture`: 1 passed.
 - `cargo test -p meerkat-mobkit phase0_contract_004_console_rest_sse_contract_version_is_pinned_and_enforced -- --nocapture`: 1 passed.
 - `cargo test -p meerkat-mobkit contract_version -- --nocapture`: 2 passed.
 - `npm --prefix console run phase0:types --silent`: 123 JS/type-normalization tests passed.
+- `2026-05-27` fix batch gate: `cargo fmt --check`; `git diff --check`; `scripts/repo-cargo clippy -p meerkat-mobkit --all-targets -- -D warnings`; `scripts/repo-cargo test -p meerkat-mobkit` (240 lib tests plus integration/doctests); `npm --prefix console run phase0:types --silent` (124 tests); `npm --prefix console run e2e:browser --silent`; `PYTHONPATH=sdk/python pytest -q sdk/python/tests` (466 tests); `npm --prefix sdk/typescript run validate --silent` (458 tests).

@@ -28,11 +28,11 @@ use std::time::{Duration, Instant};
 
 use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_value};
 use crate::console_aggregator::{
-    AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleLogResult,
-    ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
-    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleTimelineWindowQuery,
-    ConsoleVisibilityPolicy, HideImplicitDelegateMembersConsoleVisibilityPolicy,
-    MobKitConsoleAggregator,
+    AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleLogError,
+    ConsoleLogResult, ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError,
+    ConsoleSendRequest, ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery,
+    ConsoleTimelineWindowQuery, ConsoleVisibilityPolicy,
+    HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
 use crate::http_sse::{DEFAULT_KEEP_ALIVE_INTERVAL, KEEP_ALIVE_TEXT};
@@ -987,16 +987,7 @@ async fn console_timeline_stream_handler(
                     }
                 }
                 Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    let event = ConsoleTimelineEvent::ReplayUnavailable {
-                        requested_cursor: format!("lagged:{skipped}"),
-                        latest_cursor: aggregator.latest_cursor().await.ok().flatten(),
-                    };
-                    if let Some(sse) = sse_event_from_timeline_event(&event) {
-                        yield Ok::<Event, Infallible>(sse);
-                    }
-                    break;
-                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => break,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
@@ -1032,7 +1023,7 @@ fn timeline_query_from_http(
     query: ConsoleTimelineHttpQuery,
     fallback_after: Option<String>,
 ) -> ConsoleTimelineWindowQuery {
-    let after = query.after.or(fallback_after).map(ConsoleCursor::from);
+    let after = fallback_after.or(query.after).map(ConsoleCursor::from);
     let before = query.before.map(ConsoleCursor::from);
     ConsoleTimelineWindowQuery {
         identity: query
@@ -1954,6 +1945,18 @@ fn stale_event_cursor_response(id: Value, after_cursor: u64, latest_cursor: u64)
     )
 }
 
+fn console_timeline_replay_unavailable_response(id: Value, err: ConsoleLogError) -> Value {
+    response_value(
+        id,
+        None,
+        Some(JsonRpcError {
+            code: crate::rpc::CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
+            message: format!("query_timeline failed: {err}"),
+            data: Some(json!({ "error": "replay_unavailable" })),
+        }),
+    )
+}
+
 fn parse_console_helper_options(
     options_val: Option<&Value>,
 ) -> Result<meerkat_mob::HelperOptions, String> {
@@ -2124,15 +2127,7 @@ async fn handle_console_aggregator_rpc(
                     Some(serde_json::to_value(page).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: -32010,
-                        message: format!("query_timeline failed: {err}"),
-                        data: Some(json!({ "kind": "replay_unavailable" })),
-                    }),
-                ),
+                Err(err) => console_timeline_replay_unavailable_response(response_id, err),
             }
         }
         "mobkit/console/send" => {
@@ -2351,12 +2346,12 @@ async fn handle_console_runtime_rpc(
             )
         }
         "mobkit/status" => {
-            let mob_state = runtime.handle().status().await.ok();
+            let mob_state = runtime.handle().status_observation_snapshot();
             response_value(
                 response_id,
                 Some(serde_json::json!({
                     "contract_version": crate::rpc::MOBKIT_CONTRACT_VERSION,
-                    "running": matches!(mob_state, Some(MobState::Creating | MobState::Running)),
+                    "running": matches!(mob_state, MobState::Creating | MobState::Running),
                     // Console routes to MobRuntime directly — no module runtime available.
                     // Return [] to keep StatusResult.loaded_modules schema-consistent.
                     "loaded_modules": serde_json::json!([]),
@@ -2441,15 +2436,7 @@ async fn handle_console_runtime_rpc(
                     Some(serde_json::to_value(page).unwrap_or(Value::Null)),
                     None,
                 ),
-                Err(err) => response_value(
-                    response_id,
-                    None,
-                    Some(JsonRpcError {
-                        code: -32010,
-                        message: format!("query_timeline failed: {err}"),
-                        data: Some(json!({ "kind": "replay_unavailable" })),
-                    }),
-                ),
+                Err(err) => console_timeline_replay_unavailable_response(response_id, err),
             }
         }
         "mobkit/console/send" => {
@@ -3793,8 +3780,8 @@ async fn collect_console_snapshot_read_model(
     let handle = runtime.handle();
     let mut state = ConsoleSnapshotReadModelState {
         running: Some(matches!(
-            handle.status().await.ok(),
-            Some(MobState::Creating | MobState::Running)
+            handle.status_observation_snapshot(),
+            MobState::Creating | MobState::Running
         )),
         ..ConsoleSnapshotReadModelState::default()
     };
@@ -4304,14 +4291,16 @@ pub async fn console_frontend_app_css_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
+    use super::ConsoleTimelineHttpQuery;
     use super::{
         ConsoleSnapshotReadModel, ConsoleSnapshotReadModelState, MAX_MULTIPART_BODY_BYTES,
         MAX_MULTIPART_IMAGE_BYTES, MultipartImageUpload, apply_console_visibility_policy,
         build_aggregator_live_snapshot, collect_console_snapshot_read_model,
-        console_send_identity_first, console_send_with_identity_first_fallback, cursor_is_after,
+        console_send_identity_first, console_send_with_identity_first_fallback,
+        console_timeline_replay_unavailable_response, cursor_is_after,
         dedupe_console_members_by_identity, externalize_image_upload_placeholders,
         externalize_single_image_upload, handle_console_aggregator_rpc,
-        project_console_members_from_handle, query_timeline_snapshot,
+        project_console_members_from_handle, query_timeline_snapshot, timeline_query_from_http,
     };
     use crate::blob_store::{BinaryBlobStore, ObjectStoreBlobStore};
     use crate::console_aggregator::{
@@ -5741,6 +5730,67 @@ comms = true
             "unexpected error: {err}"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn timeline_snapshot_rejects_after_cursor_beyond_empty_store_frontier()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+
+        let err = match query_timeline_snapshot(
+            &aggregator,
+            ConsoleTimelineWindowQuery {
+                after: Some(ConsoleCursor::from("console:99")),
+                limit: 200,
+                ..ConsoleTimelineWindowQuery::default()
+            },
+        )
+        .await
+        {
+            Ok(_) => {
+                return Err(std::io::Error::other("empty store future cursor must fail").into());
+            }
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("beyond the current store frontier"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn timeline_query_prefers_last_event_id_over_url_after_cursor() {
+        let query = timeline_query_from_http(
+            ConsoleTimelineHttpQuery {
+                identity: None,
+                conversation_id: None,
+                after: Some("console:100".to_string()),
+                before: None,
+                mode: None,
+                limit: None,
+            },
+            Some("console:150".to_string()),
+        );
+
+        assert_eq!(query.after.as_ref().and_then(ConsoleCursor::seq), Some(150));
+    }
+
+    #[test]
+    fn console_timeline_replay_unavailable_rpc_uses_dedicated_error_code() {
+        let response = console_timeline_replay_unavailable_response(
+            json!("rid"),
+            std::io::Error::other("timeline replay cursor is beyond the current store frontier")
+                .into(),
+        );
+
+        assert_eq!(response["error"]["code"], json!(-32013));
+        assert_eq!(
+            response["error"]["data"],
+            json!({ "error": "replay_unavailable" })
+        );
     }
 
     #[tokio::test]

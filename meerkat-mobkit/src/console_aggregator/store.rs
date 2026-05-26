@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -82,6 +82,8 @@ struct InMemoryState {
     frames: BTreeMap<u64, ConsoleFrame>,
     dedupe_to_seq: HashMap<String, u64>,
     id_to_seq: HashMap<String, u64>,
+    identity_to_seqs: HashMap<String, BTreeSet<u64>>,
+    conversation_to_seqs: HashMap<String, BTreeSet<u64>>,
     watermarks: HashMap<(String, String), String>,
 }
 
@@ -93,6 +95,8 @@ impl InMemoryConsoleLogStore {
                 frames: BTreeMap::new(),
                 dedupe_to_seq: HashMap::new(),
                 id_to_seq: HashMap::new(),
+                identity_to_seqs: HashMap::new(),
+                conversation_to_seqs: HashMap::new(),
                 watermarks: HashMap::new(),
             }),
         }
@@ -144,6 +148,18 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
         };
         state.dedupe_to_seq.insert(frame.dedupe_key.clone(), seq);
         state.id_to_seq.insert(id, seq);
+        state
+            .identity_to_seqs
+            .entry(frame.identity.clone())
+            .or_default()
+            .insert(seq);
+        if let Some(conversation_id) = frame.conversation_id.as_ref() {
+            state
+                .conversation_to_seqs
+                .entry(conversation_id.clone())
+                .or_default()
+                .insert(seq);
+        }
         state.frames.insert(seq, frame.clone());
         Ok(AppendOutcome {
             disposition: AppendDisposition::Inserted,
@@ -195,11 +211,11 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             .state
             .lock()
             .map_err(|_| boxed_error("console log lock poisoned"))?;
-        let frame_matches = |seq: &u64, frame: &ConsoleFrame| -> bool {
-            if after_seq.is_some_and(|after| *seq <= after) {
+        let frame_matches = |seq: u64, frame: &ConsoleFrame| -> bool {
+            if after_seq.is_some_and(|after| seq <= after) {
                 return false;
             }
-            if before_seq.is_some_and(|before| *seq >= before) {
+            if before_seq.is_some_and(|before| seq >= before) {
                 return false;
             }
             if let Some(identity) = query.identity.as_deref()
@@ -214,26 +230,56 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             }
             true
         };
-        let latest_cursor = state
-            .frames
-            .iter()
-            .rev()
-            .find_map(|(seq, frame)| frame_matches(seq, frame).then(|| frame.cursor.clone()));
+        let candidate_seqs = if query.identity.is_some() && query.conversation_id.is_some() {
+            let identity_seqs = state
+                .identity_to_seqs
+                .get(query.identity.as_deref().unwrap_or_default());
+            let conversation_seqs = state
+                .conversation_to_seqs
+                .get(query.conversation_id.as_deref().unwrap_or_default());
+            match (identity_seqs, conversation_seqs) {
+                (Some(left), Some(right)) if left.len() <= right.len() => {
+                    left.iter().copied().collect::<Vec<_>>()
+                }
+                (Some(_), Some(right)) => right.iter().copied().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            }
+        } else if let Some(identity) = query.identity.as_deref() {
+            state
+                .identity_to_seqs
+                .get(identity)
+                .map(|seqs| seqs.iter().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else if let Some(conversation_id) = query.conversation_id.as_deref() {
+            state
+                .conversation_to_seqs
+                .get(conversation_id)
+                .map(|seqs| seqs.iter().copied().collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else {
+            state.frames.keys().copied().collect::<Vec<_>>()
+        };
+        let latest_cursor = candidate_seqs.iter().rev().find_map(|seq| {
+            let frame = state.frames.get(seq)?;
+            frame_matches(*seq, frame).then(|| frame.cursor.clone())
+        });
         let mut frames = match query.mode {
-            ConsoleTimelineMode::Since => state
-                .frames
+            ConsoleTimelineMode::Since => candidate_seqs
                 .iter()
-                .filter(|(seq, frame)| frame_matches(seq, frame))
-                .map(|(_, frame)| frame.clone())
+                .filter_map(|seq| {
+                    let frame = state.frames.get(seq)?;
+                    frame_matches(*seq, frame).then(|| frame.clone())
+                })
                 .take(scan_limit)
                 .collect::<Vec<_>>(),
             ConsoleTimelineMode::Recent => {
-                let mut frames = state
-                    .frames
+                let mut frames = candidate_seqs
                     .iter()
                     .rev()
-                    .filter(|(seq, frame)| frame_matches(seq, frame))
-                    .map(|(_, frame)| frame.clone())
+                    .filter_map(|seq| {
+                        let frame = state.frames.get(seq)?;
+                        frame_matches(*seq, frame).then(|| frame.clone())
+                    })
                     .take(scan_limit)
                     .collect::<Vec<_>>();
                 frames.reverse();
@@ -293,6 +339,8 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
         state.frames.clear();
         state.dedupe_to_seq.clear();
         state.id_to_seq.clear();
+        state.identity_to_seqs.clear();
+        state.conversation_to_seqs.clear();
         state.next_seq = 1;
         Ok(())
     }
@@ -978,6 +1026,132 @@ mod tests {
         assert_eq!(
             older.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
             Some(3)
+        );
+    }
+
+    #[tokio::test]
+    async fn in_memory_log_queries_sparse_identity_recent_window_without_global_tail_scan() {
+        let store = InMemoryConsoleLogStore::new();
+        store
+            .append_if_absent(sample_frame("sparse-event", "sparse-agent"))
+            .await
+            .expect("append sparse frame");
+        for index in 1..=25_000 {
+            store
+                .append_if_absent(sample_frame(&format!("busy-event-{index}"), "busy-agent"))
+                .await
+                .expect("append busy frame");
+        }
+
+        let page = store
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
+                identity: Some("sparse-agent".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query sparse recent");
+
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(page.frames[0].dedupe_key, "sparse-event");
+        assert_eq!(
+            page.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_log_queries_250k_sparse_identity_recent_window_with_index() {
+        let store = SqliteConsoleLogStore::in_memory().expect("sqlite store");
+        {
+            let mut conn = store.conn.lock().expect("sqlite lock");
+            let tx = conn.transaction().expect("begin transaction");
+            {
+                let mut insert = tx
+                    .prepare(
+                        "INSERT INTO console_frames (
+                            id, dedupe_key, timestamp_ms, runtime_key, identity,
+                            conversation_id, session_id, kind, status, frame_version, updated_at_ms,
+                            payload_json, source_kind, source_cursor, source_event_id,
+                            interaction_id, parent_frame_id, caused_by_frame_id, turn_id, run_id
+                        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, NULL, ?10, ?11, NULL, ?12, NULL, NULL, NULL, NULL, NULL)",
+                    )
+                    .expect("prepare insert");
+                insert
+                    .execute(rusqlite::params![
+                        "sparse-frame",
+                        "sparse-event",
+                        1_i64,
+                        "runtime-a",
+                        "sparse-agent",
+                        "sparse-agent",
+                        "session-sparse",
+                        "text_complete",
+                        ConsoleFrameStatus::Completed.as_str(),
+                        r#"{"text":"still visible"}"#,
+                        ConsoleFrameSourceKind::ConsoleEvent.as_str(),
+                        "sparse-event",
+                    ])
+                    .expect("insert sparse frame");
+                for index in 2..=250_000_i64 {
+                    insert
+                        .execute(rusqlite::params![
+                            format!("busy-frame-{index}"),
+                            format!("busy-event-{index}"),
+                            index,
+                            "runtime-a",
+                            "busy-agent",
+                            "busy-agent",
+                            "session-busy",
+                            "text_delta",
+                            ConsoleFrameStatus::Completed.as_str(),
+                            format!(r#"{{"delta":{index}}}"#),
+                            ConsoleFrameSourceKind::ConsoleEvent.as_str(),
+                            format!("busy-event-{index}"),
+                        ])
+                        .expect("insert busy frame");
+                }
+            }
+            let plan = tx
+                .prepare(
+                    "EXPLAIN QUERY PLAN
+                     SELECT cursor_seq FROM console_frames
+                     WHERE cursor_seq > ?1 AND cursor_seq < ?2 AND identity = ?3
+                     ORDER BY cursor_seq DESC LIMIT ?4",
+                )
+                .expect("prepare query plan")
+                .query_map(
+                    rusqlite::params![0_i64, i64::MAX, "sparse-agent", 11_i64],
+                    |row| row.get::<_, String>(3),
+                )
+                .expect("run query plan")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect query plan")
+                .join("\n")
+                .to_lowercase();
+            assert!(
+                plan.contains("idx_console_frames_identity_cursor"),
+                "sparse identity recent query should use identity/cursor index; plan was: {plan}"
+            );
+            tx.commit().expect("commit transaction");
+        }
+
+        let page = store
+            .query_windowed_frames(ConsoleTimelineWindowQuery {
+                identity: Some("sparse-agent".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query sparse recent");
+
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(page.frames[0].dedupe_key, "sparse-event");
+        assert_eq!(
+            page.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(1)
         );
     }
 

@@ -3155,6 +3155,18 @@ test("buildActivityRailViewState hides text deltas and internal config churn", (
         data: { target: "tool_scope" },
       },
       {
+        id: "evt-2a",
+        event: "snapshot_started",
+        identity: "_system",
+        data: { type: "snapshot_started", after: "console:1" },
+      },
+      {
+        id: "evt-2b",
+        event: "snapshot_complete",
+        identity: "_system",
+        data: { type: "snapshot_complete", cursor: "console:2" },
+      },
+      {
         id: "evt-3",
         event: "tool_call_requested",
         identity: "incident-commander",

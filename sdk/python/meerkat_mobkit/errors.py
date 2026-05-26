@@ -9,6 +9,7 @@ from typing import Any
 MOB_EVENTS_STALE_CURSOR_CODE: int = -32010
 CAPABILITY_UNAVAILABLE_CODE: int = -32004
 MEMORY_BACKEND_UNAVAILABLE_CODE: int = -32012
+CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: int = -32013
 
 
 class MobKitError(Exception):
@@ -116,6 +117,26 @@ class MemoryBackendUnavailableError(RpcError):
     ):
         super().__init__(
             MEMORY_BACKEND_UNAVAILABLE_CODE,
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+
+
+class ConsoleTimelineReplayUnavailableError(RpcError):
+    """Raised when a console timeline cursor cannot be replayed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        request_id: str = "",
+        method: str = "",
+        data: Any | None = None,
+    ):
+        super().__init__(
+            CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
             message,
             request_id=request_id,
             method=method,
