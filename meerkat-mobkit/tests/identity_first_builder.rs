@@ -384,7 +384,7 @@ async fn identity_first_builder_persistent_state_conflicts_with_continuity_store
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .continuity_store(Arc::new(StubContinuityStore));
-    assert_build_err_contains(builder, "mutually exclusive").await;
+    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
 }
 
 #[tokio::test]
@@ -392,7 +392,7 @@ async fn identity_first_builder_persistent_state_conflicts_with_lease_provider()
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .lease_provider(Arc::new(StubLeaseProvider));
-    assert_build_err_contains(builder, "mutually exclusive").await;
+    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
 }
 
 #[tokio::test]
@@ -400,7 +400,7 @@ async fn identity_first_builder_persistent_state_conflicts_with_scratch_dir() {
     let builder = UnifiedRuntimeBuilder::default()
         .persistent_state("/tmp/test-state")
         .scratch_dir("/tmp/test-scratch");
-    assert_build_err_contains(builder, "mutually exclusive").await;
+    Box::pin(assert_build_err_contains(builder, "mutually exclusive")).await;
 }
 
 // ===========================================================================
@@ -410,7 +410,7 @@ async fn identity_first_builder_persistent_state_conflicts_with_scratch_dir() {
 #[tokio::test]
 async fn identity_first_builder_external_path_missing_lease_and_scratch() {
     let builder = UnifiedRuntimeBuilder::default().continuity_store(Arc::new(StubContinuityStore));
-    assert_build_err_contains(builder, "lease_provider").await;
+    Box::pin(assert_build_err_contains(builder, "lease_provider")).await;
 }
 
 #[tokio::test]
@@ -418,7 +418,7 @@ async fn identity_first_builder_external_path_missing_continuity_store() {
     let builder = UnifiedRuntimeBuilder::default()
         .lease_provider(Arc::new(StubLeaseProvider))
         .scratch_dir("/tmp/test-scratch");
-    assert_build_err_contains(builder, "continuity_store").await;
+    Box::pin(assert_build_err_contains(builder, "continuity_store")).await;
 }
 
 #[tokio::test]
@@ -426,7 +426,7 @@ async fn identity_first_builder_external_path_missing_scratch_dir() {
     let builder = UnifiedRuntimeBuilder::default()
         .continuity_store(Arc::new(StubContinuityStore))
         .lease_provider(Arc::new(StubLeaseProvider));
-    assert_build_err_contains(builder, "scratch_dir").await;
+    Box::pin(assert_build_err_contains(builder, "scratch_dir")).await;
 }
 
 #[tokio::test]
@@ -436,7 +436,7 @@ async fn identity_first_builder_identity_first_optional_setters_require_core_pro
             edges: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }))
         .identity_runtime_instance_id("builder-test");
-    assert_build_err_contains(builder, "roster_provider").await;
+    Box::pin(assert_build_err_contains(builder, "roster_provider")).await;
 }
 
 #[tokio::test]
@@ -449,7 +449,12 @@ async fn identity_first_builder_blob_store_accepted_with_persistent_state() {
         .blob_store(Arc::new(meerkat_store::FsBlobStore::new(
             tmp.path().join("blobs"),
         )));
-    assert_build_err_not_contains(builder, "mutually exclusive", "conflicting").await;
+    Box::pin(assert_build_err_not_contains(
+        builder,
+        "mutually exclusive",
+        "conflicting",
+    ))
+    .await;
 }
 
 #[tokio::test]
@@ -463,7 +468,12 @@ async fn identity_first_builder_blob_store_accepted_with_external_path() {
         .blob_store(Arc::new(meerkat_store::FsBlobStore::new(
             tmp.path().join("blobs"),
         )));
-    assert_build_err_not_contains(builder, "mutually exclusive", "conflicting").await;
+    Box::pin(assert_build_err_not_contains(
+        builder,
+        "mutually exclusive",
+        "conflicting",
+    ))
+    .await;
 }
 
 #[tokio::test]
@@ -700,7 +710,7 @@ async fn identity_first_builder_rejects_zero_background_warm_concurrency() {
         .identity_bootstrap_mode(IdentityBootstrapMode::LazyWithBackgroundWarm { concurrency: 0 })
         .default_llm_client(Arc::new(meerkat_client::TestClient::default()));
 
-    assert_build_err_contains(builder, "concurrency").await;
+    Box::pin(assert_build_err_contains(builder, "concurrency")).await;
 }
 
 #[tokio::test]

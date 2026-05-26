@@ -2018,6 +2018,7 @@ impl MobBootstrapSpec {
             None,
             CapabilityFlags::default(),
             None,
+            None,
         )
     }
 
@@ -2047,6 +2048,7 @@ impl MobBootstrapSpec {
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
+            None,
         )
     }
 
@@ -2060,6 +2062,7 @@ impl MobBootstrapSpec {
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
+        agent_config: Option<Config>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let binary_blob_store: Arc<dyn BinaryBlobStore> = Arc::new(ObjectStoreBlobStore::memory());
@@ -2084,7 +2087,7 @@ impl MobBootstrapSpec {
         if let Some(machine) = runtime_adapter.clone() {
             factory = factory.with_image_generation_machine(machine);
         }
-        let config = Config::default();
+        let config = agent_config.unwrap_or_default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_blob_store = Some(blob_store);
         if let Some(store) = session_store {
@@ -2156,6 +2159,7 @@ impl MobBootstrapSpec {
             None,
             CapabilityFlags::default(),
             None,
+            None,
         )
     }
 
@@ -2186,6 +2190,7 @@ impl MobBootstrapSpec {
             Some(Arc::new(hook)),
             CapabilityFlags::default(),
             None,
+            None,
         )
     }
 
@@ -2200,6 +2205,7 @@ impl MobBootstrapSpec {
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
+        agent_config: Option<Config>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
         let (binary_blob_store, blob_store): (
@@ -2251,7 +2257,7 @@ impl MobBootstrapSpec {
         if caps.image_generation {
             factory = factory.with_image_generation_machine(runtime_adapter.clone());
         }
-        let config = Config::default();
+        let config = agent_config.unwrap_or_default();
         let mut builder = FactoryAgentBuilder::new(factory, config);
         builder.default_session_store = Some(Arc::new(StoreAdapter::new(session_store.clone())));
         builder.default_blob_store = Some(blob_store.clone());
@@ -2296,9 +2302,10 @@ impl MobBootstrapSpec {
         hook: Option<PreBuildHook>,
         mut caps: CapabilityFlags,
         after_create_hook: Option<AfterCreateHook>,
+        agent_config: Option<Config>,
     ) -> Self {
         caps.image_generation |= mob_definition_may_use_image_generation(&definition);
-        let config = Config::default();
+        let config = agent_config.unwrap_or_default();
         let session_store: Arc<dyn SessionStore> = custom_session_store
             .clone()
             .unwrap_or_else(|| Arc::new(meerkat_store::MemoryStore::new()));
@@ -4006,6 +4013,7 @@ realm_profile = "worker-v2"
             None,
             CapabilityFlags::default(),
             None,
+            None,
         );
         assert!(
             spec.runtime_adapter.is_some(),
@@ -4036,6 +4044,7 @@ realm_profile = "worker-v2"
             None,
             None,
             CapabilityFlags::default(),
+            None,
             None,
         );
         let state = spec
@@ -4088,6 +4097,7 @@ realm_profile = "worker-v2"
             None,
             CapabilityFlags::default(),
             None,
+            None,
         );
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
         let runtime = MobRuntime::bootstrap(spec)
@@ -4139,6 +4149,7 @@ realm_profile = "worker-v2"
             None,
             CapabilityFlags::default(),
             None,
+            None,
         );
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
 
@@ -4189,6 +4200,7 @@ realm_profile = "worker-v2"
             None,
             CapabilityFlags::default(),
             None,
+            None,
         );
         spec.options.default_llm_client = Some(Arc::new(meerkat_client::TestClient::default()));
 
@@ -4223,6 +4235,7 @@ realm_profile = "worker-v2"
             None,
             None,
             CapabilityFlags::default(),
+            None,
             None,
         );
         restarted_spec.options.default_llm_client =
@@ -4268,6 +4281,7 @@ realm_profile = "worker-v2"
             None,
             None,
             CapabilityFlags::default(),
+            None,
             None,
         );
         assert!(
