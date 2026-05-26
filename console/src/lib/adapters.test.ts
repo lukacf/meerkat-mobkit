@@ -2413,9 +2413,27 @@ test("systemNoticeClearsBusyState only treats peer/comms notices as terminal", (
       }],
     },
   };
+  const runtimeReceivedNotice = {
+    id: "runtime-received-notice",
+    event: "system_notice" as const,
+    timestampMs: 7,
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "generic",
+        body: "Received from runtime metadata channel: lease renewed",
+        blocks: [{
+          type: "runtime_notice",
+          category: "lease",
+          detail: "Received from runtime metadata channel: lease renewed",
+        }],
+      },
+    },
+  };
 
   assert.equal(systemNoticeClearsBusyState(runtimeNotice), false);
   assert.equal(systemNoticeClearsBusyState(toolConfigNotice), false);
+  assert.equal(systemNoticeClearsBusyState(runtimeReceivedNotice), false);
   assert.equal(systemNoticeClearsBusyState(commsNotice), true);
   assert.equal(systemNoticeClearsBusyState(untypedPeerNotice), true);
   assert.equal(

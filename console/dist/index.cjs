@@ -3428,7 +3428,7 @@ function systemNoticeClearsBusyState(frame) {
   const blocks = systemNoticeBlockRecords(record);
   if (blocks.some((block) => textFromUnknown(block.type) === "comms")) return true;
   const text = flattenSystemNoticeText(record);
-  return /\b(Peer message from|Received from|\[COMMS MESSAGE\b)/i.test(text);
+  return /\b(Peer message from|\[COMMS MESSAGE\b)/i.test(text);
 }
 function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
   const rich = [];
