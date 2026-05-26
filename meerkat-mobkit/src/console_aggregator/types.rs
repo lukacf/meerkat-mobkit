@@ -192,6 +192,10 @@ pub struct ConsoleTimelineQuery {
     pub conversation_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<ConsoleCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<ConsoleCursor>,
+    #[serde(default)]
+    pub mode: ConsoleTimelineMode,
     #[serde(default)]
     pub limit: usize,
 }
@@ -202,9 +206,19 @@ impl Default for ConsoleTimelineQuery {
             identity: None,
             conversation_id: None,
             after: None,
+            before: None,
+            mode: ConsoleTimelineMode::Since,
             limit: 200,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleTimelineMode {
+    #[default]
+    Since,
+    Recent,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,6 +226,14 @@ pub struct ConsoleTimelinePage {
     pub frames: Vec<ConsoleFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<ConsoleCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_cursor: Option<ConsoleCursor>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exhausted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

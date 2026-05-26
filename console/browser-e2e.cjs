@@ -125,6 +125,11 @@ async function openSidebarAgentChat(page, labelPattern) {
   await page.waitForSelector('[data-testid^="chat-composer:"]', { timeout: 30_000 });
 }
 
+async function assertNoText(page, text) {
+  const count = await page.getByText(text, { exact: true }).count();
+  assert.equal(count, 0, `did not expect text to be visible: ${text}`);
+}
+
 function startMockConsoleServer(port, options = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const html = fs.readFileSync(path.join(__dirname, "dist", "index.html"), "utf8");
@@ -158,6 +163,38 @@ function startMockConsoleServer(port, options = {}) {
   const includeToolOnlyWorker = options.includeToolOnlyWorker === true;
   const collapseWorkersSection = options.collapseWorkersSection === true;
   const requests = [];
+
+  function cursorOrdinal(cursor, cursorOrder) {
+    if (typeof cursor !== "string") return null;
+    const match = /^console:(\d+)$/.exec(cursor);
+    if (match) return Number(match[1]);
+    return cursorOrder.get(cursor) ?? null;
+  }
+
+  function timelinePageFor(frames, params = {}) {
+    const source = Array.isArray(frames) ? frames : [];
+    const cursorOrder = new Map();
+    source.forEach((frame, index) => {
+      if (typeof frame.cursor === "string") cursorOrder.set(frame.cursor, index + 1);
+    });
+    const after = cursorOrdinal(params.after, cursorOrder);
+    const before = cursorOrdinal(params.before, cursorOrder);
+    const mode = params.mode === "recent" ? "recent" : "since";
+    const limit = Math.max(1, Math.min(Number(params.limit) || 400, 1000));
+    const filtered = source.filter((frame, index) => {
+      const ordinal = cursorOrdinal(frame.cursor, cursorOrder) ?? index + 1;
+      if (after !== null && ordinal <= after) return false;
+      if (before !== null && ordinal >= before) return false;
+      return true;
+    });
+    const pageFrames = mode === "recent" ? filtered.slice(-limit) : filtered.slice(0, limit);
+    return {
+      frames: pageFrames,
+      next_cursor: pageFrames.length > 0 ? pageFrames[pageFrames.length - 1].cursor || null : null,
+      latest_cursor: filtered.length > 0 ? filtered[filtered.length - 1].cursor || null : null,
+      exhausted: filtered.length <= limit,
+    };
+  }
 
   function writeTimelineStreamFrame(res, frame, index) {
     res.write([
@@ -399,15 +436,12 @@ function startMockConsoleServer(port, options = {}) {
             typeof identity === "string" && Array.isArray(timelineFramesByIdentity[identity])
               ? timelineFramesByIdentity[identity]
               : null;
-          const frames = framesForIdentity || (identity === "image-agent" ? timelineFrames : []);
+          const frames = framesForIdentity || (identity ? (identity === "image-agent" ? timelineFrames : []) : timelineFrames);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
             jsonrpc: "2.0",
             id: rpcId,
-            result: {
-              frames,
-              next_cursor: frames.length > 0 ? frames[frames.length - 1].cursor || null : null,
-            },
+            result: timelinePageFor(frames, payload.params),
           }));
           return;
         }
@@ -1455,6 +1489,177 @@ async function runChatPaneAutoScrollProof() {
   }
 }
 
+async function runGlobalTimelineRecentSeedProof() {
+  const port = await reservePort();
+  const baseTs = Date.now() - 60_000;
+  const oldFrames = Array.from({ length: 1_200 }, (_, index) => ({
+    id: `old-global-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "identity:luka",
+    interaction_id: `old-global-turn-${index + 1}`,
+    timestamp_ms: baseTs - 1_200_000 + index,
+    cursor: `console:${index + 1}`,
+    payload: { text: `Old global event ${index + 1}` },
+  }));
+  const recentFrame = {
+    id: "recent-global-event",
+    kind: "interaction_complete",
+    identity: "identity:luka",
+    interaction_id: "recent-global-turn",
+    timestamp_ms: baseTs,
+    cursor: "console:1201",
+    payload: { text: "RECENT_GLOBAL_EVENT_VISIBLE" },
+  };
+  const server = await startMockConsoleServer(port, {
+    timelineFrames: [...oldFrames, recentFrame],
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('[data-testid="signals-rail"], .cc-activity-rail', { timeout: 10_000 });
+    await page.waitForTimeout(500);
+
+    const timelineRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter((payload) => payload.method === "mobkit/console/query_timeline");
+    const globalSeed = timelineRequests.find((payload) => !payload.params?.identity);
+    assert.equal(globalSeed?.params?.mode, "recent");
+    assert.equal(globalSeed?.params?.limit, 200);
+    assert(
+      server.requests.some(
+        (request) =>
+          request.method === "GET" &&
+          request.url.startsWith("/console/timeline/stream") &&
+          request.url.includes("after=console%3A1201"),
+      ),
+      `expected timeline stream to continue after recent tail cursor; requests=${JSON.stringify(server.requests, null, 2)}`,
+    );
+
+    process.stdout.write("browser global timeline recent seed ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneRecentFirstPageProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T21:40:00.000Z");
+  const frames = Array.from({ length: 1_500 }, (_, index) => ({
+    id: `recent-first-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `recent-first-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Recent-first worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": frames,
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Recent-first worker line 1500").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Recent-first worker line 42");
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    const firstIdentityRequest = identityRequests[0];
+    assert.equal(firstIdentityRequest?.params?.mode, "recent");
+    assert.equal(firstIdentityRequest?.params?.limit, 200);
+    assert.equal(firstIdentityRequest?.params?.after, undefined);
+
+    process.stdout.write("browser chat pane recent first page ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneOlderHistoryDemandPagingProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T22:40:00.000Z");
+  const frames = Array.from({ length: 250 }, (_, index) => ({
+    id: `older-demand-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `older-demand-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Older-demand worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": frames,
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Older-demand worker line 250").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Older-demand worker line 42");
+    await pane.getByRole("button", { name: "Load older history" }).click();
+    await pane.getByText("Older-demand worker line 42").waitFor({ timeout: 10_000 });
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    assert(
+      identityRequests.some(
+        (payload) => payload.params?.mode === "recent" && payload.params?.before === "console:51",
+      ),
+      `expected demand-paged older request before first visible tail cursor; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+
+    process.stdout.write("browser chat pane older history demand paging ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runRunStartedClearsOptimisticPromptProof() {
   const port = await reservePort();
   const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
@@ -1763,6 +1968,9 @@ async function main() {
   await runNonCommsSystemNoticeDoesNotClearBusyProof();
   await runSidebarSearchExpandsCollapsedWorkerSectionProof();
   await runChatPaneAutoScrollProof();
+  await runGlobalTimelineRecentSeedProof();
+  await runChatPaneRecentFirstPageProof();
+  await runChatPaneOlderHistoryDemandPagingProof();
   await runRunStartedClearsOptimisticPromptProof();
   await runUserInputEchoClearsOptimisticPromptProof();
   await runLiveSystemNoticeAppearsInOpenChatProof();

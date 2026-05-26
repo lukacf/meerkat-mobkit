@@ -520,7 +520,13 @@ function flushTrailingSseBlock(buffer: string, onFrame: (frame: ConsoleFrame) =>
 
 export async function queryTimeline(
   baseUrl: string,
-  target: { identity?: string; conversationId?: string; after?: string },
+  target: {
+    identity?: string;
+    conversationId?: string;
+    after?: string;
+    before?: string;
+    mode?: "since" | "recent";
+  },
   limit = 400,
 ): Promise<ConsoleTimelinePage> {
   const result = await rpc<unknown>(baseUrl, "mobkit/console/query_timeline", {
@@ -528,6 +534,8 @@ export async function queryTimeline(
     ...(target.identity?.trim() ? { identity: target.identity.trim() } : {}),
     ...(target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {}),
     ...(target.after?.trim() ? { after: target.after.trim() } : {}),
+    ...(target.before?.trim() ? { before: target.before.trim() } : {}),
+    ...(target.mode ? { mode: target.mode } : {}),
   });
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
@@ -537,7 +545,9 @@ export async function queryTimeline(
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
     nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : undefined,
-    available: true,
+    latestCursor: typeof record.latest_cursor === "string" ? record.latest_cursor : undefined,
+    exhausted: record.exhausted === true,
+    available: record.available !== false,
   };
 }
 

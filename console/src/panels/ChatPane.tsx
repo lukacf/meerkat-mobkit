@@ -36,6 +36,9 @@ interface ChatPaneProps {
   respawnLabel?: string;
   retireLabel?: string;
   sendLabel?: string;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  onLoadOlder?: () => void;
   /// Pending-message stack rendered between conversation body and
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
   /// reserves the slot. Pass `null` (or omit) to suppress.
@@ -489,6 +492,9 @@ export function ChatPane({
   respawnLabel = "Respawn",
   retireLabel = "Retire",
   sendLabel = "Send",
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlder,
   stackSlot,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
@@ -671,6 +677,13 @@ export function ChatPane({
           if (event.currentTarget.scrollLeft !== 0) {
             event.currentTarget.scrollLeft = 0;
           }
+          if (
+            event.currentTarget.scrollTop <= 32 &&
+            hasOlderHistory &&
+            !loadingOlderHistory
+          ) {
+            onLoadOlder?.();
+          }
         }}
         ref={bodyRef}
       >
@@ -679,6 +692,16 @@ export function ChatPane({
           label="Copy transcript"
           text={transcriptText}
         />
+        {hasOlderHistory && (
+          <button
+            className="conv__history"
+            disabled={loadingOlderHistory}
+            onClick={() => onLoadOlder?.()}
+            type="button"
+          >
+            {loadingOlderHistory ? "Loading history" : "Load older history"}
+          </button>
+        )}
         {messages.length === 0 && (
           <div className="msg msg--origin">
             <div className="msg__time" />

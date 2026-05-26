@@ -4483,7 +4483,9 @@ async function queryTimeline(baseUrl, target, limit = 400) {
     limit,
     ...target.identity?.trim() ? { identity: target.identity.trim() } : {},
     ...target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {},
-    ...target.after?.trim() ? { after: target.after.trim() } : {}
+    ...target.after?.trim() ? { after: target.after.trim() } : {},
+    ...target.before?.trim() ? { before: target.before.trim() } : {},
+    ...target.mode ? { mode: target.mode } : {}
   });
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
@@ -4493,7 +4495,9 @@ async function queryTimeline(baseUrl, target, limit = 400) {
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
     nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : void 0,
-    available: true
+    latestCursor: typeof record.latest_cursor === "string" ? record.latest_cursor : void 0,
+    exhausted: record.exhausted === true,
+    available: record.available !== false
   };
 }
 async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue") {
@@ -8647,6 +8651,9 @@ function ChatPane({
   respawnLabel = "Respawn",
   retireLabel = "Retire",
   sendLabel = "Send",
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlder,
   stackSlot
 }) {
   const bodyRef = import_react19.default.useRef(null);
@@ -8815,6 +8822,9 @@ function ChatPane({
           if (event.currentTarget.scrollLeft !== 0) {
             event.currentTarget.scrollLeft = 0;
           }
+          if (event.currentTarget.scrollTop <= 32 && hasOlderHistory && !loadingOlderHistory) {
+            onLoadOlder?.();
+          }
         },
         ref: bodyRef,
         children: [
@@ -8824,6 +8834,16 @@ function ChatPane({
               className: "msg__copy--transcript",
               label: "Copy transcript",
               text: transcriptText
+            }
+          ),
+          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+            "button",
+            {
+              className: "conv__history",
+              disabled: loadingOlderHistory,
+              onClick: () => onLoadOlder?.(),
+              type: "button",
+              children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
           messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg msg--origin", children: [
@@ -9948,7 +9968,9 @@ function ConsoleApp({ baseUrl }) {
       log = {
         events: [],
         byKey: /* @__PURE__ */ new Map(),
-        hasServerLog: null
+        hasServerLog: null,
+        olderHistoryExhausted: false,
+        olderHistoryLoading: false
       };
       identityLogRef.current[identity] = log;
     }
@@ -10117,19 +10139,49 @@ function ConsoleApp({ baseUrl }) {
     if (recomputePhaseForIdentity(identity)) changed = true;
     return changed;
   }
-  async function queryIdentityTimeline(identity) {
-    const frames = [];
-    let available = true;
-    let after;
-    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
-      const page = await queryTimeline(baseUrl, { identity, after }, 1e3);
-      available = page.available;
-      frames.push(...page.frames);
-      const next = page.nextCursor?.trim();
-      if (!next || next === after) break;
-      after = next;
+  function newerCursor(a, b) {
+    const aSeq = cursorSeq2(a);
+    const bSeq = cursorSeq2(b);
+    if (aSeq === null) return b || a;
+    if (bSeq === null) return a || b;
+    return bSeq > aSeq ? b : a;
+  }
+  function olderCursor(a, b) {
+    const aSeq = cursorSeq2(a);
+    const bSeq = cursorSeq2(b);
+    if (aSeq === null) return b || a;
+    if (bSeq === null) return a || b;
+    return bSeq < aSeq ? b : a;
+  }
+  function noteIdentityTimelinePage(identity, page, mode) {
+    const log = getOrCreateLog(identity);
+    for (const frame of page.frames) {
+      log.oldestTimelineCursor = olderCursor(log.oldestTimelineCursor, frame.cursor);
+      log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, frame.cursor);
     }
-    return { frames, available };
+    if (mode === "recent") {
+      log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, page.latestCursor);
+      if (page.exhausted) log.olderHistoryExhausted = true;
+    } else {
+      log.latestTimelineCursor = newerCursor(
+        log.latestTimelineCursor,
+        page.nextCursor || page.latestCursor
+      );
+    }
+  }
+  async function queryIdentityTimelinePage(identity, target) {
+    const page = await queryTimeline(
+      baseUrl,
+      {
+        identity,
+        mode: target.mode,
+        after: target.after,
+        before: target.before
+      },
+      target.limit ?? 200
+    );
+    noteIdentityTimelinePage(identity, page, target.mode);
+    return page;
   }
   function refreshIdentityTimelineNow(identity, options = {}) {
     const normalized = identity.trim();
@@ -10144,8 +10196,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
     const request = (async () => {
-      const { frames, available } = await queryIdentityTimeline(normalized);
-      reconcileServerLog(normalized, frames, available);
+      const page = await queryIdentityTimelinePage(normalized, {
+        mode: "recent",
+        limit: 200
+      });
+      reconcileServerLog(normalized, page.frames, page.available);
       if (options.clearPhase) clearPhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
@@ -10153,6 +10208,26 @@ function ConsoleApp({ baseUrl }) {
     });
     timelineFetchInFlightRef.current[normalized] = request;
     return request;
+  }
+  async function loadOlderIdentityTimeline(identity) {
+    const normalized = identity.trim();
+    if (!normalized) return;
+    const log = getOrCreateLog(normalized);
+    if (log.olderHistoryLoading || log.olderHistoryExhausted) return;
+    log.olderHistoryLoading = true;
+    forceRender();
+    try {
+      const page = await queryIdentityTimelinePage(normalized, {
+        mode: "recent",
+        before: log.oldestTimelineCursor,
+        limit: 200
+      });
+      reconcileServerLog(normalized, page.frames, page.available);
+    } catch {
+    } finally {
+      log.olderHistoryLoading = false;
+      forceRender();
+    }
   }
   function getSortedFrames(identity) {
     const log = identityLogRef.current[identity];
@@ -10731,8 +10806,14 @@ function ConsoleApp({ baseUrl }) {
         const log = getOrCreateLog(identity);
         if (log.hasServerLog === false) continue;
         try {
-          const { frames, available } = await queryIdentityTimeline(identity);
-          if (reconcileServerLog(identity, frames, available)) changed = true;
+          const page = await queryIdentityTimelinePage(identity, {
+            mode: log.latestTimelineCursor ? "since" : "recent",
+            after: log.latestTimelineCursor,
+            limit: log.latestTimelineCursor ? 1e3 : 200
+          });
+          if (reconcileServerLog(identity, page.frames, page.available)) {
+            changed = true;
+          }
         } catch {
         }
       }
@@ -10777,7 +10858,7 @@ function ConsoleApp({ baseUrl }) {
     };
     let stopped = false;
     let unsubscribe = null;
-    void queryTimeline(baseUrl, {}, 200).then(({ frames, nextCursor }) => {
+    void queryTimeline(baseUrl, { mode: "recent" }, 200).then(({ frames, nextCursor, latestCursor }) => {
       if (stopped) return;
       const seen = /* @__PURE__ */ new Set();
       const filtered = [];
@@ -10793,7 +10874,7 @@ function ConsoleApp({ baseUrl }) {
         frames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)).slice(-300).reverse()
       );
       forceRender();
-      const after = nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
+      const after = latestCursor || nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
       unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
     }).catch(() => {
       if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
@@ -11322,6 +11403,7 @@ function ConsoleApp({ baseUrl }) {
     });
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
+    const identityLog = getOrCreateLog(identity);
     const isSending = sendingPanels.has(panelKey);
     const hasLocalPhase = Object.prototype.hasOwnProperty.call(
       phaseRef.current,
@@ -11377,6 +11459,9 @@ function ConsoleApp({ baseUrl }) {
         respawnLabel: configuredActionLabels.respawn,
         retireLabel: configuredActionLabels.retire,
         sendLabel: configuredActionLabels.send,
+        hasOlderHistory: identityLog.hasServerLog === true && Boolean(identityLog.oldestTimelineCursor) && identityLog.olderHistoryExhausted !== true,
+        loadingOlderHistory: identityLog.olderHistoryLoading === true,
+        onLoadOlder: () => void loadOlderIdentityTimeline(identity),
         stackSlot
       }
     );

@@ -30,7 +30,7 @@ use crate::blob_store::{BinaryBlobPayload, BinaryBlobStore, is_valid_blob_id_val
 use crate::console_aggregator::{
     AllowAllConsoleVisibilityPolicy, ConsoleCursor, ConsoleFrame, ConsoleLogResult,
     ConsoleLogStore, ConsoleReplayUnavailable, ConsoleSendError, ConsoleSendRequest,
-    ConsoleTimelineEvent, ConsoleTimelineQuery, ConsoleVisibilityPolicy,
+    ConsoleTimelineEvent, ConsoleTimelineMode, ConsoleTimelineQuery, ConsoleVisibilityPolicy,
     HideImplicitDelegateMembersConsoleVisibilityPolicy, MobKitConsoleAggregator,
 };
 use crate::contact_directory::ContactDirectory;
@@ -540,6 +540,10 @@ struct ConsoleTimelineHttpQuery {
     #[serde(default)]
     after: Option<String>,
     #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    mode: Option<ConsoleTimelineMode>,
+    #[serde(default)]
     limit: Option<usize>,
 }
 
@@ -1027,6 +1031,7 @@ fn timeline_query_from_http(
     fallback_after: Option<String>,
 ) -> ConsoleTimelineQuery {
     let after = query.after.or(fallback_after).map(ConsoleCursor::from);
+    let before = query.before.map(ConsoleCursor::from);
     ConsoleTimelineQuery {
         identity: query
             .identity
@@ -1037,6 +1042,8 @@ fn timeline_query_from_http(
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
         after,
+        before,
+        mode: query.mode.unwrap_or_default(),
         limit: query.limit.unwrap_or(200),
     }
 }
@@ -1045,119 +1052,22 @@ async fn query_timeline_snapshot(
     aggregator: &MobKitConsoleAggregator,
     mut query: ConsoleTimelineQuery,
 ) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
-    const MAX_SNAPSHOT_PAGES: usize = 100;
-    const STORE_PAGE_LIMIT: usize = 1_000;
     const DEFAULT_SNAPSHOT_LIMIT: usize = 200;
-    let mut frames = Vec::new();
-    let mut latest_cursor = query.after.clone();
-    if query.after.is_none() {
-        query.limit = if query.limit == 0 {
-            DEFAULT_SNAPSHOT_LIMIT
-        } else {
-            query.limit
-        }
-        .clamp(1, STORE_PAGE_LIMIT);
-        return query_fresh_timeline_snapshot(aggregator, query, STORE_PAGE_LIMIT).await;
+    query.limit = if query.limit == 0 {
+        DEFAULT_SNAPSHOT_LIMIT
+    } else {
+        query.limit
+    };
+    if query.after.is_none() && query.mode == ConsoleTimelineMode::Since {
+        query.mode = ConsoleTimelineMode::Recent;
     }
-    query.limit = STORE_PAGE_LIMIT;
-    let query_identity = query.identity.clone();
-    for page_idx in 0..MAX_SNAPSHOT_PAGES {
-        let page = aggregator.store().query_frames(query.clone()).await?;
-        if page.frames.is_empty() {
-            break;
-        }
-        latest_cursor = page.next_cursor.clone();
-        let page_len = page.frames.len();
-        frames.extend(
-            visible_snapshot_frames(aggregator, page.frames, query_identity.as_deref()).await?,
-        );
-        query.after = latest_cursor.clone();
-        if page_len < STORE_PAGE_LIMIT {
-            break;
-        }
-        if page_idx + 1 == MAX_SNAPSHOT_PAGES {
-            return Err(Box::new(std::io::Error::other(
-                "timeline replay exceeded maximum snapshot pages",
-            )));
-        }
-    }
-    Ok((frames, latest_cursor))
-}
-
-async fn query_fresh_timeline_snapshot(
-    aggregator: &MobKitConsoleAggregator,
-    mut query: ConsoleTimelineQuery,
-    store_page_limit: usize,
-) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
-    const IDENTITY_ANCHOR_FRAME_LIMIT: usize = 100;
-    let requested_limit = query.limit;
-    query.limit = store_page_limit;
-    let query_identity = query.identity.clone();
-    let mut latest_cursor = None;
-    let mut anchor_frames = Vec::new();
-    let mut tail = std::collections::VecDeque::with_capacity(requested_limit);
-    loop {
-        let page = aggregator.store().query_frames(query.clone()).await?;
-        if page.frames.is_empty() {
-            break;
-        }
-        latest_cursor = page.next_cursor.clone();
-        let page_len = page.frames.len();
-        for frame in
-            visible_snapshot_frames(aggregator, page.frames, query_identity.as_deref()).await?
-        {
-            if query_identity.is_some()
-                && is_identity_snapshot_anchor_frame(&frame)
-                && anchor_frames.len() < IDENTITY_ANCHOR_FRAME_LIMIT
-            {
-                anchor_frames.push(frame.clone());
-            }
-            if tail.len() >= requested_limit {
-                tail.pop_front();
-            }
-            tail.push_back(frame);
-        }
-        query.after = latest_cursor.clone();
-        if page_len < query.limit {
-            break;
-        }
-    }
-    if anchor_frames.is_empty() {
-        return Ok((tail.into_iter().collect(), latest_cursor));
-    }
-
-    let mut merged = anchor_frames;
-    for frame in tail {
-        if !merged
-            .iter()
-            .any(|existing| existing.cursor == frame.cursor || existing.id == frame.id)
-        {
-            merged.push(frame);
-        }
-    }
-    merged.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
-    Ok((merged, latest_cursor))
-}
-
-async fn visible_snapshot_frames(
-    aggregator: &MobKitConsoleAggregator,
-    frames: Vec<ConsoleFrame>,
-    identity: Option<&str>,
-) -> ConsoleLogResult<Vec<ConsoleFrame>> {
-    let mut visible = Vec::with_capacity(frames.len());
-    for frame in frames {
-        if aggregator
-            .timeline_frame_visible_for_query(&frame, identity)
-            .await
-        {
-            visible.push(frame);
-        }
-    }
-    Ok(visible)
-}
-
-fn is_identity_snapshot_anchor_frame(frame: &ConsoleFrame) -> bool {
-    frame.kind == "user_input"
+    let mode = query.mode;
+    let page = aggregator.query_timeline(query).await?;
+    let cursor = match mode {
+        ConsoleTimelineMode::Recent => page.latest_cursor.or(page.next_cursor),
+        ConsoleTimelineMode::Since => page.next_cursor.or(page.latest_cursor),
+    };
+    Ok((page.frames, cursor))
 }
 
 fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::response::Response {
@@ -5718,16 +5628,16 @@ comms = true
         )
         .await?;
 
-        assert_eq!(frames.len(), 2_400);
+        assert_eq!(frames.len(), 1_000);
         assert_eq!(
             frames.first().and_then(|frame| frame.cursor.seq()),
             Some(101)
         );
         assert_eq!(
             frames.last().and_then(|frame| frame.cursor.seq()),
-            Some(2_500)
+            Some(1_100)
         );
-        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(2_500));
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1_100));
         Ok(())
     }
 

@@ -44,6 +44,8 @@ export interface ConsoleTimelineAccepted {
 export interface ConsoleTimelinePage {
   frames: ConsoleFrame[];
   nextCursor?: string;
+  latestCursor?: string;
+  exhausted?: boolean;
   available: boolean;
 }
 

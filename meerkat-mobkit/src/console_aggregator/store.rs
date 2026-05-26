@@ -7,8 +7,8 @@ use sha2::{Digest, Sha256};
 
 use super::types::{
     AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
-    ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleTimelinePage, ConsoleTimelineQuery,
-    NewConsoleFrame,
+    ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleTimelineMode, ConsoleTimelinePage,
+    ConsoleTimelineQuery, NewConsoleFrame,
 };
 
 pub type ConsoleLogResult<T> = Result<T, ConsoleLogError>;
@@ -157,35 +157,64 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let after_seq = query.after.as_ref().map(cursor_seq).transpose()?;
+        let before_seq = query.before.as_ref().map(cursor_seq).transpose()?;
         let limit = normalize_limit(query.limit);
         let state = self
             .state
             .lock()
             .map_err(|_| boxed_error("console log lock poisoned"))?;
-        let mut frames = Vec::new();
-        for (seq, frame) in &state.frames {
+        let frame_matches = |seq: &u64, frame: &ConsoleFrame| -> bool {
             if after_seq.is_some_and(|after| *seq <= after) {
-                continue;
+                return false;
+            }
+            if before_seq.is_some_and(|before| *seq >= before) {
+                return false;
             }
             if let Some(identity) = query.identity.as_deref()
                 && frame.identity != identity
             {
-                continue;
+                return false;
             }
             if let Some(conversation_id) = query.conversation_id.as_deref()
                 && frame.conversation_id.as_deref() != Some(conversation_id)
             {
-                continue;
+                return false;
             }
-            frames.push(frame.clone());
-            if frames.len() >= limit {
-                break;
+            true
+        };
+        let latest_cursor = state
+            .frames
+            .iter()
+            .rev()
+            .find_map(|(seq, frame)| frame_matches(seq, frame).then(|| frame.cursor.clone()));
+        let frames = match query.mode {
+            ConsoleTimelineMode::Since => state
+                .frames
+                .iter()
+                .filter(|(seq, frame)| frame_matches(seq, frame))
+                .map(|(_, frame)| frame.clone())
+                .take(limit)
+                .collect::<Vec<_>>(),
+            ConsoleTimelineMode::Recent => {
+                let mut frames = state
+                    .frames
+                    .iter()
+                    .rev()
+                    .filter(|(seq, frame)| frame_matches(seq, frame))
+                    .map(|(_, frame)| frame.clone())
+                    .take(limit)
+                    .collect::<Vec<_>>();
+                frames.reverse();
+                frames
             }
-        }
+        };
+        let exhausted = frames.len() < limit;
         let next_cursor = frames.last().map(|frame| frame.cursor.clone());
         Ok(ConsoleTimelinePage {
             frames,
             next_cursor,
+            latest_cursor,
+            exhausted,
         })
     }
 
@@ -365,6 +394,7 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let after_seq = query.after.as_ref().map(cursor_seq).transpose()?;
+        let before_seq = query.before.as_ref().map(cursor_seq).transpose()?;
         let limit = normalize_limit(query.limit);
         let conn = self
             .conn
@@ -375,43 +405,56 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
                     conversation_id, session_id, kind, status, frame_version, updated_at_ms, payload_json,
                     source_kind, source_cursor, source_event_id, interaction_id,
                     parent_frame_id, caused_by_frame_id, turn_id, run_id
-             FROM console_frames WHERE cursor_seq > ?1",
+             FROM console_frames WHERE cursor_seq > ?1 AND cursor_seq < ?2",
         );
+        let mut next_param = 3usize;
         if query.identity.is_some() {
-            sql.push_str(" AND identity = ?2");
+            sql.push_str(" AND identity = ?");
+            sql.push_str(&next_param.to_string());
+            next_param += 1;
         }
         if query.conversation_id.is_some() {
-            sql.push_str(if query.identity.is_some() {
-                " AND conversation_id = ?3"
-            } else {
-                " AND conversation_id = ?2"
-            });
+            sql.push_str(" AND conversation_id = ?");
+            sql.push_str(&next_param.to_string());
+            next_param += 1;
         }
-        sql.push_str(" ORDER BY cursor_seq ASC LIMIT ?");
-        let limit_param_index = 2
-            + usize::from(query.identity.is_some())
-            + usize::from(query.conversation_id.is_some());
-        sql.push_str(&limit_param_index.to_string());
+        match query.mode {
+            ConsoleTimelineMode::Since => sql.push_str(" ORDER BY cursor_seq ASC LIMIT ?"),
+            ConsoleTimelineMode::Recent => sql.push_str(" ORDER BY cursor_seq DESC LIMIT ?"),
+        }
+        sql.push_str(&next_param.to_string());
 
         let after = after_seq.unwrap_or(0) as i64;
-        let frames = match (query.identity.as_deref(), query.conversation_id.as_deref()) {
-            (Some(identity), Some(conversation_id)) => query_sql_frames(
-                &conn,
-                &sql,
-                params![after, identity, conversation_id, limit as i64],
-            )?,
-            (Some(identity), None) => {
-                query_sql_frames(&conn, &sql, params![after, identity, limit as i64])?
-            }
-            (None, Some(conversation_id)) => {
-                query_sql_frames(&conn, &sql, params![after, conversation_id, limit as i64])?
-            }
-            (None, None) => query_sql_frames(&conn, &sql, params![after, limit as i64])?,
-        };
+        let before = before_seq.unwrap_or(i64::MAX as u64) as i64;
+        let mut values = vec![
+            rusqlite::types::Value::Integer(after),
+            rusqlite::types::Value::Integer(before),
+        ];
+        if let Some(identity) = query.identity.as_ref() {
+            values.push(rusqlite::types::Value::Text(identity.clone()));
+        }
+        if let Some(conversation_id) = query.conversation_id.as_ref() {
+            values.push(rusqlite::types::Value::Text(conversation_id.clone()));
+        }
+        values.push(rusqlite::types::Value::Integer(limit as i64));
+        let mut frames = query_sql_frames(&conn, &sql, rusqlite::params_from_iter(values))?;
+        if query.mode == ConsoleTimelineMode::Recent {
+            frames.reverse();
+        }
+        let latest_cursor = latest_matching_cursor(
+            &conn,
+            after,
+            before,
+            query.identity.as_deref(),
+            query.conversation_id.as_deref(),
+        )?;
+        let exhausted = frames.len() < limit;
         let next_cursor = frames.last().map(|frame| frame.cursor.clone());
         Ok(ConsoleTimelinePage {
             frames,
             next_cursor,
+            latest_cursor,
+            exhausted,
         })
     }
 
@@ -617,6 +660,43 @@ fn select_frame_by_id(conn: &Connection, id: &str) -> ConsoleLogResult<Option<Co
     .map_err(into_boxed)
 }
 
+fn latest_matching_cursor(
+    conn: &Connection,
+    after: i64,
+    before: i64,
+    identity: Option<&str>,
+    conversation_id: Option<&str>,
+) -> ConsoleLogResult<Option<ConsoleCursor>> {
+    let mut sql = String::from(
+        "SELECT cursor_seq FROM console_frames WHERE cursor_seq > ?1 AND cursor_seq < ?2",
+    );
+    if identity.is_some() {
+        sql.push_str(" AND identity = ?3");
+    }
+    if conversation_id.is_some() {
+        sql.push_str(" AND conversation_id = ?");
+        let next_param = 3 + usize::from(identity.is_some());
+        sql.push_str(&next_param.to_string());
+    }
+    sql.push_str(" ORDER BY cursor_seq DESC LIMIT 1");
+
+    let mut values = vec![
+        rusqlite::types::Value::Integer(after),
+        rusqlite::types::Value::Integer(before),
+    ];
+    if let Some(identity) = identity {
+        values.push(rusqlite::types::Value::Text(identity.to_string()));
+    }
+    if let Some(conversation_id) = conversation_id {
+        values.push(rusqlite::types::Value::Text(conversation_id.to_string()));
+    }
+    let seq: Option<i64> = conn
+        .query_row(&sql, rusqlite::params_from_iter(values), |row| row.get(0))
+        .optional()
+        .map_err(into_boxed)?;
+    Ok(seq.map(|value| ConsoleCursor::from_seq(value as u64)))
+}
+
 fn row_to_frame(row: &rusqlite::Row<'_>) -> rusqlite::Result<ConsoleFrame> {
     let seq: i64 = row.get(0)?;
     let payload_json: String = row.get(12)?;
@@ -774,6 +854,117 @@ mod tests {
             .expect("query");
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].dedupe_key, "event-3");
+    }
+
+    #[tokio::test]
+    async fn in_memory_log_queries_recent_window_in_display_order() {
+        let store = InMemoryConsoleLogStore::new();
+        for index in 1..=6 {
+            store
+                .append_if_absent(sample_frame(&format!("event-{index}"), "agent-a"))
+                .await
+                .expect("append frame");
+        }
+
+        let page = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 3,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query recent");
+        assert_eq!(
+            page.frames
+                .iter()
+                .map(|frame| frame.dedupe_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-4", "event-5", "event-6"]
+        );
+        assert_eq!(
+            page.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(6)
+        );
+        assert_eq!(
+            page.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(6)
+        );
+        assert!(!page.exhausted);
+
+        let older = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                before: page.frames.first().map(|frame| frame.cursor.clone()),
+                limit: 3,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query older");
+        assert_eq!(
+            older
+                .frames
+                .iter()
+                .map(|frame| frame.dedupe_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-1", "event-2", "event-3"]
+        );
+        assert_eq!(
+            older.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(3)
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_log_queries_recent_window_with_before_cursor() {
+        let store = SqliteConsoleLogStore::in_memory().expect("sqlite store");
+        for index in 1..=6 {
+            store
+                .append_if_absent(sample_frame(&format!("event-{index}"), "agent-a"))
+                .await
+                .expect("append frame");
+        }
+
+        let page = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 2,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query recent");
+        assert_eq!(
+            page.frames
+                .iter()
+                .map(|frame| frame.dedupe_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-5", "event-6"]
+        );
+
+        let older = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                before: page.frames.first().map(|frame| frame.cursor.clone()),
+                limit: 2,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query older");
+        assert_eq!(
+            older
+                .frames
+                .iter()
+                .map(|frame| frame.dedupe_key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-3", "event-4"]
+        );
+        assert_eq!(
+            older.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(4)
+        );
     }
 
     #[tokio::test]

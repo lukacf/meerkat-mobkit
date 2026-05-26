@@ -38,7 +38,8 @@ pub use types::{
     AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted, ConsoleReplayUnavailable, ConsoleSendRequest, ConsoleTimelineEvent,
-    ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleVisibility, NewConsoleFrame,
+    ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleVisibility,
+    NewConsoleFrame,
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
@@ -48,6 +49,9 @@ const SESSION_HISTORY_GROWING_REFRESH_TTL_MS: u64 = 2_000;
 const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
 const EXPLICIT_IDENTITY_BACKFILL_WAIT: Duration = Duration::from_millis(750);
 const IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT: Duration = Duration::from_millis(250);
+const TIMELINE_RAW_SCAN_PAGE_LIMIT: usize = 1_000;
+const TIMELINE_MAX_RAW_SCAN_FRAMES: usize = 100_000;
+const IDENTITY_RECENT_ANCHOR_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityCollectionMode {
@@ -561,34 +565,130 @@ impl MobKitConsoleAggregator {
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
         let explicit_identity = query.identity.clone();
-        let mut page = self.inner.store.query_frames(query.clone()).await?;
+        let mut probe_query = query.clone();
+        probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
+        let page = self.inner.store.query_frames(probe_query).await?;
         if let Some(identity) = explicit_identity.clone()
             && explicit_identity_query_needs_session_history_backfill(&page.frames)
         {
             backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
-            page = self.inner.store.query_frames(query).await?;
         }
-        let mut visible_frames = Vec::with_capacity(page.frames.len());
+        self.query_timeline_visible(query).await
+    }
+
+    async fn query_timeline_visible(
+        &self,
+        query: ConsoleTimelineQuery,
+    ) -> ConsoleLogResult<ConsoleTimelinePage> {
+        let requested_limit = query.limit.clamp(1, TIMELINE_RAW_SCAN_PAGE_LIMIT);
+        let mut scan_query = query.clone();
+        scan_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
+        let mut visible_frames = Vec::with_capacity(requested_limit);
+        let mut anchor_frames = Vec::new();
         let mut identity_visibility_cache = HashMap::new();
         let identity_records = self.inner.identity_read_model.current().await;
-        for frame in page.frames {
-            let allow_historical_identity =
-                explicit_identity.as_deref() == Some(frame.identity.as_str());
-            if frame_is_visible_cached(
-                &self.inner,
-                &frame,
-                allow_historical_identity,
-                &mut identity_visibility_cache,
-                &identity_records,
-            )
-            .await
-            .unwrap_or(false)
-            {
-                visible_frames.push(frame);
+        let mut next_cursor = query.after.clone();
+        let mut latest_cursor = None;
+        let mut exhausted = false;
+        let mut scanned = 0usize;
+
+        loop {
+            let page = self.inner.store.query_frames(scan_query.clone()).await?;
+            latest_cursor = latest_cursor.or(page.latest_cursor.clone());
+            if page.frames.is_empty() {
+                exhausted = true;
+                break;
+            }
+            let raw_len = page.frames.len();
+            scanned = scanned.saturating_add(raw_len);
+            match query.mode {
+                ConsoleTimelineMode::Since => {
+                    if let Some(cursor) = page.next_cursor.clone() {
+                        next_cursor = Some(cursor.clone());
+                        scan_query.after = Some(cursor);
+                    }
+                }
+                ConsoleTimelineMode::Recent => {
+                    if let Some(first) = page.frames.first() {
+                        scan_query.before = Some(first.cursor.clone());
+                    }
+                    next_cursor = page.next_cursor.clone().or(next_cursor);
+                }
+            }
+
+            for frame in page.frames {
+                let allow_historical_identity =
+                    query.identity.as_deref() == Some(frame.identity.as_str());
+                if frame_is_visible_cached(
+                    &self.inner,
+                    &frame,
+                    allow_historical_identity,
+                    &mut identity_visibility_cache,
+                    &identity_records,
+                )
+                .await
+                .unwrap_or(false)
+                {
+                    if query.mode == ConsoleTimelineMode::Recent
+                        && query.identity.is_some()
+                        && is_identity_timeline_anchor_frame(&frame)
+                        && anchor_frames.len() < IDENTITY_RECENT_ANCHOR_LIMIT
+                    {
+                        anchor_frames.push(frame.clone());
+                    }
+                    match query.mode {
+                        ConsoleTimelineMode::Since => {
+                            if visible_frames.len() < requested_limit {
+                                visible_frames.push(frame);
+                            }
+                        }
+                        ConsoleTimelineMode::Recent => {
+                            visible_frames.push(frame);
+                        }
+                    }
+                }
+            }
+            let needs_identity_anchor = query.mode == ConsoleTimelineMode::Recent
+                && query.identity.is_some()
+                && anchor_frames.is_empty();
+            if visible_frames.len() >= requested_limit && !needs_identity_anchor {
+                break;
+            }
+            if page.exhausted || raw_len < TIMELINE_RAW_SCAN_PAGE_LIMIT {
+                exhausted = true;
+                break;
+            }
+            if scanned >= TIMELINE_MAX_RAW_SCAN_FRAMES {
+                break;
             }
         }
-        page.frames = visible_frames;
-        Ok(page)
+
+        if query.mode == ConsoleTimelineMode::Recent {
+            visible_frames.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+            if visible_frames.len() > requested_limit {
+                visible_frames = visible_frames.split_off(visible_frames.len() - requested_limit);
+            }
+            if !anchor_frames.is_empty() {
+                let mut merged = anchor_frames;
+                for frame in visible_frames {
+                    if !merged
+                        .iter()
+                        .any(|existing| existing.cursor == frame.cursor || existing.id == frame.id)
+                    {
+                        merged.push(frame);
+                    }
+                }
+                merged.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+                visible_frames = merged;
+            }
+        }
+
+        Ok(ConsoleTimelinePage {
+            frames: visible_frames,
+            next_cursor,
+            latest_cursor,
+            exhausted,
+        })
     }
 
     pub async fn refresh_session_history(&self) -> ConsoleLogResult<()> {
@@ -1106,6 +1206,18 @@ fn explicit_identity_query_needs_session_history_backfill(frames: &[ConsoleFrame
                 | "tool_result_received"
         )
     })
+}
+
+fn is_identity_timeline_anchor_frame(frame: &ConsoleFrame) -> bool {
+    match frame.kind.as_str() {
+        "user_input" | "run_started" => true,
+        "interaction_started" => frame
+            .payload
+            .get("content")
+            .or_else(|| frame.payload.get("prompt"))
+            .is_some(),
+        _ => false,
+    }
 }
 
 fn dedupe_identity_records(records: Vec<ConsoleIdentityRecord>) -> Vec<ConsoleIdentityRecord> {
@@ -2573,6 +2685,7 @@ async fn history_frame_has_existing_counterpart(
                 conversation_id: frame.conversation_id.clone(),
                 after,
                 limit: 1_000,
+                ..ConsoleTimelineQuery::default()
             })
             .await?;
         for existing in &page.frames {
@@ -3055,6 +3168,15 @@ mod tests {
 
     use super::*;
     use crate::mob_handle_runtime::MobBootstrapSpec;
+
+    #[derive(Debug)]
+    struct HideHiddenNoiseFrames;
+
+    impl ConsoleVisibilityPolicy for HideHiddenNoiseFrames {
+        fn frame_visible(&self, frame: &ConsoleFrame) -> bool {
+            frame.kind != "hidden_noise"
+        }
+    }
 
     struct CountingConsoleLogStore {
         inner: InMemoryConsoleLogStore,
@@ -3761,6 +3883,92 @@ comms = true
             .expect("query timeline");
         assert_eq!(page.frames.len(), 1);
         assert_eq!(page.frames[0].kind, "text_delta");
+    }
+
+    #[tokio::test]
+    async fn query_timeline_since_skips_hidden_raw_gaps_with_bounded_paging() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let runtime = build_single_member_runtime().await;
+        let mut entry = runtime_entry_for_test("runtime-a", &runtime);
+        entry.visibility_policy = Arc::new(HideHiddenNoiseFrames);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+
+        for idx in 0..1_500 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("hidden-gap-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "hidden_noise".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("hidden-gap-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append hidden frame");
+        }
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "visible-after-gap".to_string(),
+                timestamp_ms: 1_501,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "interaction_complete".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "text": "visible after hidden gap" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("visible-after-gap".to_string()),
+                interaction_id: Some("turn-visible".to_string()),
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append visible frame");
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                limit: 1,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query timeline");
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(page.frames[0].dedupe_key, "visible-after-gap");
+        assert_eq!(
+            page.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(1_501)
+        );
+        let _ = runtime.mob_handle().stop().await;
     }
 
     #[tokio::test]
