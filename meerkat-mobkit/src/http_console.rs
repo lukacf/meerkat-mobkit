@@ -1089,10 +1089,12 @@ async fn query_fresh_timeline_snapshot(
     mut query: ConsoleTimelineQuery,
     store_page_limit: usize,
 ) -> ConsoleLogResult<(Vec<ConsoleFrame>, Option<ConsoleCursor>)> {
+    const IDENTITY_ANCHOR_FRAME_LIMIT: usize = 100;
     let requested_limit = query.limit;
     query.limit = store_page_limit;
     let query_identity = query.identity.clone();
     let mut latest_cursor = None;
+    let mut anchor_frames = Vec::new();
     let mut tail = std::collections::VecDeque::with_capacity(requested_limit);
     loop {
         let page = aggregator.store().query_frames(query.clone()).await?;
@@ -1104,6 +1106,12 @@ async fn query_fresh_timeline_snapshot(
         for frame in
             visible_snapshot_frames(aggregator, page.frames, query_identity.as_deref()).await?
         {
+            if query_identity.is_some()
+                && is_identity_snapshot_anchor_frame(&frame)
+                && anchor_frames.len() < IDENTITY_ANCHOR_FRAME_LIMIT
+            {
+                anchor_frames.push(frame.clone());
+            }
             if tail.len() >= requested_limit {
                 tail.pop_front();
             }
@@ -1114,7 +1122,21 @@ async fn query_fresh_timeline_snapshot(
             break;
         }
     }
-    Ok((tail.into_iter().collect(), latest_cursor))
+    if anchor_frames.is_empty() {
+        return Ok((tail.into_iter().collect(), latest_cursor));
+    }
+
+    let mut merged = anchor_frames;
+    for frame in tail {
+        if !merged
+            .iter()
+            .any(|existing| existing.cursor == frame.cursor || existing.id == frame.id)
+        {
+            merged.push(frame);
+        }
+    }
+    merged.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+    Ok((merged, latest_cursor))
 }
 
 async fn visible_snapshot_frames(
@@ -1132,6 +1154,10 @@ async fn visible_snapshot_frames(
         }
     }
     Ok(visible)
+}
+
+fn is_identity_snapshot_anchor_frame(frame: &ConsoleFrame) -> bool {
+    frame.kind == "user_input"
 }
 
 fn console_json_error(status: StatusCode, error: &str, message: &str) -> axum::response::Response {
@@ -5556,6 +5582,96 @@ comms = true
         assert_eq!(frames[0].identity, "sparse-agent");
         assert_eq!(frames[0].payload["text"], json!("still visible"));
         assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fresh_identity_snapshot_keeps_user_input_anchor_before_noisy_tail()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "worker-kickoff".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "review-worker-a".to_string(),
+                conversation_id: Some("review-worker-a".to_string()),
+                session_id: None,
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Console chat smoke: review this initiative"
+                        }
+                    ]
+                }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::Synthetic,
+                    source_cursor: None,
+                },
+                source_event_id: Some("worker-kickoff".to_string()),
+                interaction_id: Some("kickoff-1".to_string()),
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+        for idx in 0..1_500 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("worker-delta-{idx}"),
+                    timestamp_ms: idx + 2,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "review-worker-a".to_string(),
+                    conversation_id: Some("review-worker-a".to_string()),
+                    session_id: None,
+                    kind: "reasoning_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("worker-delta-{idx}")),
+                    interaction_id: Some("kickoff-1".to_string()),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await?;
+        }
+
+        let (frames, cursor) = query_timeline_snapshot(
+            &aggregator,
+            ConsoleTimelineQuery {
+                identity: Some("review-worker-a".to_string()),
+                after: None,
+                limit: 200,
+                ..ConsoleTimelineQuery::default()
+            },
+        )
+        .await?;
+
+        assert!(
+            frames.iter().any(|frame| {
+                frame.kind == "user_input"
+                    && frame.payload.to_string().contains("Console chat smoke")
+            }),
+            "identity chat snapshot must keep the worker kickoff prompt before a noisy tail: {frames:#?}",
+        );
+        assert_eq!(cursor.as_ref().and_then(ConsoleCursor::seq), Some(1_501));
+        assert_eq!(
+            frames.last().and_then(|frame| frame.cursor.seq()),
+            Some(1_501)
+        );
         Ok(())
     }
 
