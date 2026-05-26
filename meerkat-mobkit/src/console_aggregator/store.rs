@@ -159,6 +159,7 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
         let after_seq = query.after.as_ref().map(cursor_seq).transpose()?;
         let before_seq = query.before.as_ref().map(cursor_seq).transpose()?;
         let limit = normalize_limit(query.limit);
+        let scan_limit = limit.saturating_add(1);
         let state = self
             .state
             .lock()
@@ -187,13 +188,13 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
             .iter()
             .rev()
             .find_map(|(seq, frame)| frame_matches(seq, frame).then(|| frame.cursor.clone()));
-        let frames = match query.mode {
+        let mut frames = match query.mode {
             ConsoleTimelineMode::Since => state
                 .frames
                 .iter()
                 .filter(|(seq, frame)| frame_matches(seq, frame))
                 .map(|(_, frame)| frame.clone())
-                .take(limit)
+                .take(scan_limit)
                 .collect::<Vec<_>>(),
             ConsoleTimelineMode::Recent => {
                 let mut frames = state
@@ -202,13 +203,21 @@ impl ConsoleLogStore for InMemoryConsoleLogStore {
                     .rev()
                     .filter(|(seq, frame)| frame_matches(seq, frame))
                     .map(|(_, frame)| frame.clone())
-                    .take(limit)
+                    .take(scan_limit)
                     .collect::<Vec<_>>();
                 frames.reverse();
                 frames
             }
         };
-        let exhausted = frames.len() < limit;
+        let exhausted = frames.len() <= limit;
+        if frames.len() > limit {
+            match query.mode {
+                ConsoleTimelineMode::Since => frames.truncate(limit),
+                ConsoleTimelineMode::Recent => {
+                    frames.remove(0);
+                }
+            }
+        }
         let next_cursor = frames.last().map(|frame| frame.cursor.clone());
         Ok(ConsoleTimelinePage {
             frames,
@@ -393,9 +402,10 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
-        let after_seq = query.after.as_ref().map(cursor_seq).transpose()?;
-        let before_seq = query.before.as_ref().map(cursor_seq).transpose()?;
+        let after_seq = query.after.as_ref().map(cursor_seq_i64).transpose()?;
+        let before_seq = query.before.as_ref().map(cursor_seq_i64).transpose()?;
         let limit = normalize_limit(query.limit);
+        let scan_limit = limit.saturating_add(1);
         let conn = self
             .conn
             .lock()
@@ -424,8 +434,8 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         }
         sql.push_str(&next_param.to_string());
 
-        let after = after_seq.unwrap_or(0) as i64;
-        let before = before_seq.unwrap_or(i64::MAX as u64) as i64;
+        let after = after_seq.unwrap_or(0);
+        let before = before_seq.unwrap_or(i64::MAX);
         let mut values = vec![
             rusqlite::types::Value::Integer(after),
             rusqlite::types::Value::Integer(before),
@@ -436,10 +446,19 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
         if let Some(conversation_id) = query.conversation_id.as_ref() {
             values.push(rusqlite::types::Value::Text(conversation_id.clone()));
         }
-        values.push(rusqlite::types::Value::Integer(limit as i64));
+        values.push(rusqlite::types::Value::Integer(scan_limit as i64));
         let mut frames = query_sql_frames(&conn, &sql, rusqlite::params_from_iter(values))?;
         if query.mode == ConsoleTimelineMode::Recent {
             frames.reverse();
+        }
+        let exhausted = frames.len() <= limit;
+        if frames.len() > limit {
+            match query.mode {
+                ConsoleTimelineMode::Since => frames.truncate(limit),
+                ConsoleTimelineMode::Recent => {
+                    frames.remove(0);
+                }
+            }
         }
         let latest_cursor = latest_matching_cursor(
             &conn,
@@ -448,7 +467,6 @@ impl ConsoleLogStore for SqliteConsoleLogStore {
             query.identity.as_deref(),
             query.conversation_id.as_deref(),
         )?;
-        let exhausted = frames.len() < limit;
         let next_cursor = frames.last().map(|frame| frame.cursor.clone());
         Ok(ConsoleTimelinePage {
             frames,
@@ -739,6 +757,11 @@ fn cursor_seq(cursor: &ConsoleCursor) -> ConsoleLogResult<u64> {
         .ok_or_else(|| boxed_error(format!("invalid console cursor: {cursor}")))
 }
 
+fn cursor_seq_i64(cursor: &ConsoleCursor) -> ConsoleLogResult<i64> {
+    let seq = cursor_seq(cursor)?;
+    i64::try_from(seq).map_err(|_| boxed_error(format!("console cursor out of range: {cursor}")))
+}
+
 pub(crate) fn stable_frame_id(dedupe_key: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(dedupe_key.as_bytes());
@@ -965,6 +988,72 @@ mod tests {
             older.latest_cursor.as_ref().and_then(ConsoleCursor::seq),
             Some(4)
         );
+    }
+
+    #[tokio::test]
+    async fn sqlite_log_reports_exhausted_on_exact_size_recent_final_page() {
+        let store = SqliteConsoleLogStore::in_memory().expect("sqlite store");
+        for index in 1..=400 {
+            store
+                .append_if_absent(sample_frame(&format!("event-{index}"), "agent-a"))
+                .await
+                .expect("append frame");
+        }
+
+        let first = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 200,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query recent");
+        assert!(!first.exhausted);
+        assert_eq!(first.frames[0].dedupe_key, "event-201");
+
+        let older = store
+            .query_frames(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                before: first.frames.first().map(|frame| frame.cursor.clone()),
+                limit: 200,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query older");
+        assert!(older.exhausted);
+        assert_eq!(older.frames.len(), 200);
+        assert_eq!(older.frames[0].dedupe_key, "event-1");
+    }
+
+    #[tokio::test]
+    async fn sqlite_log_rejects_out_of_range_console_cursors() {
+        let store = SqliteConsoleLogStore::in_memory().expect("sqlite store");
+        store
+            .append_if_absent(sample_frame("event-1", "agent-a"))
+            .await
+            .expect("append frame");
+
+        let err = store
+            .query_frames(ConsoleTimelineQuery {
+                after: Some(ConsoleCursor::from("console:9223372036854775808")),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect_err("oversized after cursor should be rejected");
+        assert!(err.to_string().contains("out of range"));
+
+        let err = store
+            .query_frames(ConsoleTimelineQuery {
+                before: Some(ConsoleCursor::from("console:9223372036854775808")),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect_err("oversized before cursor should be rejected");
+        assert!(err.to_string().contains("out of range"));
     }
 
     #[tokio::test]

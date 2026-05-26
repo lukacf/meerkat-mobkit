@@ -666,6 +666,10 @@ export function subscribeTimelineEvents(
         if (stopped || controller.signal.aborted) {
           break;
         }
+        const replayError = (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError;
+        if (replayError?.latest_event_id) {
+          after = replayError.latest_event_id;
+        }
         onFrame(replayUnavailableFrame(error));
       }
       if (!stopped) {

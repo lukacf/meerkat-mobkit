@@ -498,6 +498,9 @@ export function ChatPane({
   stackSlot,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
+  const preserveOlderHistoryScrollRef = React.useRef(false);
+  const olderHistoryScrollHeightRef = React.useRef(0);
+  const olderHistoryScrollTopRef = React.useRef(0);
 
   const messages = React.useMemo(() => {
     return buildChatMessages(entries);
@@ -519,6 +522,14 @@ export function ChatPane({
   }, [identity, messages, phase]);
 
   React.useLayoutEffect(() => {
+    if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
+      const node = bodyRef.current;
+      const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
+      node.scrollTop = olderHistoryScrollTopRef.current + Math.max(0, addedHeight);
+      node.scrollLeft = 0;
+      preserveOlderHistoryScrollRef.current = false;
+      return;
+    }
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -533,6 +544,21 @@ export function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
+
+  React.useEffect(() => {
+    if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
+      preserveOlderHistoryScrollRef.current = false;
+    }
+  }, [loadingOlderHistory]);
+
+  function requestOlderHistory() {
+    if (bodyRef.current) {
+      preserveOlderHistoryScrollRef.current = true;
+      olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
+      olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
+    }
+    onLoadOlder?.();
+  }
 
   const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
@@ -682,7 +708,7 @@ export function ChatPane({
             hasOlderHistory &&
             !loadingOlderHistory
           ) {
-            onLoadOlder?.();
+            requestOlderHistory();
           }
         }}
         ref={bodyRef}
@@ -696,7 +722,7 @@ export function ChatPane({
           <button
             className="conv__history"
             disabled={loadingOlderHistory}
-            onClick={() => onLoadOlder?.()}
+            onClick={requestOlderHistory}
             type="button"
           >
             {loadingOlderHistory ? "Loading history" : "Load older history"}

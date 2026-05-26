@@ -103,6 +103,38 @@ The URL carries `after_seq` (`next_after_seq` ∨ caller's `after_seq` ∨
 `latest_cursor`) and the original filters so the SSE handler picks
 up gaplessly with the same predicate.
 
+---
+
+## Console timeline
+
+### `mobkit/console/query_timeline`
+
+Query the console log store for timeline frames. The method backs the bundled console chat and activity panes.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | no | Restrict results to one console identity. |
+| `conversation_id` | `string` | no | Restrict results to one conversation. |
+| `mode` | `"since"` or `"recent"` | no | `since` returns visible frames after `after`; `recent` returns the latest visible frames in display order. |
+| `after` | `console:<seq>` | no | Exclusive lower cursor bound. |
+| `before` | `console:<seq>` | no | Exclusive upper cursor bound for older-history paging. |
+| `limit` | `usize` | no | Visible frame limit, clamped by the server. |
+</Accordion>
+
+Response:
+
+```json
+{
+  "frames": [],
+  "next_cursor": "console:240",
+  "latest_cursor": "console:240",
+  "exhausted": false
+}
+```
+
+`next_cursor` never advances past visible frames omitted due to `limit`, so clients can page with `mode: "since"` without gaps. `latest_cursor` is the live-continuation cursor for `mode: "recent"` seed queries.
+
 ### `list_runs`
 
 List flow runs for this mob.

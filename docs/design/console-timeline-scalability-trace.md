@@ -19,6 +19,11 @@
 | INV-001 | Timeline reads remain store-local and do not synchronously refresh broad session history. | 1 | Aggregator query path | `cargo test -p meerkat-mobkit query_timeline_is_store_local_for_registered_runtimes -- --nocapture`; `cargo test -p meerkat-mobkit` | VALIDATED |
 | INV-002 | No Fugue-specific console path is introduced. | final | Repository scan | `rg -n "Fugue\|fugue\|LUC-631\|kapellmeister\|Kapellmeister" ...` only finds design-doc context/examples | VALIDATED |
 | INV-003 | No Meerkat core/RPC changes are required for this bug. | final | Repository diff | `git diff --name-only` only shows MobKit console/backend files and design docs | VALIDATED |
+| INV-004 | `since` pagination must not advance past visible frames that were not returned. | review | Aggregator query path, SSE replay clients | `query_timeline_since_cursor_stops_at_last_visible_returned_frame`; `cargo test -p meerkat-mobkit` | VALIDATED |
+| INV-005 | Idle chat refreshes must not force broad session-history backfill. | review | Open chat panel refresh loop | `query_timeline_since_empty_continuation_does_not_force_backfill`; `cargo test -p meerkat-mobkit` | VALIDATED |
+| INV-006 | Timeline cursor parsing must reject out-of-range values instead of wrapping. | review | SQLite console log store | `sqlite_log_rejects_out_of_range_console_cursors`; `cargo test -p meerkat-mobkit` | VALIDATED |
+| INV-007 | Older-history paging must preserve the user's scroll position. | review | `ChatPane` browser behavior | `browser chat pane older history demand paging ok`; `npm --prefix console run e2e:browser --silent` | VALIDATED |
+| INV-008 | Stale timeline SSE cursors must be normalized as replay-unavailable and resubscribe at the latest cursor. | review | Console-core timeline subscription | `subscribeTimelineEvents recovers from stale timeline cursors`; `npm --prefix console run phase0:types --silent` | VALIDATED |
 
 ## Typed But Unwired
 
@@ -37,3 +42,12 @@
 - `npm --prefix console run e2e:browser --silent`: passed, including `browser global timeline recent seed ok`, `browser chat pane recent first page ok`, and `browser chat pane older history demand paging ok`.
 - `git diff --name-only`: changes are limited to MobKit console/backend files and design docs; no Meerkat core/RPC files changed.
 - `rg -n "Fugue|fugue|LUC-631|kapellmeister|Kapellmeister" ...`: matches only the design docs' motivating context and examples, not runtime code.
+- Adversarial review follow-up fixed visible-cursor skipping, idle-refresh backfill, exact final-page exhaustion, stale SSE replay normalization, SQLite cursor overflow, and older-history scroll preservation.
+- `cargo test -p meerkat-mobkit query_timeline_since -- --nocapture`: 3 passed.
+- `cargo test -p meerkat-mobkit sqlite_log -- --nocapture`: 7 passed.
+- `cargo test -p meerkat-mobkit --lib`: 232 passed.
+- `cargo test -p meerkat-mobkit`: passed, including 232 lib tests, integration tests, and doctests.
+- `cargo clippy -p meerkat-mobkit --all-targets -- -D warnings`: passed.
+- `npm --prefix console run phase0:types --silent`: 122 JS/type-normalization tests passed.
+- `npm --prefix console run e2e:browser --silent`: passed, including recent seed, recent chat, older-history paging, and scroll-preservation coverage.
+- `git diff --check`: passed.

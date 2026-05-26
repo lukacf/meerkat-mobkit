@@ -307,9 +307,10 @@ function normalizeReplayUnavailableError(value) {
   if (!record || record.error !== "replay_unavailable") {
     return null;
   }
-  const stream = record.stream === "identity" || record.stream === "all_events" ? record.stream : null;
-  const requested = trimString(record.requested_last_event_id);
-  const latest = trimString(record.latest_event_id);
+  const explicitStream = record.stream === "identity" || record.stream === "all_events" || record.stream === "timeline" ? record.stream : null;
+  const requested = trimString(record.requested_last_event_id) || trimString(record.requested_cursor);
+  const latest = trimString(record.latest_event_id) || trimString(record.latest_cursor);
+  const stream = explicitStream || (requested.startsWith("console:") || latest.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
   }
@@ -4589,6 +4590,10 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
         if (stopped || controller.signal.aborted) {
           break;
         }
+        const replayError = error.replayError;
+        if (replayError?.latest_event_id) {
+          after = replayError.latest_event_id;
+        }
         onFrame(replayUnavailableFrame(error));
       }
       if (!stopped) {
@@ -8657,6 +8662,9 @@ function ChatPane({
   stackSlot
 }) {
   const bodyRef = import_react19.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react19.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react19.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react19.default.useRef(0);
   const messages = import_react19.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
@@ -8674,6 +8682,14 @@ function ChatPane({
     ].join(":");
   }, [identity, messages, phase]);
   import_react19.default.useLayoutEffect(() => {
+    if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
+      const node = bodyRef.current;
+      const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
+      node.scrollTop = olderHistoryScrollTopRef.current + Math.max(0, addedHeight);
+      node.scrollLeft = 0;
+      preserveOlderHistoryScrollRef.current = false;
+      return;
+    }
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -8688,6 +8704,19 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
+  import_react19.default.useEffect(() => {
+    if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
+      preserveOlderHistoryScrollRef.current = false;
+    }
+  }, [loadingOlderHistory]);
+  function requestOlderHistory() {
+    if (bodyRef.current) {
+      preserveOlderHistoryScrollRef.current = true;
+      olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
+      olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
+    }
+    onLoadOlder?.();
+  }
   const transcriptText = import_react19.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
@@ -8823,7 +8852,7 @@ function ChatPane({
             event.currentTarget.scrollLeft = 0;
           }
           if (event.currentTarget.scrollTop <= 32 && hasOlderHistory && !loadingOlderHistory) {
-            onLoadOlder?.();
+            requestOlderHistory();
           }
         },
         ref: bodyRef,
@@ -8841,7 +8870,7 @@ function ChatPane({
             {
               className: "conv__history",
               disabled: loadingOlderHistory,
-              onClick: () => onLoadOlder?.(),
+              onClick: requestOlderHistory,
               type: "button",
               children: loadingOlderHistory ? "Loading history" : "Load older history"
             }

@@ -51,6 +51,7 @@ const EXPLICIT_IDENTITY_BACKFILL_WAIT: Duration = Duration::from_millis(750);
 const IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT: Duration = Duration::from_millis(250);
 const TIMELINE_RAW_SCAN_PAGE_LIMIT: usize = 1_000;
 const TIMELINE_MAX_RAW_SCAN_FRAMES: usize = 100_000;
+const TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT: usize = 5_000;
 const IDENTITY_RECENT_ANCHOR_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -568,7 +569,9 @@ impl MobKitConsoleAggregator {
         let mut probe_query = query.clone();
         probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
         let page = self.inner.store.query_frames(probe_query).await?;
-        if let Some(identity) = explicit_identity.clone()
+        if query.after.is_none()
+            && query.before.is_none()
+            && let Some(identity) = explicit_identity.clone()
             && explicit_identity_query_needs_session_history_backfill(&page.frames)
         {
             backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
@@ -588,6 +591,9 @@ impl MobKitConsoleAggregator {
         let mut identity_visibility_cache = HashMap::new();
         let identity_records = self.inner.identity_read_model.current().await;
         let mut next_cursor = query.after.clone();
+        let mut since_last_scanned_cursor = query.after.clone();
+        let mut since_last_delivered_cursor = None;
+        let mut since_stopped_at_visible_limit = false;
         let mut latest_cursor = None;
         let mut exhausted = false;
         let mut scanned = 0usize;
@@ -604,7 +610,7 @@ impl MobKitConsoleAggregator {
             match query.mode {
                 ConsoleTimelineMode::Since => {
                     if let Some(cursor) = page.next_cursor.clone() {
-                        next_cursor = Some(cursor.clone());
+                        since_last_scanned_cursor = Some(cursor.clone());
                         scan_query.after = Some(cursor);
                     }
                 }
@@ -638,8 +644,16 @@ impl MobKitConsoleAggregator {
                     }
                     match query.mode {
                         ConsoleTimelineMode::Since => {
-                            if visible_frames.len() < requested_limit {
-                                visible_frames.push(frame);
+                            if visible_frames.len() >= requested_limit {
+                                since_stopped_at_visible_limit = true;
+                                break;
+                            }
+                            since_last_delivered_cursor = Some(frame.cursor.clone());
+                            visible_frames.push(frame);
+                            if visible_frames.len() >= requested_limit {
+                                since_stopped_at_visible_limit = true;
+                                exhausted = page.exhausted;
+                                break;
                             }
                         }
                         ConsoleTimelineMode::Recent => {
@@ -650,8 +664,12 @@ impl MobKitConsoleAggregator {
             }
             let needs_identity_anchor = query.mode == ConsoleTimelineMode::Recent
                 && query.identity.is_some()
-                && anchor_frames.is_empty();
+                && anchor_frames.is_empty()
+                && scanned < TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT;
             if visible_frames.len() >= requested_limit && !needs_identity_anchor {
+                break;
+            }
+            if since_stopped_at_visible_limit {
                 break;
             }
             if page.exhausted || raw_len < TIMELINE_RAW_SCAN_PAGE_LIMIT {
@@ -685,7 +703,13 @@ impl MobKitConsoleAggregator {
 
         Ok(ConsoleTimelinePage {
             frames: visible_frames,
-            next_cursor,
+            next_cursor: match query.mode {
+                ConsoleTimelineMode::Since if since_stopped_at_visible_limit => {
+                    since_last_delivered_cursor.or(since_last_scanned_cursor)
+                }
+                ConsoleTimelineMode::Since => since_last_scanned_cursor,
+                ConsoleTimelineMode::Recent => next_cursor,
+            },
             latest_cursor,
             exhausted,
         })
@@ -3967,6 +3991,131 @@ comms = true
         assert_eq!(
             page.next_cursor.as_ref().and_then(ConsoleCursor::seq),
             Some(1_501)
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn query_timeline_since_cursor_stops_at_last_visible_returned_frame() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for idx in 1..=300 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("visible-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "interaction_complete".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "text": format!("visible {idx}") }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("visible-{idx}")),
+                    interaction_id: Some(format!("turn-{idx}")),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append visible frame");
+        }
+
+        let first = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query first page");
+        assert_eq!(first.frames.len(), 10);
+        assert_eq!(
+            first.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(10)
+        );
+
+        let second = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                after: first.next_cursor,
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query second page");
+        assert_eq!(second.frames.len(), 10);
+        assert_eq!(second.frames[0].dedupe_key, "visible-11");
+        assert_eq!(
+            second.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(20)
+        );
+    }
+
+    #[tokio::test]
+    async fn query_timeline_since_empty_continuation_does_not_force_backfill() {
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let runtime = build_single_member_runtime().await;
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", &runtime),
+            );
+        let inserted = store
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "event-1".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "delta": "hello" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("event-1".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append frame");
+
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                after: Some(inserted.frame.cursor),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await
+            .expect("query continuation");
+
+        assert!(page.frames.is_empty());
+        assert_eq!(
+            store.source_watermark_calls(),
+            0,
+            "empty since continuation must not synchronously force session-history backfill"
         );
         let _ = runtime.mob_handle().stop().await;
     }

@@ -328,3 +328,54 @@ test("subscribeTimelineEvents reconnects with the latest aggregate cursor", asyn
     globalThis.fetch = originalFetch;
   }
 });
+
+test("subscribeTimelineEvents recovers from stale timeline cursors", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const seen: string[] = [];
+  let unsubscribe = () => {};
+
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({
+        error: "replay_unavailable",
+        requested_cursor: "bad",
+        latest_cursor: "console:99",
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response([
+      "id: console:100",
+      "event: console_frame",
+      'data: {"type":"console_frame","frame":{"id":"console-frame-100","cursor":"console:100","dedupe_key":"event-100","timestamp_ms":100,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"after stale cursor recovery"},"source":{"kind":"console_event"}}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    unsubscribe = subscribeTimelineEvents(
+      "http://127.0.0.1:7000",
+      { after: "bad" },
+      (frame) => {
+        seen.push(frame.event);
+        if (frame.cursor === "console:100") {
+          unsubscribe();
+        }
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream?after=bad");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A99");
+    assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
+});

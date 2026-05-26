@@ -10,6 +10,7 @@ MobKit uses Server-Sent Events (SSE) for several real-time flows:
 - agent-scoped streaming through `GET /agents/{agent_id}/events`
 - mob-merged streaming through `GET /mob/events`
 - structural mob events through `GET /mobkit/mob_events/stream`
+- console timeline replay and live continuation through `GET /console/timeline/stream`
 - event subscription and replay through `mobkit/events/subscribe`
 
 ## Authentication
@@ -56,6 +57,26 @@ id: evt-3
 event: interaction_complete
 data: {"type": "interaction_complete", "result": "Done."}
 ```
+
+## Console timeline stream
+
+```
+GET /console/timeline/stream
+```
+
+Streams a bounded replay snapshot followed by live console timeline frames. The route accepts the same `identity`, `conversation_id`, `after`, `before`, `mode`, and `limit` parameters as [`GET /console/timeline`](/api/rest).
+
+If replay cannot satisfy the requested cursor, the server returns HTTP **409** with:
+
+```json
+{
+  "error": "replay_unavailable",
+  "requested_cursor": "console:10",
+  "latest_cursor": "console:240"
+}
+```
+
+Clients should resume from `latest_cursor` rather than retrying the stale cursor.
 
 ## Event subscription
 

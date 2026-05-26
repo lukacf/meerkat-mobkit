@@ -93,6 +93,32 @@ Returns the list of loaded modules.
 }
 ```
 
+### `GET /console/timeline`
+
+Returns console timeline frames from the MobKit console log store. This endpoint is the REST equivalent of `mobkit/console/query_timeline`.
+
+<Accordion title="Query parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | no | Restrict results to one console identity. |
+| `conversation_id` | `string` | no | Restrict results to one conversation. |
+| `mode` | `"since"` or `"recent"` | no | `since` scans forward after `after`; `recent` returns the latest visible frames in display order. Defaults to `since` for compatibility. |
+| `after` | `console:<seq>` | no | Exclusive lower cursor bound for continuation. |
+| `before` | `console:<seq>` | no | Exclusive upper cursor bound, primarily for older-history paging with `recent`. |
+| `limit` | `usize` | no | Visible frame limit, clamped by the server. |
+</Accordion>
+
+Response frames are visibility-filtered and returned in display order. `next_cursor` is safe to use as the next `after` cursor for `since` pagination; `latest_cursor` is the latest cursor for the target window and is useful for live continuation after a `recent` seed.
+
+```json
+{
+  "frames": [],
+  "next_cursor": "console:240",
+  "latest_cursor": "console:240",
+  "exhausted": false
+}
+```
+
 ---
 
 ## Authentication

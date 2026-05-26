@@ -1635,6 +1635,18 @@ async function runChatPaneOlderHistoryDemandPagingProof() {
     await assertNoText(page, "Older-demand worker line 42");
     await pane.getByRole("button", { name: "Load older history" }).click();
     await pane.getByText("Older-demand worker line 42").waitFor({ timeout: 10_000 });
+    const body = pane.locator(".conv__body");
+    const scrollState = await body.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+    }));
+    const distanceFromBottom =
+      scrollState.scrollHeight - scrollState.clientHeight - scrollState.scrollTop;
+    assert(
+      distanceFromBottom > 100,
+      `older history load should preserve reader position instead of snapping to bottom; state=${JSON.stringify(scrollState)}`,
+    );
 
     const identityRequests = server.requests
       .filter((request) => request.url === "/console/rpc" && request.body)
