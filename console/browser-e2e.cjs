@@ -156,6 +156,7 @@ function startMockConsoleServer(port, options = {}) {
   const includeImageAgent = options.includeImageAgent === true;
   const includeBusyWorker = options.includeBusyWorker === true;
   const includeToolOnlyWorker = options.includeToolOnlyWorker === true;
+  const collapseWorkersSection = options.collapseWorkersSection === true;
   const requests = [];
 
   function writeTimelineStreamFrame(res, frame, index) {
@@ -375,6 +376,17 @@ function startMockConsoleServer(port, options = {}) {
               }] : []),
             ],
           },
+          ...(collapseWorkersSection ? {
+            console_config: {
+              agent_list: {
+                group_by: ["group", "role"],
+                section_order: ["Identity", "Router", "Workers"],
+                sections: [
+                  { name: "Workers", collapsed: true },
+                ],
+              },
+            },
+          } : {}),
         }));
         return;
       }
@@ -1327,6 +1339,36 @@ async function runNonCommsSystemNoticeDoesNotClearBusyProof() {
   }
 }
 
+async function runSidebarSearchExpandsCollapsedWorkerSectionProof() {
+  const port = await reservePort();
+  const server = await startMockConsoleServer(port, {
+    includeToolOnlyWorker: true,
+    collapseWorkersSection: true,
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.waitForSelector('[data-testid="sidebar-agent-list"]', { timeout: 30_000 });
+    await page.getByTestId("sidebar-search").fill("tool-only-worker");
+    await page.locator('[data-testid="sidebar-agent:tool-only-worker"]').waitFor({
+      timeout: 10_000,
+    });
+    await page.locator('[data-testid="sidebar-agent:tool-only-worker"]').click();
+    await page.waitForSelector('[data-testid="chat-pane:tool-only-worker"]', { timeout: 10_000 });
+
+    process.stdout.write("browser sidebar search expands collapsed worker section ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runChatPaneAutoScrollProof() {
   const port = await reservePort();
   const baseTs = Date.parse("2026-05-23T20:40:00.000Z");
@@ -1719,6 +1761,7 @@ async function main() {
   await runToolOnlyWorkerBusyQueueProof();
   await runToolOnlyWorkerTerminalClearsBusyProof();
   await runNonCommsSystemNoticeDoesNotClearBusyProof();
+  await runSidebarSearchExpandsCollapsedWorkerSectionProof();
   await runChatPaneAutoScrollProof();
   await runRunStartedClearsOptimisticPromptProof();
   await runUserInputEchoClearsOptimisticPromptProof();
