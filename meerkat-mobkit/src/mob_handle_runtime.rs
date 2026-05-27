@@ -878,69 +878,14 @@ fn build_persistent_runtime_store(store_path: &Path) -> Arc<dyn meerkat_runtime:
 /// delegating non-session runtime bookkeeping to the process-local store.
 struct SessionStoreBackedRuntimeStore {
     inner: Arc<dyn meerkat_runtime::RuntimeStore>,
-    session_store: Arc<dyn SessionStore>,
 }
 
 impl SessionStoreBackedRuntimeStore {
     fn new(
         inner: Arc<dyn meerkat_runtime::RuntimeStore>,
-        session_store: Arc<dyn SessionStore>,
+        _session_store: Arc<dyn SessionStore>,
     ) -> Self {
-        Self {
-            inner,
-            session_store,
-        }
-    }
-
-    fn session_id_for_runtime(
-        runtime_id: &meerkat_runtime::LogicalRuntimeId,
-    ) -> Result<meerkat_core::types::SessionId, meerkat_runtime::store::RuntimeStoreError> {
-        const PREFIX: &str = "rt:session:";
-        let Some(raw) = runtime_id.0.strip_prefix(PREFIX) else {
-            return Err(meerkat_runtime::store::RuntimeStoreError::Unsupported(
-                format!("cannot map non-session runtime id '{runtime_id}' to SessionStore"),
-            ));
-        };
-        meerkat_core::types::SessionId::parse(raw).map_err(|err| {
-            meerkat_runtime::store::RuntimeStoreError::Internal(format!(
-                "invalid session runtime id '{runtime_id}': {err}"
-            ))
-        })
-    }
-
-    fn decode_session(
-        snapshot: &[u8],
-        session_store_key: Option<&meerkat_core::types::SessionId>,
-    ) -> Result<meerkat_core::Session, meerkat_runtime::store::RuntimeStoreError> {
-        let session: meerkat_core::Session = serde_json::from_slice(snapshot).map_err(|err| {
-            meerkat_runtime::store::RuntimeStoreError::Internal(format!(
-                "failed to deserialize runtime session snapshot: {err}"
-            ))
-        })?;
-        if let Some(expected) = session_store_key
-            && session.id() != expected
-        {
-            return Err(
-                meerkat_runtime::store::RuntimeStoreError::SessionKeyMismatch {
-                    expected: expected.clone(),
-                    actual: session.id().clone(),
-                },
-            );
-        }
-        Ok(session)
-    }
-
-    async fn save_session_snapshot_to_store(
-        &self,
-        snapshot: &[u8],
-        session_store_key: Option<&meerkat_core::types::SessionId>,
-    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        let session = Self::decode_session(snapshot, session_store_key)?;
-        self.session_store.save(&session).await.map_err(|err| {
-            meerkat_runtime::store::RuntimeStoreError::WriteFailed(format!(
-                "external SessionStore save failed: {err}"
-            ))
-        })
+        Self { inner }
     }
 }
 
@@ -975,11 +920,19 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
         session_delta: meerkat_runtime::store::SessionDelta,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        let session_id = Self::session_id_for_runtime(runtime_id)?;
-        self.save_session_snapshot_to_store(&session_delta.session_snapshot, Some(&session_id))
-            .await?;
         self.inner
             .commit_session_snapshot(runtime_id, session_delta)
+            .await
+    }
+
+    async fn commit_session_transcript_rewrite_snapshot(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        session_delta: meerkat_runtime::store::SessionDelta,
+        commit: &meerkat_core::TranscriptRewriteCommit,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .commit_session_transcript_rewrite_snapshot(runtime_id, session_delta, commit)
             .await
     }
 
@@ -991,13 +944,6 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         input_updates: Vec<StoredInputState>,
         session_store_key: Option<meerkat_core::types::SessionId>,
     ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
-        if let Some(delta) = session_delta.as_ref() {
-            self.save_session_snapshot_to_store(
-                &delta.session_snapshot,
-                session_store_key.as_ref(),
-            )
-            .await?;
-        }
         self.inner
             .atomic_apply(
                 runtime_id,
@@ -1034,23 +980,35 @@ impl meerkat_runtime::RuntimeStore for SessionStoreBackedRuntimeStore {
         &self,
         runtime_id: &meerkat_runtime::LogicalRuntimeId,
     ) -> Result<Option<Vec<u8>>, meerkat_runtime::store::RuntimeStoreError> {
-        if let Some(snapshot) = self.inner.load_session_snapshot(runtime_id).await? {
-            return Ok(Some(snapshot));
-        }
-        let session_id = Self::session_id_for_runtime(runtime_id)?;
-        let Some(session) = self.session_store.load(&session_id).await.map_err(|err| {
-            meerkat_runtime::store::RuntimeStoreError::ReadFailed(format!(
-                "external SessionStore load failed: {err}"
-            ))
-        })?
-        else {
-            return Ok(None);
-        };
-        serde_json::to_vec(&session).map(Some).map_err(|err| {
-            meerkat_runtime::store::RuntimeStoreError::Internal(format!(
-                "failed to serialize external SessionStore snapshot: {err}"
-            ))
-        })
+        self.inner.load_session_snapshot(runtime_id).await
+    }
+
+    async fn clear_session_snapshot(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+    ) -> Result<(), meerkat_runtime::store::RuntimeStoreError> {
+        self.inner.clear_session_snapshot(runtime_id).await
+    }
+
+    async fn replace_session_snapshot_if_current(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_current: &[u8],
+        replacement: Vec<u8>,
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .replace_session_snapshot_if_current(runtime_id, expected_current, replacement)
+            .await
+    }
+
+    async fn clear_session_snapshot_if_current(
+        &self,
+        runtime_id: &meerkat_runtime::LogicalRuntimeId,
+        expected_current: &[u8],
+    ) -> Result<bool, meerkat_runtime::store::RuntimeStoreError> {
+        self.inner
+            .clear_session_snapshot_if_current(runtime_id, expected_current)
+            .await
     }
 
     async fn persist_input_state(

@@ -683,6 +683,7 @@ export function subscribeTimelineEvents(
   let stopped = false;
   let controller: AbortController | null = null;
   let after = target.after?.trim() || undefined;
+  const fetchImpl = globalThis.fetch;
 
   void (async () => {
     let retryDelayMs = 250;
@@ -694,7 +695,7 @@ export function subscribeTimelineEvents(
           headers["Last-Event-ID"] = after;
         }
         await streamFramesFromResponse(
-          await fetch(`${baseUrl}${timelineStreamPath(target)}`, {
+          await fetchImpl(`${baseUrl}${timelineStreamPath(target)}`, {
             method: "GET",
             headers,
             signal: controller.signal,

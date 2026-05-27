@@ -3176,6 +3176,9 @@ function renderRunStartedPromptEntries(frame, entryId, options = {}) {
   if (!prompt) {
     return [];
   }
+  if (options.suppressStructuredCommsPrompt) {
+    return [];
+  }
   const createdAt = isoFromTimestampMs(frame.timestampMs);
   const entries = [];
   if (!options.suppressEmbeddedRpcPrompt) {
@@ -3383,6 +3386,26 @@ function typedNoticeBlockText(block) {
   ].filter(Boolean);
   return parts.join("\n");
 }
+function typedCommsStableBodyText(block) {
+  const parts = [
+    textFromUnknown(block.summary),
+    textFromUnknown(block.body),
+    textFromUnknown(block.detail)
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+function stripCommsIntentBodyPrefix(text, peerAliases = []) {
+  const match = text.match(/^\s*\[COMMS\s+(?:MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]\n]+)\]\s*\n\s*Intent:\s*[^\n]*\n\s*Body:\s*([\s\S]+)$/i) || text.match(/^\s*Peer\s+(?:message|request|response)\s+from\s+(.+):\s*\n\s*Intent:\s*[^\n]*\n\s*Body:\s*([\s\S]+)$/i);
+  if (match?.[1] && peerAliases.length > 0) {
+    const peer = normalizePeerAlias(match[1]);
+    if (!peerAliases.includes(peer)) return text.trim();
+  }
+  return (match?.[2] || text).trim();
+}
+function stripBareCommsIntentBodyPrefix(text) {
+  const match = text.match(/^\s*Intent:\s*[^\n]*\n\s*Body:\s*([\s\S]+)$/i);
+  return (match?.[1] || text).trim();
+}
 function isExternalEventOnlySystemNotice(message) {
   if (!message || typeof message !== "object") return false;
   const record = message;
@@ -3408,6 +3431,20 @@ function systemNoticeMessageRecord(frame) {
     return data.message;
   }
   return data;
+}
+function commsNoticeMessageRecord(frame) {
+  const systemNotice = systemNoticeMessageRecord(frame);
+  if (systemNotice) return systemNotice;
+  if (frame.sourceKind !== "session_history" || !frame.data || typeof frame.data !== "object") {
+    return null;
+  }
+  if (frame.event !== "text_complete" && frame.event !== "interaction_complete" && frame.event !== "interaction_failed" && frame.event !== "run_failed") {
+    return null;
+  }
+  const message = frame.data.message;
+  if (!message || typeof message !== "object") return null;
+  const record = message;
+  return textFromUnknown(record.role) === "system_notice" ? record : null;
 }
 function systemNoticeBlockRecords(record) {
   const blocks = record.blocks;
@@ -3438,7 +3475,383 @@ function legacyPeerNoticeTextCandidates(record) {
   return candidates;
 }
 function isLegacyPeerNoticeText(text) {
-  return /^(Peer message from|\[COMMS (?:MESSAGE|REQUEST)\b)/i.test(text.trim());
+  return /^(Peer (?:message|request|response) from|\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b)/i.test(text.trim());
+}
+function isCommsLikeRunStartedPrompt(text) {
+  const trimmed = text.trim();
+  return /(^|\n)\s*Peer (?:message|request|response)(?:\s+from\b|$)/i.test(trimmed) || /(^|\n)\s*\[COMMS (?:MESSAGE|REQUEST|RESPONSE)\b/i.test(trimmed);
+}
+var PEER_ENVELOPE_LINE_RE = /^Peer\s+(?:message|request|response)\s+from\s+(.+):(.*)$/i;
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function stripPeerEnvelopeByAlias(text, peerAliases) {
+  const normalized = text.replace(/\r/g, "\n").trim();
+  const aliases = [...peerAliases].filter(Boolean).sort((a, b) => b.length - a.length);
+  for (const alias of aliases) {
+    const escaped = escapeRegExp(alias);
+    const peerEnvelope = new RegExp(
+      `^Peer\\s+(?:message|request|response)\\s+from\\s+${escaped}:(?:\\s+|$)`,
+      "i"
+    );
+    const bracketedEnvelope = new RegExp(
+      `^\\[COMMS\\s+(?:MESSAGE|REQUEST|RESPONSE)\\s+from\\s+${escaped}\\]\\s*`,
+      "i"
+    );
+    const lines = normalized.split("\n").map((line) => line.trim());
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      if (!line || /^Peer (?:message|request|response)$/i.test(line)) continue;
+      const peerMatch = line.match(peerEnvelope);
+      const bracketMatch = line.match(bracketedEnvelope);
+      if (!peerMatch && !bracketMatch) return null;
+      const bodyOnEnvelopeLine = line.replace(peerEnvelope, "").replace(bracketedEnvelope, "").trim();
+      const bodyLines = [
+        ...bodyOnEnvelopeLine ? [bodyOnEnvelopeLine] : [],
+        ...lines.slice(index + 1).filter((candidate) => !isPeerEnvelopeScaffoldLine(candidate, aliases, true))
+      ];
+      return bodyLines.join("\n").trim();
+    }
+  }
+  return null;
+}
+function isPeerEnvelopeScaffoldLine(line, peerAliases = [], allowStandaloneScaffold = false) {
+  if (!line) return true;
+  if (allowStandaloneScaffold && /^Peer (?:message|request|response)$/i.test(line)) return true;
+  if (peerAliases.length === 0 && /^\[COMMS (?:MESSAGE|REQUEST|RESPONSE) from [^\]]+\]$/i.test(line)) return true;
+  for (const alias of peerAliases) {
+    if (!alias) continue;
+    const escaped = escapeRegExp(alias);
+    if (new RegExp(`^Peer\\s+(?:message|request|response)\\s+from\\s+${escaped}:\\s*$`, "i").test(line)) {
+      return true;
+    }
+    if (new RegExp(`^\\[COMMS\\s+(?:MESSAGE|REQUEST|RESPONSE)\\s+from\\s+${escaped}\\]\\s*$`, "i").test(line)) {
+      return true;
+    }
+  }
+  return false;
+}
+function normalizePeerEnvelopeText(text, peerAliases = []) {
+  const allowGenericEnvelopeStrip = peerAliases.length === 0;
+  const intentBodyStripped = stripCommsIntentBodyPrefix(text, peerAliases);
+  const envelopeStripped = intentBodyStripped === text.trim() ? stripPeerEnvelopeByAlias(text, peerAliases) : null;
+  const aliasStripped = envelopeStripped ?? (intentBodyStripped === text.trim() ? null : intentBodyStripped);
+  let normalized = (envelopeStripped !== null ? stripBareCommsIntentBodyPrefix(envelopeStripped) : aliasStripped ?? text).replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter((line) => {
+    if (isPeerEnvelopeScaffoldLine(
+      line,
+      peerAliases,
+      allowGenericEnvelopeStrip || aliasStripped !== null
+    )) return false;
+    if (allowGenericEnvelopeStrip && PEER_ENVELOPE_LINE_RE.test(line) && !line.replace(PEER_ENVELOPE_LINE_RE, "$2").trim()) return false;
+    return true;
+  }).join("\n");
+  if (allowGenericEnvelopeStrip) {
+    normalized = normalized.replace(PEER_ENVELOPE_LINE_RE, "$2").replace(/^\[COMMS\s+(?:MESSAGE|REQUEST|RESPONSE)\s+from\s+[^\]]+\]\s*/i, "");
+  }
+  return normalized.replace(/\s+/g, " ").trim();
+}
+function normalizeStructuredCommsBodyText(text, peerAliases = []) {
+  const trimmed = text.trim();
+  if (trimmed) {
+    const stripped = stripPeerEnvelopeByAlias(trimmed, peerAliases);
+    if (stripped !== null) return stripped.replace(/\s+/g, " ").trim();
+  }
+  return trimmed.replace(/\r/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean).join(" ");
+}
+function normalizePeerAlias(value) {
+  return value.trim().toLowerCase();
+}
+function peerFromCommsText(text) {
+  const trimmed = text.trim();
+  const peerLine = trimmed.match(/(?:^|\n)\s*Peer\s+(?:message|request|response)\s+from\s+(.+):(?:[^\n]*)/i);
+  if (peerLine?.[1]) return normalizePeerAlias(peerLine[1]);
+  const bracketed = trimmed.match(/(?:^|\n)\s*\[COMMS\s+(?:MESSAGE|REQUEST|RESPONSE)\s+from\s+([^\]]+)\]/i);
+  if (bracketed?.[1]) return normalizePeerAlias(bracketed[1]);
+  return "";
+}
+var STRUCTURED_COMMS_PROMPT_MATCH_WINDOW_MS = 3e4;
+function normalizedPeerAliases(...values) {
+  const aliases = [];
+  for (const value of values) {
+    const alias = normalizePeerAlias(value);
+    if (alias && !aliases.includes(alias)) aliases.push(alias);
+  }
+  return aliases;
+}
+function commsKindFromText(text) {
+  const match = text.trim().match(/(?:^|\n)\s*Peer\s+(message|request|response)\s+from\s+/i) || text.trim().match(/(?:^|\n)\s*\[COMMS\s+(MESSAGE|REQUEST|RESPONSE)\s+from\s+/i);
+  return match?.[1]?.toLowerCase() || "";
+}
+function systemNoticeCommsSignatures(frame) {
+  const record = commsNoticeMessageRecord(frame);
+  if (!record || isExternalEventOnlySystemNotice(record)) return [];
+  const isCommsNotice = textFromUnknown(record.kind) === "comms" || systemNoticeBlockRecords(record).some((block) => textFromUnknown(block.type) === "comms") || canUseLegacyPeerNoticeText(record) && legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
+  if (!isCommsNotice) return [];
+  const signatures = [];
+  const seenSignatures = /* @__PURE__ */ new Set();
+  const pushCandidate = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
+    const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
+    const body2 = normalizePeerEnvelopeText(candidate, aliases);
+    if (!body2) return;
+    const candidateKind = kind || commsKindFromText(candidate);
+    const candidateDirection = direction || (commsKindFromText(candidate) ? "incoming" : "");
+    const key = [
+      aliases.join("|"),
+      body2,
+      candidateKind,
+      candidateDirection,
+      occurrenceId || ""
+    ].join("\0");
+    if (seenSignatures.has(key)) return;
+    seenSignatures.add(key);
+    signatures.push({
+      peer: aliases[0] || "",
+      peerAliases: aliases,
+      body: body2,
+      kind: candidateKind,
+      direction: candidateDirection,
+      occurrenceId,
+      timestampMs: frame.timestampMs,
+      sourceKind: frame.sourceKind
+    });
+  };
+  const noticeOccurrenceId = textFromUnknown(record.request_id) || textFromUnknown(record.correlation_id) || textFromUnknown(record.id);
+  const noticeBlocks = systemNoticeBlockRecords(record);
+  const typedCommsBlocks = noticeBlocks.filter((block) => textFromUnknown(block.type) === "comms");
+  if (!typedCommsBlocks.length) {
+    for (const candidate of legacyPeerNoticeTextCandidates(record)) {
+      pushCandidate(candidate, [], noticeOccurrenceId);
+    }
+  }
+  const body = textFromUnknown(record.body);
+  if (body && !typedCommsBlocks.length) pushCandidate(body, [], noticeOccurrenceId);
+  for (let index = 0; index < typedCommsBlocks.length; index++) {
+    const block = typedCommsBlocks[index];
+    const peer = block.peer && typeof block.peer === "object" ? block.peer : {};
+    const peerAliases = normalizedPeerAliases(
+      textFromUnknown(peer.display_name),
+      textFromUnknown(peer.id)
+    );
+    const blockOccurrenceId = textFromUnknown(block.request_id) || textFromUnknown(block.correlation_id) || textFromUnknown(block.id) || (noticeOccurrenceId ? `${noticeOccurrenceId}:${index}` : `${index}`);
+    const blockKind = textFromUnknown(block.kind);
+    const blockDirection = textFromUnknown(block.direction);
+    const contentText = typedNoticeContentBlocks(block.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
+    const stableBodyText = typedCommsStableBodyText(block);
+    const candidateText = contentText || stableBodyText || body;
+    if (candidateText) pushCandidate(candidateText, peerAliases, blockOccurrenceId, blockKind, blockDirection);
+  }
+  return signatures;
+}
+function structuredCommsNoticeTextSignatures(frames) {
+  const signatures = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let index = 0; index < frames.length; index++) {
+    const frame = frames[index];
+    for (const signature of systemNoticeCommsSignatures(frame)) {
+      const primaryPeerAlias = signature.peer || signature.peerAliases[0] || "";
+      const key = [
+        frame.id || `${frame.event}:${index}`,
+        primaryPeerAlias,
+        signature.kind || "",
+        signature.direction || "",
+        signature.occurrenceId || "",
+        signature.body
+      ].join("\0");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      signatures.push({
+        ...signature,
+        sourceIndex: index
+      });
+    }
+  }
+  return signatures;
+}
+function runStartedPromptMatchesStructuredCommsNotice(frame, signature) {
+  if (frame.event !== "run_started" || typeof frame.data !== "object" || frame.data === null) {
+    return false;
+  }
+  const prompt = extractPromptText(frame.data.prompt).trim();
+  if (!prompt || !isCommsLikeRunStartedPrompt(prompt)) return false;
+  const promptPeer = peerFromCommsText(prompt);
+  const promptKind = commsKindFromText(prompt);
+  const normalizedPrompt = normalizePeerEnvelopeText(prompt, signature.peerAliases);
+  if (!normalizedPrompt) return false;
+  if (promptKind && (!signature.kind || promptKind !== signature.kind)) return false;
+  if (signature.direction === "outgoing") return false;
+  const matchedByAlias = stripPeerEnvelopeByAlias(prompt, signature.peerAliases) !== null;
+  if (promptPeer && signature.peerAliases.length === 0) return false;
+  if (promptPeer && signature.peerAliases.length > 0 && !signature.peerAliases.includes(promptPeer) && !matchedByAlias) {
+    return false;
+  }
+  if (typeof frame.timestampMs === "number" && typeof signature.timestampMs === "number" && Math.abs(frame.timestampMs - signature.timestampMs) > STRUCTURED_COMMS_PROMPT_MATCH_WINDOW_MS) {
+    return false;
+  }
+  return Boolean(signature.body && normalizedPrompt === signature.body);
+}
+function structuredCommsPromptSuppressionKeys(frames, structuredCommsSignatures) {
+  const keys = /* @__PURE__ */ new Set();
+  const consumed = /* @__PURE__ */ new Set();
+  const consumedStructuredNotices = /* @__PURE__ */ new Set();
+  for (const signature of structuredCommsSignatures) {
+    const signatureKey = [
+      signature.sourceIndex ?? "",
+      signature.peerAliases.join("|"),
+      signature.body,
+      signature.kind || "",
+      signature.direction || "",
+      signature.occurrenceId || ""
+    ].join("\0");
+    if (consumedStructuredNotices.has(signatureKey)) continue;
+    consumedStructuredNotices.add(signatureKey);
+    let best = null;
+    for (let index = 0; index < frames.length; index++) {
+      const frame = frames[index];
+      const key = `${frame.id || frame.event || "frame"}:${index}`;
+      if (consumed.has(key)) continue;
+      if (typeof signature.timestampMs === "number" && typeof frame.timestampMs === "number") {
+        if (frame.timestampMs > signature.timestampMs) continue;
+        if (frame.timestampMs === signature.timestampMs && typeof signature.sourceIndex === "number" && index > signature.sourceIndex) continue;
+      } else if (typeof signature.sourceIndex === "number" && index > signature.sourceIndex) {
+        continue;
+      }
+      if (!runStartedPromptMatchesStructuredCommsNotice(frame, signature)) continue;
+      const distance = typeof frame.timestampMs === "number" && typeof signature.timestampMs === "number" ? Math.abs(frame.timestampMs - signature.timestampMs) : Math.abs(index - (signature.sourceIndex ?? index));
+      if (!best || distance < best.distance) {
+        best = {
+          key,
+          distance
+        };
+      }
+    }
+    if (best) {
+      keys.add(best.key);
+      consumed.add(best.key);
+    }
+  }
+  return keys;
+}
+function commsNoticeDedupeKeys(frame) {
+  const signatures = systemNoticeCommsSignatures(frame);
+  const keys = [];
+  for (const signature of signatures) {
+    if (!signature.body) continue;
+    const key = [
+      signature.peer || "unknown",
+      signature.kind || "message",
+      signature.direction || "incoming",
+      signature.occurrenceId || "",
+      signature.body
+    ].join(":");
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+}
+function commsNoticeDuplicateKey(key, frame, emitted) {
+  const previous = emitted.get(key);
+  if (!previous) return false;
+  const sourceKind = frame.sourceKind || "live";
+  const previousSourceKind = previous.sourceKind || "live";
+  const mixedLiveHistory = sourceKind !== previousSourceKind && (sourceKind === "session_history" || previousSourceKind === "session_history");
+  const closeInTime = typeof frame.timestampMs !== "number" || typeof previous.timestampMs !== "number" || Math.abs(frame.timestampMs - previous.timestampMs) <= 6e4;
+  return mixedLiveHistory && closeInTime;
+}
+function markCommsNoticeDedupeKey(key, frame, emitted) {
+  emitted.set(key, { sourceKind: frame.sourceKind, timestampMs: frame.timestampMs });
+}
+function commsNoticeDedupeKeysFromBlock(record, fallbackBody, index) {
+  const type = textFromUnknown(record.type);
+  const keys = [];
+  const pushKey = (candidate, peerAliases = [], occurrenceId, kind, direction) => {
+    const aliases = peerAliases.length ? peerAliases : normalizedPeerAliases(peerFromCommsText(candidate));
+    const body = normalizePeerEnvelopeText(candidate, aliases);
+    if (!body) return;
+    const candidateKind = kind || commsKindFromText(candidate) || "message";
+    const candidateDirection = direction || (commsKindFromText(candidate) ? "incoming" : "incoming");
+    const key = [
+      aliases[0] || "unknown",
+      candidateKind,
+      candidateDirection,
+      occurrenceId || "",
+      body
+    ].join(":");
+    if (!keys.includes(key)) keys.push(key);
+  };
+  if (type === "comms") {
+    const peer = record.peer && typeof record.peer === "object" ? record.peer : {};
+    const peerAliases = normalizedPeerAliases(
+      textFromUnknown(peer.display_name),
+      textFromUnknown(peer.id)
+    );
+    const contentText = typedNoticeContentBlocks(record.content).map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n");
+    const stableBodyText = typedCommsStableBodyText(record);
+    const occurrenceId = textFromUnknown(record.request_id) || textFromUnknown(record.correlation_id) || textFromUnknown(record.id) || `${index}`;
+    pushKey(
+      contentText || stableBodyText || fallbackBody,
+      peerAliases,
+      occurrenceId,
+      textFromUnknown(record.kind) || "message",
+      textFromUnknown(record.direction) || "incoming"
+    );
+    return keys;
+  }
+  if (type && type !== "text") return keys;
+  const blockText = typedNoticeBlockText(record).trim();
+  if (blockText && isLegacyPeerNoticeText(blockText)) {
+    pushKey(blockText);
+  }
+  const content = record.content;
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (!item || typeof item !== "object") continue;
+      const itemRecord = item;
+      const itemText = textFromUnknown(itemRecord.text).trim();
+      if (itemText && isLegacyPeerNoticeText(itemText)) {
+        pushKey(itemText);
+      }
+      const data = itemRecord.data;
+      if (data && typeof data === "object") {
+        const dataText = textFromUnknown(data.text).trim();
+        if (dataText && isLegacyPeerNoticeText(dataText)) {
+          pushKey(dataText);
+        }
+      }
+    }
+  }
+  return keys;
+}
+function consumeCommsNoticeBlockDedupeKeys(keys, consumeDuplicateCommsBlock) {
+  if (keys.length === 0 || !consumeDuplicateCommsBlock) return false;
+  let duplicateCount = 0;
+  for (const key of keys) {
+    if (consumeDuplicateCommsBlock(key)) duplicateCount += 1;
+  }
+  return duplicateCount === keys.length;
+}
+function shouldSuppressDuplicateCommsNotice(frame, emitted) {
+  const keys = commsNoticeDedupeKeys(frame);
+  if (keys.length === 0) return false;
+  let duplicateCount = 0;
+  for (const key of keys) {
+    if (commsNoticeDuplicateKey(key, frame, emitted)) duplicateCount += 1;
+  }
+  if (duplicateCount === keys.length) {
+    return true;
+  }
+  const record = systemNoticeMessageRecord(frame);
+  const hasBlockLevelComms = record ? systemNoticeBlockRecords(record).some((block, index) => commsNoticeDedupeKeysFromBlock(block, textFromUnknown(record.body), index).length > 0) : false;
+  if (!hasBlockLevelComms) {
+    for (const key of keys) {
+      markCommsNoticeDedupeKey(key, frame, emitted);
+    }
+  }
+  return false;
+}
+function structuredCommsBodyShouldPreserveLeadingEnvelope(body, peerAliases) {
+  if (!body.match(/^\s*(?:Peer\s+(?:message|request|response)\s+from\s+.+:|\[COMMS\s+(?:MESSAGE|REQUEST|RESPONSE)\s+from\s+[^\]]+\])\s*\n/i)) {
+    return false;
+  }
+  return peerAliases.some((alias) => alias && !alias.startsWith("implicit-"));
 }
 function canUseLegacyPeerNoticeText(record) {
   const kind = textFromUnknown(record.kind);
@@ -3455,38 +3868,63 @@ function systemNoticeClearsBusyState(frame) {
   if (!canUseLegacyPeerNoticeText(record)) return false;
   return legacyPeerNoticeTextCandidates(record).some(isLegacyPeerNoticeText);
 }
-function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
+function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl, sourceKind, consumeDuplicateCommsBlock) {
   const rich = [];
   const bodyText = textFromUnknown(body);
   if (!Array.isArray(blocks)) {
     if (bodyText) rich.push({ type: "paragraph", text: bodyText });
     return rich;
   }
-  for (const block of blocks) {
+  let consumedDuplicateCommsBlock = false;
+  for (let index = 0; index < blocks.length; index++) {
+    const block = blocks[index];
     if (!block || typeof block !== "object") continue;
     const record = block;
     const type = textFromUnknown(record.type);
     if (type === "comms") {
+      const dedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
+      if (consumeCommsNoticeBlockDedupeKeys(dedupeKeys, consumeDuplicateCommsBlock)) {
+        consumedDuplicateCommsBlock = true;
+        continue;
+      }
       const peer = record.peer && typeof record.peer === "object" ? record.peer : {};
       const peerLabel = peerLastSegment(textFromUnknown(peer.display_name) || textFromUnknown(peer.id) || "peer");
+      const peerAliases = normalizedPeerAliases(
+        textFromUnknown(peer.display_name),
+        textFromUnknown(peer.id)
+      );
       const kind = textFromUnknown(record.kind) || "message";
+      const direction = textFromUnknown(record.direction);
       const intent = textFromUnknown(record.intent);
       const requestId = textFromUnknown(record.request_id) || `typed-comms:${peerLabel}:${kind}`;
       const contentBlocks2 = typedNoticeContentBlocks(record.content, blobBaseUrl);
       const contentText = contentBlocks2.map((item) => item.type === "paragraph" ? item.text : "").filter(Boolean).join("\n").trim();
-      const displayBody = (contentText || typedNoticeBlockText(record)).replace(/^Peer\s+(?:message|request|response)\s+from\s+[^\n:]+:\s*/i, "").trim();
+      const displayBodySource = contentText || typedCommsStableBodyText(record) || bodyText;
+      const preserveStructuredContentEnvelope = structuredCommsBodyShouldPreserveLeadingEnvelope(
+        displayBodySource,
+        peerAliases
+      );
+      const displayBody = normalizeStructuredCommsBodyText(
+        displayBodySource,
+        preserveStructuredContentEnvelope ? [] : peerAliases
+      );
       rich.push({
         type: "tool-call",
         toolCallId: requestId,
         name: `peer_${kind}`,
         arguments: JSON.stringify(record.payload ?? {}, null, 2),
         status: "success",
-        peerIncoming: true,
+        peerIncoming: direction !== "outgoing",
         peerTarget: peerLabel,
         ...intent ? { peerIntent: intent } : {},
         peerBody: displayBody || void 0
       });
       rich.push(...contentBlocks2.filter((item) => item.type !== "paragraph"));
+      continue;
+    }
+    const legacyDedupeKeys = commsNoticeDedupeKeysFromBlock(record, bodyText, index);
+    if (consumeCommsNoticeBlockDedupeKeys(legacyDedupeKeys, consumeDuplicateCommsBlock)) {
+      consumedDuplicateCommsBlock = true;
       continue;
     }
     if (type === "external_event") {
@@ -3511,10 +3949,12 @@ function typedSystemNoticeBlocksToRich(blocks, body, blobBaseUrl) {
     }
     rich.push({ type: "divider", text: typedNoticeBlockText(record) || "Runtime metadata" });
   }
-  if (rich.length === 0 && bodyText) rich.push({ type: "paragraph", text: bodyText });
+  if (rich.length === 0 && bodyText && !consumedDuplicateCommsBlock) {
+    rich.push({ type: "paragraph", text: bodyText });
+  }
   return rich;
 }
-function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults) {
+function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults, sourceKind, consumeDuplicateCommsBlock) {
   if (!message || typeof message !== "object") {
     return { role: null, text: "" };
   }
@@ -3526,8 +3966,21 @@ function historyMessageText(message, peerRegistry, blobBaseUrl, toolResults) {
       return { role: "user", text };
     }
     case "system_notice": {
-      const blocks = typedSystemNoticeBlocksToRich(record.blocks, record.body, blobBaseUrl);
-      const text = typeof record.body === "string" ? record.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
+      const blocks = typedSystemNoticeBlocksToRich(
+        record.blocks,
+        record.body,
+        blobBaseUrl,
+        sourceKind,
+        consumeDuplicateCommsBlock
+      );
+      const duplicateCommsConsumed = Boolean(
+        consumeDuplicateCommsBlock && blocks.length === 0 && systemNoticeBlockRecords(record).some((block, index) => commsNoticeDedupeKeysFromBlock(
+          block,
+          textFromUnknown(record.body),
+          index
+        ).length > 0)
+      );
+      const text = duplicateCommsConsumed ? "" : typeof record.body === "string" ? record.body : blocks.map((block) => block.type === "paragraph" || block.type === "divider" ? block.text : "").filter(Boolean).join("\n");
       return { role: "meta", text, ...blocks.length > 0 ? { blocks } : {} };
     }
     case "assistant":
@@ -3561,7 +4014,9 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
     record.message,
     options.peerRegistry,
     options.blobBaseUrl,
-    options.toolResults
+    options.toolResults,
+    frame.sourceKind,
+    options.consumeDuplicateCommsBlock
   );
   const text = parsed.text.trim();
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
@@ -3603,7 +4058,8 @@ function renderSessionHistoryTextCompleteEntry(agent, frame, entryId, options = 
 function renderSystemNoticeEntry(frame, entryId, options = {}) {
   if (frame.event !== "system_notice") return null;
   const record = frame.data && typeof frame.data === "object" ? frame.data : {};
-  const message = record.message && typeof record.message === "object" ? record.message : {
+  const rawMessage = record.message && typeof record.message === "object" ? record.message : null;
+  const message = rawMessage ? textFromUnknown(rawMessage.role) ? rawMessage : { role: "system_notice", ...rawMessage } : {
     role: "system_notice",
     kind: record.kind,
     render_class: record.render_class,
@@ -3611,7 +4067,14 @@ function renderSystemNoticeEntry(frame, entryId, options = {}) {
     blocks: record.blocks
   };
   if (isExternalEventOnlySystemNotice(message)) return null;
-  const parsed = historyMessageText(message, void 0, options.blobBaseUrl);
+  const parsed = historyMessageText(
+    message,
+    void 0,
+    options.blobBaseUrl,
+    void 0,
+    frame.sourceKind,
+    options.consumeDuplicateCommsBlock
+  );
   if (parsed.role !== "meta") return null;
   const parsedBlocks = Array.isArray(parsed.blocks) ? parsed.blocks : [];
   const filteredParsedBlocks = options.consumeDuplicateToolBlock ? parsedBlocks.filter((block) => {
@@ -3636,6 +4099,11 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
   const toolBlocks = buildToolBlocks(orderedFrames);
   const peerRegistry = buildPeerRegistry(orderedFrames);
   const sessionToolResults = historyToolResults(orderedFrames);
+  const structuredCommsSignatures = structuredCommsNoticeTextSignatures(orderedFrames);
+  const structuredCommsPromptSuppression = structuredCommsPromptSuppressionKeys(
+    orderedFrames,
+    structuredCommsSignatures
+  );
   const emittedToolCalls = /* @__PURE__ */ new Set();
   const {
     liveToolCallIds,
@@ -3644,6 +4112,7 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
   const liveAssistantTerminalTexts = liveAssistantTerminalTextSignatures(orderedFrames);
   const emittedImages = /* @__PURE__ */ new Set();
   const emittedUserInputs = /* @__PURE__ */ new Set();
+  const emittedCommsNotices = /* @__PURE__ */ new Map();
   let pendingText = "";
   let pendingId = "";
   let pendingCreatedAt;
@@ -3761,7 +4230,8 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     if (frame.event === "run_started") {
       flushPendingText();
       const promptEntries = renderRunStartedPromptEntries(frame, entryId, {
-        suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true
+        suppressEmbeddedRpcPrompt: options.suppressEmbeddedRunStartedPrompt === true,
+        suppressStructuredCommsPrompt: structuredCommsPromptSuppression.has(entryId)
       });
       if (promptEntries.length > 0) {
         for (const promptEntry of promptEntries) {
@@ -3777,8 +4247,18 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
     }
     if (frame.event === "system_notice") {
       flushPendingText();
+      if (shouldSuppressDuplicateCommsNotice(frame, emittedCommsNotices)) {
+        continue;
+      }
       const noticeEntry = renderSystemNoticeEntry(frame, entryId, {
         blobBaseUrl: options.blobBaseUrl,
+        consumeDuplicateCommsBlock: (key) => {
+          if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
+            return true;
+          }
+          markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
+          return false;
+        },
         consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (noticeEntry) {
@@ -3814,6 +4294,13 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
         peerRegistry,
         blobBaseUrl: options.blobBaseUrl,
         toolResults: sessionToolResults,
+        consumeDuplicateCommsBlock: (key) => {
+          if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
+            return true;
+          }
+          markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
+          return false;
+        },
         consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
       });
       if (historyEntry) {
@@ -3839,6 +4326,13 @@ function mapFramesToTimelineEntries(agent, frames, options = {}) {
           peerRegistry,
           blobBaseUrl: options.blobBaseUrl,
           toolResults: sessionToolResults,
+          consumeDuplicateCommsBlock: (key) => {
+            if (commsNoticeDuplicateKey(key, frame, emittedCommsNotices)) {
+              return true;
+            }
+            markCommsNoticeDedupeKey(key, frame, emittedCommsNotices);
+            return false;
+          },
           consumeDuplicateToolBlock: (block) => liveToolCallIds.has(block.toolCallId) || consumeToolSignatureCount(liveToolSignatureCounts, block)
         });
         if (historyEntry) {
@@ -4606,6 +5100,7 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
   let stopped = false;
   let controller = null;
   let after = target.after?.trim() || void 0;
+  const fetchImpl = globalThis.fetch;
   void (async () => {
     let retryDelayMs = 250;
     while (!stopped) {
@@ -4616,7 +5111,7 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
           headers["Last-Event-ID"] = after;
         }
         await streamFramesFromResponse(
-          await fetch(`${baseUrl}${timelineStreamPath(target)}`, {
+          await fetchImpl(`${baseUrl}${timelineStreamPath(target)}`, {
             method: "GET",
             headers,
             signal: controller.signal

@@ -532,7 +532,7 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
             let digits: String = after
                 .trim_start()
                 .chars()
-                .take_while(|c| c.is_ascii_digit())
+                .take_while(char::is_ascii_digit)
                 .collect();
             if let Ok(n) = digits.parse::<u32>() {
                 if n <= 10 {
@@ -547,7 +547,7 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
                 let digits: String = num_part
                     .chars()
                     .rev()
-                    .take_while(|c| c.is_ascii_digit())
+                    .take_while(char::is_ascii_digit)
                     .collect::<String>()
                     .chars()
                     .rev()
@@ -651,7 +651,7 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
 
         let score_x = extract_score(&review_x).unwrap_or(5);
         let score_y = extract_score(&review_y).unwrap_or(5);
-        let avg_score = (score_x + score_y) / 2;
+        let avg_score = u32::midpoint(score_x, score_y);
         best_score = best_score.max(avg_score);
 
         eprintln!("[Phase 2] Judge X: {score_x}/10 — Judge Y: {score_y}/10 — avg: {avg_score}/10");
@@ -887,8 +887,7 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
     assert!(
         matches!(
             pre_restore,
-            Err(IdentityRuntimeError::UnknownIdentity(_))
-                | Err(IdentityRuntimeError::NoActiveLease(_))
+            Err(IdentityRuntimeError::UnknownIdentity(_) | IdentityRuntimeError::NoActiveLease(_))
         ),
         "pre-restore dispatch should fail with structured error, got: {pre_restore:?}"
     );
@@ -935,6 +934,12 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
 
         let (new_session, new_rt_id) = match outcome {
             RestoreOutcome::Created { record, .. } | RestoreOutcome::Resumed { record, .. } => {
+                (&record.session_id, &record.agent_runtime_id)
+            }
+            RestoreOutcome::Dormant { record, .. } => {
+                let record = record.as_ref().unwrap_or_else(|| {
+                    panic!("{identity_str} restored dormant without continuity")
+                });
                 (&record.session_id, &record.agent_runtime_id)
             }
             RestoreOutcome::Broken(f) => {
@@ -1213,10 +1218,7 @@ async fn e2e_kitchen_sink_two_mob_chaos() {
     };
     let jy_old_gen = jy_pre_reset.generation;
     let jy_old_session = jy_pre_reset.session_id.clone();
-    eprintln!(
-        "[Phase 9] judge:y pre-reset: gen={}, session={}",
-        jy_old_gen, jy_old_session
-    );
+    eprintln!("[Phase 9] judge:y pre-reset: gen={jy_old_gen}, session={jy_old_session}");
 
     // Now reset judge:y — destructive
     let reset_record = critic_irt2

@@ -33,12 +33,9 @@ fn is_repairable_bridge_delivery_error(error: &str) -> bool {
 }
 
 fn is_archive_not_found_cleanup_error(error: &str) -> bool {
-    (error.contains("ArchiveSession failed")
-        && error.contains("NotFound for registered runtime session"))
-        || (error.contains("disposal completed but ArchiveSession failed")
-            && error.contains("cancel-before-retire failed")
-            && error.contains("Runtime not ready: running"))
-        || error.contains("previous member cleanup ambiguous")
+    error.contains("disposal completed but ArchiveSession failed")
+        && error.contains("cancel-before-retire failed")
+        && error.contains("Runtime not ready: running")
 }
 
 // ---------------------------------------------------------------------------
@@ -250,6 +247,17 @@ pub trait SessionBridge: Send + Sync {
     ) -> Result<CheckpointVersion, BridgeError> {
         Ok(checkpoint_version)
     }
+
+    /// Remove identity ownership metadata for a concrete bridge session.
+    ///
+    /// This is used when an identity lifecycle operation aborts after session
+    /// runtime state was registered but before continuity commits.
+    async fn unregister_session_runtime_state(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        Ok(())
+    }
 }
 
 /// Lightweight inspection of a mob member's current execution state.
@@ -362,8 +370,13 @@ pub(crate) fn build_spawn_spec(
     if let Some(ref ctx) = draft.app_context {
         spawn_spec = spawn_spec.with_context(ctx.clone());
     }
-    if !draft.labels.is_empty() {
-        spawn_spec = spawn_spec.with_labels(draft.labels.clone());
+    let mut labels = draft.labels.clone();
+    labels.insert(
+        "agent_identity".to_string(),
+        spec.identity.as_str().to_string(),
+    );
+    if !labels.is_empty() {
+        spawn_spec = spawn_spec.with_labels(labels);
     }
     if !draft.additional_instructions.is_empty() {
         spawn_spec = spawn_spec.with_additional_instructions(draft.additional_instructions.clone());
@@ -768,6 +781,19 @@ impl SessionBridge for MobSessionBridge {
         }
         Ok(checkpoint_version)
     }
+
+    async fn unregister_session_runtime_state(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+    ) -> Result<(), BridgeError> {
+        if let Some(adapter) = self.continuity_session_store.as_ref() {
+            adapter
+                .unregister_session(session_id)
+                .await
+                .map_err(|err| BridgeError::Mob(format!("continuity unregister_session: {err}")))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -853,6 +879,14 @@ mod tests {
                 .and_then(|labels| labels.get("team"))
                 .map(String::as_str),
             Some("ops")
+        );
+        assert_eq!(
+            spawn
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("agent_identity"))
+                .map(String::as_str),
+            Some("agent:alpha")
         );
     }
 

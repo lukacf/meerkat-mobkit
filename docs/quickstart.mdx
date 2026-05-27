@@ -9,18 +9,8 @@ description: "Bootstrap a MobKit runtime with modules and a Meerkat mob. Single 
   <Tab title="Rust crate">
     ```toml Cargo.toml
     [dependencies]
-    meerkat-mobkit = "0.4"
+    meerkat-mobkit = "0.6.47"
     tokio = { version = "1", features = ["full"] }
-    ```
-
-    MobKit expects Meerkat crates on the same workspace. Add path patches if building from source:
-
-    ```toml Cargo.toml
-    [patch.crates-io]
-    meerkat = { path = "../raik/meerkat" }
-    meerkat-core = { path = "../raik/meerkat-core" }
-    meerkat-mob = { path = "../raik/meerkat-mob" }
-    meerkat-mcp = { path = "../raik/meerkat-mcp" }
     ```
   </Tab>
   <Tab title="TypeScript">

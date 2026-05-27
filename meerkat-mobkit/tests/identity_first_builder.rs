@@ -679,8 +679,7 @@ async fn identity_first_builder_lazy_console_lists_and_inspects_dormant_identiti
         "console listing must not load session snapshots"
     );
 
-    let inspection = aggregator
-        .inspect_identity("prod/agent:alpha")
+    let inspection = Box::pin(aggregator.inspect_identity("prod/agent:alpha"))
         .await
         .expect("console inspect should not fail")
         .expect("dormant alpha should be inspectable");

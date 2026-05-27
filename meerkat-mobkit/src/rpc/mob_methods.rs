@@ -16,13 +16,10 @@ use crate::unified_runtime::UnifiedRuntime;
 
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
-fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
-    (error.contains("ArchiveSession failed")
-        && error.contains("NotFound for registered runtime session"))
-        || (error.contains("disposal completed but ArchiveSession failed")
-            && error.contains("cancel-before-retire failed")
-            && error.contains("Runtime not ready: running"))
-        || error.contains("previous member cleanup ambiguous")
+pub(super) fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
+    error.contains("disposal completed but ArchiveSession failed")
+        && error.contains("cancel-before-retire failed")
+        && error.contains("Runtime not ready: running")
 }
 
 /// Parse HelperOptions from an optional JSON "options" object.
@@ -2163,5 +2160,20 @@ mod tests {
             for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
 
         assert!(lifecycle_archive_cleanup_completed(error));
+    }
+
+    #[test]
+    fn lifecycle_archive_cleanup_completed_rejects_ambiguous_cleanup() {
+        let error = "previous member cleanup ambiguous for member rt:review:singleton:0";
+
+        assert!(!lifecycle_archive_cleanup_completed(error));
+    }
+
+    #[test]
+    fn lifecycle_archive_cleanup_completed_rejects_archive_not_found() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: NotFound for registered runtime session";
+
+        assert!(!lifecycle_archive_cleanup_completed(error));
     }
 }

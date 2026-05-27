@@ -311,6 +311,79 @@ class TestCallbackDispatcherContinuityStore:
         )
         assert deleted == {"identity": "lead:main", "fencing_token": 42}
 
+    @pytest.mark.asyncio
+    async def test_delete_session_snapshot_if_current_revision_routed(self):
+        deleted = {}
+
+        class MockStore:
+            async def resolve_many(self, identities):
+                return {}
+
+            async def load_session_snapshot(self, session_id):
+                return None
+
+            async def save_session_snapshot(self, *args):
+                pass
+
+            async def upsert_continuity_record(self, *args):
+                pass
+
+            async def delete_continuity_record(self, *args):
+                pass
+
+            async def delete_session_snapshot_if_current_revision(
+                self, session_id, expected_current_revision
+            ):
+                deleted["session_id"] = session_id
+                deleted["expected_current_revision"] = expected_current_revision
+                return True
+
+        d = CallbackDispatcher()
+        d.register_continuity_store(MockStore())
+
+        result = await d.handle_callback(
+            "callback/continuity_store/delete_session_snapshot_if_current_revision",
+            {
+                "session_id": "s-1",
+                "expected_current_revision": "row-sha256:abc",
+            },
+        )
+        assert result is True
+        assert deleted == {
+            "session_id": "s-1",
+            "expected_current_revision": "row-sha256:abc",
+        }
+
+    @pytest.mark.asyncio
+    async def test_delete_session_snapshot_if_current_revision_defaults_false(self):
+        class MockStore:
+            async def resolve_many(self, identities):
+                return {}
+
+            async def load_session_snapshot(self, session_id):
+                return None
+
+            async def save_session_snapshot(self, *args):
+                pass
+
+            async def upsert_continuity_record(self, *args):
+                pass
+
+            async def delete_continuity_record(self, *args):
+                pass
+
+        d = CallbackDispatcher()
+        d.register_continuity_store(MockStore())
+
+        result = await d.handle_callback(
+            "callback/continuity_store/delete_session_snapshot_if_current_revision",
+            {
+                "session_id": "s-1",
+                "expected_current_revision": "row-sha256:abc",
+            },
+        )
+        assert result is False
+
 
 class TestCallbackDispatcherLeaseProvider:
     @pytest.mark.asyncio

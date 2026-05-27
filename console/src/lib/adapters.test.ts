@@ -19,6 +19,8 @@ import {
 function typedCommsNotice(args: {
   peer: string;
   body: string;
+  peerId?: string;
+  peerDisplayName?: string;
   kind?: string;
   direction?: "incoming" | "outgoing";
   intent?: string;
@@ -34,7 +36,10 @@ function typedCommsNotice(args: {
       type: "comms",
       kind,
       direction: args.direction || "incoming",
-      peer: { id: args.peer, display_name: args.peer },
+      peer: {
+        id: args.peerId || args.peer,
+        display_name: args.peerDisplayName || args.peer,
+      },
       request_id: args.requestId || `req-${args.peer}-${kind}`,
       ...(args.intent ? { intent: args.intent } : {}),
       ...(args.payload !== undefined ? { payload: args.payload } : {}),
@@ -2088,6 +2093,37 @@ test("mapFramesToTimelineEntries renders session-history typed comms frames as c
   assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
 });
 
+test("mapFramesToTimelineEntries preserves outgoing typed comms direction", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "outgoing-comms",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-b",
+            body: "Please review this patch.",
+            direction: "outgoing",
+          }),
+        },
+      },
+    ],
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.type === "tool-call" ? block.peerIncoming : true, false);
+  assert.equal(block?.type === "tool-call" ? block.peerTarget : "", "peer-b");
+});
+
 test("mapFramesToTimelineEntries suppresses repeated assistant history after an inbound comms notice", () => {
   const entries = mapFramesToTimelineEntries(
     {
@@ -2196,6 +2232,2073 @@ test("mapFramesToTimelineEntries renders live typed comms system notices as comm
   assert.equal(block?.peerIncoming, true);
   assert.equal(block?.peerTarget, "grandchild-worker");
   assert.equal(block?.peerBody, "grandchild-worker ping acknowledgement.");
+});
+
+test("mapFramesToTimelineEntries suppresses raw run_started peer envelopes when structured comms notice exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer message\n"
+            + "Peer message from fugue/issue_lead/LUC-642/issue_lead:\n"
+            + "Peer message from fugue/issue_lead/LUC-642/issue_lead:\n"
+            + "Focused RED-review replan is complete and Linear is back in Implementing...\n"
+            + "Peer message",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            body: "Focused RED-review replan is complete and Linear is back in Implementing...",
+          }),
+        },
+      },
+      {
+        id: "evt-complete",
+        event: "interaction_complete",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: { result: "Acknowledged." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  assert.equal(entries.some((entry) => (
+    entry.identity.id === "user"
+    && "text" in entry
+    && entry.text.includes("Peer message from fugue/issue_lead")
+  )), false);
+  assert.equal(entries[1]?.identity.id, "planner");
+});
+
+test("mapFramesToTimelineEntries keeps raw peer prompts when structured comms body is only partial", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer message from fugue/peer-a:\n"
+            + "Done.\n"
+            + "Please also validate the retry plan.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(
+    entries[0] && "text" in entries[0] ? entries[0].text : "",
+    "Peer message from fugue/peer-a:\nDone.\nPlease also validate the retry plan.",
+  );
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses colon-delimited peer identity envelopes", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer message\n"
+            + "Peer message from review:singleton:\n"
+            + "Done.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries matches raw peer envelopes against structured display names", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer message\n"
+            + "Peer message from fugue/issue_lead/LUC-642/issue_lead:\n"
+            + "Focused RED-review replan is complete and Linear is back in Implementing...",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            peerId: "peer-uuid-1",
+            peerDisplayName: "fugue/issue_lead/LUC-642/issue_lead",
+            body: "Focused RED-review replan is complete and Linear is back in Implementing...",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries.some((entry) => (
+    entry.identity.id === "user"
+    && "text" in entry
+    && entry.text.includes("Peer message from fugue/issue_lead")
+  )), false);
+});
+
+test("mapFramesToTimelineEntries suppresses raw peer response envelopes when structured comms notice exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer response\n"
+            + "Peer response from fugue/issue_lead/LUC-642/issue_lead:\n"
+            + "Done.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            kind: "response",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries.some((entry) => (
+    entry.identity.id === "user"
+    && "text" in entry
+    && entry.text.includes("Peer response from fugue/issue_lead")
+  )), false);
+});
+
+test("mapFramesToTimelineEntries suppresses raw peer request envelopes when structured comms notice exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer request\n"
+            + "Peer request from fugue/issue_lead/LUC-642/issue_lead:\n"
+            + "Can you validate the current plan?",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            kind: "request",
+            body: "Can you validate the current plan?",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries.some((entry) => (
+    entry.identity.id === "user"
+    && "text" in entry
+    && entry.text.includes("Peer request from fugue/issue_lead")
+  )), false);
+});
+
+test("mapFramesToTimelineEntries suppresses plain intent/body peer envelopes when structured comms notice exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer request from fugue/peer-a:\n"
+            + "Intent: request_summary\n"
+            + "Body: Summarize the incident.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            kind: "request",
+            body: "Summarize the incident.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries.some((entry) => (
+    entry.identity.id === "user"
+    && "text" in entry
+    && entry.text.includes("Intent: request_summary")
+  )), false);
+});
+
+test("mapFramesToTimelineEntries suppresses duplicated intent/body peer envelopes when structured comms notice exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer request\n"
+            + "Peer request from fugue/peer-a:\n"
+            + "Peer request from fugue/peer-a:\n"
+            + "Intent: request_summary\n"
+            + "Body: Summarize the incident.\n"
+            + "Peer request",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            kind: "request",
+            body: "Summarize the incident.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses duplicated bracketed intent/body comms envelopes", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "[COMMS REQUEST from fugue/peer-a]\n"
+            + "[COMMS REQUEST from fugue/peer-a]\n"
+            + "Intent: request_summary\n"
+            + "Body: Summarize the incident.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            kind: "request",
+            body: "Summarize the incident.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries does not suppress peer requests with structured peer responses", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-request",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt: "Peer request from fugue/peer-a:\nDone.",
+        },
+      },
+      {
+        id: "structured-response",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+            kind: "response",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries consumes one raw peer prompt per structured duplicate", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nSame update.",
+        },
+      },
+      {
+        id: "raw-two",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nSame update.",
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Same update.",
+          }),
+        },
+      },
+      {
+        id: "structured-two",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Same update.",
+            requestId: "second",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries.every((entry) => entry.identity.id === "comms"), true);
+});
+
+test("mapFramesToTimelineEntries does not overconsume raw prompts for one legacy structured notice", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nSame update.",
+        },
+      },
+      {
+        id: "raw-two",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nSame update.",
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: {
+            kind: "comms",
+            body: "Peer message from fugue/peer-a:\nSame update.",
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 1);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+});
+
+test("mapFramesToTimelineEntries dedupes alias-equivalent typed comms notice signatures", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-display:\nSame update.",
+        },
+      },
+      {
+        id: "raw-two",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-display:\nSame update.",
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-display",
+            peerId: "fugue/peer-id",
+            peerDisplayName: "fugue/peer-display",
+            body: "Peer message from fugue/peer-display:\nSame update.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 1);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+});
+
+test("mapFramesToTimelineEntries consumes duplicate raw prompts for duplicate typed comms blocks", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nSame update.",
+        },
+      },
+      {
+        id: "raw-two",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nSame update.",
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "comms",
+            blocks: [
+              {
+                type: "comms",
+                kind: "message",
+                direction: "incoming",
+                peer: {
+                  id: "fugue/peer-a",
+                  display_name: "fugue/peer-a",
+                },
+                content: [{ type: "text", text: "Same update." }],
+              },
+              {
+                type: "comms",
+                kind: "message",
+                direction: "incoming",
+                peer: {
+                  id: "fugue/peer-a",
+                  display_name: "fugue/peer-a",
+                },
+                content: [{ type: "text", text: "Same update." }],
+              },
+            ],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 0);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+});
+
+test("mapFramesToTimelineEntries suppresses raw prompts for body-only typed comms notices", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: "Peer message from fugue/peer-a:\nClean body.",
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "comms",
+            body: "Clean body.",
+            blocks: [{
+              type: "comms",
+              kind: "message",
+              direction: "incoming",
+              peer: {
+                id: "fugue/peer-a",
+                display_name: "fugue/peer-a",
+              },
+              request_id: "body-only",
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 0);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Clean body.");
+});
+
+test("mapFramesToTimelineEntries suppresses bracketed intent/body comms prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: "[COMMS REQUEST from fugue/peer-a]\nIntent: request_summary\nBody: Summarize the incident.",
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            kind: "request",
+            intent: "request_summary",
+            body: "Summarize the incident.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 0);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+});
+
+test("mapFramesToTimelineEntries preserves literal Body lines in clean comms bodies", () => {
+  const body = "Here is the report\nBody: section one";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: `[COMMS REQUEST from fugue/peer-a]\nIntent: request_summary\nBody: ${body}`,
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            kind: "request",
+            intent: "request_summary",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 0);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "Here is the report Body: section one",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves clean comms bodies that look like intent wrappers", () => {
+  const body = "Intent: preserve this line\nBody: preserve this too";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-one",
+        event: "run_started",
+        data: {
+          prompt: `[COMMS REQUEST from fugue/peer-a]\nIntent: request_summary\nBody: ${body}`,
+        },
+      },
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            kind: "request",
+            intent: "request_summary",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.filter((entry) => entry.identity.id === "user").length, 0);
+  assert.equal(entries.filter((entry) => entry.identity.id === "comms").length, 1);
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "Intent: preserve this line Body: preserve this too",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves quoted peer envelope lines in clean comms bodies", () => {
+  const body = "Peer message from incident-lead:\nPlease keep this quote.";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            kind: "message",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "Peer message from incident-lead: Please keep this quote.",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves same-peer envelope lines quoted inside clean typed comms bodies", () => {
+  const body = "Quoted wrapper:\nPeer message from review:singleton:\nPlease keep this quote.";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            kind: "message",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "Quoted wrapper: Peer message from review:singleton: Please keep this quote.",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves bracketed COMMS note literals in clean comms bodies", () => {
+  const body = "[COMMS NOTE]\nIntent: preserve this\nBody: preserve this too";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            kind: "message",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "[COMMS NOTE] Intent: preserve this Body: preserve this too",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves quoted bracketed COMMS envelopes in clean comms bodies", () => {
+  const body = "[COMMS MESSAGE from incident-lead]\nIntent: preserve this\nBody: preserve this too";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            kind: "message",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "[COMMS MESSAGE from incident-lead] Intent: preserve this Body: preserve this too",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves standalone peer scaffold words in clean comms bodies", () => {
+  const body = "Peer message\nPlease keep this heading.";
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "structured-one",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            kind: "message",
+            body,
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  const block = entries[0] && "blocks" in entries[0] && Array.isArray(entries[0].blocks)
+    ? entries[0].blocks[0]
+    : null;
+  assert.equal(
+    block?.type === "tool-call" ? block.peerBody : "",
+    "Peer message Please keep this heading.",
+  );
+});
+
+test("mapFramesToTimelineEntries does not suppress explicit peer request with generic structured comms", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-request",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt: "Peer request from fugue/peer-a:\nDone.",
+        },
+      },
+      {
+        id: "generic-structured",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses raw bracketed comms response envelopes when structured comms notice exists", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "[COMMS RESPONSE from fugue/issue_lead/LUC-642/issue_lead]\n"
+            + "Done.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            kind: "response",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries.some((entry) => (
+    entry.identity.id === "user"
+    && "text" in entry
+    && entry.text.includes("[COMMS RESPONSE from fugue/issue_lead")
+  )), false);
+});
+
+test("mapFramesToTimelineEntries suppresses one-line peer envelopes whose body contains colons", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt: "Peer message from review:singleton: Error: failed",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Error: failed",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses bannered peer envelopes whose body contains colons", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt:
+            "Peer message\n"
+            + "Peer message from review:singleton: Error: failed\n"
+            + "Peer message",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Error: failed",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses only the nearest duplicate raw peer prompt", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "early-raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { prompt: "Peer message from review:singleton: Done." },
+      },
+      {
+        id: "nearest-raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:09.000Z"),
+        data: { prompt: "Peer message from review:singleton: Done." },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:10.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries does not suppress later envelope-looking prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "actual-duplicate-before-structured",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { prompt: "Peer message from review:singleton: Done." },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:10.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Done.",
+          }),
+        },
+      },
+      {
+        id: "later-operator-looking-prompt",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:11.000Z"),
+        data: { prompt: "Peer message from review:singleton: Done." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[1]?.identity.id, "user");
+  assert.equal(entries[1]?.id, "later-operator-looking-prompt:2");
+});
+
+test("mapFramesToTimelineEntries does not suppress quoted peer envelopes inside operator prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "operator-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt: "Please investigate this:\nPeer message from review:singleton: Done.",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[0] && "text" in entries[0] ? entries[0].text : "", "Please investigate this:\nPeer message from review:singleton: Done.");
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses nearest duplicate by frame order without timestamps", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "early-raw-run-started",
+        event: "run_started",
+        data: { prompt: "Peer message from review:singleton: Done." },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Done.",
+          }),
+        },
+      },
+      {
+        id: "later-raw-run-started",
+        event: "run_started",
+        data: { prompt: "Peer message from review:singleton: Done." },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[1]?.identity.id, "user");
+  assert.equal(entries[1]?.id, "later-raw-run-started:2");
+});
+
+test("mapFramesToTimelineEntries does not suppress colon-prefixed peer aliases", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { prompt: "Peer message from review:singleton: Error" },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review",
+            body: "singleton: Error",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "user");
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses runtime-id peer envelopes without truncating colon bodies", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-run-started",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          prompt: "Peer message from rt:review:singleton:0: Error: failed",
+        },
+      },
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "rt:review:singleton:0",
+            body: "Error: failed",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries strips typed one-line comms envelopes by structured peer alias", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "structured-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Peer message from review:singleton: Error: failed",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : undefined;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.type === "tool-call" ? block.peerBody : "", "Error: failed");
+});
+
+test("mapFramesToTimelineEntries does not suppress unrelated same-body peer prompts", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "notice-peer-a",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+          }),
+        },
+      },
+      {
+        id: "run-peer-b",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:01.000Z"),
+        data: {
+          prompt:
+            "Peer message\n"
+            + "Peer message from fugue/peer-b:\n"
+            + "Done.\n"
+            + "Peer message",
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[1]?.identity.id, "user");
+  assert.equal(
+    entries[1] && "text" in entries[1] ? entries[1].text : "",
+    "Peer message\nPeer message from fugue/peer-b:\nDone.\nPeer message",
+  );
+});
+
+test("mapFramesToTimelineEntries deduplicates live and history copies of the same comms notice", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            body: "Focused RED-review replan is complete.",
+          }),
+        },
+      },
+      {
+        id: "history-notice",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            body: "Focused RED-review replan is complete.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries deduplicates live comms and session-history terminal system notices", () => {
+  const notice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { message: notice },
+      },
+      {
+        id: "history-text-complete",
+        event: "text_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: { message: notice },
+      },
+      {
+        id: "history-interaction-complete",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:03.000Z"),
+        data: { message: notice },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries deduplicates comms notices when volatile status drifts", () => {
+  const liveNotice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  liveNotice.blocks[0] = {
+    ...liveNotice.blocks[0],
+    status: "sent",
+    state: "pending",
+  };
+  const historyNotice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  historyNotice.blocks[0] = {
+    ...historyNotice.blocks[0],
+    status: "delivered",
+    state: "complete",
+  };
+
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { message: liveNotice },
+      },
+      {
+        id: "history-interaction-complete",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:03.000Z"),
+        data: { message: historyNotice },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerBody, "Done.");
+});
+
+test("mapFramesToTimelineEntries deduplicates body-only comms notices when volatile status drifts", () => {
+  const liveNotice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  liveNotice.blocks[0] = {
+    ...liveNotice.blocks[0],
+    content: undefined,
+    status: "sent",
+    state: "pending",
+  };
+  const historyNotice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  historyNotice.blocks[0] = {
+    ...historyNotice.blocks[0],
+    content: undefined,
+    status: "delivered",
+    state: "complete",
+  };
+
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { message: liveNotice },
+      },
+      {
+        id: "history-interaction-complete",
+        event: "interaction_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:03.000Z"),
+        data: { message: historyNotice },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerBody, "Done.");
+});
+
+test("mapFramesToTimelineEntries suppresses raw peer prompts using session-history terminal system notices", () => {
+  const notice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-peer-prompt",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { prompt: "Peer message from fugue/peer-a:\nDone." },
+      },
+      {
+        id: "history-text-complete",
+        event: "text_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: { message: notice },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries suppresses raw peer prompts using body-only status-drift comms notices", () => {
+  const notice = typedCommsNotice({
+    peer: "fugue/peer-a",
+    body: "Done.",
+  });
+  notice.blocks[0] = {
+    ...notice.blocks[0],
+    content: undefined,
+    status: "delivered",
+    state: "complete",
+  };
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "raw-peer-prompt",
+        event: "run_started",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: { prompt: "Peer message from fugue/peer-a:\nDone." },
+      },
+      {
+        id: "history-text-complete",
+        event: "text_complete",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: { message: notice },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[0]?.variant, "rich");
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(block?.peerBody, "Done.");
+});
+
+test("mapFramesToTimelineEntries keeps opposite-direction comms with the same peer request and body", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-outgoing",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+            direction: "outgoing",
+            requestId: "req-shared",
+          }),
+        },
+      },
+      {
+        id: "history-incoming",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+            direction: "incoming",
+            requestId: "req-shared",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  const blocks = entries.map((entry) => (
+    entry && "blocks" in entry ? entry.blocks?.[0] : null
+  ));
+  assert.equal(blocks[0]?.type, "tool-call");
+  assert.equal(blocks[0]?.peerIncoming, false);
+  assert.equal(blocks[1]?.type, "tool-call");
+  assert.equal(blocks[1]?.peerIncoming, true);
+});
+
+test("mapFramesToTimelineEntries preserves leading peer-envelope-looking text in structured comms content", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "notice-quoted-envelope",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "review:singleton",
+            body: "Peer message from review:singleton:\nPlease keep this quote.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(
+    block?.peerBody,
+    "Peer message from review:singleton: Please keep this quote.",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves leading peer-envelope-looking text in body-only structured comms", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "notice-body-only-quote",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: {
+            role: "system_notice",
+            kind: "comms",
+            body: "Peer message from review:singleton:\nPlease keep this quote.",
+            blocks: [{
+              type: "comms",
+              kind: "message",
+              direction: "incoming",
+              peer: { id: "review:singleton", display_name: "review:singleton" },
+              request_id: "req-body-only",
+            }],
+          },
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(
+    block?.peerBody,
+    "Peer message from review:singleton: Please keep this quote.",
+  );
+});
+
+test("mapFramesToTimelineEntries preserves leading slash peer envelopes in structured comms content", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "notice-slash-envelope",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/issue_lead/LUC-642/issue_lead",
+            body: "Peer message from fugue/issue_lead/LUC-642/issue_lead:\nPlease keep this quote.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 1);
+  const block = entries[0] && "blocks" in entries[0] ? entries[0].blocks?.[0] : null;
+  assert.equal(block?.type, "tool-call");
+  assert.equal(
+    block?.peerBody,
+    "Peer message from fugue/issue_lead/LUC-642/issue_lead: Please keep this quote.",
+  );
+});
+
+test("mapFramesToTimelineEntries keeps mixed comms notice frames when later blocks differ", () => {
+  const multiNotice = (
+    id: string,
+    sourceKind: "session_history" | undefined,
+    secondPeer: string,
+    secondBody: string,
+  ) => ({
+    id,
+    event: "system_notice",
+    sourceKind,
+    timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "comms",
+        blocks: [
+          {
+            type: "comms",
+            kind: "message",
+            direction: "incoming",
+            peer: { id: "peer-a", display_name: "peer-a" },
+            request_id: "shared-a",
+            content: [{ type: "text", text: "same" }],
+          },
+          {
+            type: "comms",
+            kind: "message",
+            direction: "incoming",
+            peer: { id: secondPeer, display_name: secondPeer },
+            request_id: `unique-${secondPeer}`,
+            content: [{ type: "text", text: secondBody }],
+          },
+        ],
+      },
+    },
+  });
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      multiNotice("live-notice", undefined, "peer-b", "unique live"),
+      multiNotice("history-notice", "session_history", "peer-c", "unique history"),
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  const firstBlocks = entries[0] && "blocks" in entries[0] ? entries[0].blocks ?? [] : [];
+  const secondBlocks = entries[1] && "blocks" in entries[1] ? entries[1].blocks ?? [] : [];
+  assert.equal(firstBlocks.length, 2);
+  assert.equal(secondBlocks.length, 1);
+  assert.equal(
+    secondBlocks[0]?.type === "tool-call" ? secondBlocks[0].peerTarget : "",
+    "peer-c",
+  );
+  assert.equal(
+    secondBlocks[0]?.type === "tool-call" ? secondBlocks[0].peerBody : "",
+    "unique history",
+  );
+});
+
+test("mapFramesToTimelineEntries filters duplicate legacy comms blocks in mixed notices", () => {
+  const legacyNotice = (
+    id: string,
+    sourceKind: "session_history" | undefined,
+    secondPeer: string,
+    secondBody: string,
+  ) => ({
+    id,
+    event: "system_notice",
+    sourceKind,
+    timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+    data: {
+      message: {
+        role: "system_notice",
+        kind: "generic",
+        blocks: [
+          {
+            type: "text",
+            body: "Peer message from peer-a:\nsame",
+          },
+          {
+            type: "text",
+            body: `Peer message from ${secondPeer}:\n${secondBody}`,
+          },
+        ],
+      },
+    },
+  });
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      legacyNotice("live-notice", undefined, "peer-b", "unique live"),
+      legacyNotice("history-notice", "session_history", "peer-c", "unique history"),
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  const secondBlocks = entries[1] && "blocks" in entries[1] ? entries[1].blocks ?? [] : [];
+  assert.equal(secondBlocks.length, 1);
+  assert.equal(secondBlocks[0]?.type === "divider" ? secondBlocks[0].text : "", "Peer message from peer-c:\nunique history");
+});
+
+test("mapFramesToTimelineEntries keeps same-peer same-body comms with different request ids", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+            requestId: "request-a",
+          }),
+        },
+      },
+      {
+        id: "history-notice",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+            requestId: "request-b",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[1]?.identity.id, "comms");
+});
+
+test("mapFramesToTimelineEntries keeps same-body history comms from different peers", () => {
+  const entries = mapFramesToTimelineEntries(
+    {
+      agent_id: "planner",
+      member_id: "planner",
+      label: "Planner",
+      kind: "identity",
+    },
+    [
+      {
+        id: "live-notice",
+        event: "system_notice",
+        timestampMs: Date.parse("2026-05-27T08:00:00.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-a",
+            body: "Done.",
+          }),
+        },
+      },
+      {
+        id: "history-notice",
+        event: "system_notice",
+        sourceKind: "session_history",
+        timestampMs: Date.parse("2026-05-27T08:00:02.000Z"),
+        data: {
+          message: typedCommsNotice({
+            peer: "fugue/peer-b",
+            body: "Done.",
+          }),
+        },
+      },
+    ],
+    { renderInteractionStartsAsUser: true },
+  );
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.identity.id, "comms");
+  assert.equal(entries[1]?.identity.id, "comms");
 });
 
 test("mapFramesToTimelineEntries renders live untyped peer system notices", () => {

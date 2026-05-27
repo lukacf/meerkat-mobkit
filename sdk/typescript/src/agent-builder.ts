@@ -247,6 +247,17 @@ export class CallbackDispatcher {
       return sessionSnapshotToDict(snap);
     }
 
+    if (method === "callback/continuity_store/delete_session_snapshot_if_current_revision") {
+      if (this._continuityStore === null) {
+        throw new Error("no ContinuityStore registered");
+      }
+      const sessionId = String(params.session_id ?? "");
+      const expectedCurrentRevision = String(params.expected_current_revision ?? "");
+      const handler = this._continuityStore.deleteSessionSnapshotIfCurrentRevision;
+      if (!handler) return false;
+      return handler.call(this._continuityStore, sessionId, expectedCurrentRevision);
+    }
+
     if (method === "callback/continuity_store/save_session_snapshot") {
       if (this._continuityStore === null) {
         throw new Error("no ContinuityStore registered");
