@@ -147,6 +147,12 @@ function startMockConsoleServer(port, options = {}) {
     options.timelineFramesByIdentity && typeof options.timelineFramesByIdentity === "object"
       ? options.timelineFramesByIdentity
       : {};
+  const timelineFrameSnapshotsByIdentity =
+    options.timelineFrameSnapshotsByIdentity &&
+    typeof options.timelineFrameSnapshotsByIdentity === "object"
+      ? options.timelineFrameSnapshotsByIdentity
+      : {};
+  const timelineSnapshotQueryCountsByIdentity = new Map();
   const timelineFramesAfterSendByIdentity =
     options.timelineFramesAfterSendByIdentity &&
     typeof options.timelineFramesAfterSendByIdentity === "object"
@@ -432,10 +438,21 @@ function startMockConsoleServer(port, options = {}) {
         const rpcId = payload.id || "rpc";
         if (payload.method === "mobkit/console/query_timeline") {
           const identity = payload.params?.identity;
-          const framesForIdentity =
-            typeof identity === "string" && Array.isArray(timelineFramesByIdentity[identity])
-              ? timelineFramesByIdentity[identity]
-              : null;
+          let framesForIdentity = null;
+          if (
+            typeof identity === "string" &&
+            Array.isArray(timelineFrameSnapshotsByIdentity[identity])
+          ) {
+            const snapshots = timelineFrameSnapshotsByIdentity[identity];
+            const queryCount = timelineSnapshotQueryCountsByIdentity.get(identity) || 0;
+            timelineSnapshotQueryCountsByIdentity.set(identity, queryCount + 1);
+            framesForIdentity = snapshots[Math.min(queryCount, snapshots.length - 1)];
+          } else if (
+            typeof identity === "string" &&
+            Array.isArray(timelineFramesByIdentity[identity])
+          ) {
+            framesForIdentity = timelineFramesByIdentity[identity];
+          }
           const frames = framesForIdentity || (identity ? (identity === "image-agent" ? timelineFrames : []) : timelineFrames);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
@@ -1672,6 +1689,68 @@ async function runChatPaneOlderHistoryDemandPagingProof() {
   }
 }
 
+async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T22:45:00.000Z");
+  const frames = Array.from({ length: 250 }, (_, index) => ({
+    id: `async-backfill-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `async-backfill-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Async-backfill worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFrameSnapshotsByIdentity: {
+      "person-worker-alpha": [[], frames],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Async-backfill worker line 250").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Async-backfill worker line 42");
+    await pane.getByRole("button", { name: "Load older history" }).click();
+    await pane.getByText("Async-backfill worker line 42").waitFor({ timeout: 10_000 });
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    assert(
+      identityRequests.some((payload) => payload.params?.mode === "recent"),
+      `expected initial recent query for async backfill proof; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+    assert(
+      identityRequests.some(
+        (payload) => payload.params?.mode === "recent" && payload.params?.before === "console:51",
+      ),
+      `expected older-history request after async backfill re-enabled the control; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+
+    process.stdout.write("browser chat pane async backfill older history recovery ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runRunStartedClearsOptimisticPromptProof() {
   const port = await reservePort();
   const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
@@ -1983,6 +2062,7 @@ async function main() {
   await runGlobalTimelineRecentSeedProof();
   await runChatPaneRecentFirstPageProof();
   await runChatPaneOlderHistoryDemandPagingProof();
+  await runChatPaneAsyncBackfillRestoresOlderHistoryProof();
   await runRunStartedClearsOptimisticPromptProof();
   await runUserInputEchoClearsOptimisticPromptProof();
   await runLiveSystemNoticeAppearsInOpenChatProof();

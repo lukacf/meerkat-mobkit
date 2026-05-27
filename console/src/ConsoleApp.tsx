@@ -101,6 +101,7 @@ interface IdentityLog {
   oldestTimelineCursor?: string;
   latestTimelineCursor?: string;
   olderHistoryExhausted?: boolean;
+  olderHistoryExhaustedAtCursor?: string;
   olderHistoryLoading?: boolean;
 }
 
@@ -778,16 +779,22 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   function noteIdentityTimelinePage(
     identity: string,
     page: ConsoleTimelinePage,
-    mode: "recent" | "since",
+    target: { mode: "recent" | "since"; before?: string },
   ) {
     const log = getOrCreateLog(identity);
     for (const frame of page.frames) {
       log.oldestTimelineCursor = olderCursor(log.oldestTimelineCursor, frame.cursor);
       log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, frame.cursor);
     }
-    if (mode === "recent") {
+    if (target.mode === "recent") {
       log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, page.latestCursor);
-      if (page.exhausted) log.olderHistoryExhausted = true;
+      if (target.before) {
+        log.olderHistoryExhausted = page.exhausted === true;
+        log.olderHistoryExhaustedAtCursor =
+          page.exhausted === true ? log.oldestTimelineCursor : undefined;
+      } else if (!log.olderHistoryExhaustedAtCursor) {
+        log.olderHistoryExhausted = page.exhausted === true;
+      }
     } else {
       log.latestTimelineCursor = newerCursor(
         log.latestTimelineCursor,
@@ -810,7 +817,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       },
       target.limit ?? 200,
     );
-    noteIdentityTimelinePage(identity, page, target.mode);
+    noteIdentityTimelinePage(identity, page, target);
     return page;
   }
 

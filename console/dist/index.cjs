@@ -10231,15 +10231,20 @@ function ConsoleApp({ baseUrl }) {
     if (bSeq === null) return a || b;
     return bSeq < aSeq ? b : a;
   }
-  function noteIdentityTimelinePage(identity, page, mode) {
+  function noteIdentityTimelinePage(identity, page, target) {
     const log = getOrCreateLog(identity);
     for (const frame of page.frames) {
       log.oldestTimelineCursor = olderCursor(log.oldestTimelineCursor, frame.cursor);
       log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, frame.cursor);
     }
-    if (mode === "recent") {
+    if (target.mode === "recent") {
       log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, page.latestCursor);
-      if (page.exhausted) log.olderHistoryExhausted = true;
+      if (target.before) {
+        log.olderHistoryExhausted = page.exhausted === true;
+        log.olderHistoryExhaustedAtCursor = page.exhausted === true ? log.oldestTimelineCursor : void 0;
+      } else if (!log.olderHistoryExhaustedAtCursor) {
+        log.olderHistoryExhausted = page.exhausted === true;
+      }
     } else {
       log.latestTimelineCursor = newerCursor(
         log.latestTimelineCursor,
@@ -10258,7 +10263,7 @@ function ConsoleApp({ baseUrl }) {
       },
       target.limit ?? 200
     );
-    noteIdentityTimelinePage(identity, page, target.mode);
+    noteIdentityTimelinePage(identity, page, target);
     return page;
   }
   function refreshIdentityTimelineNow(identity, options = {}) {
