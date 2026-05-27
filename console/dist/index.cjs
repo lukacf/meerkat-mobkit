@@ -304,12 +304,13 @@ function normalizeRoutingSectionView(value) {
 }
 function normalizeReplayUnavailableError(value) {
   const record = value && typeof value === "object" ? value : null;
-  if (!record || record.error !== "replay_unavailable") {
+  if (!record || record.error !== "replay_unavailable" && record.type !== "replay_unavailable") {
     return null;
   }
-  const stream = record.stream === "identity" || record.stream === "all_events" ? record.stream : null;
-  const requested = trimString(record.requested_last_event_id);
-  const latest = trimString(record.latest_event_id);
+  const explicitStream = record.stream === "identity" || record.stream === "all_events" || record.stream === "timeline" ? record.stream : null;
+  const requested = trimString(record.requested_last_event_id) || trimString(record.requested_cursor);
+  const latest = trimString(record.latest_event_id) || trimString(record.latest_cursor);
+  const stream = explicitStream || (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
   }
@@ -2590,6 +2591,8 @@ var HIDDEN_EVENTS = /* @__PURE__ */ new Set([
   "reasoning_complete",
   "interaction_started",
   "frame_updated",
+  "snapshot_complete",
+  "snapshot_started",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -4290,6 +4293,18 @@ async function rpc(baseUrl, method, params) {
       error.rpcError = typedError;
       throw error;
     }
+    const replayError = normalizeReplayUnavailableError(result.error.data);
+    if (replayError || result.error.code === -32013) {
+      const error = new Error(
+        `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`
+      );
+      const annotated = error;
+      if (replayError) {
+        annotated.replayError = replayError;
+      }
+      annotated.timelineReplayUnavailable = true;
+      throw error;
+    }
     throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return result.result;
@@ -4395,9 +4410,27 @@ async function streamFramesFromResponse(response, options = {}) {
     }
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
+  const replayUnavailableError = (frame) => {
+    if (frame.event !== "replay_unavailable") {
+      return null;
+    }
+    const replayError = normalizeReplayUnavailableError(frame.data);
+    if (!replayError) {
+      return new Error("timeline stream replay unavailable");
+    }
+    const error = new Error(
+      `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`
+    );
+    error.replayError = replayError;
+    return error;
+  };
   if (!response.body || typeof response.body.getReader !== "function") {
     const frames2 = parseSseFrames(await response.text());
     for (const frame of frames2) {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         options.onFrame?.(frame);
       }
@@ -4418,6 +4451,10 @@ async function streamFramesFromResponse(response, options = {}) {
       frameBuffer += chunk;
       let sawTerminal = false;
       frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+        const replayError = replayUnavailableError(frame);
+        if (replayError) {
+          throw replayError;
+        }
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
@@ -4433,12 +4470,20 @@ async function streamFramesFromResponse(response, options = {}) {
     const finalChunk = decoder.decode();
     frameBuffer += finalChunk;
     frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
       }
     });
     flushTrailingSseBlock(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
@@ -4483,7 +4528,9 @@ async function queryTimeline(baseUrl, target, limit = 400) {
     limit,
     ...target.identity?.trim() ? { identity: target.identity.trim() } : {},
     ...target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {},
-    ...target.after?.trim() ? { after: target.after.trim() } : {}
+    ...target.after?.trim() ? { after: target.after.trim() } : {},
+    ...target.before?.trim() ? { before: target.before.trim() } : {},
+    ...target.mode ? { mode: target.mode } : {}
   });
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
@@ -4493,7 +4540,9 @@ async function queryTimeline(baseUrl, target, limit = 400) {
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
     nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : void 0,
-    available: true
+    latestCursor: typeof record.latest_cursor === "string" ? record.latest_cursor : void 0,
+    exhausted: record.exhausted === true,
+    available: record.available !== false
   };
 }
 async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue") {
@@ -4529,7 +4578,6 @@ function timelineStreamPath(target) {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  if (target.after?.trim()) params.set("after", target.after.trim());
   return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 function cursorFromTimelineFrame(frame) {
@@ -4563,10 +4611,14 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
     while (!stopped) {
       controller = new AbortController();
       try {
+        const headers = { "content-type": "application/json" };
+        if (after) {
+          headers["Last-Event-ID"] = after;
+        }
         await streamFramesFromResponse(
-          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+          await fetch(`${baseUrl}${timelineStreamPath(target)}`, {
             method: "GET",
-            headers: { "content-type": "application/json" },
+            headers,
             signal: controller.signal
           }),
           {
@@ -4584,6 +4636,10 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
       } catch (error) {
         if (stopped || controller.signal.aborted) {
           break;
+        }
+        const replayError = error.replayError;
+        if (replayError?.latest_event_id) {
+          after = replayError.latest_event_id;
         }
         onFrame(replayUnavailableFrame(error));
       }
@@ -8647,9 +8703,15 @@ function ChatPane({
   respawnLabel = "Respawn",
   retireLabel = "Retire",
   sendLabel = "Send",
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlder,
   stackSlot
 }) {
   const bodyRef = import_react19.default.useRef(null);
+  const preserveOlderHistoryScrollRef = import_react19.default.useRef(false);
+  const olderHistoryScrollHeightRef = import_react19.default.useRef(0);
+  const olderHistoryScrollTopRef = import_react19.default.useRef(0);
   const messages = import_react19.default.useMemo(() => {
     return buildChatMessages(entries);
   }, [entries]);
@@ -8667,6 +8729,14 @@ function ChatPane({
     ].join(":");
   }, [identity, messages, phase]);
   import_react19.default.useLayoutEffect(() => {
+    if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
+      const node = bodyRef.current;
+      const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
+      node.scrollTop = olderHistoryScrollTopRef.current + Math.max(0, addedHeight);
+      node.scrollLeft = 0;
+      preserveOlderHistoryScrollRef.current = false;
+      return;
+    }
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -8681,6 +8751,19 @@ function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
+  import_react19.default.useEffect(() => {
+    if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
+      preserveOlderHistoryScrollRef.current = false;
+    }
+  }, [loadingOlderHistory]);
+  function requestOlderHistory() {
+    if (bodyRef.current) {
+      preserveOlderHistoryScrollRef.current = true;
+      olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
+      olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
+    }
+    onLoadOlder?.();
+  }
   const transcriptText = import_react19.default.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
   const state = (agent?.state || "unknown").toLowerCase();
@@ -8815,6 +8898,9 @@ function ChatPane({
           if (event.currentTarget.scrollLeft !== 0) {
             event.currentTarget.scrollLeft = 0;
           }
+          if (event.currentTarget.scrollTop <= 32 && hasOlderHistory && !loadingOlderHistory) {
+            requestOlderHistory();
+          }
         },
         ref: bodyRef,
         children: [
@@ -8824,6 +8910,16 @@ function ChatPane({
               className: "msg__copy--transcript",
               label: "Copy transcript",
               text: transcriptText
+            }
+          ),
+          hasOlderHistory && /* @__PURE__ */ (0, import_jsx_runtime28.jsx)(
+            "button",
+            {
+              className: "conv__history",
+              disabled: loadingOlderHistory,
+              onClick: requestOlderHistory,
+              type: "button",
+              children: loadingOlderHistory ? "Loading history" : "Load older history"
             }
           ),
           messages.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime28.jsxs)("div", { className: "msg msg--origin", children: [
@@ -9827,6 +9923,8 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "text_complete",
   "reasoning_delta",
   "reasoning_complete",
+  "snapshot_complete",
+  "snapshot_started",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -9948,7 +10046,9 @@ function ConsoleApp({ baseUrl }) {
       log = {
         events: [],
         byKey: /* @__PURE__ */ new Map(),
-        hasServerLog: null
+        hasServerLog: null,
+        olderHistoryExhausted: false,
+        olderHistoryLoading: false
       };
       identityLogRef.current[identity] = log;
     }
@@ -10117,19 +10217,70 @@ function ConsoleApp({ baseUrl }) {
     if (recomputePhaseForIdentity(identity)) changed = true;
     return changed;
   }
-  async function queryIdentityTimeline(identity) {
-    const frames = [];
-    let available = true;
-    let after;
-    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
-      const page = await queryTimeline(baseUrl, { identity, after }, 1e3);
-      available = page.available;
-      frames.push(...page.frames);
-      const next = page.nextCursor?.trim();
-      if (!next || next === after) break;
-      after = next;
+  function newerCursor(a, b) {
+    const aSeq = cursorSeq2(a);
+    const bSeq = cursorSeq2(b);
+    if (aSeq === null) return b || a;
+    if (bSeq === null) return a || b;
+    return bSeq > aSeq ? b : a;
+  }
+  function olderCursor(a, b) {
+    const aSeq = cursorSeq2(a);
+    const bSeq = cursorSeq2(b);
+    if (aSeq === null) return b || a;
+    if (bSeq === null) return a || b;
+    return bSeq < aSeq ? b : a;
+  }
+  function noteIdentityTimelinePage(identity, page, target) {
+    const log = getOrCreateLog(identity);
+    const previousOldest = log.oldestTimelineCursor;
+    const previousLatest = log.latestTimelineCursor;
+    const previousExhausted = log.olderHistoryExhausted;
+    const previousExhaustedAtCursor = log.olderHistoryExhaustedAtCursor;
+    for (const frame of page.frames) {
+      log.oldestTimelineCursor = olderCursor(log.oldestTimelineCursor, frame.cursor);
+      log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, frame.cursor);
     }
-    return { frames, available };
+    if (target.mode === "recent") {
+      log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, page.latestCursor);
+      if (target.before) {
+        log.olderHistoryExhausted = page.exhausted === true;
+        log.olderHistoryExhaustedAtCursor = page.exhausted === true ? log.oldestTimelineCursor : void 0;
+      } else if (!log.olderHistoryExhaustedAtCursor) {
+        log.olderHistoryExhausted = page.exhausted === true;
+      }
+    } else {
+      log.latestTimelineCursor = newerCursor(
+        log.latestTimelineCursor,
+        page.nextCursor || page.latestCursor
+      );
+    }
+    return previousOldest !== log.oldestTimelineCursor || previousLatest !== log.latestTimelineCursor || previousExhausted !== log.olderHistoryExhausted || previousExhaustedAtCursor !== log.olderHistoryExhaustedAtCursor;
+  }
+  function resetIdentityTimelineReplayMetadata(identity) {
+    const log = getOrCreateLog(identity);
+    const changed = log.events.length > 0 || log.byKey.size > 0 || log.oldestTimelineCursor !== void 0 || log.latestTimelineCursor !== void 0 || log.olderHistoryExhausted !== false || log.olderHistoryExhaustedAtCursor !== void 0;
+    log.events = [];
+    log.byKey.clear();
+    log.oldestTimelineCursor = void 0;
+    log.latestTimelineCursor = void 0;
+    log.olderHistoryExhausted = false;
+    log.olderHistoryExhaustedAtCursor = void 0;
+    return changed;
+  }
+  async function queryIdentityTimelinePage(identity, target) {
+    const page = await queryTimeline(
+      baseUrl,
+      {
+        identity,
+        mode: target.mode,
+        after: target.after,
+        before: target.before
+      },
+      target.limit ?? 200
+    );
+    const metadataChanged = noteIdentityTimelinePage(identity, page, target);
+    return { page, metadataChanged };
   }
   function refreshIdentityTimelineNow(identity, options = {}) {
     const normalized = identity.trim();
@@ -10144,8 +10295,11 @@ function ConsoleApp({ baseUrl }) {
       });
     }
     const request = (async () => {
-      const { frames, available } = await queryIdentityTimeline(normalized);
-      reconcileServerLog(normalized, frames, available);
+      const { page } = await queryIdentityTimelinePage(normalized, {
+        mode: "recent",
+        limit: 200
+      });
+      reconcileServerLog(normalized, page.frames, page.available);
       if (options.clearPhase) clearPhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
@@ -10153,6 +10307,26 @@ function ConsoleApp({ baseUrl }) {
     });
     timelineFetchInFlightRef.current[normalized] = request;
     return request;
+  }
+  async function loadOlderIdentityTimeline(identity) {
+    const normalized = identity.trim();
+    if (!normalized) return;
+    const log = getOrCreateLog(normalized);
+    if (log.olderHistoryLoading || log.olderHistoryExhausted) return;
+    log.olderHistoryLoading = true;
+    forceRender();
+    try {
+      const { page } = await queryIdentityTimelinePage(normalized, {
+        mode: "recent",
+        before: log.oldestTimelineCursor,
+        limit: 200
+      });
+      reconcileServerLog(normalized, page.frames, page.available);
+    } catch {
+    } finally {
+      log.olderHistoryLoading = false;
+      forceRender();
+    }
   }
   function getSortedFrames(identity) {
     const log = identityLogRef.current[identity];
@@ -10731,9 +10905,33 @@ function ConsoleApp({ baseUrl }) {
         const log = getOrCreateLog(identity);
         if (log.hasServerLog === false) continue;
         try {
-          const { frames, available } = await queryIdentityTimeline(identity);
-          if (reconcileServerLog(identity, frames, available)) changed = true;
-        } catch {
+          const sinceCursor = log.latestTimelineCursor && !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor) ? log.latestTimelineCursor : void 0;
+          const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+            mode: sinceCursor ? "since" : "recent",
+            after: sinceCursor,
+            limit: sinceCursor ? 1e3 : 200
+          });
+          if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
+            changed = true;
+          }
+        } catch (error2) {
+          const replay = error2;
+          if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
+            if (resetIdentityTimelineReplayMetadata(identity)) {
+              changed = true;
+            }
+            try {
+              const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+                mode: "recent",
+                limit: 200
+              });
+              if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
+                changed = true;
+              }
+            } catch {
+            }
+            continue;
+          }
         }
       }
       if (changed) forceRender();
@@ -10777,7 +10975,7 @@ function ConsoleApp({ baseUrl }) {
     };
     let stopped = false;
     let unsubscribe = null;
-    void queryTimeline(baseUrl, {}, 200).then(({ frames, nextCursor }) => {
+    void queryTimeline(baseUrl, { mode: "recent" }, 200).then(({ frames, nextCursor, latestCursor }) => {
       if (stopped) return;
       const seen = /* @__PURE__ */ new Set();
       const filtered = [];
@@ -10793,7 +10991,7 @@ function ConsoleApp({ baseUrl }) {
         frames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)).slice(-300).reverse()
       );
       forceRender();
-      const after = nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
+      const after = latestCursor || nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
       unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
     }).catch(() => {
       if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
@@ -11322,6 +11520,7 @@ function ConsoleApp({ baseUrl }) {
     });
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
+    const identityLog = getOrCreateLog(identity);
     const isSending = sendingPanels.has(panelKey);
     const hasLocalPhase = Object.prototype.hasOwnProperty.call(
       phaseRef.current,
@@ -11377,6 +11576,9 @@ function ConsoleApp({ baseUrl }) {
         respawnLabel: configuredActionLabels.respawn,
         retireLabel: configuredActionLabels.retire,
         sendLabel: configuredActionLabels.send,
+        hasOlderHistory: identityLog.hasServerLog === true && Boolean(identityLog.oldestTimelineCursor) && identityLog.olderHistoryExhausted !== true,
+        loadingOlderHistory: identityLog.olderHistoryLoading === true,
+        onLoadOlder: () => void loadOlderIdentityTimeline(identity),
         stackSlot
       }
     );

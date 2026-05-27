@@ -36,6 +36,9 @@ interface ChatPaneProps {
   respawnLabel?: string;
   retireLabel?: string;
   sendLabel?: string;
+  hasOlderHistory?: boolean;
+  loadingOlderHistory?: boolean;
+  onLoadOlder?: () => void;
   /// Pending-message stack rendered between conversation body and
   /// composer. ConsoleApp owns the state + handlers; ChatPane just
   /// reserves the slot. Pass `null` (or omit) to suppress.
@@ -489,9 +492,15 @@ export function ChatPane({
   respawnLabel = "Respawn",
   retireLabel = "Retire",
   sendLabel = "Send",
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlder,
   stackSlot,
 }: ChatPaneProps): React.JSX.Element {
   const bodyRef = React.useRef<HTMLDivElement>(null);
+  const preserveOlderHistoryScrollRef = React.useRef(false);
+  const olderHistoryScrollHeightRef = React.useRef(0);
+  const olderHistoryScrollTopRef = React.useRef(0);
 
   const messages = React.useMemo(() => {
     return buildChatMessages(entries);
@@ -513,6 +522,14 @@ export function ChatPane({
   }, [identity, messages, phase]);
 
   React.useLayoutEffect(() => {
+    if (preserveOlderHistoryScrollRef.current && bodyRef.current) {
+      const node = bodyRef.current;
+      const addedHeight = node.scrollHeight - olderHistoryScrollHeightRef.current;
+      node.scrollTop = olderHistoryScrollTopRef.current + Math.max(0, addedHeight);
+      node.scrollLeft = 0;
+      preserveOlderHistoryScrollRef.current = false;
+      return;
+    }
     const resetTranscriptScroll = () => {
       if (bodyRef.current) {
         bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
@@ -527,6 +544,21 @@ export function ChatPane({
       window.cancelAnimationFrame(secondFrame);
     };
   }, [scrollSignature]);
+
+  React.useEffect(() => {
+    if (!loadingOlderHistory && preserveOlderHistoryScrollRef.current) {
+      preserveOlderHistoryScrollRef.current = false;
+    }
+  }, [loadingOlderHistory]);
+
+  function requestOlderHistory() {
+    if (bodyRef.current) {
+      preserveOlderHistoryScrollRef.current = true;
+      olderHistoryScrollHeightRef.current = bodyRef.current.scrollHeight;
+      olderHistoryScrollTopRef.current = bodyRef.current.scrollTop;
+    }
+    onLoadOlder?.();
+  }
 
   const transcriptText = React.useMemo(() => transcriptCopyText(messages), [messages]);
   const initial = (agentLabel || "?").trim().charAt(0).toUpperCase() || "?";
@@ -671,6 +703,13 @@ export function ChatPane({
           if (event.currentTarget.scrollLeft !== 0) {
             event.currentTarget.scrollLeft = 0;
           }
+          if (
+            event.currentTarget.scrollTop <= 32 &&
+            hasOlderHistory &&
+            !loadingOlderHistory
+          ) {
+            requestOlderHistory();
+          }
         }}
         ref={bodyRef}
       >
@@ -679,6 +718,16 @@ export function ChatPane({
           label="Copy transcript"
           text={transcriptText}
         />
+        {hasOlderHistory && (
+          <button
+            className="conv__history"
+            disabled={loadingOlderHistory}
+            onClick={requestOlderHistory}
+            type="button"
+          >
+            {loadingOlderHistory ? "Loading history" : "Load older history"}
+          </button>
+        )}
         {messages.length === 0 && (
           <div className="msg msg--origin">
             <div className="msg__time" />

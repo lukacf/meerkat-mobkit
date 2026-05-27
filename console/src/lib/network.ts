@@ -248,6 +248,21 @@ async function rpc<T>(
       (error as Error & { rpcError?: ConsoleGatewayInteractionRejectedError }).rpcError = typedError;
       throw error;
     }
+    const replayError = normalizeReplayUnavailableError(result.error.data) as ConsoleReplayUnavailablePayload | null;
+    if (replayError || result.error.code === -32013) {
+      const error = new Error(
+        `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`,
+      );
+      const annotated = error as Error & {
+        replayError?: ConsoleReplayUnavailablePayload;
+        timelineReplayUnavailable?: boolean;
+      };
+      if (replayError) {
+        annotated.replayError = replayError;
+      }
+      annotated.timelineReplayUnavailable = true;
+      throw error;
+    }
     throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
 
@@ -428,9 +443,28 @@ async function streamFramesFromResponse(
     throw new Error(`interaction stream request failed ${response.status}: ${text}`);
   }
 
+  const replayUnavailableError = (frame: ConsoleFrame): Error | null => {
+    if (frame.event !== "replay_unavailable") {
+      return null;
+    }
+    const replayError = normalizeReplayUnavailableError(frame.data) as ConsoleReplayUnavailablePayload | null;
+    if (!replayError) {
+      return new Error("timeline stream replay unavailable");
+    }
+    const error = new Error(
+      `interaction stream replay unavailable for ${replayError.stream}: ${replayError.requested_last_event_id} -> ${replayError.latest_event_id}`,
+    );
+    (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
+    return error;
+  };
+
   if (!response.body || typeof response.body.getReader !== "function") {
     const frames = parseSseFrames(await response.text());
     for (const frame of frames) {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         options.onFrame?.(frame);
       }
@@ -455,6 +489,10 @@ async function streamFramesFromResponse(
       frameBuffer += chunk;
       let sawTerminal = false;
       frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+        const replayError = replayUnavailableError(frame);
+        if (replayError) {
+          throw replayError;
+        }
         if (matchesCorrelation(frame, options.correlation, true)) {
           frames.push(frame);
           options.onFrame?.(frame);
@@ -470,12 +508,20 @@ async function streamFramesFromResponse(
     const finalChunk = decoder.decode();
     frameBuffer += finalChunk;
     frameBuffer = flushSseBlocks(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
       }
     });
     flushTrailingSseBlock(frameBuffer, (frame) => {
+      const replayError = replayUnavailableError(frame);
+      if (replayError) {
+        throw replayError;
+      }
       if (matchesCorrelation(frame, options.correlation, true)) {
         frames.push(frame);
         options.onFrame?.(frame);
@@ -520,7 +566,13 @@ function flushTrailingSseBlock(buffer: string, onFrame: (frame: ConsoleFrame) =>
 
 export async function queryTimeline(
   baseUrl: string,
-  target: { identity?: string; conversationId?: string; after?: string },
+  target: {
+    identity?: string;
+    conversationId?: string;
+    after?: string;
+    before?: string;
+    mode?: "since" | "recent";
+  },
   limit = 400,
 ): Promise<ConsoleTimelinePage> {
   const result = await rpc<unknown>(baseUrl, "mobkit/console/query_timeline", {
@@ -528,6 +580,8 @@ export async function queryTimeline(
     ...(target.identity?.trim() ? { identity: target.identity.trim() } : {}),
     ...(target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {}),
     ...(target.after?.trim() ? { after: target.after.trim() } : {}),
+    ...(target.before?.trim() ? { before: target.before.trim() } : {}),
+    ...(target.mode ? { mode: target.mode } : {}),
   });
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
@@ -537,7 +591,9 @@ export async function queryTimeline(
   return {
     frames: rawFrames.map(timelineFrameToConsoleFrame),
     nextCursor: typeof record.next_cursor === "string" ? record.next_cursor : undefined,
-    available: true,
+    latestCursor: typeof record.latest_cursor === "string" ? record.latest_cursor : undefined,
+    exhausted: record.exhausted === true,
+    available: record.available !== false,
   };
 }
 
@@ -587,11 +643,10 @@ export async function callConsoleRpc<T>(
   return rpc<T>(baseUrl, method, params);
 }
 
-function timelineStreamPath(target: { identity?: string; conversationId?: string; after?: string }): string {
+function timelineStreamPath(target: { identity?: string; conversationId?: string }): string {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  if (target.after?.trim()) params.set("after", target.after.trim());
   return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 
@@ -634,10 +689,14 @@ export function subscribeTimelineEvents(
     while (!stopped) {
       controller = new AbortController();
       try {
+        const headers: Record<string, string> = { "content-type": "application/json" };
+        if (after) {
+          headers["Last-Event-ID"] = after;
+        }
         await streamFramesFromResponse(
-          await fetch(`${baseUrl}${timelineStreamPath({ ...target, after })}`, {
+          await fetch(`${baseUrl}${timelineStreamPath(target)}`, {
             method: "GET",
-            headers: { "content-type": "application/json" },
+            headers,
             signal: controller.signal,
           }),
           {
@@ -655,6 +714,10 @@ export function subscribeTimelineEvents(
       } catch (error) {
         if (stopped || controller.signal.aborted) {
           break;
+        }
+        const replayError = (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError;
+        if (replayError?.latest_event_id) {
+          after = replayError.latest_event_id;
         }
         onFrame(replayUnavailableFrame(error));
       }

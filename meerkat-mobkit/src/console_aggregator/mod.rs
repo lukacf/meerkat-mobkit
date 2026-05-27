@@ -15,7 +15,7 @@ use meerkat_mob::runtime::MobMemberListEntry;
 use meerkat_mob::{MobError, MobHandle};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Semaphore, broadcast, oneshot};
+use tokio::sync::{Semaphore, broadcast};
 
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
@@ -38,7 +38,8 @@ pub use types::{
     AppendDisposition, AppendOutcome, ConsoleCursor, ConsoleFrame, ConsoleFrameSource,
     ConsoleFrameSourceKind, ConsoleFrameStatus, ConsoleIdentityInspection, ConsoleIdentityRecord,
     ConsoleInteractionAccepted, ConsoleReplayUnavailable, ConsoleSendRequest, ConsoleTimelineEvent,
-    ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleVisibility, NewConsoleFrame,
+    ConsoleTimelineMode, ConsoleTimelinePage, ConsoleTimelineQuery, ConsoleTimelineWindowPage,
+    ConsoleTimelineWindowQuery, ConsoleVisibility, NewConsoleFrame,
 };
 
 const TIMELINE_CHANNEL_CAP: usize = 1024;
@@ -46,8 +47,11 @@ const SESSION_HISTORY_PAGE_LIMIT: usize = 500;
 const SESSION_HISTORY_REFRESH_TTL_MS: u64 = 30_000;
 const SESSION_HISTORY_GROWING_REFRESH_TTL_MS: u64 = 2_000;
 const SESSION_HISTORY_DISCOVERY_INTERVAL: Duration = Duration::from_secs(5);
-const EXPLICIT_IDENTITY_BACKFILL_WAIT: Duration = Duration::from_millis(750);
 const IDENTITY_FIRST_LIVE_MEMBER_REFRESH_WAIT: Duration = Duration::from_millis(250);
+const TIMELINE_RAW_SCAN_PAGE_LIMIT: usize = 1_000;
+const TIMELINE_MAX_RAW_SCAN_FRAMES: usize = 100_000;
+const TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT: usize = 5_000;
+const IDENTITY_RECENT_ANCHOR_LIMIT: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentityCollectionMode {
@@ -560,35 +564,220 @@ impl MobKitConsoleAggregator {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
-        let explicit_identity = query.identity.clone();
-        let mut page = self.inner.store.query_frames(query.clone()).await?;
-        if let Some(identity) = explicit_identity.clone()
-            && explicit_identity_query_needs_session_history_backfill(&page.frames)
+        let page = self.query_timeline_windowed(query.into()).await?;
+        Ok(ConsoleTimelinePage {
+            frames: page.frames,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    pub async fn query_timeline_windowed(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+        self.reject_after_cursor_beyond_store_frontier(query.after.as_ref())
+            .await?;
+        if query.after.is_none()
+            && query.before.is_none()
+            && let Some(identity) = query.identity.clone()
         {
-            backfill_identity_for_explicit_query(self.inner.clone(), identity).await;
-            page = self.inner.store.query_frames(query).await?;
-        }
-        let mut visible_frames = Vec::with_capacity(page.frames.len());
-        let mut identity_visibility_cache = HashMap::new();
-        let identity_records = self.inner.identity_read_model.current().await;
-        for frame in page.frames {
-            let allow_historical_identity =
-                explicit_identity.as_deref() == Some(frame.identity.as_str());
-            if frame_is_visible_cached(
-                &self.inner,
-                &frame,
-                allow_historical_identity,
-                &mut identity_visibility_cache,
-                &identity_records,
-            )
-            .await
-            .unwrap_or(false)
-            {
-                visible_frames.push(frame);
+            let mut probe_query = query.clone();
+            probe_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
+            let page = self.inner.store.query_windowed_frames(probe_query).await?;
+            if explicit_identity_query_needs_session_history_backfill(&page.frames) {
+                spawn_session_history_backfill_for_identity(self.inner.clone(), identity, true);
             }
         }
-        page.frames = visible_frames;
-        Ok(page)
+        self.query_timeline_visible(query).await
+    }
+
+    async fn reject_after_cursor_beyond_store_frontier(
+        &self,
+        after: Option<&ConsoleCursor>,
+    ) -> ConsoleLogResult<()> {
+        let Some(after_seq) = after.and_then(ConsoleCursor::seq) else {
+            return Ok(());
+        };
+        let latest_seq = self
+            .inner
+            .store
+            .latest_cursor()
+            .await?
+            .and_then(|cursor| cursor.seq())
+            .unwrap_or(0);
+        if after_seq > latest_seq {
+            return Err(std::io::Error::other(
+                "timeline replay cursor is beyond the current store frontier",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    async fn query_timeline_visible(
+        &self,
+        query: ConsoleTimelineWindowQuery,
+    ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+        let requested_limit = query.limit.clamp(1, TIMELINE_RAW_SCAN_PAGE_LIMIT);
+        let mut scan_query = query.clone();
+        scan_query.limit = TIMELINE_RAW_SCAN_PAGE_LIMIT;
+        let mut visible_frames = Vec::with_capacity(requested_limit);
+        let mut anchor_frames = Vec::new();
+        let mut identity_visibility_cache = HashMap::new();
+        let identity_records = self.inner.identity_read_model.current().await;
+        let mut next_cursor = query.after.clone();
+        let mut since_last_scanned_cursor = query.after.clone();
+        let mut since_last_delivered_cursor = None;
+        let mut since_stopped_at_visible_limit = false;
+        let mut latest_cursor = None;
+        let mut exhausted = false;
+        let mut scanned = 0usize;
+
+        loop {
+            let page = self
+                .inner
+                .store
+                .query_windowed_frames(scan_query.clone())
+                .await?;
+            latest_cursor = latest_cursor.or(page.latest_cursor.clone());
+            if page.frames.is_empty() {
+                exhausted = true;
+                break;
+            }
+            let raw_len = page.frames.len();
+            scanned = scanned.saturating_add(raw_len);
+            match query.mode {
+                ConsoleTimelineMode::Since => {
+                    if let Some(cursor) = page.next_cursor.clone() {
+                        since_last_scanned_cursor = Some(cursor.clone());
+                        scan_query.after = Some(cursor);
+                    }
+                }
+                ConsoleTimelineMode::Recent => {
+                    if let Some(first) = page.frames.first() {
+                        scan_query.before = Some(first.cursor.clone());
+                    }
+                    next_cursor = page.next_cursor.clone().or(next_cursor);
+                }
+            }
+
+            for frame in page.frames {
+                let allow_historical_identity =
+                    query.identity.as_deref() == Some(frame.identity.as_str());
+                if frame_is_visible_cached(
+                    &self.inner,
+                    &frame,
+                    allow_historical_identity,
+                    &mut identity_visibility_cache,
+                    &identity_records,
+                )
+                .await
+                .unwrap_or(false)
+                {
+                    if query.mode == ConsoleTimelineMode::Recent
+                        && query.identity.is_some()
+                        && is_identity_timeline_anchor_frame(&frame)
+                        && anchor_frames.len() < IDENTITY_RECENT_ANCHOR_LIMIT
+                    {
+                        anchor_frames.push(frame.clone());
+                    }
+                    match query.mode {
+                        ConsoleTimelineMode::Since => {
+                            if visible_frames.len() >= requested_limit {
+                                since_stopped_at_visible_limit = true;
+                                break;
+                            }
+                            since_last_delivered_cursor = Some(frame.cursor.clone());
+                            visible_frames.push(frame);
+                            if visible_frames.len() >= requested_limit {
+                                since_stopped_at_visible_limit = true;
+                                exhausted = false;
+                                break;
+                            }
+                        }
+                        ConsoleTimelineMode::Recent => {
+                            visible_frames.push(frame);
+                        }
+                    }
+                }
+            }
+            let needs_identity_anchor = query.mode == ConsoleTimelineMode::Recent
+                && query.identity.is_some()
+                && anchor_frames.is_empty()
+                && scanned < TIMELINE_RECENT_ANCHOR_RAW_SCAN_LIMIT;
+            if visible_frames.len() >= requested_limit && !needs_identity_anchor {
+                break;
+            }
+            if since_stopped_at_visible_limit {
+                break;
+            }
+            if page.exhausted || raw_len < TIMELINE_RAW_SCAN_PAGE_LIMIT {
+                exhausted = true;
+                break;
+            }
+            if scanned >= TIMELINE_MAX_RAW_SCAN_FRAMES {
+                break;
+            }
+        }
+
+        if query.mode == ConsoleTimelineMode::Recent {
+            visible_frames.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+            if visible_frames.len() > requested_limit {
+                visible_frames = visible_frames.split_off(visible_frames.len() - requested_limit);
+            }
+            if !anchor_frames.is_empty() {
+                let anchor_cursors = anchor_frames
+                    .iter()
+                    .map(|frame| frame.cursor.clone())
+                    .collect::<Vec<_>>();
+                let mut merged = anchor_frames;
+                for frame in visible_frames {
+                    if !merged
+                        .iter()
+                        .any(|existing| existing.cursor == frame.cursor || existing.id == frame.id)
+                    {
+                        merged.push(frame);
+                    }
+                }
+                merged.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+                visible_frames = merged;
+                if visible_frames.len() > requested_limit {
+                    let mut anchors = Vec::new();
+                    let mut tail = Vec::new();
+                    for frame in visible_frames {
+                        if anchor_cursors.contains(&frame.cursor) {
+                            anchors.push(frame);
+                        } else {
+                            tail.push(frame);
+                        }
+                    }
+                    visible_frames = if anchors.len() >= requested_limit {
+                        anchors.split_off(anchors.len() - requested_limit)
+                    } else {
+                        let keep_tail = requested_limit.saturating_sub(anchors.len());
+                        if tail.len() > keep_tail {
+                            tail = tail.split_off(tail.len() - keep_tail);
+                        }
+                        anchors.extend(tail);
+                        anchors.sort_by_key(|frame| frame.cursor.seq().unwrap_or(u64::MAX));
+                        anchors
+                    };
+                }
+            }
+        }
+
+        Ok(ConsoleTimelineWindowPage {
+            frames: visible_frames,
+            next_cursor: match query.mode {
+                ConsoleTimelineMode::Since if since_stopped_at_visible_limit => {
+                    since_last_delivered_cursor.or(since_last_scanned_cursor)
+                }
+                ConsoleTimelineMode::Since => since_last_scanned_cursor,
+                ConsoleTimelineMode::Recent => next_cursor,
+            },
+            latest_cursor,
+            exhausted,
+        })
     }
 
     pub async fn refresh_session_history(&self) -> ConsoleLogResult<()> {
@@ -1106,6 +1295,18 @@ fn explicit_identity_query_needs_session_history_backfill(frames: &[ConsoleFrame
                 | "tool_result_received"
         )
     })
+}
+
+fn is_identity_timeline_anchor_frame(frame: &ConsoleFrame) -> bool {
+    match frame.kind.as_str() {
+        "user_input" | "run_started" => true,
+        "interaction_started" => frame
+            .payload
+            .get("content")
+            .or_else(|| frame.payload.get("prompt"))
+            .is_some(),
+        _ => false,
+    }
 }
 
 fn dedupe_identity_records(records: Vec<ConsoleIdentityRecord>) -> Vec<ConsoleIdentityRecord> {
@@ -1822,35 +2023,6 @@ fn spawn_session_history_backfill_for_identity(
         };
         spawn_session_history_backfill_target(inner, target, force_refresh);
     });
-}
-
-async fn backfill_identity_for_explicit_query(inner: Arc<AggregatorInner>, identity: String) {
-    if !inner.options.session_history_backfill_enabled {
-        return;
-    }
-    let (tx, rx) = oneshot::channel();
-    let warning_identity = identity.clone();
-    tokio::spawn(async move {
-        let result = async {
-            let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
-                return Ok(());
-            };
-            run_targeted_session_history_backfill(inner, target, true).await
-        }
-        .await
-        .map_err(|err| err.to_string());
-        let _ = tx.send(result);
-    });
-    match tokio::time::timeout(EXPLICIT_IDENTITY_BACKFILL_WAIT, rx).await {
-        Ok(Ok(Ok(())) | Err(_)) | Err(_) => {}
-        Ok(Ok(Err(err))) => {
-            tracing::warn!(
-                identity = %warning_identity,
-                error = %err,
-                "console explicit identity session-history refresh failed"
-            );
-        }
-    }
 }
 
 fn spawn_opportunistic_session_history_backfill_for_identity(
@@ -3056,6 +3228,15 @@ mod tests {
     use super::*;
     use crate::mob_handle_runtime::MobBootstrapSpec;
 
+    #[derive(Debug)]
+    struct HideHiddenNoiseFrames;
+
+    impl ConsoleVisibilityPolicy for HideHiddenNoiseFrames {
+        fn frame_visible(&self, frame: &ConsoleFrame) -> bool {
+            frame.kind != "hidden_noise"
+        }
+    }
+
     struct CountingConsoleLogStore {
         inner: InMemoryConsoleLogStore,
         source_watermark_calls: AtomicUsize,
@@ -3268,6 +3449,13 @@ mod tests {
             query: ConsoleTimelineQuery,
         ) -> ConsoleLogResult<ConsoleTimelinePage> {
             self.inner.query_frames(query).await
+        }
+
+        async fn query_windowed_frames(
+            &self,
+            query: ConsoleTimelineWindowQuery,
+        ) -> ConsoleLogResult<ConsoleTimelineWindowPage> {
+            self.inner.query_windowed_frames(query).await
         }
 
         async fn frame_by_dedupe_key(
@@ -3764,6 +3952,323 @@ comms = true
     }
 
     #[tokio::test]
+    async fn identity_recent_anchor_respects_query_limit() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "anchored-user-input".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "user_input".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "content": "anchor me" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::Synthetic,
+                    source_cursor: None,
+                },
+                source_event_id: Some("anchored-user-input".to_string()),
+                interaction_id: Some("turn-a".to_string()),
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append anchor");
+        for idx in 2..=40 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("noisy-tail-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "reasoning_delta".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("noisy-tail-{idx}")),
+                    interaction_id: Some("turn-a".to_string()),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append noisy tail");
+        }
+
+        let page = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Recent,
+                limit: 5,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query recent identity timeline");
+
+        assert_eq!(
+            page.frames.len(),
+            5,
+            "identity anchor merge must not exceed the requested limit"
+        );
+        assert!(
+            page.frames
+                .iter()
+                .any(|frame| frame.dedupe_key == "anchored-user-input"),
+            "the bounded result should still retain the useful turn anchor: {:#?}",
+            page.frames
+        );
+        assert_eq!(
+            page.frames.last().and_then(|frame| frame.cursor.seq()),
+            Some(40)
+        );
+    }
+
+    #[tokio::test]
+    async fn query_timeline_since_skips_hidden_raw_gaps_with_bounded_paging() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let runtime = build_single_member_runtime().await;
+        let mut entry = runtime_entry_for_test("runtime-a", &runtime);
+        entry.visibility_policy = Arc::new(HideHiddenNoiseFrames);
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+
+        for idx in 0..1_500 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("hidden-gap-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "hidden_noise".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "delta": idx }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("hidden-gap-{idx}")),
+                    interaction_id: None,
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append hidden frame");
+        }
+        aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "visible-after-gap".to_string(),
+                timestamp_ms: 1_501,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "interaction_complete".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "text": "visible after hidden gap" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("visible-after-gap".to_string()),
+                interaction_id: Some("turn-visible".to_string()),
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append visible frame");
+
+        let page = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                limit: 1,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query timeline");
+        assert_eq!(page.frames.len(), 1);
+        assert_eq!(page.frames[0].dedupe_key, "visible-after-gap");
+        assert_eq!(
+            page.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(1_501)
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[tokio::test]
+    async fn query_timeline_since_cursor_stops_at_last_visible_returned_frame() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        for idx in 1..=300 {
+            aggregator
+                .store()
+                .append_if_absent(NewConsoleFrame {
+                    id: None,
+                    dedupe_key: format!("visible-{idx}"),
+                    timestamp_ms: idx,
+                    runtime_key: "runtime-a".to_string(),
+                    identity: "agent-a".to_string(),
+                    conversation_id: Some("agent-a".to_string()),
+                    session_id: None,
+                    kind: "interaction_complete".to_string(),
+                    status: ConsoleFrameStatus::Delivered,
+                    payload: json!({ "text": format!("visible {idx}") }),
+                    source: ConsoleFrameSource {
+                        kind: ConsoleFrameSourceKind::ConsoleEvent,
+                        source_cursor: None,
+                    },
+                    source_event_id: Some(format!("visible-{idx}")),
+                    interaction_id: Some(format!("turn-{idx}")),
+                    turn_id: None,
+                    run_id: None,
+                    parent_frame_id: None,
+                    caused_by_frame_id: None,
+                })
+                .await
+                .expect("append visible frame");
+        }
+
+        let first = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query first page");
+        assert_eq!(first.frames.len(), 10);
+        assert_eq!(
+            first.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(10)
+        );
+
+        let second = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                after: first.next_cursor,
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query second page");
+        assert_eq!(second.frames.len(), 10);
+        assert_eq!(second.frames[0].dedupe_key, "visible-11");
+        assert_eq!(
+            second.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(20)
+        );
+    }
+
+    #[tokio::test]
+    async fn query_timeline_since_empty_continuation_does_not_force_backfill() {
+        let store = Arc::new(CountingConsoleLogStore::new());
+        let aggregator = MobKitConsoleAggregator::new(store.clone());
+        let runtime = build_single_member_runtime().await;
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                runtime_entry_for_test("runtime-a", &runtime),
+            );
+        let inserted = store
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "event-1".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "agent-a".to_string(),
+                conversation_id: Some("agent-a".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "delta": "hello" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("event-1".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await
+            .expect("append frame");
+
+        let page = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                identity: Some("agent-a".to_string()),
+                mode: ConsoleTimelineMode::Since,
+                after: Some(inserted.frame.cursor),
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect("query continuation");
+
+        assert!(page.frames.is_empty());
+        assert_eq!(
+            store.source_watermark_calls(),
+            0,
+            "empty since continuation must not synchronously force session-history backfill"
+        );
+        let _ = runtime.mob_handle().stop().await;
+    }
+
+    #[test]
+    fn legacy_timeline_struct_literals_remain_source_compatible() {
+        let query = ConsoleTimelineQuery {
+            identity: Some("agent-a".to_string()),
+            conversation_id: None,
+            after: Some(ConsoleCursor::from("console:1")),
+            limit: 10,
+        };
+        let page = ConsoleTimelinePage {
+            frames: Vec::new(),
+            next_cursor: query.after.clone(),
+        };
+
+        assert_eq!(query.limit, 10);
+        assert_eq!(
+            page.next_cursor.as_ref().and_then(ConsoleCursor::seq),
+            Some(1)
+        );
+    }
+
+    #[tokio::test]
     async fn query_timeline_is_store_local_for_registered_runtimes() {
         let store = Arc::new(CountingConsoleLogStore::new());
         let aggregator = MobKitConsoleAggregator::new(store.clone());
@@ -3975,14 +4480,17 @@ comms = true
         .expect("query succeeds");
 
         assert!(
-            page.frames.iter().any(|frame| {
-                frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && frame.kind == "user_input"
-                    && session_history_content_text(frame).as_deref() == Some("You are agent-a.")
-            }),
-            "explicit identity query should force-refresh stale/fresh empty watermarks; frames: {:#?}",
+            page.frames.is_empty(),
+            "empty fresh-watermark query should return promptly before async backfill; frames: {:#?}",
             page.frames
         );
+        wait_for_session_history_text(
+            &aggregator,
+            "test/agent-a",
+            "You are agent-a.",
+            Duration::from_secs(5),
+        )
+        .await?;
         let _ = runtime.mob_handle().stop().await;
         Ok(())
     }
@@ -4076,11 +4584,19 @@ comms = true
         assert!(
             page.frames.iter().any(|frame| {
                 frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && session_history_content_text(frame).as_deref() == Some(fresh_prompt)
+                    && session_history_content_text(frame).as_deref()
+                        == Some("stale projected history")
             }),
-            "explicit identity query should refresh stale history and include the fresh prompt; frames: {:#?}",
+            "explicit identity query should return existing history before async refresh; frames: {:#?}",
             page.frames
         );
+        wait_for_session_history_text(
+            &aggregator,
+            "test/agent-a",
+            fresh_prompt,
+            Duration::from_secs(5),
+        )
+        .await?;
         assert!(
             store.source_watermark_calls() > 0,
             "stale existing session history should force a targeted source refresh"
@@ -4110,7 +4626,6 @@ comms = true
             observed = page.frames;
             if observed.iter().any(|frame| {
                 frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && (frame.kind == "user_input" || frame.kind == "interaction_complete")
                     && session_history_content_text(frame).as_deref() == Some(expected)
             }) {
                 return Ok(());
@@ -4288,6 +4803,25 @@ comms = true
         assert_eq!(store.source_watermark_calls(), 0);
     }
 
+    #[tokio::test]
+    async fn query_timeline_rejects_future_cursor_after_store_reset() {
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        let err = aggregator
+            .query_timeline_windowed(ConsoleTimelineWindowQuery {
+                after: Some(ConsoleCursor::from("console:99")),
+                limit: 10,
+                ..ConsoleTimelineWindowQuery::default()
+            })
+            .await
+            .expect_err("future cursor on empty/reset store must be replay-unavailable");
+
+        assert!(
+            err.to_string()
+                .contains("beyond the current store frontier"),
+            "unexpected error: {err}"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn explicit_identity_timeline_backfills_kickoff_when_live_tool_frames_arrive_first() {
         let store = Arc::new(CountingConsoleLogStore::new());
@@ -4355,23 +4889,35 @@ comms = true
             .expect("query child timeline");
 
         assert!(
-            page.frames.iter().any(|frame| {
-                frame.kind == "user_input"
-                    && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
-                    && frame.payload.to_string().contains("You are agent-a.")
-            }),
-            "explicit child timeline should include the kickoff prompt even after live tool frames: {:#?}",
-            page.frames
-        );
-        assert!(
             page.frames
                 .iter()
                 .any(|frame| frame.kind == "tool_execution_started"),
-            "live tool frame should still be present after the backfill"
+            "initial explicit child timeline should return existing store frames without waiting for session history"
         );
+
+        let mut observed_backfill = false;
+        for _ in 0..80 {
+            let page = aggregator
+                .query_timeline(ConsoleTimelineQuery {
+                    identity: Some("test/agent-a".to_string()),
+                    limit: 20,
+                    ..ConsoleTimelineQuery::default()
+                })
+                .await
+                .expect("query child timeline after scheduled backfill");
+            if page.frames.iter().any(|frame| {
+                frame.kind == "user_input"
+                    && frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                    && frame.payload.to_string().contains("You are agent-a.")
+            }) {
+                observed_backfill = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         assert!(
-            store.source_watermark_calls() > 0,
-            "the regression requires an explicit session-history backfill despite a non-empty live timeline"
+            observed_backfill,
+            "scheduled explicit child timeline backfill should eventually include the kickoff prompt"
         );
         let _ = runtime.mob_handle().stop().await;
     }

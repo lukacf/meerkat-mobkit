@@ -10,14 +10,14 @@ MobKit exposes its full operational API over JSON-RPC 2.0 via stdio. This is the
 
 - **Transport:** JSON lines over stdio (one JSON object per line)
 - **Version:** JSON-RPC 2.0
-- **Contract version:** `0.1.0`
+- **Contract version:** `0.4.0`
 
 ### Capabilities handshake
 
 The first line from the MobKit process is a capabilities declaration:
 
 ```json
-{"contract_version": "0.1.0"}
+{"contract_version": "0.4.0"}
 ```
 
 Clients must validate the contract version before sending requests.
@@ -66,11 +66,14 @@ errors. SDKs surface it on `RpcError.data`.
 |------|---------|--------------|
 | `-32010` | `mob_events/{query,subscribe}` `after_seq` past `latest_cursor` (stale cursor) | `{after_cursor, latest_cursor, error: "event_query_stale"}` |
 | `-32012` | `memory/{index,query}` backend unavailable | none |
+| `-32013` | `mobkit/console/query_timeline` cursor cannot be replayed from the console timeline | `{error: "replay_unavailable"}` |
 
 The `-32010` constant is exported from both SDKs as
 `MOB_EVENTS_STALE_CURSOR_CODE`. The Python and TypeScript SDKs auto-
 reify `-32010` errors into `MobEventsStaleError` (a typed subclass of
 `RpcError`) carrying `after_cursor` and `latest_cursor`.
+Console timeline replay failures use `CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE`
+so they are not mistaken for mob-events ledger cursor errors.
 
 ---
 
@@ -102,6 +105,38 @@ pointing to the [`/mobkit/mob_events/stream`](/api/sse) SSE route.
 The URL carries `after_seq` (`next_after_seq` ∨ caller's `after_seq` ∨
 `latest_cursor`) and the original filters so the SSE handler picks
 up gaplessly with the same predicate.
+
+---
+
+## Console timeline
+
+### `mobkit/console/query_timeline`
+
+Query the console log store for timeline frames. The method backs the bundled console chat and activity panes.
+
+<Accordion title="Parameters">
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `identity` | `string` | no | Restrict results to one console identity. |
+| `conversation_id` | `string` | no | Restrict results to one conversation. |
+| `mode` | `"since"` or `"recent"` | no | `since` returns visible frames after `after`; `recent` returns the latest visible frames in display order. |
+| `after` | `console:<seq>` | no | Exclusive lower cursor bound. |
+| `before` | `console:<seq>` | no | Exclusive upper cursor bound for older-history paging. |
+| `limit` | `usize` | no | Visible frame limit, clamped by the server. |
+</Accordion>
+
+Response:
+
+```json
+{
+  "frames": [],
+  "next_cursor": "console:240",
+  "latest_cursor": "console:240",
+  "exhausted": false
+}
+```
+
+`next_cursor` never advances past visible frames omitted due to `limit`, so clients can page with `mode: "since"` without gaps. `latest_cursor` is the live-continuation cursor for `mode: "recent"` seed queries.
 
 ### `list_runs`
 

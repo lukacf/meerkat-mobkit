@@ -49,6 +49,24 @@ jobs:
       - run: pip install pytest pytest-asyncio
       - run: PYTHONPATH=sdk/python python3 -m pytest sdk/python/tests/ -q
 
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: npm --prefix console install --silent --no-fund --no-audit
+      - run: npm --prefix console run phase0:types --silent
+      - run: npm --prefix console exec -- playwright install --with-deps chromium
+      - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
+      - run: npm --prefix console run e2e:browser --silent
+
   audit:
     name: audit
     runs-on: ubuntu-latest
@@ -59,7 +77,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [fmt-lint, test, test-python, audit]
+    needs: [fmt-lint, test, test-python, console, audit]
     runs-on: ubuntu-latest
     steps:
       - name: Check job results
@@ -67,11 +85,13 @@ jobs:
           if [[ "${{ needs.fmt-lint.result }}" != "success" ||
                 "${{ needs.test.result }}" != "success" ||
                 "${{ needs.test-python.result }}" != "success" ||
+                "${{ needs.console.result }}" != "success" ||
                 "${{ needs.audit.result }}" != "success" ]]; then
             echo "One or more jobs failed or were cancelled."
             echo "  fmt-lint:     ${{ needs.fmt-lint.result }}"
             echo "  test:         ${{ needs.test.result }}"
             echo "  test-python:  ${{ needs.test-python.result }}"
+            echo "  console:      ${{ needs.console.result }}"
             echo "  audit:        ${{ needs.audit.result }}"
             exit 1
           fi

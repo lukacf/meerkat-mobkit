@@ -3,6 +3,7 @@ import pytest
 
 from meerkat_mobkit.errors import (
     CapabilityUnavailableError,
+    ConsoleTimelineReplayUnavailableError,
     ContractMismatchError,
     MobKitError,
     NotConnectedError,
@@ -21,6 +22,7 @@ class TestMobKitErrorHierarchy:
             TransportError,
             RpcError,
             CapabilityUnavailableError,
+            ConsoleTimelineReplayUnavailableError,
             ContractMismatchError,
             NotConnectedError,
         ],

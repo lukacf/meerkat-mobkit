@@ -159,6 +159,47 @@ test("queryTimeline normalizes replayable frame update markers", async () => {
   }
 });
 
+test("queryTimeline exposes typed replay-unavailable RPC errors", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id: "mobkit/console/query_timeline:1",
+    error: {
+      code: -32013,
+      message: "query_timeline failed: replay unavailable",
+      data: {
+        error: "replay_unavailable",
+        stream: "timeline",
+        requested_cursor: "console:500",
+        latest_cursor: "console:42",
+      },
+    },
+  }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })) as typeof fetch;
+
+  try {
+    await assert.rejects(
+      queryTimeline("http://127.0.0.1:7000", { after: "console:500" }, 10),
+      (error: unknown) => {
+        const replay = error as Error & {
+          replayError?: { stream?: string; requested_last_event_id?: string; latest_event_id?: string };
+          timelineReplayUnavailable?: boolean;
+        };
+        assert.equal(replay.timelineReplayUnavailable, true);
+        assert.equal(replay.replayError?.stream, "timeline");
+        assert.equal(replay.replayError?.requested_last_event_id, "console:500");
+        assert.equal(replay.replayError?.latest_event_id, "console:42");
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("sendConsole posts idempotent console send RPC", async () => {
   const originalFetch = globalThis.fetch;
   let body = "";
@@ -284,12 +325,14 @@ test("parseSseFrames unwraps aggregate frame update events", () => {
 test("subscribeTimelineEvents reconnects with the latest aggregate cursor", async () => {
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
   const seen: string[] = [];
   let unsubscribe = () => {};
 
-  globalThis.fetch = (async (input) => {
+  globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
     if (calls.length === 1) {
       return new Response([
         "id: console:10",
@@ -321,8 +364,172 @@ test("subscribeTimelineEvents reconnects with the latest aggregate cursor", asyn
     });
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
-    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream?after=console%3A10");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, [undefined, "console:10"]);
     assert.deepEqual(seen, ["snapshot_complete", "text_complete"]);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("subscribeTimelineEvents recovers from stale timeline cursors", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
+  const seen: string[] = [];
+  let unsubscribe = () => {};
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({
+        error: "replay_unavailable",
+        requested_cursor: "bad",
+        latest_cursor: "console:99",
+      }), {
+        status: 409,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return new Response([
+      "id: console:100",
+      "event: console_frame",
+      'data: {"type":"console_frame","frame":{"id":"console-frame-100","cursor":"console:100","dedupe_key":"event-100","timestamp_ms":100,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"after stale cursor recovery"},"source":{"kind":"console_event"}}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    unsubscribe = subscribeTimelineEvents(
+      "http://127.0.0.1:7000",
+      { after: "bad" },
+      (frame) => {
+        seen.push(frame.event);
+        if (frame.cursor === "console:100") {
+          unsubscribe();
+        }
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, ["bad", "console:99"]);
+    assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("subscribeTimelineEvents recovers from in-stream timeline replay gaps", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
+  const seen: string[] = [];
+  let unsubscribe = () => {};
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
+    if (calls.length === 1) {
+      return new Response([
+        "event: replay_unavailable",
+        'data: {"type":"replay_unavailable","requested_cursor":"lagged:4","latest_cursor":"console:99"}',
+        "",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response([
+      "id: console:100",
+      "event: console_frame",
+      'data: {"type":"console_frame","frame":{"id":"console-frame-100","cursor":"console:100","dedupe_key":"event-100","timestamp_ms":100,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"after stream replay gap"},"source":{"kind":"console_event"}}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    unsubscribe = subscribeTimelineEvents(
+      "http://127.0.0.1:7000",
+      {},
+      (frame) => {
+        seen.push(frame.event);
+        if (frame.cursor === "console:100") {
+          unsubscribe();
+        }
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, [undefined, "console:99"]);
+    assert.deepEqual(seen, ["replay_unavailable", "text_complete"]);
+  } finally {
+    unsubscribe();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("subscribeTimelineEvents reconnects from the last delivered cursor after stream end", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: string[] = [];
+  const lastEventIds: Array<string | undefined> = [];
+  const seen: string[] = [];
+  let unsubscribe = () => {};
+
+  globalThis.fetch = (async (input, init) => {
+    const url = String(input);
+    calls.push(url);
+    lastEventIds.push((init?.headers as Record<string, string> | undefined)?.["Last-Event-ID"]);
+    if (calls.length === 1) {
+      return new Response([
+        "id: console:41",
+        "event: console_frame",
+        'data: {"type":"console_frame","frame":{"id":"console-frame-41","cursor":"console:41","dedupe_key":"event-41","timestamp_ms":41,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"before lag"},"source":{"kind":"console_event"}}}',
+        "",
+      ].join("\n"), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }
+    return new Response([
+      "id: console:42",
+      "event: console_frame",
+      'data: {"type":"console_frame","frame":{"id":"console-frame-42","cursor":"console:42","dedupe_key":"event-42","timestamp_ms":42,"runtime_key":"runtime-a","identity":"agent-a","kind":"text_complete","status":"completed","frame_version":1,"payload":{"text":"replayed after reconnect"},"source":{"kind":"console_event"}}}',
+      "",
+    ].join("\n"), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    unsubscribe = subscribeTimelineEvents(
+      "http://127.0.0.1:7000",
+      {},
+      (frame) => {
+        seen.push(`${frame.event}:${frame.cursor ?? ""}`);
+        if (frame.cursor === "console:42") {
+          unsubscribe();
+        }
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(calls[0], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.equal(calls[1], "http://127.0.0.1:7000/console/timeline/stream");
+    assert.deepEqual(lastEventIds, [undefined, "console:41"]);
+    assert.deepEqual(seen, ["text_complete:console:41", "text_complete:console:42"]);
   } finally {
     unsubscribe();
     globalThis.fetch = originalFetch;

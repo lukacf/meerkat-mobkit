@@ -24,6 +24,8 @@ from .errors import (
     MEMORY_BACKEND_UNAVAILABLE_CODE,
     MOB_EVENTS_STALE_CURSOR_CODE,
     CapabilityUnavailableError,
+    CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
+    ConsoleTimelineReplayUnavailableError,
     MemoryBackendUnavailableError,
     MobEventsStaleError,
     NotConnectedError,
@@ -87,6 +89,13 @@ def _rpc_error_from_payload(
         )
     if code == MEMORY_BACKEND_UNAVAILABLE_CODE:
         return MemoryBackendUnavailableError(
+            message,
+            request_id=request_id,
+            method=method,
+            data=data,
+        )
+    if code == CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE:
+        return ConsoleTimelineReplayUnavailableError(
             message,
             request_id=request_id,
             method=method,

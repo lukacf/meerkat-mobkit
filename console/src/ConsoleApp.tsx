@@ -61,6 +61,8 @@ import type {
   ConsoleFrame,
   ConsoleGatingActionPayload,
   ConsoleModulesResponse,
+  ConsoleReplayUnavailablePayload,
+  ConsoleTimelinePage,
   ConsoleTopologyNode,
 } from "./types";
 import { TopologyPanel } from "./panels/TopologyPanel";
@@ -96,6 +98,11 @@ interface IdentityLog {
   /// runtime has an EventLogStore (we'll fetch backfill); `false`
   /// once we've observed `available: false` (SSE is the only source).
   hasServerLog: boolean | null;
+  oldestTimelineCursor?: string;
+  latestTimelineCursor?: string;
+  olderHistoryExhausted?: boolean;
+  olderHistoryExhaustedAtCursor?: string;
+  olderHistoryLoading?: boolean;
 }
 
 function normalizeConsoleTheme(value: unknown): ConsoleTheme | null {
@@ -319,6 +326,8 @@ const ACTIVITY_SKIP_EVENTS = new Set([
   "text_complete",
   "reasoning_delta",
   "reasoning_complete",
+  "snapshot_complete",
+  "snapshot_started",
   "run_failed",
   "keep-alive",
   "tool_config_changed",
@@ -485,6 +494,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         events: [],
         byKey: new Map(),
         hasServerLog: null,
+        olderHistoryExhausted: false,
+        olderHistoryLoading: false,
       };
       identityLogRef.current[identity] = log;
     }
@@ -749,26 +760,93 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     return changed;
   }
 
-  async function queryIdentityTimeline(
+  function newerCursor(a: string | undefined, b: string | undefined): string | undefined {
+    const aSeq = cursorSeq(a);
+    const bSeq = cursorSeq(b);
+    if (aSeq === null) return b || a;
+    if (bSeq === null) return a || b;
+    return bSeq > aSeq ? b : a;
+  }
+
+  function olderCursor(a: string | undefined, b: string | undefined): string | undefined {
+    const aSeq = cursorSeq(a);
+    const bSeq = cursorSeq(b);
+    if (aSeq === null) return b || a;
+    if (bSeq === null) return a || b;
+    return bSeq < aSeq ? b : a;
+  }
+
+  function noteIdentityTimelinePage(
     identity: string,
-  ): Promise<{ frames: ConsoleFrame[]; available: boolean }> {
-    const frames: ConsoleFrame[] = [];
-    let available = true;
-    let after: string | undefined;
-    for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
-      const page = await queryTimeline(baseUrl, { identity, after }, 1000);
-      available = page.available;
-      frames.push(...page.frames);
-      const next = page.nextCursor?.trim();
-      // A raw timeline page can contain only non-renderable frames
-      // (for example reasoning deltas). The server still returns the
-      // raw next cursor after visibility filtering, so keep paging until
-      // the cursor is exhausted; otherwise visible history can be stranded
-      // behind hidden noise and appear minutes late via live refresh.
-      if (!next || next === after) break;
-      after = next;
+    page: ConsoleTimelinePage,
+    target: { mode: "recent" | "since"; before?: string },
+  ): boolean {
+    const log = getOrCreateLog(identity);
+    const previousOldest = log.oldestTimelineCursor;
+    const previousLatest = log.latestTimelineCursor;
+    const previousExhausted = log.olderHistoryExhausted;
+    const previousExhaustedAtCursor = log.olderHistoryExhaustedAtCursor;
+    for (const frame of page.frames) {
+      log.oldestTimelineCursor = olderCursor(log.oldestTimelineCursor, frame.cursor);
+      log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, frame.cursor);
     }
-    return { frames, available };
+    if (target.mode === "recent") {
+      log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, page.latestCursor);
+      if (target.before) {
+        log.olderHistoryExhausted = page.exhausted === true;
+        log.olderHistoryExhaustedAtCursor =
+          page.exhausted === true ? log.oldestTimelineCursor : undefined;
+      } else if (!log.olderHistoryExhaustedAtCursor) {
+        log.olderHistoryExhausted = page.exhausted === true;
+      }
+    } else {
+      log.latestTimelineCursor = newerCursor(
+        log.latestTimelineCursor,
+        page.nextCursor || page.latestCursor,
+      );
+    }
+    return (
+      previousOldest !== log.oldestTimelineCursor ||
+      previousLatest !== log.latestTimelineCursor ||
+      previousExhausted !== log.olderHistoryExhausted ||
+      previousExhaustedAtCursor !== log.olderHistoryExhaustedAtCursor
+    );
+  }
+
+  function resetIdentityTimelineReplayMetadata(identity: string): boolean {
+    const log = getOrCreateLog(identity);
+    const changed =
+      log.events.length > 0 ||
+      log.byKey.size > 0 ||
+      log.oldestTimelineCursor !== undefined ||
+      log.latestTimelineCursor !== undefined ||
+      log.olderHistoryExhausted !== false ||
+      log.olderHistoryExhaustedAtCursor !== undefined;
+    log.events = [];
+    log.byKey.clear();
+    log.oldestTimelineCursor = undefined;
+    log.latestTimelineCursor = undefined;
+    log.olderHistoryExhausted = false;
+    log.olderHistoryExhaustedAtCursor = undefined;
+    return changed;
+  }
+
+  async function queryIdentityTimelinePage(
+    identity: string,
+    target: { mode: "recent" | "since"; after?: string; before?: string; limit?: number },
+  ): Promise<{ page: ConsoleTimelinePage; metadataChanged: boolean }> {
+    const page = await queryTimeline(
+      baseUrl,
+      {
+        identity,
+        mode: target.mode,
+        after: target.after,
+        before: target.before,
+      },
+      target.limit ?? 200,
+    );
+    const metadataChanged = noteIdentityTimelinePage(identity, page, target);
+    return { page, metadataChanged };
   }
 
   function refreshIdentityTimelineNow(
@@ -788,8 +866,11 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
 
     const request = (async () => {
-      const { frames, available } = await queryIdentityTimeline(normalized);
-      reconcileServerLog(normalized, frames, available);
+      const { page } = await queryIdentityTimelinePage(normalized, {
+        mode: "recent",
+        limit: 200,
+      });
+      reconcileServerLog(normalized, page.frames, page.available);
       if (options.clearPhase) clearPhaseForIdentity(normalized);
       forceRender();
     })().finally(() => {
@@ -797,6 +878,28 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
     timelineFetchInFlightRef.current[normalized] = request;
     return request;
+  }
+
+  async function loadOlderIdentityTimeline(identity: string): Promise<void> {
+    const normalized = identity.trim();
+    if (!normalized) return;
+    const log = getOrCreateLog(normalized);
+    if (log.olderHistoryLoading || log.olderHistoryExhausted) return;
+    log.olderHistoryLoading = true;
+    forceRender();
+    try {
+      const { page } = await queryIdentityTimelinePage(normalized, {
+        mode: "recent",
+        before: log.oldestTimelineCursor,
+        limit: 200,
+      });
+      reconcileServerLog(normalized, page.frames, page.available);
+    } catch {
+      // The current view remains usable; a later scroll can retry.
+    } finally {
+      log.olderHistoryLoading = false;
+      forceRender();
+    }
   }
 
   /// Render-time chat view: transcript time is the primary order. Aggregate
@@ -1599,9 +1702,41 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         const log = getOrCreateLog(identity);
         if (log.hasServerLog === false) continue;
         try {
-          const { frames, available } = await queryIdentityTimeline(identity);
-          if (reconcileServerLog(identity, frames, available)) changed = true;
-        } catch {
+          const sinceCursor =
+            log.latestTimelineCursor &&
+            !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor)
+              ? log.latestTimelineCursor
+              : undefined;
+          const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+            mode: sinceCursor ? "since" : "recent",
+            after: sinceCursor,
+            limit: sinceCursor ? 1000 : 200,
+          });
+          if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
+            changed = true;
+          }
+        } catch (error) {
+          const replay = error as Error & {
+            replayError?: ConsoleReplayUnavailablePayload;
+            timelineReplayUnavailable?: boolean;
+          };
+          if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
+            if (resetIdentityTimelineReplayMetadata(identity)) {
+              changed = true;
+            }
+            try {
+              const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+                mode: "recent",
+                limit: 200,
+              });
+              if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
+                changed = true;
+              }
+            } catch {
+              // Keep the panel usable; the next refresh will retry.
+            }
+            continue;
+          }
           // Keep the panel usable; the next refresh will retry.
         }
       }
@@ -1684,8 +1819,8 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     let stopped = false;
     let unsubscribe: (() => void) | null = null;
 
-    void queryTimeline(baseUrl, {}, 200)
-      .then(({ frames, nextCursor }) => {
+    void queryTimeline(baseUrl, { mode: "recent" }, 200)
+      .then(({ frames, nextCursor, latestCursor }) => {
         if (stopped) return;
         const seen = new Set<string>();
         const filtered: ConsoleFrame[] = [];
@@ -1705,7 +1840,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         );
         forceRender();
 
-        const after = nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
+        const after =
+          latestCursor ||
+          nextCursor ||
+          [...frames].reverse().find((frame) => frame.cursor)?.cursor;
         unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
       })
       .catch(() => {
@@ -2426,6 +2564,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     });
     const draft = draftByKey[panelKey] || "";
     const staged = stagedAttachmentsByIdentity[identity] ?? [];
+    const identityLog = getOrCreateLog(identity);
     const isSending = sendingPanels.has(panelKey);
     const hasLocalPhase = Object.prototype.hasOwnProperty.call(
       phaseRef.current,
@@ -2502,6 +2641,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
         respawnLabel={configuredActionLabels.respawn}
         retireLabel={configuredActionLabels.retire}
         sendLabel={configuredActionLabels.send}
+        hasOlderHistory={
+          identityLog.hasServerLog === true &&
+          Boolean(identityLog.oldestTimelineCursor) &&
+          identityLog.olderHistoryExhausted !== true
+        }
+        loadingOlderHistory={identityLog.olderHistoryLoading === true}
+        onLoadOlder={() => void loadOlderIdentityTimeline(identity)}
         stackSlot={stackSlot}
       />
     );

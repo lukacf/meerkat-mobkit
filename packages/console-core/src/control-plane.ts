@@ -109,7 +109,7 @@ export interface GatingActionRequest {
 
 export interface ReplayUnavailableError {
   error: "replay_unavailable";
-  stream: "identity" | "all_events";
+  stream: "identity" | "all_events" | "timeline";
   requested_last_event_id: string;
   latest_event_id: string;
 }
@@ -512,12 +512,23 @@ export function normalizeRoutingSectionView(value: unknown): RoutingSectionView 
 
 export function normalizeReplayUnavailableError(value: unknown): ReplayUnavailableError | null {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : null;
-  if (!record || record.error !== "replay_unavailable") {
+  if (
+    !record ||
+    (record.error !== "replay_unavailable" && record.type !== "replay_unavailable")
+  ) {
     return null;
   }
-  const stream = record.stream === "identity" || record.stream === "all_events" ? record.stream : null;
-  const requested = trimString(record.requested_last_event_id);
-  const latest = trimString(record.latest_event_id);
+  const explicitStream =
+    record.stream === "identity" || record.stream === "all_events" || record.stream === "timeline"
+      ? record.stream
+      : null;
+  const requested =
+    trimString(record.requested_last_event_id) || trimString(record.requested_cursor);
+  const latest =
+    trimString(record.latest_event_id) || trimString(record.latest_cursor);
+  const stream =
+    explicitStream ||
+    (requested?.startsWith("console:") || latest?.startsWith("console:") ? "timeline" : null);
   if (!stream || !requested || !latest) {
     return null;
   }

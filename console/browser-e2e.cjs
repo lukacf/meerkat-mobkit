@@ -125,6 +125,11 @@ async function openSidebarAgentChat(page, labelPattern) {
   await page.waitForSelector('[data-testid^="chat-composer:"]', { timeout: 30_000 });
 }
 
+async function assertNoText(page, text) {
+  const count = await page.getByText(text, { exact: true }).count();
+  assert.equal(count, 0, `did not expect text to be visible: ${text}`);
+}
+
 function startMockConsoleServer(port, options = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const html = fs.readFileSync(path.join(__dirname, "dist", "index.html"), "utf8");
@@ -142,6 +147,23 @@ function startMockConsoleServer(port, options = {}) {
     options.timelineFramesByIdentity && typeof options.timelineFramesByIdentity === "object"
       ? options.timelineFramesByIdentity
       : {};
+  const timelineFrameSnapshotsByIdentity =
+    options.timelineFrameSnapshotsByIdentity &&
+    typeof options.timelineFrameSnapshotsByIdentity === "object"
+      ? options.timelineFrameSnapshotsByIdentity
+      : {};
+  const timelineSnapshotQueryCountsByIdentity = new Map();
+  const timelineReplayUnavailableAfterByIdentity =
+    options.timelineReplayUnavailableAfterByIdentity &&
+    typeof options.timelineReplayUnavailableAfterByIdentity === "object"
+      ? options.timelineReplayUnavailableAfterByIdentity
+      : {};
+  const timelineFramesAfterReplayUnavailableByIdentity =
+    options.timelineFramesAfterReplayUnavailableByIdentity &&
+    typeof options.timelineFramesAfterReplayUnavailableByIdentity === "object"
+      ? options.timelineFramesAfterReplayUnavailableByIdentity
+      : {};
+  const timelineReplayUnavailableTriggeredByIdentity = new Set();
   const timelineFramesAfterSendByIdentity =
     options.timelineFramesAfterSendByIdentity &&
     typeof options.timelineFramesAfterSendByIdentity === "object"
@@ -158,6 +180,38 @@ function startMockConsoleServer(port, options = {}) {
   const includeToolOnlyWorker = options.includeToolOnlyWorker === true;
   const collapseWorkersSection = options.collapseWorkersSection === true;
   const requests = [];
+
+  function cursorOrdinal(cursor, cursorOrder) {
+    if (typeof cursor !== "string") return null;
+    const match = /^console:(\d+)$/.exec(cursor);
+    if (match) return Number(match[1]);
+    return cursorOrder.get(cursor) ?? null;
+  }
+
+  function timelinePageFor(frames, params = {}) {
+    const source = Array.isArray(frames) ? frames : [];
+    const cursorOrder = new Map();
+    source.forEach((frame, index) => {
+      if (typeof frame.cursor === "string") cursorOrder.set(frame.cursor, index + 1);
+    });
+    const after = cursorOrdinal(params.after, cursorOrder);
+    const before = cursorOrdinal(params.before, cursorOrder);
+    const mode = params.mode === "recent" ? "recent" : "since";
+    const limit = Math.max(1, Math.min(Number(params.limit) || 400, 1000));
+    const filtered = source.filter((frame, index) => {
+      const ordinal = cursorOrdinal(frame.cursor, cursorOrder) ?? index + 1;
+      if (after !== null && ordinal <= after) return false;
+      if (before !== null && ordinal >= before) return false;
+      return true;
+    });
+    const pageFrames = mode === "recent" ? filtered.slice(-limit) : filtered.slice(0, limit);
+    return {
+      frames: pageFrames,
+      next_cursor: pageFrames.length > 0 ? pageFrames[pageFrames.length - 1].cursor || null : null,
+      latest_cursor: filtered.length > 0 ? filtered[filtered.length - 1].cursor || null : null,
+      exhausted: filtered.length <= limit,
+    };
+  }
 
   function writeTimelineStreamFrame(res, frame, index) {
     res.write([
@@ -191,7 +245,7 @@ function startMockConsoleServer(port, options = {}) {
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       const body = Buffer.concat(chunks).toString("utf8");
-      requests.push({ method, url, body });
+      requests.push({ method, url, body, headers: req.headers });
 
       if (method === "GET" && url === "/console") {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -265,7 +319,7 @@ function startMockConsoleServer(port, options = {}) {
       if (method === "GET" && url === "/console/experience") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
-          contract_version: "0.3.0",
+          contract_version: "0.4.0",
           agent_sidebar: {
             panel_id: "console.agent_sidebar",
             schema_version: "1",
@@ -395,19 +449,65 @@ function startMockConsoleServer(port, options = {}) {
         const rpcId = payload.id || "rpc";
         if (payload.method === "mobkit/console/query_timeline") {
           const identity = payload.params?.identity;
-          const framesForIdentity =
-            typeof identity === "string" && Array.isArray(timelineFramesByIdentity[identity])
-              ? timelineFramesByIdentity[identity]
-              : null;
-          const frames = framesForIdentity || (identity === "image-agent" ? timelineFrames : []);
+          let framesForIdentity = null;
+          if (
+            typeof identity === "string" &&
+            typeof timelineReplayUnavailableAfterByIdentity[identity] === "string" &&
+            payload.params?.after === timelineReplayUnavailableAfterByIdentity[identity] &&
+            !timelineReplayUnavailableTriggeredByIdentity.has(identity)
+          ) {
+            timelineReplayUnavailableTriggeredByIdentity.add(identity);
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({
+              jsonrpc: "2.0",
+              id: rpcId,
+              error: {
+                code: -32013,
+                message: "timeline replay unavailable",
+                data: {
+                  error: "replay_unavailable",
+                  stream: "timeline",
+                  requested_cursor: payload.params.after,
+                  latest_cursor: payload.params.after,
+                },
+              },
+            }));
+            return;
+          }
+          if (
+            typeof identity === "string" &&
+            Array.isArray(timelineFrameSnapshotsByIdentity[identity])
+          ) {
+            const snapshots = timelineFrameSnapshotsByIdentity[identity];
+            const queryCount = timelineSnapshotQueryCountsByIdentity.get(identity) || 0;
+            timelineSnapshotQueryCountsByIdentity.set(identity, queryCount + 1);
+            const snapshot = snapshots[Math.min(queryCount, snapshots.length - 1)];
+            if (snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) && snapshot.error) {
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end(JSON.stringify({
+                jsonrpc: "2.0",
+                id: rpcId,
+                error: snapshot.error,
+              }));
+              return;
+            }
+            framesForIdentity = Array.isArray(snapshot) ? snapshot : snapshot?.frames;
+          } else if (
+            typeof identity === "string" &&
+            Array.isArray(timelineFramesByIdentity[identity])
+          ) {
+            framesForIdentity =
+              timelineReplayUnavailableTriggeredByIdentity.has(identity) &&
+              Array.isArray(timelineFramesAfterReplayUnavailableByIdentity[identity])
+                ? timelineFramesAfterReplayUnavailableByIdentity[identity]
+                : timelineFramesByIdentity[identity];
+          }
+          const frames = framesForIdentity || (identity ? (identity === "image-agent" ? timelineFrames : []) : timelineFrames);
           res.writeHead(200, { "content-type": "application/json" });
           res.end(JSON.stringify({
             jsonrpc: "2.0",
             id: rpcId,
-            result: {
-              frames,
-              next_cursor: frames.length > 0 ? frames[frames.length - 1].cursor || null : null,
-            },
+            result: timelinePageFor(frames, payload.params),
           }));
           return;
         }
@@ -1455,6 +1555,390 @@ async function runChatPaneAutoScrollProof() {
   }
 }
 
+async function runGlobalTimelineRecentSeedProof() {
+  const port = await reservePort();
+  const baseTs = Date.now() - 60_000;
+  const oldFrames = Array.from({ length: 1_200 }, (_, index) => ({
+    id: `old-global-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "identity:luka",
+    interaction_id: `old-global-turn-${index + 1}`,
+    timestamp_ms: baseTs - 1_200_000 + index,
+    cursor: `console:${index + 1}`,
+    payload: { text: `Old global event ${index + 1}` },
+  }));
+  const recentFrame = {
+    id: "recent-global-event",
+    kind: "interaction_complete",
+    identity: "identity:luka",
+    interaction_id: "recent-global-turn",
+    timestamp_ms: baseTs,
+    cursor: "console:1201",
+    payload: { text: "RECENT_GLOBAL_EVENT_VISIBLE" },
+  };
+  const server = await startMockConsoleServer(port, {
+    timelineFrames: [...oldFrames, recentFrame],
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('[data-testid="signals-rail"], .cc-activity-rail', { timeout: 10_000 });
+    await page.waitForTimeout(500);
+
+    const timelineRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter((payload) => payload.method === "mobkit/console/query_timeline");
+    const globalSeed = timelineRequests.find((payload) => !payload.params?.identity);
+    assert.equal(globalSeed?.params?.mode, "recent");
+    assert.equal(globalSeed?.params?.limit, 200);
+    assert(
+      server.requests.some(
+        (request) =>
+          request.method === "GET" &&
+          request.url === "/console/timeline/stream" &&
+          request.headers?.["last-event-id"] === "console:1201",
+      ),
+      `expected timeline stream to continue after recent tail cursor via Last-Event-ID; requests=${JSON.stringify(server.requests, null, 2)}`,
+    );
+
+    process.stdout.write("browser global timeline recent seed ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneRecentFirstPageProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T21:40:00.000Z");
+  const frames = Array.from({ length: 1_500 }, (_, index) => ({
+    id: `recent-first-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `recent-first-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Recent-first worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": frames,
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Recent-first worker line 1500").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Recent-first worker line 42");
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    const firstIdentityRequest = identityRequests[0];
+    assert.equal(firstIdentityRequest?.params?.mode, "recent");
+    assert.equal(firstIdentityRequest?.params?.limit, 200);
+    assert.equal(firstIdentityRequest?.params?.after, undefined);
+
+    process.stdout.write("browser chat pane recent first page ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneOlderHistoryDemandPagingProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T22:40:00.000Z");
+  const frames = Array.from({ length: 250 }, (_, index) => ({
+    id: `older-demand-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `older-demand-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Older-demand worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": frames,
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Older-demand worker line 250").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Older-demand worker line 42");
+    await pane.getByRole("button", { name: "Load older history" }).click();
+    await pane.getByText("Older-demand worker line 42").waitFor({ timeout: 10_000 });
+    const body = pane.locator(".conv__body");
+    const scrollState = await body.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight,
+    }));
+    const distanceFromBottom =
+      scrollState.scrollHeight - scrollState.clientHeight - scrollState.scrollTop;
+    assert(
+      distanceFromBottom > 100,
+      `older history load should preserve reader position instead of snapping to bottom; state=${JSON.stringify(scrollState)}`,
+    );
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    assert(
+      identityRequests.some(
+        (payload) => payload.params?.mode === "recent" && payload.params?.before === "console:51",
+      ),
+      `expected demand-paged older request before first visible tail cursor; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+
+    process.stdout.write("browser chat pane older history demand paging ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T22:45:00.000Z");
+  const frames = Array.from({ length: 250 }, (_, index) => ({
+    id: `async-backfill-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `async-backfill-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Async-backfill worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFrameSnapshotsByIdentity: {
+      "person-worker-alpha": [[], frames],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Async-backfill worker line 250").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Async-backfill worker line 42");
+    await pane.getByRole("button", { name: "Load older history" }).click();
+    await pane.getByText("Async-backfill worker line 42").waitFor({ timeout: 10_000 });
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    assert(
+      identityRequests.some((payload) => payload.params?.mode === "recent"),
+      `expected initial recent query for async backfill proof; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+    assert(
+      identityRequests.some(
+        (payload) => payload.params?.mode === "recent" && payload.params?.before === "console:51",
+      ),
+      `expected older-history request after async backfill re-enabled the control; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+
+    process.stdout.write("browser chat pane async backfill older history recovery ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
+  const port = await reservePort();
+  const baseTs = Date.parse("2026-05-23T22:46:00.000Z");
+  const frames = Array.from({ length: 250 }, (_, index) => ({
+    id: `nonempty-async-backfill-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `nonempty-async-backfill-turn-${index + 1}`,
+    timestamp_ms: baseTs + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Non-empty async-backfill worker line ${index + 1}`,
+    },
+  }));
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFrameSnapshotsByIdentity: {
+      "person-worker-alpha": [[frames[249]], frames],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Non-empty async-backfill worker line 250").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Non-empty async-backfill worker line 42");
+    await pane.getByRole("button", { name: "Load older history" }).click();
+    await pane.getByText("Non-empty async-backfill worker line 42").waitFor({ timeout: 10_000 });
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    const recentRequests = identityRequests.filter(
+      (payload) => payload.params?.mode === "recent" && payload.params?.before === undefined,
+    );
+    assert(
+      recentRequests.length >= 2,
+      `expected provisional non-empty exhausted tail to refresh with another recent query; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+    assert(
+      identityRequests.some(
+        (payload) => payload.params?.mode === "recent" && payload.params?.before === "console:51",
+      ),
+      `expected older-history request after non-empty async backfill re-enabled the control; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+
+    process.stdout.write("browser chat pane non-empty async backfill older history recovery ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
+async function runChatPaneReplayRecoveryReplacesStaleLocalLogProof() {
+  const port = await reservePort();
+  const oldFrames = Array.from({ length: 250 }, (_, index) => ({
+    id: `stale-replay-line-${index + 1}`,
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: `stale-replay-turn-${index + 1}`,
+    timestamp_ms: Date.parse("2026-05-23T22:47:00.000Z") + index,
+    cursor: `console:${index + 1}`,
+    payload: {
+      text: `Stale replay worker line ${index + 1}`,
+    },
+  }));
+  const newFrame = {
+    id: "fresh-replay-line-400",
+    kind: "interaction_complete",
+    identity: "person-worker-alpha",
+    interaction_id: "fresh-replay-turn-400",
+    timestamp_ms: Date.parse("2026-05-23T22:48:00.000Z"),
+    cursor: "console:400",
+    payload: {
+      text: "Fresh replay worker line 400",
+    },
+  };
+  const server = await startMockConsoleServer(port, {
+    includeBusyWorker: true,
+    timelineFramesByIdentity: {
+      "person-worker-alpha": oldFrames,
+    },
+    timelineReplayUnavailableAfterByIdentity: {
+      "person-worker-alpha": "console:250",
+    },
+    timelineFramesAfterReplayUnavailableByIdentity: {
+      "person-worker-alpha": [newFrame],
+    },
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+    await page.waitForSelector('.agent[role="button"], .cc-sidebar-row', { timeout: 30_000 });
+    await page.locator('.agent[role="button"], .cc-sidebar-row').filter({ hasText: "Person Worker Alpha" }).click();
+    const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
+    await pane.getByText("Fresh replay worker line 400").waitFor({ timeout: 10_000 });
+    await assertNoText(page, "Stale replay worker line 250");
+
+    const identityRequests = server.requests
+      .filter((request) => request.url === "/console/rpc" && request.body)
+      .map((request) => JSON.parse(request.body))
+      .filter(
+        (payload) =>
+          payload.method === "mobkit/console/query_timeline" &&
+          payload.params?.identity === "person-worker-alpha",
+      );
+    assert(
+      identityRequests.some((payload) => payload.params?.mode === "since" && payload.params?.after === "console:250"),
+      `expected stale since cursor to be rejected; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+    assert(
+      identityRequests.some((payload) => payload.params?.mode === "recent" && payload.params?.after === undefined),
+      `expected replay recovery to fall back to a fresh recent page; saw ${JSON.stringify(identityRequests, null, 2)}`,
+    );
+
+    process.stdout.write("browser chat pane replay recovery replaces stale local log ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function runRunStartedClearsOptimisticPromptProof() {
   const port = await reservePort();
   const prompt = "ORDER_PROOF send this once and keep the transcript chronological.";
@@ -1763,6 +2247,12 @@ async function main() {
   await runNonCommsSystemNoticeDoesNotClearBusyProof();
   await runSidebarSearchExpandsCollapsedWorkerSectionProof();
   await runChatPaneAutoScrollProof();
+  await runGlobalTimelineRecentSeedProof();
+  await runChatPaneRecentFirstPageProof();
+  await runChatPaneOlderHistoryDemandPagingProof();
+  await runChatPaneAsyncBackfillRestoresOlderHistoryProof();
+  await runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof();
+  await runChatPaneReplayRecoveryReplacesStaleLocalLogProof();
   await runRunStartedClearsOptimisticPromptProof();
   await runUserInputEchoClearsOptimisticPromptProof();
   await runLiveSystemNoticeAppearsInOpenChatProof();

@@ -62,11 +62,11 @@ describe("constants", () => {
 describe("parseStatusResult", () => {
   it("parses valid wire-format object", () => {
     const result = parseStatusResult({
-      contract_version: "0.3.0",
+      contract_version: "0.4.0",
       running: true,
       loaded_modules: ["mod_a", "mod_b"],
     });
-    assert.equal(result.contractVersion, "0.3.0");
+    assert.equal(result.contractVersion, "0.4.0");
     assert.equal(result.running, true);
     assert.deepEqual(result.loadedModules, ["mod_a", "mod_b"]);
   });
@@ -101,11 +101,11 @@ describe("parseStatusResult", () => {
 describe("parseCapabilitiesResult", () => {
   it("parses valid wire-format object", () => {
     const result = parseCapabilitiesResult({
-      contract_version: "0.3.0",
+      contract_version: "0.4.0",
       methods: ["status", "spawn"],
       loaded_modules: ["core"],
     });
-    assert.equal(result.contractVersion, "0.3.0");
+    assert.equal(result.contractVersion, "0.4.0");
     assert.deepEqual(result.methods, ["status", "spawn"]);
     assert.deepEqual(result.loadedModules, ["core"]);
   });

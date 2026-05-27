@@ -6,6 +6,7 @@ import {
   TransportError,
   RpcError,
   CapabilityUnavailableError,
+  ConsoleTimelineReplayUnavailableError,
   ContractMismatchError,
   NotConnectedError,
   MobkitRpcError,
@@ -122,6 +123,26 @@ describe("CapabilityUnavailableError", () => {
   it("has name set to CapabilityUnavailableError", () => {
     const err = new CapabilityUnavailableError("msg");
     assert.equal(err.name, "CapabilityUnavailableError");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ConsoleTimelineReplayUnavailableError
+// ---------------------------------------------------------------------------
+
+describe("ConsoleTimelineReplayUnavailableError", () => {
+  it("extends MobKitError and uses the dedicated console timeline code", () => {
+    const data = {
+      error: "replay_unavailable",
+      stream: "timeline",
+      requested_cursor: "console:500",
+      latest_cursor: "console:42",
+    };
+    const err = new ConsoleTimelineReplayUnavailableError("replay unavailable", "rid", "mobkit/console/query_timeline", data);
+    assert.ok(err instanceof MobKitError);
+    assert.equal(err.name, "ConsoleTimelineReplayUnavailableError");
+    assert.equal(err.code, -32013);
+    assert.deepEqual(err.data, data);
   });
 });
 

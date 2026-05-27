@@ -52,7 +52,7 @@ use session_store_methods::{
 use subscribe_methods::{SubscribeParamsError, parse_subscribe_request};
 
 pub const JSONRPC_VERSION: &str = "2.0";
-pub const MOBKIT_CONTRACT_VERSION: &str = "0.3.0";
+pub const MOBKIT_CONTRACT_VERSION: &str = "0.4.0";
 pub const MAX_SCHEDULES_PER_REQUEST: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,6 +113,12 @@ pub const MOB_EVENTS_STALE_CURSOR_CODE: i64 = -32010;
 /// without misclassifying a memory backend failure as a stale-cursor
 /// event.
 pub const MEMORY_BACKEND_UNAVAILABLE_CODE: i64 = -32012;
+
+/// JSON-RPC error code returned by `mobkit/console/query_timeline` when
+/// the requested console cursor cannot be replayed from the durable console
+/// timeline. Distinct from [`MOB_EVENTS_STALE_CURSOR_CODE`] because SDKs
+/// reify `-32010` specifically as a mob-events ledger error.
+pub const CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE: i64 = -32013;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonRpcRequest {
@@ -1000,7 +1006,7 @@ pub async fn handle_unified_rpc_json(
 
     let response = match request.method.as_str() {
         "mobkit/status" => {
-            let mob_state = runtime.mob_handle().status().await.ok();
+            let mob_state = Some(runtime.mob_handle().status_observation_snapshot());
             let is_running = runtime.module_is_running().await;
             let loaded = runtime.loaded_modules().await;
             let mut result = serde_json::json!({

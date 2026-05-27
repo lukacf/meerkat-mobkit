@@ -66,10 +66,10 @@ Non-MCP modules communicate over a JSON-line protocol on stdout/stderr:
     The first line of stdout must be a JSON capabilities declaration:
 
     ```json
-    {"contract_version": "0.1.0"}
+    {"contract_version": "0.4.0"}
     ```
 
-    The runtime validates the contract version matches `MOBKIT_CONTRACT_VERSION` (`"0.1.0"`).
+    The runtime validates the contract version matches `MOBKIT_CONTRACT_VERSION` (`"0.4.0"`).
   </Step>
   <Step title="Request/Response">
     Subsequent communication uses JSON-RPC over the JSON-line protocol. Each line is a complete JSON object.

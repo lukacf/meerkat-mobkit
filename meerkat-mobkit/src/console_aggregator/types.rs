@@ -207,11 +207,76 @@ impl Default for ConsoleTimelineQuery {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsoleTimelineWindowQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<ConsoleCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<ConsoleCursor>,
+    #[serde(default)]
+    pub mode: ConsoleTimelineMode,
+    #[serde(default)]
+    pub limit: usize,
+}
+
+impl Default for ConsoleTimelineWindowQuery {
+    fn default() -> Self {
+        Self {
+            identity: None,
+            conversation_id: None,
+            after: None,
+            before: None,
+            mode: ConsoleTimelineMode::Since,
+            limit: 200,
+        }
+    }
+}
+
+impl From<ConsoleTimelineQuery> for ConsoleTimelineWindowQuery {
+    fn from(query: ConsoleTimelineQuery) -> Self {
+        Self {
+            identity: query.identity,
+            conversation_id: query.conversation_id,
+            after: query.after,
+            before: None,
+            mode: ConsoleTimelineMode::Since,
+            limit: query.limit,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleTimelineMode {
+    #[default]
+    Since,
+    Recent,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConsoleTimelinePage {
     pub frames: Vec<ConsoleFrame>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<ConsoleCursor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsoleTimelineWindowPage {
+    pub frames: Vec<ConsoleFrame>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<ConsoleCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_cursor: Option<ConsoleCursor>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub exhausted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

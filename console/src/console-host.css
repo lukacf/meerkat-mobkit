@@ -2147,6 +2147,19 @@ svg[data-svg="fit"],
   min-height: 0;
   position: relative;
 }
+.conv__history {
+  align-self: center;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: var(--disp);
+  font-size: 11px;
+  flex: none;
+}
+.conv__history:hover:not(:disabled) { color: var(--ink); border-color: var(--line-strong); }
+.conv__history:disabled { opacity: 0.55; cursor: default; }
 
 .msg {
   display: grid;
