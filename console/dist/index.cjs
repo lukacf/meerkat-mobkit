@@ -10233,6 +10233,10 @@ function ConsoleApp({ baseUrl }) {
   }
   function noteIdentityTimelinePage(identity, page, target) {
     const log = getOrCreateLog(identity);
+    const previousOldest = log.oldestTimelineCursor;
+    const previousLatest = log.latestTimelineCursor;
+    const previousExhausted = log.olderHistoryExhausted;
+    const previousExhaustedAtCursor = log.olderHistoryExhaustedAtCursor;
     for (const frame of page.frames) {
       log.oldestTimelineCursor = olderCursor(log.oldestTimelineCursor, frame.cursor);
       log.latestTimelineCursor = newerCursor(log.latestTimelineCursor, frame.cursor);
@@ -10251,6 +10255,18 @@ function ConsoleApp({ baseUrl }) {
         page.nextCursor || page.latestCursor
       );
     }
+    return previousOldest !== log.oldestTimelineCursor || previousLatest !== log.latestTimelineCursor || previousExhausted !== log.olderHistoryExhausted || previousExhaustedAtCursor !== log.olderHistoryExhaustedAtCursor;
+  }
+  function resetIdentityTimelineReplayMetadata(identity) {
+    const log = getOrCreateLog(identity);
+    const changed = log.events.length > 0 || log.byKey.size > 0 || log.oldestTimelineCursor !== void 0 || log.latestTimelineCursor !== void 0 || log.olderHistoryExhausted !== false || log.olderHistoryExhaustedAtCursor !== void 0;
+    log.events = [];
+    log.byKey.clear();
+    log.oldestTimelineCursor = void 0;
+    log.latestTimelineCursor = void 0;
+    log.olderHistoryExhausted = false;
+    log.olderHistoryExhaustedAtCursor = void 0;
+    return changed;
   }
   async function queryIdentityTimelinePage(identity, target) {
     const page = await queryTimeline(
@@ -10263,8 +10279,8 @@ function ConsoleApp({ baseUrl }) {
       },
       target.limit ?? 200
     );
-    noteIdentityTimelinePage(identity, page, target);
-    return page;
+    const metadataChanged = noteIdentityTimelinePage(identity, page, target);
+    return { page, metadataChanged };
   }
   function refreshIdentityTimelineNow(identity, options = {}) {
     const normalized = identity.trim();
@@ -10279,7 +10295,7 @@ function ConsoleApp({ baseUrl }) {
       });
     }
     const request = (async () => {
-      const page = await queryIdentityTimelinePage(normalized, {
+      const { page } = await queryIdentityTimelinePage(normalized, {
         mode: "recent",
         limit: 200
       });
@@ -10300,7 +10316,7 @@ function ConsoleApp({ baseUrl }) {
     log.olderHistoryLoading = true;
     forceRender();
     try {
-      const page = await queryIdentityTimelinePage(normalized, {
+      const { page } = await queryIdentityTimelinePage(normalized, {
         mode: "recent",
         before: log.oldestTimelineCursor,
         limit: 200
@@ -10889,24 +10905,27 @@ function ConsoleApp({ baseUrl }) {
         const log = getOrCreateLog(identity);
         if (log.hasServerLog === false) continue;
         try {
-          const page = await queryIdentityTimelinePage(identity, {
-            mode: log.latestTimelineCursor ? "since" : "recent",
-            after: log.latestTimelineCursor,
-            limit: log.latestTimelineCursor ? 1e3 : 200
+          const sinceCursor = log.latestTimelineCursor && !(log.olderHistoryExhausted === true && !log.olderHistoryExhaustedAtCursor) ? log.latestTimelineCursor : void 0;
+          const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
+            mode: sinceCursor ? "since" : "recent",
+            after: sinceCursor,
+            limit: sinceCursor ? 1e3 : 200
           });
-          if (reconcileServerLog(identity, page.frames, page.available)) {
+          if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
             changed = true;
           }
         } catch (error2) {
           const replay = error2;
           if (replay.timelineReplayUnavailable || replay.replayError?.stream === "timeline") {
-            log.latestTimelineCursor = void 0;
+            if (resetIdentityTimelineReplayMetadata(identity)) {
+              changed = true;
+            }
             try {
-              const page = await queryIdentityTimelinePage(identity, {
+              const { page, metadataChanged } = await queryIdentityTimelinePage(identity, {
                 mode: "recent",
                 limit: 200
               });
-              if (reconcileServerLog(identity, page.frames, page.available)) {
+              if (reconcileServerLog(identity, page.frames, page.available) || metadataChanged) {
                 changed = true;
               }
             } catch {
