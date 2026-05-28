@@ -501,6 +501,125 @@ async fn identity_first_contracts_local_store_stale_fencing_token_rejected() {
 }
 
 #[tokio::test]
+async fn identity_first_contracts_local_store_snapshot_save_advances_fencing_token() {
+    let store = LocalContinuityStore::in_memory().unwrap();
+    let id = AgentIdentity::parse("triage:main").unwrap();
+    let sid = meerkat_core::types::SessionId::new();
+    let record = ContinuityRecord {
+        identity: id.clone(),
+        agent_runtime_id: AgentRuntimeId::parse("rt-001").unwrap(),
+        session_id: sid.clone(),
+        generation: ContinuityGeneration::new(0),
+        checkpoint_version: CheckpointVersion::new(0),
+    };
+    store
+        .upsert_continuity_record(&record, FencingToken::new(1))
+        .await
+        .unwrap();
+
+    store
+        .save_session_snapshot(
+            &id,
+            &sid,
+            ContinuityGeneration::new(0),
+            CheckpointVersion::new(1),
+            FencingToken::new(2),
+            &SessionSnapshot {
+                data: b"new owner".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let err = store
+        .save_session_snapshot(
+            &id,
+            &sid,
+            ContinuityGeneration::new(0),
+            CheckpointVersion::new(2),
+            FencingToken::new(1),
+            &SessionSnapshot {
+                data: b"stale owner".to_vec(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ContinuityStoreError::StaleFencingToken { .. }),
+        "expected advanced fencing token to reject stale writer, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn identity_first_contracts_local_store_snapshot_save_requires_current_session_stream() {
+    let store = LocalContinuityStore::in_memory().unwrap();
+    let id = AgentIdentity::parse("triage:main").unwrap();
+    let old_sid = meerkat_core::types::SessionId::new();
+    let old_record = ContinuityRecord {
+        identity: id.clone(),
+        agent_runtime_id: AgentRuntimeId::parse("rt-old").unwrap(),
+        session_id: old_sid.clone(),
+        generation: ContinuityGeneration::new(0),
+        checkpoint_version: CheckpointVersion::new(0),
+    };
+    store
+        .upsert_continuity_record(&old_record, FencingToken::new(7))
+        .await
+        .unwrap();
+
+    let new_sid = meerkat_core::types::SessionId::new();
+    let new_record = ContinuityRecord {
+        identity: id.clone(),
+        agent_runtime_id: AgentRuntimeId::parse("rt-new").unwrap(),
+        session_id: new_sid.clone(),
+        generation: ContinuityGeneration::new(1),
+        checkpoint_version: CheckpointVersion::new(0),
+    };
+    store
+        .upsert_continuity_record(&new_record, FencingToken::new(7))
+        .await
+        .unwrap();
+
+    let err = store
+        .save_session_snapshot(
+            &id,
+            &old_sid,
+            old_record.generation,
+            CheckpointVersion::new(99),
+            FencingToken::new(7),
+            &SessionSnapshot {
+                data: b"late old session".to_vec(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ContinuityStoreError::NotFound { .. }),
+        "expected late save from abandoned session stream to fail closed, got {err:?}"
+    );
+
+    store
+        .save_session_snapshot(
+            &id,
+            &new_sid,
+            new_record.generation,
+            CheckpointVersion::new(1),
+            FencingToken::new(7),
+            &SessionSnapshot {
+                data: b"current session".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let resolved = store.resolve_many(std::slice::from_ref(&id)).await.unwrap();
+    let Some(ContinuityResolveState::Ready { record }) = resolved.get(&id) else {
+        panic!("expected current record to remain ready: {resolved:#?}");
+    };
+    assert_eq!(record.session_id, new_sid);
+    assert_eq!(record.checkpoint_version, CheckpointVersion::new(1));
+}
+
+#[tokio::test]
 async fn identity_first_contracts_local_store_stale_checkpoint_version_rejected() {
     let store = LocalContinuityStore::in_memory().unwrap();
     let id = AgentIdentity::parse("triage:main").unwrap();

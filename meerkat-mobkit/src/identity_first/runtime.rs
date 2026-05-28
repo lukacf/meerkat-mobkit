@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
-use meerkat_core::types::HandlingMode;
+use meerkat_core::types::{HandlingMode, SessionId};
 use tokio::sync::{Mutex, RwLock, broadcast};
 
 use super::bridge::SessionBridge;
@@ -326,6 +326,7 @@ pub struct IdentityRuntime {
     managed_peer_reconcile_lock: Mutex<()>,
     desired_peer_edges: RwLock<Vec<ManagedPeerEdge>>,
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
+    lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
     default_timeout: Duration,
 }
@@ -347,6 +348,7 @@ impl IdentityRuntime {
             managed_peer_reconcile_lock: Mutex::new(()),
             desired_peer_edges: RwLock::new(Vec::new()),
             materialization_locks: RwLock::new(BTreeMap::new()),
+            lifecycle_locks: RwLock::new(BTreeMap::new()),
             customizer: RwLock::new(None),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
         }
@@ -363,6 +365,14 @@ impl IdentityRuntime {
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
         *self.customizer.write().await = customizer;
+    }
+
+    async fn release_uninstalled_materialize_lease(&self, grant: &LeaseGrant) -> Option<String> {
+        self.lease_provider
+            .release_leases(std::slice::from_ref(grant))
+            .await
+            .err()
+            .map(|err| err.to_string())
     }
 
     pub async fn set_desired_peer_edges(&self, edges: Vec<ManagedPeerEdge>) {
@@ -622,6 +632,17 @@ impl IdentityRuntime {
             .clone()
     }
 
+    async fn lifecycle_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
+        if let Some(lock) = self.lifecycle_locks.read().await.get(identity) {
+            return lock.clone();
+        }
+        let mut locks = self.lifecycle_locks.write().await;
+        locks
+            .entry(identity.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     /// Materialize a dormant identity into a concrete mob member/session.
     ///
     /// This is the lazy counterpart to eager `restore_flow`: it performs the
@@ -632,6 +653,8 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
         let lock = self.materialization_lock_for(identity).await;
         let _guard = lock.lock().await;
 
@@ -673,6 +696,21 @@ impl IdentityRuntime {
             Some(super::types::LeaseAcquireResult::Acquired(grant)) => grant.clone(),
             _ => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
         };
+        if let Some(record) = continuity.as_ref()
+            && let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+        {
+            let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "continuity upsert before materialize: {err}{}",
+                cleanup_error
+                    .as_ref()
+                    .map(|e| format!("; lease cleanup failed: {e}"))
+                    .unwrap_or_default(),
+            )));
+        }
 
         let active_peers = self.entries.read().await.keys().cloned().collect();
         let managed_edges = self.desired_peer_edges.read().await.clone();
@@ -691,22 +729,44 @@ impl IdentityRuntime {
             external_tools: Vec::new(),
             local_external_tools: Default::default(),
         };
-        if let Some(customizer) = self.customizer.read().await.clone() {
-            customizer
+        if let Some(customizer) = self.customizer.read().await.clone()
+            && let Err(err) = customizer
                 .customize_build(&build_context, &spec, &mut draft)
                 .await
-                .map_err(|err| IdentityRuntimeError::Internal(format!("customizer: {err}")))?;
+        {
+            let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "customizer: {err}{}",
+                cleanup_error
+                    .as_ref()
+                    .map(|e| format!("; lease cleanup failed: {e}"))
+                    .unwrap_or_default(),
+            )));
         }
 
+        let original_continuity = continuity.clone();
+        let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
         let mut record = if let Some(mut record) = continuity {
-            let snapshot = self
+            let snapshot = match self
                 .continuity_store
                 .load_session_snapshot(&record.session_id)
                 .await
-                .map_err(IdentityRuntimeError::Store)?;
+            {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "load session snapshot before materialize: {err}{}",
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; lease cleanup failed: {e}"))
+                            .unwrap_or_default(),
+                    )));
+                }
+            };
 
             if let Some(bridge) = self.bridge.as_ref() {
-                bridge
+                if let Err(err) = bridge
                     .register_session_runtime_state(
                         &record.session_id,
                         identity,
@@ -715,11 +775,26 @@ impl IdentityRuntime {
                         grant.fencing_token,
                     )
                     .await
-                    .map_err(|err| {
-                        IdentityRuntimeError::Internal(format!(
-                            "bridge register_session_runtime_state: {err}"
-                        ))
-                    })?;
+                {
+                    let unregister_error = Self::unregister_bridge_session_runtime_states(
+                        bridge.as_ref(),
+                        std::slice::from_ref(&record.session_id),
+                    )
+                    .await;
+                    let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "bridge register_session_runtime_state: {err}{}{}",
+                        unregister_error
+                            .as_ref()
+                            .map(|e| format!("; unregister session failed: {e}"))
+                            .unwrap_or_default(),
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; lease cleanup failed: {e}"))
+                            .unwrap_or_default(),
+                    )));
+                }
+                let registered_session_id = record.session_id.clone();
                 let snapshot = snapshot.unwrap_or(SessionSnapshot { data: Vec::new() });
                 let outcome = bridge
                     .resume_session(
@@ -730,10 +805,37 @@ impl IdentityRuntime {
                         &record.session_id,
                         &snapshot,
                     )
-                    .await
-                    .map_err(|err| {
-                        IdentityRuntimeError::Internal(format!("bridge resume_session: {err}"))
-                    })?;
+                    .await;
+                let outcome = match outcome {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        let unregister_error = Self::unregister_bridge_session_runtime_states(
+                            bridge.as_ref(),
+                            std::slice::from_ref(&registered_session_id),
+                        )
+                        .await;
+                        let cleanup_error =
+                            bridge.retire_member(&record.agent_runtime_id).await.err();
+                        let lease_cleanup_error =
+                            self.release_uninstalled_materialize_lease(&grant).await;
+                        let detail = format!(
+                            "bridge resume_session: {err}{}{}{}",
+                            unregister_error
+                                .as_ref()
+                                .map(|e| format!("; unregister session failed: {e}"))
+                                .unwrap_or_default(),
+                            cleanup_error
+                                .as_ref()
+                                .map(|e| format!("; cleanup retire failed: {e}"))
+                                .unwrap_or_default(),
+                            lease_cleanup_error
+                                .as_ref()
+                                .map(|e| format!("; lease cleanup failed: {e}"))
+                                .unwrap_or_default(),
+                        );
+                        return Err(IdentityRuntimeError::Internal(detail));
+                    }
+                };
                 if let Some(reason) = outcome.fallback_reason().cloned() {
                     tracing::warn!(
                         %identity,
@@ -749,7 +851,11 @@ impl IdentityRuntime {
                     )
                     .await;
                 }
-                record.session_id = outcome.session_id().clone();
+                let effective_session_id = outcome.session_id().clone();
+                if effective_session_id != registered_session_id {
+                    abandoned_session_registrations.push(registered_session_id);
+                }
+                record.session_id = effective_session_id;
             }
             record
         } else {
@@ -764,11 +870,23 @@ impl IdentityRuntime {
                 generation: ContinuityGeneration::new(0),
                 checkpoint_version: CheckpointVersion::new(0),
             };
-            self.continuity_store
+            if let Err(err) = self
+                .continuity_store
                 .upsert_continuity_record(&record, grant.fencing_token)
-                .await?;
+                .await
+            {
+                let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "continuity upsert before materialize create: {err}{}",
+                    cleanup_error
+                        .as_ref()
+                        .map(|e| format!("; lease cleanup failed: {e}"))
+                        .unwrap_or_default(),
+                )));
+            }
             if let Some(bridge) = self.bridge.as_ref() {
-                bridge
+                let provisional_session_id = record.session_id.clone();
+                if let Err(err) = bridge
                     .register_session_runtime_state(
                         &record.session_id,
                         identity,
@@ -781,8 +899,49 @@ impl IdentityRuntime {
                         IdentityRuntimeError::Internal(format!(
                             "bridge register_session_runtime_state: {err}"
                         ))
-                    })?;
-                record.session_id = bridge
+                    })
+                {
+                    let unregister_error = Self::unregister_bridge_session_runtime_states(
+                        bridge.as_ref(),
+                        std::slice::from_ref(&provisional_session_id),
+                    )
+                    .await;
+                    let delete_error = self
+                        .continuity_store
+                        .delete_continuity_record(identity, grant.fencing_token)
+                        .await
+                        .err();
+                    let cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+                    if let Some(delete_error) = delete_error {
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "{err}{}; tentative continuity cleanup failed: {delete_error}{}",
+                            unregister_error
+                                .as_ref()
+                                .map(|e| format!("; unregister session failed: {e}"))
+                                .unwrap_or_default(),
+                            cleanup_error
+                                .as_ref()
+                                .map(|e| format!("; lease cleanup failed: {e}"))
+                                .unwrap_or_default(),
+                        )));
+                    }
+                    if let Some(cleanup_error) = cleanup_error {
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "{err}{}; lease cleanup failed: {cleanup_error}",
+                            unregister_error
+                                .as_ref()
+                                .map(|e| format!("; unregister session failed: {e}"))
+                                .unwrap_or_default(),
+                        )));
+                    }
+                    if let Some(unregister_error) = unregister_error {
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "{err}; unregister session failed: {unregister_error}"
+                        )));
+                    }
+                    return Err(err);
+                }
+                let created_session_id = bridge
                     .create_session(
                         identity,
                         &record.agent_runtime_id,
@@ -793,16 +952,121 @@ impl IdentityRuntime {
                     .await
                     .map_err(|err| {
                         IdentityRuntimeError::Internal(format!("bridge create_session: {err}"))
-                    })?;
+                    });
+                match created_session_id {
+                    Ok(session_id) => {
+                        if session_id != provisional_session_id {
+                            abandoned_session_registrations.push(provisional_session_id);
+                        }
+                        record.session_id = session_id;
+                    }
+                    Err(err) => {
+                        let unregister_error = Self::unregister_bridge_session_runtime_states(
+                            bridge.as_ref(),
+                            std::slice::from_ref(&provisional_session_id),
+                        )
+                        .await;
+                        let cleanup_error =
+                            bridge.retire_member(&record.agent_runtime_id).await.err();
+                        let delete_error = self
+                            .continuity_store
+                            .delete_continuity_record(identity, grant.fencing_token)
+                            .await
+                            .err();
+                        let lease_cleanup_error =
+                            self.release_uninstalled_materialize_lease(&grant).await;
+                        if unregister_error.is_some()
+                            || cleanup_error.is_some()
+                            || delete_error.is_some()
+                            || lease_cleanup_error.is_some()
+                        {
+                            return Err(IdentityRuntimeError::Internal(format!(
+                                "{err}{}{}{}{}",
+                                unregister_error
+                                    .as_ref()
+                                    .map(|e| format!("; unregister session failed: {e}"))
+                                    .unwrap_or_default(),
+                                cleanup_error
+                                    .as_ref()
+                                    .map(|e| format!("; cleanup retire failed: {e}"))
+                                    .unwrap_or_default(),
+                                delete_error
+                                    .as_ref()
+                                    .map(|e| format!("; tentative continuity cleanup failed: {e}"))
+                                    .unwrap_or_default(),
+                                lease_cleanup_error
+                                    .as_ref()
+                                    .map(|e| format!("; lease cleanup failed: {e}"))
+                                    .unwrap_or_default(),
+                            )));
+                        }
+                        return Err(err);
+                    }
+                }
             }
             record
         };
 
-        self.continuity_store
+        if let Err(err) = self
+            .continuity_store
             .upsert_continuity_record(&record, grant.fencing_token)
-            .await?;
+            .await
+        {
+            let unregister_error = if let Some(bridge) = self.bridge.as_ref() {
+                let mut sessions_to_unregister = abandoned_session_registrations.clone();
+                sessions_to_unregister.push(record.session_id.clone());
+                Self::unregister_bridge_session_runtime_states(
+                    bridge.as_ref(),
+                    &sessions_to_unregister,
+                )
+                .await
+            } else {
+                None
+            };
+            let cleanup_error = if let Some(bridge) = self.bridge.as_ref() {
+                bridge.retire_member(&record.agent_runtime_id).await.err()
+            } else {
+                None
+            };
+            let restore_error = self
+                .restore_continuity_after_materialize_failure(
+                    identity,
+                    original_continuity.as_ref(),
+                    &grant,
+                )
+                .await;
+            let lease_cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+            if unregister_error.is_some()
+                || cleanup_error.is_some()
+                || restore_error.is_some()
+                || lease_cleanup_error.is_some()
+            {
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "continuity upsert after materialize: {err}{}{}{}{}",
+                    unregister_error
+                        .as_ref()
+                        .map(|e| format!("; unregister session failed: {e}"))
+                        .unwrap_or_default(),
+                    cleanup_error
+                        .as_ref()
+                        .map(|e| format!("; cleanup retire failed: {e}"))
+                        .unwrap_or_default(),
+                    restore_error
+                        .as_ref()
+                        .map(|e| format!("; continuity rollback failed: {e}"))
+                        .unwrap_or_default(),
+                    lease_cleanup_error
+                        .as_ref()
+                        .map(|e| format!("; lease cleanup failed: {e}"))
+                        .unwrap_or_default(),
+                )));
+            }
+            return Err(IdentityRuntimeError::Internal(format!(
+                "continuity upsert after materialize: {err}"
+            )));
+        }
         if let Some(bridge) = self.bridge.as_ref() {
-            let effective_checkpoint_version = bridge
+            let register_result = bridge
                 .register_session_runtime_state(
                     &record.session_id,
                     identity,
@@ -810,13 +1074,88 @@ impl IdentityRuntime {
                     record.checkpoint_version,
                     grant.fencing_token,
                 )
-                .await
-                .map_err(|err| {
-                    IdentityRuntimeError::Internal(format!(
-                        "bridge register actual session runtime state: {err}"
-                    ))
-                })?;
+                .await;
+            let effective_checkpoint_version = match register_result {
+                Ok(version) => version,
+                Err(err) => {
+                    let mut sessions_to_unregister = abandoned_session_registrations.clone();
+                    sessions_to_unregister.push(record.session_id.clone());
+                    let unregister_error = Self::unregister_bridge_session_runtime_states(
+                        bridge.as_ref(),
+                        &sessions_to_unregister,
+                    )
+                    .await;
+                    let cleanup_error = bridge.retire_member(&record.agent_runtime_id).await.err();
+                    let restore_error = self
+                        .restore_continuity_after_materialize_failure(
+                            identity,
+                            original_continuity.as_ref(),
+                            &grant,
+                        )
+                        .await;
+                    let lease_cleanup_error =
+                        self.release_uninstalled_materialize_lease(&grant).await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "bridge register actual session runtime state: {err}{}{}{}{}",
+                        unregister_error
+                            .as_ref()
+                            .map(|e| format!("; unregister session failed: {e}"))
+                            .unwrap_or_default(),
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; cleanup retire failed: {e}"))
+                            .unwrap_or_default(),
+                        restore_error
+                            .as_ref()
+                            .map(|e| format!("; continuity rollback failed: {e}"))
+                            .unwrap_or_default(),
+                        lease_cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; lease cleanup failed: {e}"))
+                            .unwrap_or_default(),
+                    )));
+                }
+            };
             record.checkpoint_version = effective_checkpoint_version;
+            if let Some(err) = Self::unregister_bridge_session_runtime_states(
+                bridge.as_ref(),
+                &abandoned_session_registrations,
+            )
+            .await
+            {
+                let actual_unregister_error = Self::unregister_bridge_session_runtime_states(
+                    bridge.as_ref(),
+                    std::slice::from_ref(&record.session_id),
+                )
+                .await;
+                let unregister_error = actual_unregister_error
+                    .map(|actual_err| format!("{err}; actual session: {actual_err}"))
+                    .unwrap_or(err);
+                let cleanup_error = bridge.retire_member(&record.agent_runtime_id).await.err();
+                let restore_error = self
+                    .restore_continuity_after_materialize_failure(
+                        identity,
+                        original_continuity.as_ref(),
+                        &grant,
+                    )
+                    .await;
+                let lease_cleanup_error = self.release_uninstalled_materialize_lease(&grant).await;
+                return Err(IdentityRuntimeError::Internal(format!(
+                    "bridge unregister abandoned session runtime state: {unregister_error}{}{}{}",
+                    cleanup_error
+                        .as_ref()
+                        .map(|e| format!("; cleanup retire failed: {e}"))
+                        .unwrap_or_default(),
+                    restore_error
+                        .as_ref()
+                        .map(|e| format!("; continuity rollback failed: {e}"))
+                        .unwrap_or_default(),
+                    lease_cleanup_error
+                        .as_ref()
+                        .map(|e| format!("; lease cleanup failed: {e}"))
+                        .unwrap_or_default(),
+                )));
+            }
         }
 
         {
@@ -825,11 +1164,7 @@ impl IdentityRuntime {
                 .get_mut(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
             entry.continuity = Some(record.clone());
-            entry.lease = Some(LeaseEntry {
-                fencing_token: grant.fencing_token,
-                ttl: grant.ttl,
-                acquired_at: Instant::now(),
-            });
+            entry.lease = Some(Self::lease_entry_from_grant(&grant));
             entry.state = IdentityLifecycleState::Active;
             entry.checkpoint_version = record.checkpoint_version;
         }
@@ -842,8 +1177,14 @@ impl IdentityRuntime {
         )
         .await;
         let desired_edges = self.desired_peer_edges.read().await.clone();
-        if !desired_edges.is_empty() {
-            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        if !desired_edges.is_empty()
+            && let Err(err) = self.reconcile_managed_peer_edges(&desired_edges).await
+        {
+            tracing::warn!(
+                identity = %identity,
+                error = %err,
+                "identity materialized with topology reconcile warning"
+            );
         }
         Ok(record)
     }
@@ -871,8 +1212,13 @@ impl IdentityRuntime {
         }
 
         let desired_edges = self.desired_peer_edges.read().await.clone();
-        if !desired_edges.is_empty() {
-            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        if !desired_edges.is_empty()
+            && let Err(err) = self.reconcile_managed_peer_edges(&desired_edges).await
+        {
+            tracing::warn!(
+                error = %err,
+                "identity materialize_all completed with topology reconcile warning"
+            );
         }
 
         Ok(records)
@@ -900,8 +1246,14 @@ impl IdentityRuntime {
         }
 
         let desired_edges = self.desired_peer_edges.read().await.clone();
-        if !desired_edges.is_empty() {
-            self.reconcile_managed_peer_edges(&desired_edges).await?;
+        if !desired_edges.is_empty()
+            && let Err(err) = self.reconcile_managed_peer_edges(&desired_edges).await
+        {
+            tracing::warn!(
+                identity = %identity,
+                error = %err,
+                "identity peer materialization completed with topology reconcile warning"
+            );
         }
 
         Ok(records)
@@ -1031,6 +1383,293 @@ impl IdentityRuntime {
         }
     }
 
+    fn lease_entry_from_grant(grant: &LeaseGrant) -> LeaseEntry {
+        LeaseEntry {
+            fencing_token: grant.fencing_token,
+            ttl: grant.ttl,
+            acquired_at: Instant::now(),
+        }
+    }
+
+    async fn mark_lifecycle_in_progress(
+        &self,
+        identity: &AgentIdentity,
+        state: IdentityLifecycleState,
+    ) -> Result<IdentityEntry, IdentityRuntimeError> {
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        let snapshot = entry.clone();
+        entry.state = state;
+        entry.lease = None;
+        Ok(snapshot)
+    }
+
+    async fn restore_entry(&self, identity: &AgentIdentity, entry: IdentityEntry) {
+        self.entries.write().await.insert(identity.clone(), entry);
+    }
+
+    async fn restore_entry_with_grant(
+        &self,
+        identity: &AgentIdentity,
+        mut entry: IdentityEntry,
+        grant: &LeaseGrant,
+    ) {
+        let restore_live_lease = entry.state == IdentityLifecycleState::Active;
+        if let Some(record) = entry.continuity.as_ref() {
+            if let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+            {
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to advance restored continuity fencing token after lifecycle failure"
+                );
+                entry.state = IdentityLifecycleState::Broken;
+            } else if let Some(bridge) = self.bridge.as_ref()
+                && let Err(err) = bridge
+                    .register_session_runtime_state(
+                        &record.session_id,
+                        identity,
+                        record.generation,
+                        record.checkpoint_version,
+                        grant.fencing_token,
+                    )
+                    .await
+            {
+                tracing::warn!(
+                    %identity,
+                    error = %err,
+                    "failed to refresh restored session runtime state after lifecycle failure"
+                );
+                entry.state = IdentityLifecycleState::Broken;
+            }
+            entry.lease = restore_live_lease.then(|| Self::lease_entry_from_grant(grant));
+        }
+        self.restore_entry(identity, entry).await;
+    }
+
+    pub(crate) async fn refresh_active_restore_grant(
+        &self,
+        identity: &AgentIdentity,
+        grant: &LeaseGrant,
+    ) -> Result<(), IdentityRuntimeError> {
+        let record = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            if entry.state != IdentityLifecycleState::Active {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: identity.clone(),
+                    state: entry.state,
+                    operation: "refresh_active_restore_grant",
+                });
+            }
+            entry.continuity.clone()
+        };
+
+        if let Some(record) = record.as_ref()
+            && let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+        {
+            let mut entries = self.entries.write().await;
+            if let Some(entry) = entries.get_mut(identity) {
+                entry.state = IdentityLifecycleState::Broken;
+                entry.lease = None;
+            }
+            drop(entries);
+            self.emit_event(
+                identity,
+                IdentityEvent::StateChanged {
+                    identity: identity.clone(),
+                    new_state: IdentityLifecycleState::Broken,
+                },
+            )
+            .await;
+            return Err(IdentityRuntimeError::Store(err));
+        }
+
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        if entry.state != IdentityLifecycleState::Active {
+            return Err(IdentityRuntimeError::InvalidState {
+                identity: identity.clone(),
+                state: entry.state,
+                operation: "refresh_active_restore_grant",
+            });
+        }
+        entry.lease = Some(Self::lease_entry_from_grant(grant));
+        drop(entries);
+        self.emit_event(
+            identity,
+            IdentityEvent::LeaseUpdated {
+                identity: identity.clone(),
+                fencing_token: grant.fencing_token,
+            },
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn restore_broken_entry_with_fenced_store(
+        &self,
+        identity: &AgentIdentity,
+        mut entry: IdentityEntry,
+        grant: &LeaseGrant,
+    ) {
+        entry.state = IdentityLifecycleState::Broken;
+        entry.lease = None;
+        if let Some(record) = entry.continuity.as_ref()
+            && let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+        {
+            tracing::warn!(
+                %identity,
+                error = %err,
+                "failed to preserve fenced continuity record for broken identity"
+            );
+        }
+        self.restore_entry(identity, entry).await;
+    }
+
+    async fn mark_rebind_failure_broken(
+        &self,
+        identity: &AgentIdentity,
+        mut entry: IdentityEntry,
+        grant: &LeaseGrant,
+        rebound_record: &ContinuityRecord,
+    ) {
+        entry.state = IdentityLifecycleState::Broken;
+        entry.lease = None;
+        entry.checkpoint_version = rebound_record.checkpoint_version;
+        entry.continuity = Some(rebound_record.clone());
+        if let Err(err) = self
+            .continuity_store
+            .upsert_continuity_record(rebound_record, grant.fencing_token)
+            .await
+        {
+            tracing::warn!(
+                %identity,
+                session_id = %rebound_record.session_id,
+                error = %err,
+                "failed to preserve rebound continuity after live respawn rebind failure"
+            );
+        }
+        self.restore_entry(identity, entry).await;
+    }
+
+    async fn restore_entry_after_reset_bridge_failure(
+        &self,
+        identity: &AgentIdentity,
+        entry: IdentityEntry,
+        grant: &LeaseGrant,
+        force_broken: bool,
+    ) -> Option<ContinuityStoreError> {
+        let delete_error = if entry.continuity.is_none() {
+            self.continuity_store
+                .delete_continuity_record(identity, grant.fencing_token)
+                .await
+                .err()
+        } else {
+            None
+        };
+        if force_broken || delete_error.is_some() {
+            self.restore_broken_entry_with_fenced_store(identity, entry, grant)
+                .await;
+        } else {
+            self.restore_entry_with_grant(identity, entry, grant).await;
+        }
+        delete_error
+    }
+
+    async fn restore_continuity_after_materialize_failure(
+        &self,
+        identity: &AgentIdentity,
+        previous: Option<&ContinuityRecord>,
+        grant: &LeaseGrant,
+    ) -> Option<ContinuityStoreError> {
+        match previous {
+            Some(record) => self
+                .continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+                .err(),
+            None => self
+                .continuity_store
+                .delete_continuity_record(identity, grant.fencing_token)
+                .await
+                .err(),
+        }
+    }
+
+    async fn unregister_bridge_session_runtime_states(
+        bridge: &dyn SessionBridge,
+        session_ids: &[SessionId],
+    ) -> Option<String> {
+        let mut errors = Vec::new();
+        let mut seen = BTreeSet::new();
+        for session_id in session_ids {
+            if !seen.insert(session_id.to_string()) {
+                continue;
+            }
+            if let Err(err) = bridge.unregister_session_runtime_state(session_id).await {
+                errors.push(format!("{session_id}: {err}"));
+            }
+        }
+        (!errors.is_empty()).then(|| errors.join("; "))
+    }
+
+    async fn advance_existing_continuity_fence(
+        &self,
+        identity: &AgentIdentity,
+        entry: &IdentityEntry,
+        grant: &LeaseGrant,
+    ) -> Result<(), IdentityRuntimeError> {
+        if let Some(record) = entry.continuity.as_ref() {
+            self.continuity_store
+                .upsert_continuity_record(record, grant.fencing_token)
+                .await
+                .map_err(IdentityRuntimeError::Store)?;
+        }
+        let _ = identity;
+        Ok(())
+    }
+
+    async fn refresh_existing_session_runtime_state(
+        &self,
+        identity: &AgentIdentity,
+        record: &ContinuityRecord,
+        grant: &LeaseGrant,
+    ) -> Result<CheckpointVersion, IdentityRuntimeError> {
+        let Some(bridge) = self.bridge.as_ref() else {
+            return Ok(record.checkpoint_version);
+        };
+        bridge
+            .register_session_runtime_state(
+                &record.session_id,
+                identity,
+                record.generation,
+                record.checkpoint_version,
+                grant.fencing_token,
+            )
+            .await
+            .map_err(|err| {
+                IdentityRuntimeError::Internal(format!(
+                    "bridge refresh session runtime state: {err}"
+                ))
+            })
+    }
+
     // -----------------------------------------------------------------------
     // Delivery: send() — REQ-01, REQ-03
     // -----------------------------------------------------------------------
@@ -1091,6 +1730,8 @@ impl IdentityRuntime {
             self.materialize_reachable_peers(identity).await?;
         }
 
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
         let (token, runtime_id) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -1158,6 +1799,8 @@ impl IdentityRuntime {
         }
         self.materialize_reachable_peers(identity).await?;
 
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
         let (token, is_durable, runtime_id) = {
             let entries = self.entries.read().await;
             let entry = entries
@@ -1279,32 +1922,80 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<FencingToken, IdentityRuntimeError> {
-        let (token, runtime_id) = {
-            let mut entries = self.entries.write().await;
-            let entry = entries
-                .get_mut(identity)
-                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let registered_entry = self
+            .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Retiring)
+            .await?;
+        let _previous_token = match Self::check_lease(&registered_entry) {
+            Ok(token) => token,
+            Err(err) => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(err);
+            }
+        };
+        let runtime_id = registered_entry
+            .continuity
+            .as_ref()
+            .map(|c| c.agent_runtime_id.clone());
+        let session_id = registered_entry
+            .continuity
+            .as_ref()
+            .map(|c| c.session_id.clone());
 
-            let token = Self::check_lease(entry)?;
-            entry.state = IdentityLifecycleState::Retiring;
-
-            let runtime_id = entry
-                .continuity
-                .as_ref()
-                .map(|c| c.agent_runtime_id.clone());
-
-            (token, runtime_id)
+        let acquire_result = match self
+            .lease_provider
+            .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::Lease(err));
+            }
         };
 
-        // Retire the mob member through the session bridge when available.
-        if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            bridge
-                .retire_member(rid)
-                .await
-                .map_err(|e| IdentityRuntimeError::Internal(format!("bridge retire: {e}")))?;
+        let grant = match acquire_result.get(identity) {
+            Some(super::types::LeaseAcquireResult::Acquired(g)) => g.clone(),
+            _ => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::NoActiveLease(identity.clone()));
+            }
+        };
+        if let Err(err) = self
+            .advance_existing_continuity_fence(identity, &registered_entry, &grant)
+            .await
+        {
+            let mut broken_entry = registered_entry;
+            broken_entry.state = IdentityLifecycleState::Broken;
+            broken_entry.lease = None;
+            self.restore_entry(identity, broken_entry).await;
+            return Err(err);
         }
 
-        Ok(token)
+        // Retire the mob member through the session bridge when available.
+        if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id)
+            && let Err(err) = bridge.retire_member(rid).await
+        {
+            self.restore_entry_with_grant(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge retire: {err}"
+            )));
+        }
+        if let (Some(bridge), Some(session_id)) = (&self.bridge, &session_id)
+            && let Err(err) = bridge.unregister_session_runtime_state(session_id).await
+        {
+            let mut broken_entry = registered_entry;
+            broken_entry.state = IdentityLifecycleState::Broken;
+            broken_entry.lease = None;
+            self.restore_entry(identity, broken_entry).await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge unregister retired session: {err}"
+            )));
+        }
+
+        Ok(grant.fencing_token)
     }
 
     // -----------------------------------------------------------------------
@@ -1321,41 +2012,78 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let registered_entry = self
+            .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Suspended)
+            .await?;
+
         // Fence the old owner by re-acquiring the lease
-        let acquire_result = self
+        let acquire_result = match self
             .lease_provider
             .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
             .await
-            .map_err(IdentityRuntimeError::Lease)?;
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::Lease(err));
+            }
+        };
 
         let grant = match acquire_result.get(identity) {
             Some(super::types::LeaseAcquireResult::Acquired(g)) => g.clone(),
             _ => {
+                self.restore_entry(identity, registered_entry).await;
                 return Err(IdentityRuntimeError::NoActiveLease(identity.clone()));
             }
         };
 
+        if let Err(err) = self
+            .advance_existing_continuity_fence(identity, &registered_entry, &grant)
+            .await
+        {
+            let mut broken_entry = registered_entry;
+            broken_entry.state = IdentityLifecycleState::Broken;
+            broken_entry.lease = None;
+            self.restore_entry(identity, broken_entry).await;
+            return Err(err);
+        }
+
         // Resolve current continuity state
-        let resolved = self
+        let resolved = match self
             .continuity_store
             .resolve_many(std::slice::from_ref(identity))
             .await
-            .map_err(IdentityRuntimeError::Store)?;
+        {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
+                return Err(IdentityRuntimeError::Store(err));
+            }
+        };
 
         let record = match resolved.get(identity) {
             Some(super::types::ContinuityResolveState::Ready { record }) => record.clone(),
             Some(super::types::ContinuityResolveState::Broken { failure }) => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
                 return Err(IdentityRuntimeError::Internal(format!(
                     "broken continuity for {identity}: {}",
                     failure.detail
                 )));
             }
             Some(super::types::ContinuityResolveState::Uninitialized) => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
                 return Err(IdentityRuntimeError::Internal(format!(
                     "cannot respawn uninitialized identity {identity}"
                 )));
             }
             None => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
                 return Err(IdentityRuntimeError::Store(
                     ContinuityStoreError::NotFound {
                         identity: identity.clone(),
@@ -1363,6 +2091,20 @@ impl IdentityRuntime {
                 ));
             }
         };
+
+        let effective_checkpoint_version = match self
+            .refresh_existing_session_runtime_state(identity, &record, &grant)
+            .await
+        {
+            Ok(version) => version,
+            Err(err) => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
+                return Err(err);
+            }
+        };
+        let mut record = record;
+        record.checkpoint_version = effective_checkpoint_version;
 
         // Update runtime state: same record, new lease, back to Active
         let mut entries = self.entries.write().await;
@@ -1380,6 +2122,172 @@ impl IdentityRuntime {
         Ok(record)
     }
 
+    /// Rebind continuity to the concrete session created by a lower-level
+    /// member respawn. This keeps identity-first status aligned when a control
+    /// surface refreshes the mob member outside the identity runtime bridge.
+    pub async fn rebind_session_after_live_respawn(
+        &self,
+        identity: &AgentIdentity,
+        session_id: SessionId,
+    ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let registered_entry = self
+            .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Suspended)
+            .await?;
+
+        let acquire_result = match self
+            .lease_provider
+            .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
+            .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::Lease(err));
+            }
+        };
+
+        let grant = match acquire_result.get(identity) {
+            Some(super::types::LeaseAcquireResult::Acquired(g)) => g.clone(),
+            _ => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::NoActiveLease(identity.clone()));
+            }
+        };
+
+        let mut record = match registered_entry.continuity.as_ref() {
+            Some(record) => record.clone(),
+            None => {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
+                return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
+            }
+        };
+        if let Err(err) = self
+            .advance_existing_continuity_fence(identity, &registered_entry, &grant)
+            .await
+        {
+            if let Some(bridge) = self.bridge.as_ref()
+                && let Err(unregister_err) =
+                    bridge.unregister_session_runtime_state(&session_id).await
+            {
+                tracing::warn!(
+                    %identity,
+                    session_id = %session_id,
+                    error = %unregister_err,
+                    "failed to unregister rebound session after continuity fence failure"
+                );
+            }
+            let mut broken_entry = registered_entry;
+            broken_entry.state = IdentityLifecycleState::Broken;
+            broken_entry.lease = None;
+            self.restore_entry(identity, broken_entry).await;
+            return Err(err);
+        }
+        let previous_session_id = record.session_id.clone();
+        record.session_id = session_id;
+        record.checkpoint_version = CheckpointVersion::new(0);
+
+        if let Err(err) = self
+            .continuity_store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await
+        {
+            if let Some(bridge) = self.bridge.as_ref()
+                && let Err(unregister_err) = bridge
+                    .unregister_session_runtime_state(&record.session_id)
+                    .await
+            {
+                tracing::warn!(
+                    %identity,
+                    session_id = %record.session_id,
+                    error = %unregister_err,
+                    "failed to unregister rebound session after continuity upsert failure"
+                );
+            }
+            self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                .await;
+            return Err(IdentityRuntimeError::Store(err));
+        }
+
+        if let Some(bridge) = self.bridge.as_ref() {
+            match bridge
+                .register_session_runtime_state(
+                    &record.session_id,
+                    identity,
+                    record.generation,
+                    record.checkpoint_version,
+                    grant.fencing_token,
+                )
+                .await
+            {
+                Ok(version) => record.checkpoint_version = version,
+                Err(err) => {
+                    if let Err(unregister_err) = bridge
+                        .unregister_session_runtime_state(&record.session_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            %identity,
+                            session_id = %record.session_id,
+                            error = %unregister_err,
+                            "failed to unregister rebound session after bridge register failure"
+                        );
+                    }
+                    self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                        .await;
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "bridge rebind respawned session runtime state: {err}"
+                    )));
+                }
+            }
+            if previous_session_id != record.session_id
+                && let Err(err) = bridge
+                    .unregister_session_runtime_state(&previous_session_id)
+                    .await
+            {
+                tracing::warn!(
+                    %identity,
+                    session_id = %previous_session_id,
+                    error = %err,
+                    "failed to unregister previous session after live respawn rebind"
+                );
+            }
+        }
+
+        if let Err(err) = self
+            .continuity_store
+            .upsert_continuity_record(&record, grant.fencing_token)
+            .await
+        {
+            if let Some(bridge) = self.bridge.as_ref()
+                && let Err(unregister_err) = bridge
+                    .unregister_session_runtime_state(&record.session_id)
+                    .await
+            {
+                tracing::warn!(
+                    %identity,
+                    session_id = %record.session_id,
+                    error = %unregister_err,
+                    "failed to unregister rebound session after final continuity upsert failure"
+                );
+            }
+            self.mark_rebind_failure_broken(identity, registered_entry, &grant, &record)
+                .await;
+            return Err(IdentityRuntimeError::Store(err));
+        }
+
+        self.register(
+            registered_entry.spec,
+            IdentityLifecycleState::Active,
+            Some(record.clone()),
+            Some(grant),
+        )
+        .await;
+        Ok(record)
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle: reset() — REQ-10
     // -----------------------------------------------------------------------
@@ -1394,26 +2302,56 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<ContinuityRecord, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let registered_entry = self
+            .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Suspended)
+            .await?;
+
         // INV-05: fence the old owner first
-        let acquire_result = self
+        let acquire_result = match self
             .lease_provider
             .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
             .await
-            .map_err(IdentityRuntimeError::Lease)?;
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::Lease(err));
+            }
+        };
 
         let grant = match acquire_result.get(identity) {
             Some(super::types::LeaseAcquireResult::Acquired(g)) => g.clone(),
             _ => {
+                self.restore_entry(identity, registered_entry).await;
                 return Err(IdentityRuntimeError::NoActiveLease(identity.clone()));
             }
         };
+        if let Err(err) = self
+            .advance_existing_continuity_fence(identity, &registered_entry, &grant)
+            .await
+        {
+            let mut broken_entry = registered_entry;
+            broken_entry.state = IdentityLifecycleState::Broken;
+            broken_entry.lease = None;
+            self.restore_entry(identity, broken_entry).await;
+            return Err(err);
+        }
 
         // Resolve to get current generation
-        let resolved = self
+        let resolved = match self
             .continuity_store
             .resolve_many(std::slice::from_ref(identity))
             .await
-            .map_err(IdentityRuntimeError::Store)?;
+        {
+            Ok(resolved) => resolved,
+            Err(err) => {
+                self.restore_entry_with_grant(identity, registered_entry.clone(), &grant)
+                    .await;
+                return Err(IdentityRuntimeError::Store(err));
+            }
+        };
 
         let current_gen = match resolved.get(identity) {
             Some(super::types::ContinuityResolveState::Ready { record }) => record.generation,
@@ -1426,10 +2364,10 @@ impl IdentityRuntime {
         // Advance generation
         let new_gen = ContinuityGeneration::new(current_gen.get() + 1);
         let new_session_id = meerkat_core::types::SessionId::new();
-        let new_runtime_id = AgentRuntimeId::parse(&format!("{}:gen{}", identity, new_gen.get()))
+        let new_runtime_id = AgentRuntimeId::parse(&format!("rt:{identity}:{}", new_gen.get()))
             .map_err(|e| {
-            IdentityRuntimeError::Internal(format!("failed to mint runtime id: {e}"))
-        })?;
+                IdentityRuntimeError::Internal(format!("failed to mint runtime id: {e}"))
+            })?;
 
         let new_record = ContinuityRecord {
             identity: identity.clone(),
@@ -1439,122 +2377,329 @@ impl IdentityRuntime {
             checkpoint_version: CheckpointVersion::new(0),
         };
 
-        // Persist the new record (fencing token from new lease protects against old writes)
-        self.continuity_store
-            .upsert_continuity_record(&new_record, grant.fencing_token)
-            .await?;
-
         // Bridge: retire old mob member and create fresh session for the new identity.
         if let Some(bridge) = &self.bridge {
-            // Retire old member (best-effort — may already be gone)
-            let old_runtime_id = {
-                let entries = self.entries.read().await;
-                entries
-                    .get(identity)
-                    .and_then(|e| e.continuity.as_ref().map(|c| c.agent_runtime_id.clone()))
-            };
-            if let Some(old_id) = old_runtime_id {
-                let _ = bridge.retire_member(&old_id).await;
+            if let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(&new_record, grant.fencing_token)
+                .await
+            {
+                self.restore_entry_with_grant(identity, registered_entry, &grant)
+                    .await;
+                return Err(IdentityRuntimeError::Store(err));
             }
 
-            // Get the spec from the runtime entry
-            let spec = {
-                let entries = self.entries.read().await;
-                entries.get(identity).map(|e| e.spec.clone())
+            let old_runtime_id = registered_entry
+                .continuity
+                .as_ref()
+                .map(|c| c.agent_runtime_id.clone());
+            let old_session_id = registered_entry
+                .continuity
+                .as_ref()
+                .map(|c| c.session_id.clone());
+
+            let spec = registered_entry.spec.clone();
+            let draft = super::types::AgentBuildDraft {
+                model: None,
+                system_prompt: None,
+                additional_instructions: spec.additional_instructions.clone(),
+                labels: spec.labels.clone(),
+                app_context: spec.context.clone(),
+                external_tools: Vec::new(),
+                local_external_tools: Default::default(),
             };
-            if let Some(spec) = spec {
-                let draft = super::types::AgentBuildDraft {
-                    model: None,
-                    system_prompt: None,
-                    additional_instructions: spec.additional_instructions.clone(),
-                    labels: spec.labels.clone(),
-                    app_context: spec.context.clone(),
-                    external_tools: Vec::new(),
-                    local_external_tools: Default::default(),
-                };
-                bridge
-                    .register_session_runtime_state(
-                        &new_record.session_id,
-                        identity,
-                        new_record.generation,
-                        new_record.checkpoint_version,
-                        grant.fencing_token,
-                    )
-                    .await
-                    .map_err(|e| {
-                        IdentityRuntimeError::Internal(format!(
-                            "bridge register_session_runtime_state after reset: {e}"
-                        ))
-                    })?;
-                let session_id = bridge
-                    .create_session(
-                        identity,
-                        &new_record.agent_runtime_id,
-                        &spec,
-                        &draft,
-                        &new_record.session_id,
-                    )
-                    .await
-                    .map_err(|e| {
-                        IdentityRuntimeError::Internal(format!(
-                            "bridge create_session after reset: {e}"
-                        ))
-                    })?;
-                // Update the record with the actual session ID
-                let initial_session_id = new_record.session_id.clone();
-                let mut new_record = new_record;
-                new_record.session_id = session_id;
-
-                // Persist the updated record
-                if new_record.session_id != initial_session_id {
-                    self.continuity_store
-                        .upsert_continuity_record(&new_record, grant.fencing_token)
-                        .await?;
+            let session_id = bridge
+                .create_session(
+                    identity,
+                    &new_record.agent_runtime_id,
+                    &spec,
+                    &draft,
+                    &new_record.session_id,
+                )
+                .await
+                .map_err(|e| {
+                    IdentityRuntimeError::Internal(format!(
+                        "bridge create_session after reset: {e}"
+                    ))
+                });
+            let session_id = match session_id {
+                Ok(session_id) => session_id,
+                Err(err) => {
+                    let cleanup_error = bridge
+                        .retire_member(&new_record.agent_runtime_id)
+                        .await
+                        .err();
+                    let delete_error = self
+                        .restore_entry_after_reset_bridge_failure(
+                            identity,
+                            registered_entry.clone(),
+                            &grant,
+                            cleanup_error.is_some(),
+                        )
+                        .await;
+                    if cleanup_error.is_some() || delete_error.is_some() {
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "{err}{}{}",
+                            cleanup_error
+                                .as_ref()
+                                .map(|e| format!("; cleanup retire failed: {e}"))
+                                .unwrap_or_default(),
+                            delete_error
+                                .as_ref()
+                                .map(|e| format!("; tentative continuity cleanup failed: {e}"))
+                                .unwrap_or_default()
+                        )));
+                    }
+                    return Err(err);
                 }
-                let effective_checkpoint_version = bridge
-                    .register_session_runtime_state(
-                        &new_record.session_id,
-                        identity,
-                        new_record.generation,
-                        new_record.checkpoint_version,
-                        grant.fencing_token,
-                    )
-                    .await
-                    .map_err(|e| {
-                        IdentityRuntimeError::Internal(format!(
-                            "bridge register actual session runtime state after reset: {e}"
-                        ))
-                    })?;
-                new_record.checkpoint_version = effective_checkpoint_version;
+            };
+            // Update the record with the actual session ID
+            let mut new_record = new_record;
+            new_record.session_id = session_id;
 
-                // Update runtime state
+            if let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(&new_record, grant.fencing_token)
+                .await
+            {
+                let unregister_error = Self::unregister_bridge_session_runtime_states(
+                    bridge.as_ref(),
+                    std::slice::from_ref(&new_record.session_id),
+                )
+                .await;
+                let cleanup_error = bridge
+                    .retire_member(&new_record.agent_runtime_id)
+                    .await
+                    .err();
+                let delete_error = self
+                    .restore_entry_after_reset_bridge_failure(
+                        identity,
+                        registered_entry.clone(),
+                        &grant,
+                        unregister_error.is_some() || cleanup_error.is_some(),
+                    )
+                    .await;
+                if unregister_error.is_some() || cleanup_error.is_some() || delete_error.is_some() {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "continuity upsert actual session after reset: {err}{}{}{}",
+                        unregister_error
+                            .as_ref()
+                            .map(|e| format!("; unregister session failed: {e}"))
+                            .unwrap_or_default(),
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; cleanup retire failed: {e}"))
+                            .unwrap_or_default(),
+                        delete_error
+                            .as_ref()
+                            .map(|e| format!("; tentative continuity cleanup failed: {e}"))
+                            .unwrap_or_default(),
+                    )));
+                }
+                return Err(IdentityRuntimeError::Store(err));
+            }
+
+            let register_result = bridge
+                .register_session_runtime_state(
+                    &new_record.session_id,
+                    identity,
+                    new_record.generation,
+                    new_record.checkpoint_version,
+                    grant.fencing_token,
+                )
+                .await;
+            let effective_checkpoint_version = match register_result {
+                Ok(version) => version,
+                Err(err) => {
+                    let unregister_error = Self::unregister_bridge_session_runtime_states(
+                        bridge.as_ref(),
+                        std::slice::from_ref(&new_record.session_id),
+                    )
+                    .await;
+                    let cleanup_error = bridge
+                        .retire_member(&new_record.agent_runtime_id)
+                        .await
+                        .err();
+                    let mut detail =
+                        format!("bridge register actual session runtime state after reset: {err}");
+                    if let Some(unregister_error) = unregister_error.as_ref() {
+                        detail
+                            .push_str(&format!("; unregister session failed: {unregister_error}"));
+                    }
+                    if let Some(cleanup_error) = cleanup_error.as_ref() {
+                        detail.push_str(&format!("; cleanup retire failed: {cleanup_error}"));
+                    }
+                    let delete_error = self
+                        .restore_entry_after_reset_bridge_failure(
+                            identity,
+                            registered_entry.clone(),
+                            &grant,
+                            unregister_error.is_some() || cleanup_error.is_some(),
+                        )
+                        .await;
+                    if let Some(delete_error) = delete_error {
+                        return Err(IdentityRuntimeError::Internal(format!(
+                            "{detail}; tentative continuity cleanup failed: {delete_error}"
+                        )));
+                    }
+                    return Err(IdentityRuntimeError::Internal(detail));
+                }
+            };
+            new_record.checkpoint_version = effective_checkpoint_version;
+
+            if let Some(old_id) = old_runtime_id.as_ref()
+                && old_id != &new_record.agent_runtime_id
+            {
+                if let Err(err) = bridge.retire_member(old_id).await {
+                    let unregister_error = bridge
+                        .unregister_session_runtime_state(&new_record.session_id)
+                        .await
+                        .err();
+                    let cleanup_error = bridge
+                        .retire_member(&new_record.agent_runtime_id)
+                        .await
+                        .err();
+                    self.restore_broken_entry_with_fenced_store(
+                        identity,
+                        registered_entry.clone(),
+                        &grant,
+                    )
+                    .await;
+                    let detail = format!(
+                        "bridge retire old member after reset: {err}{}{}",
+                        unregister_error
+                            .as_ref()
+                            .map(|e| format!("; unregister session failed: {e}"))
+                            .unwrap_or_default(),
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; cleanup retire failed: {e}"))
+                            .unwrap_or_default(),
+                    );
+                    return Err(IdentityRuntimeError::Internal(detail));
+                }
+                if let Some(old_session_id) = old_session_id.as_ref()
+                    && old_session_id != &new_record.session_id
+                    && let Err(err) = bridge
+                        .unregister_session_runtime_state(old_session_id)
+                        .await
+                {
+                    let unregister_error = bridge
+                        .unregister_session_runtime_state(&new_record.session_id)
+                        .await
+                        .err();
+                    let cleanup_error = bridge
+                        .retire_member(&new_record.agent_runtime_id)
+                        .await
+                        .err();
+                    self.restore_broken_entry_with_fenced_store(
+                        identity,
+                        registered_entry.clone(),
+                        &grant,
+                    )
+                    .await;
+                    let detail = format!(
+                        "bridge unregister old session after reset: {err}{}{}",
+                        unregister_error
+                            .as_ref()
+                            .map(|e| format!("; unregister new session failed: {e}"))
+                            .unwrap_or_default(),
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; cleanup retire failed: {e}"))
+                            .unwrap_or_default(),
+                    );
+                    return Err(IdentityRuntimeError::Internal(detail));
+                }
+            }
+
+            if let Err(err) = self
+                .continuity_store
+                .upsert_continuity_record(&new_record, grant.fencing_token)
+                .await
+            {
+                let unregister_error = bridge
+                    .unregister_session_runtime_state(&new_record.session_id)
+                    .await
+                    .err();
+                let cleanup_error = bridge
+                    .retire_member(&new_record.agent_runtime_id)
+                    .await
+                    .err();
+                let rollback_error = self
+                    .restore_continuity_after_materialize_failure(
+                        identity,
+                        registered_entry.continuity.as_ref(),
+                        &grant,
+                    )
+                    .await;
                 let mut entries = self.entries.write().await;
                 if let Some(entry) = entries.get_mut(identity) {
-                    entry.continuity = Some(new_record.clone());
-                    entry.lease = Some(LeaseEntry {
-                        fencing_token: grant.fencing_token,
-                        ttl: grant.ttl,
-                        acquired_at: Instant::now(),
-                    });
-                    entry.state = IdentityLifecycleState::Active;
-                    entry.checkpoint_version = new_record.checkpoint_version;
+                    entry.state = IdentityLifecycleState::Broken;
                 }
-                return Ok(new_record);
+                if unregister_error.is_some() || cleanup_error.is_some() || rollback_error.is_some()
+                {
+                    return Err(IdentityRuntimeError::Internal(format!(
+                        "continuity upsert after reset: {err}{}{}{}",
+                        unregister_error
+                            .as_ref()
+                            .map(|e| format!("; unregister session failed: {e}"))
+                            .unwrap_or_default(),
+                        cleanup_error
+                            .as_ref()
+                            .map(|e| format!("; cleanup retire failed: {e}"))
+                            .unwrap_or_default(),
+                        rollback_error
+                            .as_ref()
+                            .map(|e| format!("; continuity rollback failed: {e}"))
+                            .unwrap_or_default()
+                    )));
+                }
+                return Err(IdentityRuntimeError::Store(err));
             }
+
+            // Update runtime state
+            let mut entries = self.entries.write().await;
+            let Some(entry) = entries.get_mut(identity) else {
+                let _ = bridge
+                    .unregister_session_runtime_state(&new_record.session_id)
+                    .await;
+                let _ = bridge.retire_member(&new_record.agent_runtime_id).await;
+                if registered_entry.continuity.is_none() {
+                    let _ = self
+                        .continuity_store
+                        .delete_continuity_record(identity, grant.fencing_token)
+                        .await;
+                }
+                return Err(IdentityRuntimeError::UnknownIdentity(identity.clone()));
+            };
+            entry.continuity = Some(new_record.clone());
+            entry.lease = Some(Self::lease_entry_from_grant(&grant));
+            entry.state = IdentityLifecycleState::Active;
+            entry.checkpoint_version = new_record.checkpoint_version;
+            return Ok(new_record);
+        }
+
+        // Persist the new record (fencing token from new lease protects against old writes)
+        if let Err(err) = self
+            .continuity_store
+            .upsert_continuity_record(&new_record, grant.fencing_token)
+            .await
+        {
+            self.restore_entry_with_grant(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Store(err));
         }
 
         // No bridge — update runtime state only (validation mode)
         let mut entries = self.entries.write().await;
-        if let Some(entry) = entries.get_mut(identity) {
-            entry.continuity = Some(new_record.clone());
-            entry.lease = Some(LeaseEntry {
-                fencing_token: grant.fencing_token,
-                ttl: grant.ttl,
-                acquired_at: Instant::now(),
-            });
-            entry.state = IdentityLifecycleState::Active;
-            entry.checkpoint_version = CheckpointVersion::new(0);
-        }
+        let entry = entries
+            .get_mut(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        entry.continuity = Some(new_record.clone());
+        entry.lease = Some(Self::lease_entry_from_grant(&grant));
+        entry.state = IdentityLifecycleState::Active;
+        entry.checkpoint_version = CheckpointVersion::new(0);
 
         Ok(new_record)
     }
@@ -1572,37 +2717,89 @@ impl IdentityRuntime {
         &self,
         identity: &AgentIdentity,
     ) -> Result<(), IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
+        let registered_entry = self
+            .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Retiring)
+            .await?;
+        let runtime_id = registered_entry
+            .continuity
+            .as_ref()
+            .map(|c| c.agent_runtime_id.clone());
+        let session_id = registered_entry
+            .continuity
+            .as_ref()
+            .map(|c| c.session_id.clone());
+
         // INV-05: fence the old owner first
-        let acquire_result = self
+        let acquire_result = match self
             .lease_provider
             .acquire_leases(std::slice::from_ref(identity), &self.runtime_instance_id)
             .await
-            .map_err(IdentityRuntimeError::Lease)?;
+        {
+            Ok(result) => result,
+            Err(err) => {
+                self.restore_entry(identity, registered_entry).await;
+                return Err(IdentityRuntimeError::Lease(err));
+            }
+        };
 
         let grant = match acquire_result.get(identity) {
             Some(super::types::LeaseAcquireResult::Acquired(g)) => g.clone(),
             _ => {
+                self.restore_entry(identity, registered_entry).await;
                 return Err(IdentityRuntimeError::NoActiveLease(identity.clone()));
             }
         };
+        if let Err(err) = self
+            .advance_existing_continuity_fence(identity, &registered_entry, &grant)
+            .await
+        {
+            let mut broken_entry = registered_entry;
+            broken_entry.state = IdentityLifecycleState::Broken;
+            broken_entry.lease = None;
+            self.restore_entry(identity, broken_entry).await;
+            return Err(err);
+        }
 
         // Retire the mob member through the session bridge before removing
         // the continuity record. This ensures the mob actor is cleaned up.
-        let runtime_id = {
-            let entries = self.entries.read().await;
-            entries
-                .get(identity)
-                .and_then(|e| e.continuity.as_ref().map(|c| c.agent_runtime_id.clone()))
-        };
-        if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id) {
-            // Best-effort: if the member is already gone, ignore the error.
-            let _ = bridge.retire_member(rid).await;
+        if let (Some(bridge), Some(rid)) = (&self.bridge, &runtime_id)
+            && let Err(err) = bridge.retire_member(rid).await
+        {
+            self.restore_entry_with_grant(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge retire before delete: {err}"
+            )));
+        }
+
+        if let (Some(bridge), Some(session_id)) = (&self.bridge, &session_id)
+            && let Some(err) = Self::unregister_bridge_session_runtime_states(
+                bridge.as_ref(),
+                std::slice::from_ref(session_id),
+            )
+            .await
+        {
+            self.restore_broken_entry_with_fenced_store(identity, registered_entry, &grant)
+                .await;
+            return Err(IdentityRuntimeError::Internal(format!(
+                "bridge unregister session before delete: {err}"
+            )));
         }
 
         // Remove authoritative continuity record from the store
-        self.continuity_store
+        if let Err(err) = self
+            .continuity_store
             .delete_continuity_record(identity, grant.fencing_token)
-            .await?;
+            .await
+        {
+            let mut entries = self.entries.write().await;
+            if let Some(entry) = entries.get_mut(identity) {
+                entry.state = IdentityLifecycleState::Broken;
+            }
+            return Err(IdentityRuntimeError::Store(err));
+        }
 
         // Remove from runtime tracking
         self.event_channels.write().await.remove(identity);
@@ -1621,11 +2818,20 @@ impl IdentityRuntime {
         identity: &AgentIdentity,
         snapshot: &SessionSnapshot,
     ) -> Result<CheckpointVersion, IdentityRuntimeError> {
+        let lifecycle_lock = self.lifecycle_lock_for(identity).await;
+        let _lifecycle_guard = lifecycle_lock.lock().await;
         let (record, token, new_version) = {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            if entry.state != IdentityLifecycleState::Active {
+                return Err(IdentityRuntimeError::InvalidState {
+                    identity: identity.clone(),
+                    state: entry.state,
+                    operation: "checkpoint",
+                });
+            }
 
             // INV-01: require active lease
             let token = Self::check_lease(entry)?;

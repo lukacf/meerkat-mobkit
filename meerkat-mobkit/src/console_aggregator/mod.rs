@@ -200,7 +200,50 @@ struct ResolvedConsoleMember {
     entry: RuntimeEntry,
     handle: MobHandle,
     member: MobMemberListEntry,
+    source_mob_id: String,
     runtime_identity: String,
+}
+
+fn console_member_for_resolved_member(
+    resolved: &ResolvedConsoleMember,
+    record: &ConsoleIdentityRecord,
+) -> ConsoleMember {
+    ConsoleMember {
+        agent_identity: resolved.member.agent_identity.to_string(),
+        role: resolved.member.role.to_string(),
+        state: format!("{:?}", resolved.member.state),
+        model_capabilities: Default::default(),
+        runtime_mode: Some(resolved.member.runtime_mode.to_string()),
+        session_id: record.session_id.clone(),
+        wired_to: resolved
+            .member
+            .wired_to
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        labels: record.labels.clone(),
+    }
+}
+
+async fn resolved_member_visible(
+    resolved: &ResolvedConsoleMember,
+    record: &ConsoleIdentityRecord,
+) -> bool {
+    if !raw_resolved_member_visible(resolved, record) {
+        return false;
+    }
+    !live_record_shadowed_by_hidden_durable_binding(resolved, record).await
+}
+
+fn raw_resolved_member_visible(
+    resolved: &ResolvedConsoleMember,
+    record: &ConsoleIdentityRecord,
+) -> bool {
+    resolved.entry.visibility_policy.identity_visible(record)
+        && resolved
+            .entry
+            .visibility_policy
+            .member_visible(&console_member_for_resolved_member(resolved, record))
 }
 
 pub trait ConsoleVisibilityPolicy: Send + Sync {
@@ -421,6 +464,7 @@ impl MobKitConsoleAggregator {
         Ok(identities)
     }
 
+    #[cfg(test)]
     pub(crate) async fn list_identities_fresh(
         &self,
     ) -> ConsoleLogResult<Vec<ConsoleIdentityRecord>> {
@@ -454,6 +498,80 @@ impl MobKitConsoleAggregator {
             .values()
             .cloned()
             .collect::<Vec<_>>();
+        let live_records = self.live_records_for_identity(identity).await;
+        let mut durable_matches = Vec::new();
+        if !requested_identity_has_runtime_member_alias(identity, &entries) {
+            for entry in &entries {
+                let Some(identity_runtime) = entry.identity_runtime.clone() else {
+                    continue;
+                };
+                for raw_identity in namespace_match_candidates(identity, &entry.identity_namespace)
+                {
+                    let Ok(parsed_identity) =
+                        crate::identity_first::AgentIdentity::parse(&raw_identity)
+                    else {
+                        continue;
+                    };
+                    let Ok(status) = identity_runtime.status(&parsed_identity).await else {
+                        continue;
+                    };
+                    let mut record = identity_record_for_status(entry, &status);
+                    let topology_peers =
+                        identity_runtime_topology_peers(entry, identity_runtime.as_ref()).await;
+                    record.topology_peers = topology_peers
+                        .get(&record.identity)
+                        .cloned()
+                        .unwrap_or_default();
+                    if console_identity_record_visible(entry, &record).await {
+                        durable_matches.push((entry.clone(), record));
+                    }
+                }
+            }
+        }
+        if durable_matches.len() > 1 {
+            let candidates = durable_matches
+                .iter()
+                .map(|(_, record)| record.runtime_member_id.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "ambiguous durable identity alias {identity}: candidates [{candidates}]"
+            )
+            .into());
+        }
+        if let Some((entry, record)) = durable_matches.into_iter().next() {
+            let durable_live_records = self
+                .live_records_for_durable_record(&entry, identity, &record, &live_records)
+                .await;
+            let visible_durable_live_records =
+                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            if let Some(ambiguous_error) =
+                ambiguous_live_alias_error(identity, &visible_durable_live_records)
+            {
+                return Err(ambiguous_error.into());
+            }
+            if let Some(stale_error) =
+                stale_durable_record_error(identity, &record, &durable_live_records)
+            {
+                return Err(stale_error.into());
+            }
+            if let Some(session_id) = record.session_id.clone() {
+                spawn_session_history_backfill_target(
+                    self.inner.clone(),
+                    SessionBackfillTarget {
+                        entry,
+                        record: record.clone(),
+                        session_id,
+                    },
+                    false,
+                );
+            }
+            return Ok(Some(ConsoleIdentityInspection {
+                peers: record.topology_peers.clone(),
+                identity: record,
+            }));
+        }
+        let mut runtime_id_matches = Vec::new();
         for entry in &entries {
             let Some(identity_runtime) = entry.identity_runtime.clone() else {
                 continue;
@@ -461,11 +579,17 @@ impl MobKitConsoleAggregator {
             let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
                 continue;
             };
-            let Ok(parsed_identity) = crate::identity_first::AgentIdentity::parse(&raw_identity)
+            let Some(status) = identity_runtime
+                .statuses()
+                .await
+                .into_iter()
+                .find(|status| {
+                    status
+                        .agent_runtime_id
+                        .as_ref()
+                        .is_some_and(|runtime_id| runtime_id.as_str() == raw_identity)
+                })
             else {
-                continue;
-            };
-            let Ok(status) = identity_runtime.status(&parsed_identity).await else {
                 continue;
             };
             let mut record = identity_record_for_status(entry, &status);
@@ -475,8 +599,36 @@ impl MobKitConsoleAggregator {
                 .get(&record.identity)
                 .cloned()
                 .unwrap_or_default();
-            if !entry.visibility_policy.identity_visible(&record) {
-                return Ok(None);
+            if console_identity_record_visible(entry, &record).await {
+                runtime_id_matches.push((entry.clone(), record));
+            }
+        }
+        if runtime_id_matches.len() > 1 {
+            let candidates = runtime_id_matches
+                .iter()
+                .map(|(_, record)| record.identity.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "ambiguous runtime identity alias {identity}: candidates [{candidates}]"
+            )
+            .into());
+        }
+        if let Some((entry, record)) = runtime_id_matches.into_iter().next() {
+            let durable_live_records = self
+                .live_records_for_durable_record(&entry, identity, &record, &live_records)
+                .await;
+            let visible_durable_live_records =
+                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            if let Some(ambiguous_error) =
+                ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
+            {
+                return Err(ambiguous_error.into());
+            }
+            if let Some(stale_error) =
+                stale_durable_record_error(identity, &record, &durable_live_records)
+            {
+                return Err(stale_error.into());
             }
             if let Some(session_id) = record.session_id.clone() {
                 spawn_session_history_backfill_target(
@@ -495,14 +647,62 @@ impl MobKitConsoleAggregator {
             }));
         }
 
-        if let Some(resolved) = self.resolve_member(identity).await {
-            let Some(record) =
-                identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member)
-                    .await
-            else {
+        let live_matches = self.resolve_visible_members(identity).await;
+        if live_matches.len() > 1 {
+            let candidates = live_matches
+                .iter()
+                .map(|resolved| resolved.runtime_identity.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+            )
+            .into());
+        }
+        if let Some(resolved) = live_matches.into_iter().next() {
+            let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 return Ok(None);
             };
-            if !resolved.entry.visibility_policy.identity_visible(&record) {
+            if let Some(stale_error) =
+                stale_live_record_binding_error(&resolved.entry, identity, &record).await
+            {
+                return Err(stale_error.into());
+            }
+            if let Some(identity_runtime) = resolved.entry.identity_runtime.as_ref()
+                && let Ok(parsed_identity) =
+                    crate::identity_first::AgentIdentity::parse(&record.identity)
+                && let Ok(status) = identity_runtime.status(&parsed_identity).await
+            {
+                let durable_record = identity_record_for_status(&resolved.entry, &status);
+                let durable_live_records = self
+                    .live_records_for_durable_record(
+                        &resolved.entry,
+                        identity,
+                        &durable_record,
+                        &live_records,
+                    )
+                    .await;
+                let visible_durable_live_records =
+                    visible_live_records_for_entry(&resolved.entry, &durable_live_records).await;
+                if let Some(ambiguous_error) =
+                    ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
+                {
+                    return Err(ambiguous_error.into());
+                }
+                if let Some(stale_error) =
+                    stale_durable_record_error(identity, &durable_record, &durable_live_records)
+                {
+                    return Err(stale_error.into());
+                }
+                if status
+                    .agent_runtime_id
+                    .as_ref()
+                    .is_some_and(|runtime_id| runtime_id.as_str() != resolved.runtime_identity)
+                {
+                    return Ok(None);
+                }
+            }
+            if !resolved_member_visible(&resolved, &record).await {
                 return Ok(None);
             }
             if let Some(session_id) = record.session_id.clone() {
@@ -532,17 +732,155 @@ impl MobKitConsoleAggregator {
     }
 
     pub async fn retire_identity(&self, identity: &str) -> ConsoleLogResult<bool> {
-        let matches = self.resolve_members(identity).await;
-        let mut retired_any = false;
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| runtime_registry_lock_error())?
+            .clone();
+        let live_records = self.live_records_for_identity(identity).await;
+        let entries_vec = entries.values().cloned().collect::<Vec<_>>();
+        let mut durable_matches = Vec::new();
+        if !requested_identity_has_runtime_member_alias(identity, &entries_vec) {
+            for entry in entries.values() {
+                let Some(identity_runtime) = entry.identity_runtime.clone() else {
+                    continue;
+                };
+                for raw_identity in namespace_match_candidates(identity, &entry.identity_namespace)
+                {
+                    let Ok(parsed_identity) =
+                        crate::identity_first::AgentIdentity::parse(&raw_identity)
+                    else {
+                        continue;
+                    };
+                    let Ok(status) = identity_runtime.status(&parsed_identity).await else {
+                        continue;
+                    };
+                    let record = identity_record_for_status(entry, &status);
+                    if !console_identity_record_visible(entry, &record).await {
+                        continue;
+                    }
+                    durable_matches.push((
+                        entry.clone(),
+                        identity_runtime.clone(),
+                        parsed_identity,
+                        record,
+                    ));
+                }
+            }
+        }
+        if durable_matches.len() > 1 {
+            let candidates = durable_matches
+                .iter()
+                .map(|(_, _, identity, _)| identity.as_str().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "ambiguous durable identity alias {identity}: candidates [{candidates}]"
+            )
+            .into());
+        }
+        if let Some((entry, identity_runtime, parsed_identity, record)) =
+            durable_matches.into_iter().next()
+        {
+            let durable_live_records = self
+                .live_records_for_durable_record(&entry, identity, &record, &live_records)
+                .await;
+            let visible_durable_live_records =
+                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            if let Some(ambiguous_error) =
+                ambiguous_live_alias_error(identity, &visible_durable_live_records)
+            {
+                return Err(ambiguous_error.into());
+            }
+            if let Some(stale_error) =
+                stale_durable_record_error(identity, &record, &durable_live_records)
+            {
+                return Err(stale_error.into());
+            }
+            identity_runtime
+                .retire(&parsed_identity)
+                .await
+                .map_err(|err| -> ConsoleLogError {
+                    format!("retire failed for {identity}: {err}").into()
+                })?;
+            {
+                let mut durable_identities =
+                    namespace_match_candidates(identity, &entry.identity_namespace);
+                durable_identities.push(parsed_identity.as_str().to_string());
+                durable_identities.sort();
+                durable_identities.dedup();
+                if let Err(err) =
+                    retire_stale_console_members_for_runtime_entry(&entry, &durable_identities)
+                        .await
+                {
+                    tracing::warn!(
+                        identity,
+                        error = %err,
+                        "stale console member cleanup failed after durable identity retire"
+                    );
+                }
+            }
+            return Ok(true);
+        }
+        let matches = self.resolve_visible_members(identity).await;
+        if matches.len() > 1 {
+            let candidates = matches
+                .iter()
+                .map(|resolved| resolved.runtime_identity.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+            )
+            .into());
+        }
+        let mut live_retired_any = false;
         for resolved in matches {
-            let Some(record) =
-                identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member)
-                    .await
-            else {
+            let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 continue;
             };
-            if !resolved.entry.visibility_policy.identity_visible(&record) {
+            if !resolved_member_visible(&resolved, &record).await {
                 continue;
+            }
+            if let Some(stale_error) =
+                stale_live_record_binding_error(&resolved.entry, identity, &record).await
+            {
+                return Err(stale_error.into());
+            }
+            if let Some(identity_runtime) = resolved.entry.identity_runtime.as_ref()
+                && let Ok(parsed_identity) =
+                    crate::identity_first::AgentIdentity::parse(&record.identity)
+                && let Ok(status) = identity_runtime.status(&parsed_identity).await
+            {
+                let durable_record = identity_record_for_status(&resolved.entry, &status);
+                let durable_live_records = self
+                    .live_records_for_durable_record(
+                        &resolved.entry,
+                        identity,
+                        &durable_record,
+                        &live_records,
+                    )
+                    .await;
+                let visible_durable_live_records =
+                    visible_live_records_for_entry(&resolved.entry, &durable_live_records).await;
+                if let Some(ambiguous_error) =
+                    ambiguous_live_alias_error(&record.identity, &visible_durable_live_records)
+                {
+                    return Err(ambiguous_error.into());
+                }
+                if let Some(stale_error) =
+                    stale_durable_record_error(identity, &durable_record, &durable_live_records)
+                {
+                    return Err(stale_error.into());
+                }
+                if status
+                    .agent_runtime_id
+                    .as_ref()
+                    .is_some_and(|runtime_id| runtime_id.as_str() != resolved.runtime_identity)
+                {
+                    continue;
+                }
             }
             resolved
                 .handle
@@ -550,10 +888,17 @@ impl MobKitConsoleAggregator {
                 .await
                 .map_err(|err| -> ConsoleLogError {
                     format!("retire failed for {identity}: {err}").into()
+                })
+                .or_else(|err| {
+                    if lifecycle_archive_cleanup_completed(&err.to_string()) {
+                        Ok(())
+                    } else {
+                        Err(err)
+                    }
                 })?;
-            retired_any = true;
+            live_retired_any = true;
         }
-        Ok(retired_any)
+        Ok(live_retired_any)
     }
 
     pub async fn clear_timeline_frames(&self) -> ConsoleLogResult<()> {
@@ -564,7 +909,7 @@ impl MobKitConsoleAggregator {
         &self,
         query: ConsoleTimelineQuery,
     ) -> ConsoleLogResult<ConsoleTimelinePage> {
-        let page = self.query_timeline_windowed(query.into()).await?;
+        let page = Box::pin(self.query_timeline_windowed(query.into())).await?;
         Ok(ConsoleTimelinePage {
             frames: page.frames,
             next_cursor: page.next_cursor,
@@ -588,7 +933,7 @@ impl MobKitConsoleAggregator {
                 spawn_session_history_backfill_for_identity(self.inner.clone(), identity, true);
             }
         }
-        self.query_timeline_visible(query).await
+        Box::pin(self.query_timeline_visible(query)).await
     }
 
     async fn reject_after_cursor_beyond_store_frontier(
@@ -841,15 +1186,13 @@ impl MobKitConsoleAggregator {
         request: ConsoleSendRequest,
     ) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
         validate_send_request(&request)?;
-        let Some(resolved) = self.resolve_member(&request.identity).await else {
+        let Some(resolved) = Box::pin(self.resolve_send_member(&request.identity)).await? else {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         };
-        let Some(record) =
-            identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await
-        else {
+        let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         };
-        if !resolved.entry.visibility_policy.identity_visible(&record) {
+        if !resolved_member_visible(&resolved, &record).await {
             return Err(ConsoleSendError::UnknownIdentity(request.identity));
         }
         if !member_is_addressable(&resolved.member) {
@@ -1011,9 +1354,8 @@ impl MobKitConsoleAggregator {
     ) -> Result<ConsoleInteractionAccepted, ConsoleSendError> {
         validate_send_request(&request)?;
         let _content = content_input_from_value(&request.content)?;
-        let runtime_key = self
-            .runtime_key_for_identity_first_send(&request.identity)
-            .await?;
+        let runtime_key =
+            Box::pin(self.runtime_key_for_identity_first_send(&request.identity)).await?;
         let handling_mode_value = request
             .handling_mode
             .as_deref()
@@ -1111,21 +1453,69 @@ impl MobKitConsoleAggregator {
         }
 
         let mut identity_runtime_keys = Vec::new();
+        let mut hidden_durable_match = false;
+        let mut durable_matches = Vec::new();
         for entry in entries.values() {
             let Some(identity_runtime) = entry.identity_runtime.as_ref() else {
                 continue;
             };
             identity_runtime_keys.push(entry.runtime_key.clone());
-            let runtime_identity = strip_namespace(identity, &entry.identity_namespace)
-                .unwrap_or_else(|| identity.to_string());
-            let Ok(parsed_identity) =
-                crate::identity_first::AgentIdentity::parse(&runtime_identity)
-            else {
+            if requested_identity_is_runtime_member_alias(identity, &entry.identity_namespace) {
                 continue;
-            };
-            if identity_runtime.status(&parsed_identity).await.is_ok() {
-                return Ok(entry.runtime_key.clone());
             }
+            for runtime_identity in namespace_match_candidates(identity, &entry.identity_namespace)
+            {
+                let Ok(parsed_identity) =
+                    crate::identity_first::AgentIdentity::parse(&runtime_identity)
+                else {
+                    continue;
+                };
+                if let Ok(status) = identity_runtime.status(&parsed_identity).await {
+                    let record = identity_record_for_status(entry, &status);
+                    if !console_identity_record_visible(entry, &record).await {
+                        hidden_durable_match = true;
+                        continue;
+                    }
+                    durable_matches.push((entry.clone(), record));
+                }
+            }
+        }
+        if durable_matches.len() > 1 {
+            let candidates = durable_matches
+                .iter()
+                .map(|(entry, record)| format!("{}@{}", record.identity, entry.runtime_key))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ConsoleSendError::InvalidRequest(format!(
+                "ambiguous durable identity alias {identity}: candidates [{candidates}]"
+            )));
+        }
+        if let Some((entry, record)) = durable_matches.into_iter().next() {
+            let live_records = self.live_records_for_identity(identity).await;
+            let durable_live_records = self
+                .live_records_for_durable_record(&entry, identity, &record, &live_records)
+                .await;
+            let visible_durable_live_records =
+                visible_live_records_for_entry(&entry, &durable_live_records).await;
+            if let Some(ambiguous_error) =
+                ambiguous_live_alias_error(identity, &visible_durable_live_records)
+            {
+                return Err(ConsoleSendError::InvalidRequest(ambiguous_error));
+            }
+            if let Some(stale_error) =
+                stale_durable_record_error(identity, &record, &durable_live_records)
+            {
+                return Err(ConsoleSendError::InvalidRequest(stale_error));
+            }
+            return Ok(entry.runtime_key);
+        }
+        if entries.values().any(|entry| {
+            requested_identity_is_runtime_member_alias(identity, &entry.identity_namespace)
+        }) {
+            return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
+        }
+        if hidden_durable_match {
+            return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         }
 
         match identity_runtime_keys.as_slice() {
@@ -1191,15 +1581,13 @@ impl MobKitConsoleAggregator {
                 "identity must be non-empty".to_string(),
             ));
         }
-        let Some(resolved) = self.resolve_member(identity).await else {
+        let Some(resolved) = Box::pin(self.resolve_send_member(identity)).await? else {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         };
-        let Some(record) =
-            identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await
-        else {
+        let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         };
-        if !resolved.entry.visibility_policy.identity_visible(&record) {
+        if !resolved_member_visible(&resolved, &record).await {
             return Err(ConsoleSendError::UnknownIdentity(identity.to_string()));
         }
         if !member_is_addressable(&resolved.member) {
@@ -1224,8 +1612,106 @@ impl MobKitConsoleAggregator {
             .unwrap_or_default()
     }
 
-    async fn resolve_member(&self, identity: &str) -> Option<ResolvedConsoleMember> {
-        self.resolve_members(identity).await.into_iter().next()
+    async fn resolve_send_member(
+        &self,
+        identity: &str,
+    ) -> Result<Option<ResolvedConsoleMember>, ConsoleSendError> {
+        let matches = self.resolve_visible_members(identity).await;
+        if matches.len() > 1 {
+            let candidates = matches
+                .iter()
+                .map(|resolved| resolved.runtime_identity.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ConsoleSendError::AmbiguousIdentity {
+                identity: identity.to_string(),
+                candidates,
+            });
+        }
+        let Some(resolved) = matches.into_iter().next() else {
+            if let Some(stale_error) = self.durable_send_binding_error(identity).await? {
+                return Err(ConsoleSendError::InvalidRequest(stale_error));
+            }
+            return Ok(None);
+        };
+        if let Some(record) = identity_record_for_resolved_member(&resolved).await
+            && let Some(stale_error) =
+                stale_live_record_binding_error(&resolved.entry, identity, &record).await
+        {
+            return Err(ConsoleSendError::InvalidRequest(stale_error));
+        }
+        if let Some(stale_error) = self.durable_send_binding_error(identity).await? {
+            return Err(ConsoleSendError::InvalidRequest(stale_error));
+        }
+        Ok(Some(resolved))
+    }
+
+    async fn durable_send_binding_error(
+        &self,
+        identity: &str,
+    ) -> Result<Option<String>, ConsoleSendError> {
+        let entries = self
+            .inner
+            .runtimes
+            .read()
+            .map_err(|_| ConsoleSendError::Log(runtime_registry_lock_error()))?
+            .clone();
+        if entries.values().any(|entry| {
+            requested_identity_is_runtime_member_alias(identity, &entry.identity_namespace)
+        }) {
+            return Ok(None);
+        }
+        let live_records = self.live_records_for_identity(identity).await;
+        let mut durable_matches = Vec::new();
+        for entry in entries.values() {
+            let Some(identity_runtime) = entry.identity_runtime.clone() else {
+                continue;
+            };
+            for raw_identity in namespace_match_candidates(identity, &entry.identity_namespace) {
+                let Ok(parsed_identity) =
+                    crate::identity_first::AgentIdentity::parse(&raw_identity)
+                else {
+                    continue;
+                };
+                let Ok(status) = identity_runtime.status(&parsed_identity).await else {
+                    continue;
+                };
+                let record = identity_record_for_status(entry, &status);
+                if !console_identity_record_visible(entry, &record).await {
+                    continue;
+                }
+                durable_matches.push((entry.clone(), record));
+            }
+        }
+        if durable_matches.len() > 1 {
+            let candidates = durable_matches
+                .iter()
+                .map(|(_, record)| record.runtime_member_id.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(ConsoleSendError::AmbiguousIdentity {
+                identity: identity.to_string(),
+                candidates,
+            });
+        }
+        let Some((entry, durable_record)) = durable_matches.into_iter().next() else {
+            return Ok(None);
+        };
+        let durable_live_records = self
+            .live_records_for_durable_record(&entry, identity, &durable_record, &live_records)
+            .await;
+        let visible_durable_live_records =
+            visible_live_records_for_entry(&entry, &durable_live_records).await;
+        if let Some(ambiguous_error) =
+            ambiguous_live_alias_error(&durable_record.identity, &visible_durable_live_records)
+        {
+            return Err(ConsoleSendError::InvalidRequest(ambiguous_error));
+        }
+        Ok(stale_durable_record_error(
+            identity,
+            &durable_record,
+            &durable_live_records,
+        ))
     }
 
     async fn resolve_members(&self, identity: &str) -> Vec<ResolvedConsoleMember> {
@@ -1236,36 +1722,397 @@ impl MobKitConsoleAggregator {
             .ok()
             .map(|entries| entries.clone())
             .unwrap_or_default();
-        let mut matches: Vec<(String, ResolvedConsoleMember)> = Vec::new();
+        let mut exact_matches: Vec<(String, ResolvedConsoleMember)> = Vec::new();
+        let mut label_matches: Vec<(String, ResolvedConsoleMember)> = Vec::new();
         for entry in entries.values() {
-            let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
+            let raw_identities = namespace_match_candidates(identity, &entry.identity_namespace);
+            if raw_identities.is_empty() {
                 continue;
-            };
-            let mid = MeerkatId::from(raw_identity.as_str());
-            for resolved in member_sources_for_entry(entry)
-                .await
-                .into_iter()
-                .filter(|candidate| {
-                    candidate.member.agent_identity == mid
-                        || candidate
-                            .member
-                            .labels
-                            .get("agent_identity")
-                            .is_some_and(|agent_identity| agent_identity == &raw_identity)
-                })
-            {
+            }
+            let mids = raw_identities
+                .iter()
+                .map(|raw_identity| MeerkatId::from(raw_identity.as_str()))
+                .collect::<Vec<_>>();
+            for resolved in member_sources_for_entry(entry).await {
                 let session_id = resolved
                     .handle
                     .resolve_bridge_session_id_observation(&resolved.member.agent_identity)
                     .await
                     .map(|sid| sid.to_string())
                     .unwrap_or_default();
-                matches.push((session_id, resolved));
+                if mids.contains(&resolved.member.agent_identity) {
+                    exact_matches.push((session_id, resolved));
+                } else if resolved_member_matches_raw_identities(&resolved, &raw_identities, &mids)
+                {
+                    label_matches.push((session_id, resolved));
+                }
             }
         }
+        let mut matches = exact_matches;
+        matches.extend(label_matches);
+        let mut seen_members = BTreeSet::new();
+        matches.retain(|(session_id, resolved)| {
+            seen_members.insert((
+                resolved.entry.runtime_key.clone(),
+                resolved.source_mob_id.clone(),
+                session_id.clone(),
+                resolved.runtime_identity.clone(),
+            ))
+        });
         matches.sort_by(|left, right| right.0.cmp(&left.0));
         matches.into_iter().map(|(_, resolved)| resolved).collect()
     }
+
+    async fn resolve_visible_members(&self, identity: &str) -> Vec<ResolvedConsoleMember> {
+        let mut visible = Vec::new();
+        for resolved in self.resolve_members(identity).await {
+            let Some(record) = identity_record_for_resolved_member(&resolved).await else {
+                continue;
+            };
+            if resolved_member_visible(&resolved, &record).await {
+                visible.push(resolved);
+            }
+        }
+        visible
+    }
+
+    async fn live_records_for_identity(&self, identity: &str) -> Vec<ConsoleIdentityRecord> {
+        let mut records = Vec::new();
+        for resolved in self.resolve_members(identity).await {
+            let Some(record) = identity_record_for_resolved_member(&resolved).await else {
+                continue;
+            };
+            if resolved_member_visible(&resolved, &record).await {
+                records.push(record);
+            }
+        }
+        records
+    }
+
+    async fn live_records_for_durable_record(
+        &self,
+        entry: &RuntimeEntry,
+        requested_identity: &str,
+        durable: &ConsoleIdentityRecord,
+        requested_live_records: &[ConsoleIdentityRecord],
+    ) -> Vec<ConsoleIdentityRecord> {
+        let mut records = if durable.identity == requested_identity {
+            requested_live_records.to_vec()
+        } else {
+            self.live_records_for_identity(&durable.identity).await
+        };
+        for runtime_record in
+            live_records_for_runtime_member(entry, &durable.runtime_member_id).await
+        {
+            if records.iter().any(|record| {
+                record.runtime_key == runtime_record.runtime_key
+                    && record.runtime_member_id == runtime_record.runtime_member_id
+                    && record.session_id == runtime_record.session_id
+                    && record.identity == runtime_record.identity
+            }) {
+                continue;
+            }
+            records.push(runtime_record);
+        }
+        records
+    }
+}
+
+async fn console_identity_record_visible(
+    entry: &RuntimeEntry,
+    record: &ConsoleIdentityRecord,
+) -> bool {
+    if !entry.visibility_policy.identity_visible(record) {
+        return false;
+    }
+    let mut bound_live_member_seen = false;
+    let mut wrong_live_projection_seen = false;
+    for resolved in member_sources_for_entry(entry).await {
+        if resolved.runtime_identity != record.runtime_member_id {
+            continue;
+        }
+        bound_live_member_seen = true;
+        let Some(live_record) = identity_record_for_resolved_member(&resolved).await else {
+            continue;
+        };
+        if live_record.identity != record.identity {
+            wrong_live_projection_seen = true;
+            continue;
+        }
+        if raw_resolved_member_visible(&resolved, &live_record) {
+            return true;
+        }
+    }
+    if wrong_live_projection_seen {
+        return true;
+    }
+    !bound_live_member_seen
+}
+
+async fn live_record_shadowed_by_hidden_durable_binding(
+    resolved: &ResolvedConsoleMember,
+    record: &ConsoleIdentityRecord,
+) -> bool {
+    let Some(identity_runtime) = resolved.entry.identity_runtime.as_ref() else {
+        return false;
+    };
+    let Ok(identity) = crate::identity_first::AgentIdentity::parse(&record.identity) else {
+        return false;
+    };
+    let Ok(status) = identity_runtime.status(&identity).await else {
+        return false;
+    };
+    let Some(bound_runtime_id) = status.agent_runtime_id.as_ref() else {
+        return false;
+    };
+    if bound_runtime_id.as_str() == resolved.runtime_identity {
+        return false;
+    }
+    for candidate in member_sources_for_entry(&resolved.entry).await {
+        if candidate.runtime_identity != bound_runtime_id.as_str() {
+            continue;
+        }
+        let Some(bound_record) = identity_record_for_resolved_member(&candidate).await else {
+            continue;
+        };
+        if bound_record.identity == record.identity
+            && !raw_resolved_member_visible(&candidate, &bound_record)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+async fn frame_matches_hidden_member(entry: &RuntimeEntry, frame: &ConsoleFrame) -> bool {
+    let runtime_member_id = strip_namespace(&frame.identity, &entry.identity_namespace)
+        .unwrap_or_else(|| frame.identity.clone());
+    let frame_session_id = frame.session_id.as_deref();
+    let mut saw_hidden = false;
+    let mut saw_visible = false;
+    for resolved in member_sources_for_entry(entry).await {
+        let Some(record) = identity_record_for_resolved_member(&resolved).await else {
+            continue;
+        };
+        let session_matches =
+            frame_session_id.is_some() && record.session_id.as_deref() == frame_session_id;
+        let runtime_matches = record.runtime_member_id == runtime_member_id;
+        let identity_matches = record.identity == frame.identity;
+        if !session_matches && !runtime_matches && !identity_matches {
+            continue;
+        }
+        if session_matches && !raw_resolved_member_visible(&resolved, &record) {
+            return true;
+        }
+        if resolved_member_visible(&resolved, &record).await {
+            saw_visible = true;
+        } else {
+            saw_hidden = true;
+        }
+    }
+    saw_hidden && !saw_visible
+}
+
+async fn live_records_for_runtime_member(
+    entry: &RuntimeEntry,
+    runtime_member_id: &str,
+) -> Vec<ConsoleIdentityRecord> {
+    let mut records = Vec::new();
+    for resolved in member_sources_for_entry(entry).await {
+        if resolved.runtime_identity != runtime_member_id {
+            continue;
+        }
+        let Some(record) = identity_record_for_resolved_member(&resolved).await else {
+            continue;
+        };
+        records.push(record);
+    }
+    records
+}
+
+async fn visible_live_records_for_entry(
+    entry: &RuntimeEntry,
+    records: &[ConsoleIdentityRecord],
+) -> Vec<ConsoleIdentityRecord> {
+    let mut visible = Vec::new();
+    for record in records {
+        if record.runtime_key != entry.runtime_key
+            || console_identity_record_visible(entry, record).await
+        {
+            visible.push(record.clone());
+        }
+    }
+    visible
+}
+
+async fn stale_live_record_binding_error(
+    entry: &RuntimeEntry,
+    requested_identity: &str,
+    live_record: &ConsoleIdentityRecord,
+) -> Option<String> {
+    let identity_runtime = entry.identity_runtime.as_ref()?;
+    for status in identity_runtime.statuses().await {
+        let matches_runtime = status
+            .agent_runtime_id
+            .as_ref()
+            .is_some_and(|runtime_id| runtime_id.as_str() == live_record.runtime_member_id);
+        if !matches_runtime {
+            continue;
+        }
+        let durable_record = identity_record_for_status(entry, &status);
+        if let Some(stale_error) = stale_durable_record_error(
+            requested_identity,
+            &durable_record,
+            std::slice::from_ref(live_record),
+        ) {
+            return Some(stale_error);
+        }
+    }
+    None
+}
+
+fn stale_durable_record_error(
+    requested_identity: &str,
+    durable: &ConsoleIdentityRecord,
+    live_records: &[ConsoleIdentityRecord],
+) -> Option<String> {
+    let matching_live = live_records
+        .iter()
+        .filter(|record| record.identity == durable.identity)
+        .collect::<Vec<_>>();
+    if let Some(wrong_projection) = live_records.iter().find(|record| {
+        record.runtime_member_id == durable.runtime_member_id && record.identity != durable.identity
+    }) {
+        return Some(format!(
+            "stale durable identity alias {requested_identity}: identity runtime binding for {} points at {}, but live console alias projects identity {}",
+            durable.identity, durable.runtime_member_id, wrong_projection.identity
+        ));
+    }
+    if matching_live.is_empty() {
+        return None;
+    }
+    if let Some(session_mismatch) = matching_live.iter().find(|record| {
+        record.runtime_member_id == durable.runtime_member_id
+            && durable.session_id.is_some()
+            && record.session_id.is_some()
+            && durable.session_id != record.session_id
+    }) {
+        return Some(format!(
+            "stale durable identity alias {requested_identity}: identity runtime binding for {} points at {} session {}, but live console alias resolves to session {}",
+            durable.identity,
+            durable.runtime_member_id,
+            durable.session_id.as_deref().unwrap_or("<none>"),
+            session_mismatch.session_id.as_deref().unwrap_or("<none>")
+        ));
+    }
+    if matching_live
+        .iter()
+        .any(|record| record.runtime_member_id == durable.runtime_member_id)
+    {
+        return None;
+    }
+    let live_candidates = matching_live
+        .iter()
+        .map(|record| record.runtime_member_id.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "stale durable identity alias {requested_identity}: identity runtime binding for {} points at {}, but live console alias resolves to [{}]",
+        durable.identity, durable.runtime_member_id, live_candidates
+    ))
+}
+
+fn ambiguous_live_alias_error(
+    requested_identity: &str,
+    live_records: &[ConsoleIdentityRecord],
+) -> Option<String> {
+    if live_records.len() <= 1 {
+        return None;
+    }
+    let candidates = live_records
+        .iter()
+        .map(|record| {
+            format!(
+                "{}@{}",
+                record.runtime_member_id,
+                record
+                    .labels
+                    .get("source_mob_id")
+                    .map(String::as_str)
+                    .unwrap_or(record.runtime_key.as_str())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "ambiguous live identity alias {requested_identity}: candidates [{candidates}]"
+    ))
+}
+
+fn member_id_matches_durable_identity(member_id: &str, durable_identity: &str) -> bool {
+    member_id == durable_identity
+}
+
+async fn retire_stale_console_members_for_identity(
+    handle: &MobHandle,
+    durable_identities: &[String],
+    keep_runtime_member_id: Option<&str>,
+) -> Result<(), String> {
+    let stale_members = handle
+        .list_members_including_retiring()
+        .await
+        .into_iter()
+        .filter(|member| {
+            (durable_identities.iter().any(|durable_identity| {
+                member_id_matches_durable_identity(member.agent_identity.as_str(), durable_identity)
+            }) || member.labels.get("agent_identity").is_some_and(|identity| {
+                durable_identities
+                    .iter()
+                    .any(|durable_identity| identity == durable_identity)
+            })) && keep_runtime_member_id
+                .map(|keep| member.agent_identity.as_str() != keep)
+                .unwrap_or(true)
+        })
+        .map(|member| member.agent_identity)
+        .collect::<Vec<_>>();
+    for member_id in stale_members {
+        match handle.retire(member_id).await {
+            Ok(()) => {}
+            Err(err) if lifecycle_archive_cleanup_completed(&err.to_string()) => {}
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+    Ok(())
+}
+
+async fn retire_stale_console_members_for_runtime_entry(
+    entry: &RuntimeEntry,
+    durable_identities: &[String],
+) -> Result<(), String> {
+    let primary_handle = entry.runtime.handle();
+    let primary_mob_id = primary_handle.mob_id().to_string();
+    let mut handles = vec![(primary_mob_id.clone(), primary_handle)];
+    if let Some(state) = entry.runtime.agent_mob_mcp_state() {
+        for (mob_id, handle) in state.mob_handles_snapshot().await {
+            if mob_id.as_str() != primary_mob_id {
+                handles.push((mob_id.to_string(), handle));
+            }
+        }
+    }
+    let mut seen_handles = BTreeSet::new();
+    for (mob_id, handle) in handles {
+        if !seen_handles.insert(mob_id) {
+            continue;
+        }
+        retire_stale_console_members_for_identity(&handle, durable_identities, None).await?;
+    }
+    Ok(())
+}
+
+fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
+    error.contains("disposal completed but ArchiveSession failed")
+        && error.contains("cancel-before-retire failed")
+        && error.contains("Runtime not ready: running")
 }
 
 fn explicit_identity_query_needs_session_history_backfill(frames: &[ConsoleFrame]) -> bool {
@@ -1313,7 +2160,7 @@ fn dedupe_identity_records(records: Vec<ConsoleIdentityRecord>) -> Vec<ConsoleId
     let mut by_identity: BTreeMap<String, ConsoleIdentityRecord> = BTreeMap::new();
     for record in records {
         by_identity
-            .entry(record.identity.clone())
+            .entry(identity_record_dedupe_key(&record))
             .and_modify(|current| {
                 if identity_record_prefer(&record, current) {
                     *current = record.clone();
@@ -1324,10 +2171,49 @@ fn dedupe_identity_records(records: Vec<ConsoleIdentityRecord>) -> Vec<ConsoleId
     by_identity.into_values().collect()
 }
 
+fn identity_record_dedupe_key(record: &ConsoleIdentityRecord) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+        record.identity,
+        record.runtime_key,
+        record
+            .labels
+            .get("source_mob_id")
+            .map(String::as_str)
+            .unwrap_or(""),
+        record.runtime_member_id,
+        record.session_id.as_deref().unwrap_or("")
+    )
+}
+
 fn identity_record_prefer(
     candidate: &ConsoleIdentityRecord,
     current: &ConsoleIdentityRecord,
 ) -> bool {
+    let candidate_is_live_label_projection =
+        candidate
+            .labels
+            .get("agent_identity")
+            .is_some_and(|identity| {
+                identity == &strip_namespace(&candidate.identity, "").unwrap_or_default()
+                    || candidate.runtime_member_id != candidate.identity
+            });
+    let current_is_live_label_projection =
+        current
+            .labels
+            .get("agent_identity")
+            .is_some_and(|identity| {
+                identity == &strip_namespace(&current.identity, "").unwrap_or_default()
+                    || current.runtime_member_id != current.identity
+            });
+    if candidate_is_live_label_projection != current_is_live_label_projection {
+        return candidate_is_live_label_projection;
+    }
+    let candidate_has_distinct_runtime_binding = candidate.runtime_member_id != candidate.identity;
+    let current_has_distinct_runtime_binding = current.runtime_member_id != current.identity;
+    if candidate_has_distinct_runtime_binding != current_has_distinct_runtime_binding {
+        return candidate_has_distinct_runtime_binding;
+    }
     let candidate_live = candidate.addressable && candidate.health != "retired";
     let current_live = current.addressable && current.health != "retired";
     if candidate_live != current_live {
@@ -1356,7 +2242,7 @@ async fn collect_identity_records(
                     .get(&record.identity)
                     .cloned()
                     .unwrap_or_default();
-                if entry.visibility_policy.identity_visible(&record) {
+                if console_identity_record_visible(entry, &record).await {
                     identities.push(record);
                 }
             }
@@ -1384,9 +2270,8 @@ async fn collect_identity_records(
             member_sources_for_entry(entry).await
         };
         for resolved in members {
-            if let Some(record) =
-                identity_record_for_member(entry, &resolved.handle, &resolved.member).await
-                && entry.visibility_policy.identity_visible(&record)
+            if let Some(record) = identity_record_for_resolved_member(&resolved).await
+                && resolved_member_visible(&resolved, &record).await
             {
                 identities.push(record);
             }
@@ -1454,6 +2339,7 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
             entry: entry.clone(),
             handle: primary_handle.clone(),
             runtime_identity: member.agent_identity.to_string(),
+            source_mob_id: primary_mob_id.clone(),
             member,
         });
     }
@@ -1473,6 +2359,7 @@ async fn member_sources_for_entry(entry: &RuntimeEntry) -> Vec<ResolvedConsoleMe
                 entry: entry.clone(),
                 handle: handle.clone(),
                 runtime_identity: member.agent_identity.to_string(),
+                source_mob_id: mob_id.to_string(),
                 member,
             });
         }
@@ -1648,6 +2535,10 @@ async fn append_steer_delivery_terminal(
 #[derive(Debug)]
 pub enum ConsoleSendError {
     UnknownIdentity(String),
+    AmbiguousIdentity {
+        identity: String,
+        candidates: String,
+    },
     NotAddressable(String),
     Retired(String),
     InvalidContent(String),
@@ -1663,6 +2554,13 @@ impl std::fmt::Display for ConsoleSendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownIdentity(identity) => write!(f, "unknown identity: {identity}"),
+            Self::AmbiguousIdentity {
+                identity,
+                candidates,
+            } => write!(
+                f,
+                "ambiguous live identity alias {identity}: candidates [{candidates}]"
+            ),
             Self::NotAddressable(identity) => write!(f, "not addressable: {identity}"),
             Self::Retired(identity) => write!(f, "identity retired: {identity}"),
             Self::InvalidContent(message) => write!(f, "invalid content: {message}"),
@@ -1697,12 +2595,10 @@ async fn backfill_session_history(
     let members = member_sources_for_entry(&entry).await;
     let mut targets = Vec::new();
     for resolved in members {
-        let member = resolved.member;
-        let Some(record) = identity_record_for_member(&entry, &resolved.handle, &member).await
-        else {
+        let Some(record) = identity_record_for_resolved_member(&resolved).await else {
             continue;
         };
-        if !entry.visibility_policy.identity_visible(&record) {
+        if !resolved_member_visible(&resolved, &record).await {
             continue;
         }
         let Some(session_id) = record.session_id.clone() else {
@@ -2018,10 +2914,9 @@ fn spawn_session_history_backfill_for_identity(
         return;
     }
     tokio::spawn(async move {
-        let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
-            return;
-        };
-        spawn_session_history_backfill_target(inner, target, force_refresh);
+        for target in session_backfill_targets_for_identity(&inner, &identity).await {
+            spawn_session_history_backfill_target(inner.clone(), target, force_refresh);
+        }
     });
 }
 
@@ -2033,62 +2928,90 @@ fn spawn_opportunistic_session_history_backfill_for_identity(
         return;
     }
     tokio::spawn(async move {
-        let Some(target) = session_backfill_target_for_identity(&inner, &identity).await else {
-            return;
-        };
-        let active_key = format!(
-            "{}:session-history:{}",
-            target.entry.runtime_key, target.session_id
-        );
-        {
-            let mut seen = inner.opportunistic_session_backfills.lock().await;
-            if !seen.insert(active_key) {
-                return;
+        for target in session_backfill_targets_for_identity(&inner, &identity).await {
+            let active_key = format!(
+                "{}:session-history:{}",
+                target.entry.runtime_key, target.session_id
+            );
+            {
+                let mut seen = inner.opportunistic_session_backfills.lock().await;
+                if !seen.insert(active_key) {
+                    continue;
+                }
             }
+            spawn_session_history_backfill_target(inner.clone(), target, false);
         }
-        spawn_session_history_backfill_target(inner, target, false);
     });
 }
 
+#[cfg(test)]
 async fn session_backfill_target_for_identity(
     inner: &AggregatorInner,
     identity: &str,
 ) -> Option<SessionBackfillTarget> {
+    session_backfill_targets_for_identity(inner, identity)
+        .await
+        .into_iter()
+        .next()
+}
+
+async fn session_backfill_targets_for_identity(
+    inner: &AggregatorInner,
+    identity: &str,
+) -> Vec<SessionBackfillTarget> {
     let entries = inner
         .runtimes
         .read()
         .ok()
         .map(|entries| entries.clone())
         .unwrap_or_default();
+    let mut targets = Vec::new();
     for entry in entries.values() {
-        let Some(raw_identity) = strip_namespace(identity, &entry.identity_namespace) else {
+        let raw_identities = namespace_match_candidates(identity, &entry.identity_namespace);
+        if raw_identities.is_empty() {
             continue;
-        };
-        let mid = MeerkatId::from(raw_identity.as_str());
+        }
+        let mids = raw_identities
+            .iter()
+            .map(|raw_identity| MeerkatId::from(raw_identity.as_str()))
+            .collect::<Vec<_>>();
         for resolved in member_sources_for_entry(entry)
             .await
             .into_iter()
-            .filter(|candidate| candidate.member.agent_identity == mid)
+            .filter(|candidate| {
+                resolved_member_matches_raw_identities(candidate, &raw_identities, &mids)
+            })
         {
-            let Some(record) =
-                identity_record_for_member(entry, &resolved.handle, &resolved.member).await
-            else {
+            let Some(record) = identity_record_for_resolved_member(&resolved).await else {
                 continue;
             };
-            if !entry.visibility_policy.identity_visible(&record) {
+            if !resolved_member_visible(&resolved, &record).await {
                 continue;
             }
             let Some(session_id) = record.session_id.clone() else {
                 continue;
             };
-            return Some(SessionBackfillTarget {
+            targets.push(SessionBackfillTarget {
                 entry: entry.clone(),
                 record,
                 session_id,
             });
         }
     }
-    None
+    targets
+}
+
+fn resolved_member_matches_raw_identities(
+    resolved: &ResolvedConsoleMember,
+    raw_identities: &[String],
+    mids: &[MeerkatId],
+) -> bool {
+    mids.contains(&resolved.member.agent_identity)
+        || resolved
+            .member
+            .labels
+            .get("agent_identity")
+            .is_some_and(|agent_identity| raw_identities.iter().any(|raw| agent_identity == raw))
 }
 
 async fn recover_lagged_source_events(
@@ -2933,19 +3856,29 @@ async fn frame_is_visible_cached(
                         && (record.identity == frame.identity
                             || record.runtime_member_id == runtime_member_id)
                 }) {
-                    Some(record) if entry.visibility_policy.identity_visible(record) => {
-                        CachedIdentityVisibility::Visible
+                    Some(record) => {
+                        if console_identity_record_visible(&entry, record).await {
+                            CachedIdentityVisibility::Visible
+                        } else {
+                            CachedIdentityVisibility::Hidden
+                        }
                     }
-                    Some(_) => CachedIdentityVisibility::Hidden,
                     None => CachedIdentityVisibility::Missing,
                 };
                 identity_visibility_cache.insert(cache_key, visibility);
                 visibility
             };
         match identity_visibility {
-            CachedIdentityVisibility::Visible => {}
+            CachedIdentityVisibility::Visible => {
+                if frame_matches_hidden_member(&entry, frame).await {
+                    return Ok(false);
+                }
+            }
             CachedIdentityVisibility::Hidden => return Ok(false),
             CachedIdentityVisibility::Missing => {
+                if frame_matches_hidden_member(&entry, frame).await {
+                    return Ok(false);
+                }
                 return Ok(
                     allow_historical_identity && entry.visibility_policy.frame_visible(frame)
                 );
@@ -3005,6 +3938,20 @@ async fn identity_record_for_member(
         topology_peers: member.wired_to.iter().map(ToString::to_string).collect(),
         labels,
     })
+}
+
+async fn identity_record_for_resolved_member(
+    resolved: &ResolvedConsoleMember,
+) -> Option<ConsoleIdentityRecord> {
+    let mut record =
+        identity_record_for_member(&resolved.entry, &resolved.handle, &resolved.member).await?;
+    if *resolved.entry.runtime.handle().mob_id() != resolved.source_mob_id {
+        record
+            .labels
+            .entry("source_mob_id".to_string())
+            .or_insert_with(|| resolved.source_mob_id.clone());
+    }
+    Some(record)
 }
 
 fn identity_record_for_status(
@@ -3099,6 +4046,33 @@ fn strip_namespace(identity: &str, namespace: &str) -> Option<String> {
         .strip_prefix(namespace)
         .and_then(|rest| rest.strip_prefix('/'))
         .map(ToString::to_string)
+}
+
+fn namespace_match_candidates(identity: &str, namespace: &str) -> Vec<String> {
+    let namespace = namespace.trim().trim_matches('/');
+    if namespace.is_empty() {
+        return vec![identity.to_string()];
+    }
+    let mut candidates = Vec::new();
+    if let Some(stripped) = strip_namespace(identity, namespace) {
+        candidates.push(stripped);
+        candidates.push(identity.to_string());
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates
+}
+
+fn requested_identity_is_runtime_member_alias(identity: &str, namespace: &str) -> bool {
+    namespace_match_candidates(identity, namespace)
+        .iter()
+        .any(|candidate| candidate.starts_with("rt:"))
+}
+
+fn requested_identity_has_runtime_member_alias(identity: &str, entries: &[RuntimeEntry]) -> bool {
+    entries.iter().any(|entry| {
+        requested_identity_is_runtime_member_alias(identity, &entry.identity_namespace)
+    })
 }
 
 fn validate_send_request(request: &ConsoleSendRequest) -> Result<(), ConsoleSendError> {
@@ -3204,7 +4178,7 @@ fn runtime_registry_lock_error() -> ConsoleLogError {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(clippy::expect_used, clippy::large_futures, clippy::panic)]
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3234,6 +4208,33 @@ mod tests {
     impl ConsoleVisibilityPolicy for HideHiddenNoiseFrames {
         fn frame_visible(&self, frame: &ConsoleFrame) -> bool {
             frame.kind != "hidden_noise"
+        }
+    }
+
+    #[derive(Debug)]
+    struct HideRuntimeMemberIdentity(&'static str);
+
+    impl ConsoleVisibilityPolicy for HideRuntimeMemberIdentity {
+        fn identity_visible(&self, record: &ConsoleIdentityRecord) -> bool {
+            record.runtime_member_id != self.0
+        }
+    }
+
+    #[derive(Debug)]
+    struct HideRuntimeMemberOnly(&'static str);
+
+    impl ConsoleVisibilityPolicy for HideRuntimeMemberOnly {
+        fn member_visible(&self, member: &ConsoleMember) -> bool {
+            member.agent_identity != self.0
+        }
+    }
+
+    #[derive(Debug)]
+    struct HideConsoleIdentity(&'static str);
+
+    impl ConsoleVisibilityPolicy for HideConsoleIdentity {
+        fn identity_visible(&self, record: &ConsoleIdentityRecord) -> bool {
+            record.identity != self.0
         }
     }
 
@@ -3652,6 +4653,125 @@ comms = true
         }
     }
 
+    #[test]
+    fn dedupe_identity_records_preserves_stale_durable_and_live_alias_bindings() {
+        let mut durable = identity_record_for_test("test/review:singleton");
+        durable.runtime_member_id = "rt:review:singleton:1".to_string();
+        durable.session_id = Some("session-stale".to_string());
+        durable
+            .labels
+            .insert("agent_identity".to_string(), "review:singleton".to_string());
+
+        let mut live = identity_record_for_test("test/review:singleton");
+        live.runtime_member_id = "rt:review:singleton:0".to_string();
+        live.session_id = Some("session-live".to_string());
+        live.labels
+            .insert("agent_identity".to_string(), "review:singleton".to_string());
+
+        let records = dedupe_identity_records(vec![durable, live]);
+
+        assert_eq!(
+            records.len(),
+            2,
+            "list projection must expose stale durable/live alias split-brain instead of picking one record"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.runtime_member_id == "rt:review:singleton:0")
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.runtime_member_id == "rt:review:singleton:1")
+        );
+    }
+
+    #[test]
+    fn dedupe_identity_records_preserves_duplicate_live_aliases() {
+        let mut first = identity_record_for_test("test/review:singleton");
+        first.runtime_member_id = "rt:review:singleton:0".to_string();
+        first
+            .labels
+            .insert("agent_identity".to_string(), "review:singleton".to_string());
+
+        let mut second = identity_record_for_test("test/review:singleton");
+        second.runtime_member_id = "rt:review:singleton:1".to_string();
+        second
+            .labels
+            .insert("agent_identity".to_string(), "review:singleton".to_string());
+
+        let records = dedupe_identity_records(vec![first, second]);
+
+        assert_eq!(
+            records.len(),
+            2,
+            "duplicate live aliases must remain visible so controls and roster agree on ambiguity"
+        );
+    }
+
+    #[test]
+    fn dedupe_identity_records_preserves_same_member_ids_from_different_source_mobs() {
+        let mut first = identity_record_for_test("test/review:singleton");
+        first.runtime_member_id = "rt:review:singleton:0".to_string();
+        first.session_id = None;
+        first
+            .labels
+            .insert("agent_identity".to_string(), "review:singleton".to_string());
+        first
+            .labels
+            .insert("source_mob_id".to_string(), "mob-a".to_string());
+
+        let mut second = first.clone();
+        second
+            .labels
+            .insert("source_mob_id".to_string(), "mob-b".to_string());
+
+        let records = dedupe_identity_records(vec![first, second]);
+
+        assert_eq!(
+            records.len(),
+            2,
+            "same member/session aliases from different source mobs must remain visible"
+        );
+    }
+
+    #[test]
+    fn dedupe_identity_records_merges_matching_durable_and_primary_live_rows() {
+        let durable = identity_record_for_test("test/review:singleton");
+        let live = durable.clone();
+
+        let records = dedupe_identity_records(vec![durable, live]);
+
+        assert_eq!(
+            records.len(),
+            1,
+            "healthy durable and primary live projections should not duplicate the roster"
+        );
+    }
+
+    #[test]
+    fn stale_durable_record_error_detects_session_split_brain() {
+        let mut durable = identity_record_for_test("test/review:singleton");
+        durable.runtime_member_id = "rt:review:singleton:0".to_string();
+        durable.session_id = Some("session-durable".to_string());
+
+        let mut live = durable.clone();
+        live.session_id = Some("session-live".to_string());
+
+        let err = stale_durable_record_error("review:singleton", &durable, &[live])
+            .expect("session mismatch must be stale split-brain");
+
+        assert!(
+            err.contains("stale durable identity alias"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.contains("session-durable") && err.contains("session-live"),
+            "error should name both sessions: {err}"
+        );
+    }
+
     async fn identity_runtime_for_test(
         identities: &[&str],
     ) -> Result<Arc<crate::identity_first::IdentityRuntime>, Box<dyn std::error::Error + Send + Sync>>
@@ -3705,6 +4825,85 @@ comms = true
                 .await;
         }
         Ok(runtime)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_id_alias_does_not_fall_back_to_durable_rt_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("runtime-id-durable-shadow-test").await;
+        let identity_runtime = identity_runtime_for_test(&["rt:review:singleton:0"]).await?;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            Some(identity_runtime),
+            runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        assert!(
+            aggregator
+                .inspect_identity("rt:review:singleton:0")
+                .await?
+                .is_none(),
+            "runtime-member-id shaped requests must not inspect a durable rt:* identity"
+        );
+        assert!(
+            !aggregator.retire_identity("rt:review:singleton:0").await?,
+            "runtime-member-id shaped requests must not retire a durable rt:* identity"
+        );
+        let reserve_err = aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "rt:review:singleton:0".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "rt-shadow-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect_err(
+                "runtime-member-id shaped reserve must not fall back to a durable rt:* identity",
+            );
+        assert!(
+            reserve_err.to_string().contains("unknown identity"),
+            "unexpected reserve error: {reserve_err}"
+        );
+        let send_err = aggregator
+            .send(ConsoleSendRequest {
+                identity: "rt:review:singleton:0".to_string(),
+                content: json!("hello"),
+                origin: "console:test".to_string(),
+                idempotency_key: "rt-shadow-send".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect_err(
+                "runtime-member-id shaped send must not be blocked by a durable rt:* identity",
+            );
+        assert!(
+            send_err.to_string().contains("unknown identity"),
+            "unexpected send error: {send_err}"
+        );
+        let blob_err = match aggregator
+            .binary_blob_store_for_identity("rt:review:singleton:0")
+            .await
+        {
+            Ok(_) => panic!(
+                "runtime-member-id shaped blob lookup must not fall back to durable rt:* identity"
+            ),
+            Err(err) => err,
+        };
+        assert!(
+            blob_err.to_string().contains("unknown identity"),
+            "unexpected blob error: {blob_err}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3765,6 +4964,1196 @@ comms = true
         );
 
         let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn member_visibility_policy_hides_live_alias_from_aggregator_controls()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-member-hidden-policy-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await?;
+        let hidden_session_id = runtime
+            .mob_handle()
+            .resolve_bridge_session_id_observation(&meerkat_mob::ids::MeerkatId::from(
+                "rt:review:singleton:0",
+            ))
+            .await
+            .map(|sid| sid.to_string());
+        let mut duplicate_labels = BTreeMap::new();
+        duplicate_labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:1".to_string(),
+                    Some("You are a visible duplicate Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(duplicate_labels),
+            )
+            .await?;
+
+        let identity_runtime = identity_runtime_for_test(&["review:singleton"]).await?;
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            Some(identity_runtime),
+            runtime.console_events(),
+            Arc::new(HideRuntimeMemberOnly("rt:review:singleton:0")),
+        );
+
+        assert!(
+            aggregator
+                .inspect_identity("review:singleton")
+                .await?
+                .is_none(),
+            "member-hidden live alias must not inspect through aggregator"
+        );
+        let records = aggregator.list_identities_fresh().await?;
+        assert!(
+            records
+                .iter()
+                .all(|record| record.identity != "review:singleton"),
+            "member-hidden durable/live alias must not appear in identity list: {records:#?}"
+        );
+        let appended = aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "member-hidden-frame".to_string(),
+                timestamp_ms: 1,
+                runtime_key: "runtime-a".to_string(),
+                identity: "review:singleton".to_string(),
+                conversation_id: Some("review:singleton".to_string()),
+                session_id: hidden_session_id,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "delta": "hidden" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("member-hidden-frame".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+        assert!(
+            !aggregator
+                .timeline_event_visible(&ConsoleTimelineEvent::ConsoleFrame {
+                    frame: appended.frame.clone()
+                })
+                .await,
+            "member-hidden live alias must not pass timeline event visibility"
+        );
+        let identity_only = aggregator
+            .store()
+            .append_if_absent(NewConsoleFrame {
+                id: None,
+                dedupe_key: "member-hidden-identity-only-frame".to_string(),
+                timestamp_ms: 2,
+                runtime_key: "runtime-a".to_string(),
+                identity: "review:singleton".to_string(),
+                conversation_id: Some("review:singleton".to_string()),
+                session_id: None,
+                kind: "text_delta".to_string(),
+                status: ConsoleFrameStatus::Delivered,
+                payload: json!({ "delta": "identity-only-hidden" }),
+                source: ConsoleFrameSource {
+                    kind: ConsoleFrameSourceKind::ConsoleEvent,
+                    source_cursor: None,
+                },
+                source_event_id: Some("member-hidden-identity-only-frame".to_string()),
+                interaction_id: None,
+                turn_id: None,
+                run_id: None,
+                parent_frame_id: None,
+                caused_by_frame_id: None,
+            })
+            .await?;
+        assert!(
+            !aggregator
+                .timeline_event_visible(&ConsoleTimelineEvent::ConsoleFrame {
+                    frame: identity_only.frame.clone()
+                })
+                .await,
+            "member-hidden durable alias must not leak identity-only timeline frames"
+        );
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("review:singleton".to_string()),
+                limit: 10,
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        assert!(
+            page.frames.is_empty(),
+            "member-hidden live alias must not leak through explicit timeline query: {page:#?}"
+        );
+        assert!(
+            !aggregator.retire_identity("review:singleton").await?,
+            "member-hidden live alias must not retire through aggregator"
+        );
+        let reserve_err = aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "member-hidden-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect_err("member-hidden durable alias must not reserve identity-first interaction");
+        assert!(
+            reserve_err.to_string().contains("unknown identity"),
+            "unexpected reserve error: {reserve_err}"
+        );
+        let send_err = aggregator
+            .send(ConsoleSendRequest {
+                identity: "review:singleton".to_string(),
+                content: json!("hello"),
+                origin: "console:test".to_string(),
+                idempotency_key: "member-hidden-send".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect_err("member-hidden live alias must not receive sends");
+        assert!(
+            send_err.to_string().contains("unknown identity"),
+            "unexpected send error: {send_err}"
+        );
+        let blob_result = aggregator
+            .binary_blob_store_for_identity("review:singleton")
+            .await;
+        let Err(blob_err) = blob_result else {
+            panic!("member-hidden live alias must not expose blob store");
+        };
+        assert!(
+            blob_err.to_string().contains("unknown identity"),
+            "unexpected blob error: {blob_err}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn explicit_session_backfill_target_resolves_durable_identity_label()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-label-backfill-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("member spawns");
+
+        let entry = RuntimeEntry {
+            runtime_key: "runtime-a".to_string(),
+            identity_namespace: String::new(),
+            runtime: runtime.mob_runtime().clone(),
+            identity_runtime: runtime.identity_runtime().cloned(),
+            console_events: runtime.console_events(),
+            visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+        };
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert("runtime-a".to_string(), entry);
+
+        let target = session_backfill_target_for_identity(&aggregator.inner, "review:singleton")
+            .await
+            .expect("durable label should resolve targeted session backfill");
+        assert_eq!(target.record.identity, "review:singleton");
+        assert_eq!(target.record.runtime_member_id, "rt:review:singleton:0");
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspect_identity_rejects_stale_durable_binding_when_live_alias_disagrees()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-stale-durable-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the live Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("member spawns");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-stale-durable-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        let record = crate::identity_first::ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                "rt:review:singleton:1",
+            )?,
+            session_id: SessionId::new(),
+            generation: crate::identity_first::ContinuityGeneration::new(1),
+            checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+        };
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(record),
+                Some(crate::identity_first::LeaseGrant {
+                    identity,
+                    fencing_token: crate::identity_first::FencingToken::new(7),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        let err = aggregator
+            .inspect_identity("review:singleton")
+            .await
+            .expect_err("stale durable binding must not inspect as healthy");
+        assert!(
+            err.to_string().contains("stale durable identity alias"),
+            "unexpected error: {err}"
+        );
+        let retire_err = aggregator
+            .retire_identity("review:singleton")
+            .await
+            .expect_err("stale durable binding must not retire as healthy");
+        assert!(
+            retire_err
+                .to_string()
+                .contains("stale durable identity alias"),
+            "unexpected retire error: {retire_err}"
+        );
+        let send_err = aggregator
+            .send(ConsoleSendRequest {
+                identity: "review:singleton".to_string(),
+                content: json!("hello"),
+                origin: "console:test".to_string(),
+                idempotency_key: "stale-durable-send".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect_err("stale durable binding must not send to the wrong live member");
+        assert!(
+            send_err
+                .to_string()
+                .contains("stale durable identity alias"),
+            "unexpected send error: {send_err}"
+        );
+        let reserve_err = aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "stale-durable-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect_err("identity-first reserve must not bypass stale durable binding");
+        assert!(
+            reserve_err
+                .to_string()
+                .contains("stale durable identity alias"),
+            "unexpected reserve error: {reserve_err}"
+        );
+        let blob_err = match aggregator
+            .binary_blob_store_for_identity("review:singleton")
+            .await
+        {
+            Ok(_) => panic!("stale durable binding must not blob-resolve as healthy"),
+            Err(err) => err,
+        };
+        assert!(
+            blob_err
+                .to_string()
+                .contains("stale durable identity alias"),
+            "unexpected blob error: {blob_err}"
+        );
+        let records = aggregator.list_identities_fresh().await?;
+        assert!(
+            records
+                .iter()
+                .any(|record| record.identity == "review:singleton"
+                    && record.runtime_member_id == "rt:review:singleton:0"),
+            "live alias should still be listed; records: {records:#?}"
+        );
+        assert!(
+            records
+                .iter()
+                .any(|record| record.identity == "review:singleton"
+                    && record.runtime_member_id == "rt:review:singleton:1"),
+            "stale durable binding should remain visible as split-brain evidence; records: {records:#?}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspect_identity_rejects_durable_binding_when_runtime_projects_wrong_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-wrong-projection-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "other:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the mislabeled Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("member spawns");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-wrong-projection-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        let record = crate::identity_first::ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                "rt:review:singleton:0",
+            )?,
+            session_id: SessionId::new(),
+            generation: crate::identity_first::ContinuityGeneration::new(1),
+            checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+        };
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(record),
+                Some(crate::identity_first::LeaseGrant {
+                    identity,
+                    fencing_token: crate::identity_first::FencingToken::new(7),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        let err = aggregator
+            .inspect_identity("review:singleton")
+            .await
+            .expect_err("wrong projected live identity must not inspect as healthy");
+        assert!(
+            err.to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected error: {err}"
+        );
+        let retire_err = aggregator
+            .retire_identity("review:singleton")
+            .await
+            .expect_err("wrong projected live identity must not retire as healthy");
+        assert!(
+            retire_err
+                .to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected retire error: {retire_err}"
+        );
+        let send_err = aggregator
+            .send(ConsoleSendRequest {
+                identity: "review:singleton".to_string(),
+                content: json!("hello"),
+                origin: "console:test".to_string(),
+                idempotency_key: "wrong-projection-send".to_string(),
+                handling_mode: Some("queue".to_string()),
+            })
+            .await
+            .expect_err("wrong projected live identity must not send as unknown");
+        assert!(
+            send_err
+                .to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected send error: {send_err}"
+        );
+        let reserve_err = aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "wrong-projection-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect_err("identity-first reserve must not bypass wrong live projection");
+        assert!(
+            reserve_err
+                .to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected reserve error: {reserve_err}"
+        );
+        let blob_err = match aggregator
+            .binary_blob_store_for_identity("review:singleton")
+            .await
+        {
+            Ok(_) => panic!("wrong projected live identity must not blob-resolve as healthy"),
+            Err(err) => err,
+        };
+        assert!(
+            blob_err
+                .to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected blob error: {blob_err}"
+        );
+        let projected_err = aggregator
+            .inspect_identity("other:singleton")
+            .await
+            .expect_err("wrong projected alias must not inspect through live-only fallback");
+        assert!(
+            projected_err
+                .to_string()
+                .contains("identity runtime binding for review:singleton"),
+            "unexpected projected-alias error: {projected_err}"
+        );
+        let projected_retire_err = aggregator
+            .retire_identity("other:singleton")
+            .await
+            .expect_err("wrong projected alias must not retire through live-only fallback");
+        assert!(
+            projected_retire_err
+                .to_string()
+                .contains("identity runtime binding for review:singleton"),
+            "unexpected projected-alias retire error: {projected_retire_err}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspect_identity_rejects_hidden_wrong_projection_for_durable_binding()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-hidden-wrong-projection-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "other:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are a hidden wrong projection.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("member spawns");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-hidden-wrong-projection-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(crate::identity_first::ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                        "rt:review:singleton:0",
+                    )?,
+                    session_id: SessionId::new(),
+                    generation: crate::identity_first::ContinuityGeneration::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                }),
+                Some(crate::identity_first::LeaseGrant {
+                    identity,
+                    fencing_token: crate::identity_first::FencingToken::new(7),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(HideConsoleIdentity("other:singleton")),
+                },
+            );
+
+        let err = aggregator
+            .inspect_identity("review:singleton")
+            .await
+            .expect_err("hidden wrong projection must still fail durable binding validation");
+        assert!(
+            err.to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected hidden wrong-projection error: {err}"
+        );
+        let reserve_err = aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "hidden-wrong-projection-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await
+            .expect_err("reserve must not hide wrong projection from durable validation");
+        assert!(
+            reserve_err
+                .to_string()
+                .contains("projects identity other:singleton"),
+            "unexpected reserve error: {reserve_err}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn runtime_id_inspect_skips_hidden_match_and_uses_visible_runtime()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let hidden_runtime = build_empty_runtime("runtime-id-hidden-match-test").await;
+        let visible_runtime = build_empty_runtime("runtime-id-visible-match-test").await;
+        let hidden_identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "runtime-id-hidden-match-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let visible_identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "runtime-id-visible-match-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        for identity_runtime in [&hidden_identity_runtime, &visible_identity_runtime] {
+            let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+            identity_runtime
+                .register(
+                    crate::identity_first::DurableAgentSpec {
+                        identity: identity.clone(),
+                        profile: meerkat_mob::ProfileName::from("worker"),
+                        addressability: crate::identity_first::AgentAddressability::Addressable,
+                        display_name: None,
+                        labels: BTreeMap::new(),
+                        context: None,
+                        additional_instructions: Vec::new(),
+                        initial_message: None,
+                        runtime_mode_override: None,
+                    },
+                    crate::identity_first::IdentityLifecycleState::Active,
+                    Some(crate::identity_first::ContinuityRecord {
+                        identity: identity.clone(),
+                        agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                            "rt:review:singleton:0",
+                        )?,
+                        session_id: SessionId::new(),
+                        generation: crate::identity_first::ContinuityGeneration::new(1),
+                        checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                    }),
+                    Some(crate::identity_first::LeaseGrant {
+                        identity,
+                        fencing_token: crate::identity_first::FencingToken::new(7),
+                        ttl: Duration::from_mins(5),
+                    }),
+                )
+                .await;
+        }
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        {
+            let mut runtimes = aggregator.inner.runtimes.write().expect("runtime registry");
+            runtimes.insert(
+                "a-hidden".to_string(),
+                RuntimeEntry {
+                    runtime_key: "a-hidden".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: hidden_runtime.mob_runtime().clone(),
+                    identity_runtime: Some(hidden_identity_runtime),
+                    console_events: hidden_runtime.console_events(),
+                    visibility_policy: Arc::new(HideRuntimeMemberIdentity("rt:review:singleton:0")),
+                },
+            );
+            runtimes.insert(
+                "b-visible".to_string(),
+                RuntimeEntry {
+                    runtime_key: "b-visible".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: visible_runtime.mob_runtime().clone(),
+                    identity_runtime: Some(visible_identity_runtime),
+                    console_events: visible_runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+        }
+
+        let inspection = aggregator
+            .inspect_identity("rt:review:singleton:0")
+            .await?
+            .expect("visible runtime-id match should be returned");
+        assert_eq!(inspection.identity.runtime_key, "b-visible");
+
+        let _ = hidden_runtime.mob_handle().stop().await;
+        let _ = visible_runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspect_identity_rejects_cross_source_wrong_projection_for_runtime_member()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-cross-source-primary-test").await;
+        let mut primary_labels = BTreeMap::new();
+        primary_labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the primary Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(primary_labels),
+            )
+            .await
+            .expect("primary member spawns");
+
+        let delegate_runtime = build_empty_runtime("identity-cross-source-delegate-test").await;
+        let mut delegate_labels = BTreeMap::new();
+        delegate_labels.insert("agent_identity".to_string(), "other:singleton".to_string());
+        delegate_runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the wrong projected Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(delegate_labels),
+            )
+            .await
+            .expect("delegate member spawns");
+        runtime
+            .mob_runtime()
+            .agent_mob_mcp_state()
+            .expect("runtime should expose mob MCP state")
+            .mob_insert_handle(
+                meerkat_mob::ids::MobId::from("identity-cross-source-delegate-test"),
+                delegate_runtime.mob_handle().clone(),
+            )
+            .await;
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-cross-source-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        let record = crate::identity_first::ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                "rt:review:singleton:0",
+            )?,
+            session_id: SessionId::new(),
+            generation: crate::identity_first::ContinuityGeneration::new(1),
+            checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+        };
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(record),
+                Some(crate::identity_first::LeaseGrant {
+                    identity,
+                    fencing_token: crate::identity_first::FencingToken::new(7),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        let err = aggregator
+            .inspect_identity("review:singleton")
+            .await
+            .expect_err("cross-source wrong projection must not be hidden by primary source");
+        assert!(
+            err.to_string()
+                .contains("projects identity other:singleton")
+                || err.to_string().contains("ambiguous live identity alias"),
+            "unexpected error: {err}"
+        );
+
+        let _ = delegate_runtime.mob_handle().stop().await;
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspect_identity_rejects_duplicate_live_alias_even_when_durable_matches_one()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-ambiguous-durable-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the first Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels.clone()),
+            )
+            .await
+            .expect("first member spawns");
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:1".to_string(),
+                    Some("You are the second Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("second member spawns");
+
+        let identity_runtime = Arc::new(crate::identity_first::IdentityRuntime::new(
+            crate::identity_first::IdentityRuntimeConfig {
+                continuity_store: Arc::new(
+                    crate::identity_first::LocalContinuityStore::in_memory()?
+                ),
+                lease_provider: Arc::new(crate::identity_first::LocalLeaseProvider::new()),
+                runtime_instance_id: "console-aggregator-ambiguous-durable-test".to_string(),
+                has_runtime_store: true,
+                durability_policy: crate::identity_first::DurabilityPolicy::SyncWriteThrough,
+                bridge: None,
+                default_timeout: None,
+            },
+        ));
+        let identity = crate::identity_first::AgentIdentity::parse("review:singleton")?;
+        identity_runtime
+            .register(
+                crate::identity_first::DurableAgentSpec {
+                    identity: identity.clone(),
+                    profile: meerkat_mob::ProfileName::from("worker"),
+                    addressability: crate::identity_first::AgentAddressability::Addressable,
+                    display_name: None,
+                    labels: BTreeMap::new(),
+                    context: None,
+                    additional_instructions: Vec::new(),
+                    initial_message: None,
+                    runtime_mode_override: None,
+                },
+                crate::identity_first::IdentityLifecycleState::Active,
+                Some(crate::identity_first::ContinuityRecord {
+                    identity: identity.clone(),
+                    agent_runtime_id: crate::identity_first::AgentRuntimeId::parse(
+                        "rt:review:singleton:0",
+                    )?,
+                    session_id: SessionId::new(),
+                    generation: crate::identity_first::ContinuityGeneration::new(1),
+                    checkpoint_version: crate::identity_first::CheckpointVersion::new(0),
+                }),
+                Some(crate::identity_first::LeaseGrant {
+                    identity,
+                    fencing_token: crate::identity_first::FencingToken::new(8),
+                    ttl: Duration::from_mins(5),
+                }),
+            )
+            .await;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator
+            .inner
+            .runtimes
+            .write()
+            .expect("runtime registry")
+            .insert(
+                "runtime-a".to_string(),
+                RuntimeEntry {
+                    runtime_key: "runtime-a".to_string(),
+                    identity_namespace: String::new(),
+                    runtime: runtime.mob_runtime().clone(),
+                    identity_runtime: Some(identity_runtime),
+                    console_events: runtime.console_events(),
+                    visibility_policy: Arc::new(AllowAllConsoleVisibilityPolicy),
+                },
+            );
+
+        let err = aggregator
+            .inspect_identity("review:singleton")
+            .await
+            .expect_err("duplicate live alias must not inspect via durable fast path");
+        assert!(
+            err.to_string().contains("ambiguous live identity alias"),
+            "unexpected error: {err}"
+        );
+        let retire_err = aggregator
+            .retire_identity("review:singleton")
+            .await
+            .expect_err("duplicate live alias must not retire via durable fast path");
+        assert!(
+            retire_err
+                .to_string()
+                .contains("ambiguous live identity alias"),
+            "unexpected retire error: {retire_err}"
+        );
+        let runtime_id_err = aggregator
+            .inspect_identity("rt:review:singleton:0")
+            .await
+            .expect_err("runtime-id lookup must still reject duplicate durable live aliases");
+        assert!(
+            runtime_id_err
+                .to_string()
+                .contains("ambiguous live identity alias"),
+            "unexpected runtime-id inspect error: {runtime_id_err}"
+        );
+        let runtime_id_retire_err = aggregator
+            .retire_identity("rt:review:singleton:0")
+            .await
+            .expect_err("runtime-id retire must still reject duplicate durable live aliases");
+        assert!(
+            runtime_id_retire_err
+                .to_string()
+                .contains("ambiguous live identity alias")
+                || runtime_id_retire_err
+                    .to_string()
+                    .contains("stale durable identity alias"),
+            "unexpected runtime-id retire error: {runtime_id_retire_err}"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn inspect_identity_ignores_hidden_live_alias_candidates()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let runtime = build_empty_runtime("identity-hidden-ambiguous-live-test").await;
+        let mut labels = BTreeMap::new();
+        labels.insert("agent_identity".to_string(), "review:singleton".to_string());
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:0".to_string(),
+                    Some("You are the visible Review Agent.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels.clone()),
+            )
+            .await
+            .expect("visible member spawns");
+        runtime
+            .spawn(
+                SpawnMemberSpec::from_wire(
+                    "worker".to_string(),
+                    "rt:review:singleton:1".to_string(),
+                    Some("You are hidden maintenance noise.".into()),
+                    None,
+                    None,
+                )
+                .with_labels(labels),
+            )
+            .await
+            .expect("hidden member spawns");
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "runtime-a",
+            "",
+            runtime.mob_runtime().clone(),
+            None,
+            runtime.console_events(),
+            Arc::new(HideRuntimeMemberIdentity("rt:review:singleton:1")),
+        );
+
+        let inspection = aggregator
+            .inspect_identity("review:singleton")
+            .await?
+            .expect("visible live alias should inspect without hidden ambiguity");
+        assert_eq!(inspection.identity.identity, "review:singleton");
+        assert_eq!(
+            inspection.identity.runtime_member_id,
+            "rt:review:singleton:0"
+        );
+
+        let retired = aggregator.retire_identity("review:singleton").await?;
+        assert!(
+            retired,
+            "visible live alias should retire without hidden ambiguity"
+        );
+
+        let _ = runtime.mob_handle().stop().await;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn identity_first_reserve_skips_hidden_runtime_and_uses_visible_match()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let hidden_runtime = build_empty_runtime("identity-reserve-hidden-first-test").await;
+        let hidden_identity_runtime = identity_runtime_for_test(&["review:singleton"]).await?;
+        let visible_runtime = build_empty_runtime("identity-reserve-visible-second-test").await;
+        let visible_identity_runtime = identity_runtime_for_test(&["review:singleton"]).await?;
+
+        let aggregator = MobKitConsoleAggregator::in_memory();
+        aggregator.register_runtime_handles_with_policy(
+            "a-hidden",
+            "",
+            hidden_runtime.mob_runtime().clone(),
+            Some(hidden_identity_runtime),
+            hidden_runtime.console_events(),
+            Arc::new(HideRuntimeMemberIdentity("rt:review:singleton:0")),
+        );
+        aggregator.register_runtime_handles_with_policy(
+            "b-visible",
+            "",
+            visible_runtime.mob_runtime().clone(),
+            Some(visible_identity_runtime),
+            visible_runtime.console_events(),
+            Arc::new(AllowAllConsoleVisibilityPolicy),
+        );
+
+        let accepted = aggregator
+            .reserve_identity_first_interaction(
+                ConsoleSendRequest {
+                    identity: "review:singleton".to_string(),
+                    content: json!("hello"),
+                    origin: "console:test".to_string(),
+                    idempotency_key: "visible-after-hidden-reserve".to_string(),
+                    handling_mode: Some("queue".to_string()),
+                },
+                None,
+            )
+            .await?;
+        let page = aggregator
+            .query_timeline(ConsoleTimelineQuery {
+                identity: Some("review:singleton".to_string()),
+                ..ConsoleTimelineQuery::default()
+            })
+            .await?;
+        let frame = page
+            .frames
+            .iter()
+            .find(|frame| frame.id == accepted.input_frame_id)
+            .ok_or("accepted frame missing from timeline")?;
+        assert_eq!(frame.runtime_key, "b-visible");
+
+        let _ = hidden_runtime.mob_handle().stop().await;
+        let _ = visible_runtime.mob_handle().stop().await;
         Ok(())
     }
 
@@ -6207,6 +8596,30 @@ comms = true
             Some("worker")
         );
         assert_eq!(strip_namespace("test", "test"), None);
+    }
+
+    #[test]
+    fn generated_runtime_ids_do_not_match_sibling_colon_identities() {
+        assert!(!member_id_matches_durable_identity(
+            "rt:review:singleton:0",
+            "review:singleton"
+        ));
+        assert!(!member_id_matches_durable_identity(
+            "review:singleton:gen1",
+            "review:singleton"
+        ));
+        assert!(!member_id_matches_durable_identity(
+            "review:singleton:1",
+            "review:singleton"
+        ));
+        assert!(!member_id_matches_durable_identity(
+            "rt:review:singleton:qa:0",
+            "review:singleton"
+        ));
+        assert!(!member_id_matches_durable_identity(
+            "review:singleton:qa",
+            "review:singleton"
+        ));
     }
 
     #[test]

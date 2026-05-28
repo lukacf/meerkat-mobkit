@@ -603,8 +603,7 @@ async fn e2e_ob3_03_respawn_preserves_history() {
     let original_runtime_id = alice_record.agent_runtime_id.clone();
     let original_generation = alice_record.generation;
     eprintln!(
-        "[OB3-03] alice created: runtime_id={}, gen={}",
-        original_runtime_id, original_generation
+        "[OB3-03] alice created: runtime_id={original_runtime_id}, gen={original_generation}"
     );
 
     // Send first message
@@ -781,10 +780,7 @@ async fn e2e_ob3_04_reset_clean_slate() {
     };
     let old_session = alice_record.session_id.clone();
     let old_generation = alice_record.generation;
-    eprintln!(
-        "[OB3-04] alice created: session={}, gen={}",
-        old_session, old_generation
-    );
+    eprintln!("[OB3-04] alice created: session={old_session}, gen={old_generation}");
 
     // Send initial message to build history
     eprintln!("[OB3-04] Sending initial message...");

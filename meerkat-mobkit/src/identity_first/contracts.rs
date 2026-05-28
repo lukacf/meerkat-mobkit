@@ -47,6 +47,19 @@ pub trait ContinuityStore: Send + Sync {
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<Option<SessionSnapshot>, ContinuityStoreError>;
 
+    /// Delete a saved session snapshot only if its serialized session
+    /// projection still matches `expected_current_revision`.
+    ///
+    /// Implementations that cannot support session-scoped snapshot deletion
+    /// must return `Ok(false)` rather than reporting a successful no-op.
+    async fn delete_session_snapshot_if_current_revision(
+        &self,
+        _session_id: &meerkat_core::types::SessionId,
+        _expected_current_revision: &str,
+    ) -> Result<bool, ContinuityStoreError> {
+        Ok(false)
+    }
+
     /// Save a session snapshot with fencing and version preconditions.
     async fn save_session_snapshot(
         &self,

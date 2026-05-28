@@ -10,6 +10,7 @@ import {
   sendConsoleMultipart,
   subscribeTimelineEvents,
 } from "./network";
+import { mapFramesToTimelineEntries } from "./adapters";
 
 test("fetchJson defaults console requests to a 60 second timeout with an abort reason", async () => {
   const originalFetch = globalThis.fetch;
@@ -92,6 +93,88 @@ test("queryTimeline normalizes aggregate log frames", async () => {
     assert.equal(result.frames[0]?.frameVersion, 2);
     assert.equal(result.frames[0]?.turnId, "turn-1");
     assert.deepEqual(result.frames[0]?.data, { content: "hello" });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("queryTimeline parsed production frames suppress raw peer prompt when structured notice exists", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    jsonrpc: "2.0",
+    id: "mobkit/console/query_timeline:1",
+    result: {
+      frames: [
+        {
+          id: "raw-run-started",
+          cursor: "console:1",
+          timestamp_ms: Date.parse("2026-05-27T08:00:00.000Z"),
+          identity: "planner",
+          kind: "run_started",
+          payload: {
+            prompt:
+              "Peer message\n"
+              + "Peer message from fugue/issue_lead/LUC-642/issue_lead:\n"
+              + "Focused RED-review replan is complete.\n"
+              + "Peer message",
+          },
+          source: { kind: "live" },
+        },
+        {
+          id: "structured-notice",
+          cursor: "console:2",
+          timestamp_ms: Date.parse("2026-05-27T08:00:01.000Z"),
+          identity: "planner",
+          kind: "system_notice",
+          payload: {
+            message: {
+              role: "system_notice",
+              kind: "comms",
+              body: "Focused RED-review replan is complete.",
+              blocks: [{
+                type: "comms",
+                kind: "message",
+                direction: "incoming",
+                peer: {
+                  id: "fugue/issue_lead/LUC-642/issue_lead",
+                  display_name: "fugue/issue_lead/LUC-642/issue_lead",
+                },
+                request_id: "request-1",
+                content: [{
+                  type: "text",
+                  text: "Focused RED-review replan is complete.",
+                }],
+              }],
+            },
+          },
+          source: { kind: "live" },
+        },
+      ],
+      next_cursor: "console:2",
+    },
+  }))) as typeof fetch;
+
+  try {
+    const page = await queryTimeline("http://127.0.0.1:7000", { identity: "planner" });
+    const entries = mapFramesToTimelineEntries(
+      {
+        agent_id: "planner",
+        member_id: "planner",
+        label: "Planner",
+        kind: "identity",
+      },
+      page.frames,
+      { renderInteractionStartsAsUser: true },
+    );
+
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.identity.id, "comms");
+    assert.equal(entries.some((entry) => (
+      entry.identity.id === "user"
+      && "text" in entry
+      && entry.text.includes("Peer message from fugue/issue_lead")
+    )), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

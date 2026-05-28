@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::contracts::ContinuityStore;
 use super::types::{
@@ -169,6 +169,53 @@ impl ContinuityStore for LocalContinuityStore {
         Ok(row.map(|data| SessionSnapshot { data }))
     }
 
+    async fn delete_session_snapshot_if_current_revision(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_current_revision: &str,
+    ) -> Result<bool, ContinuityStoreError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|e| ContinuityStoreError::Io(format!("lock: {e}")))?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
+
+        let data = tx
+            .query_row(
+                "SELECT data FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![session_id.to_string()],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()
+            .map_err(|e| ContinuityStoreError::Io(format!("query snapshot: {e}")))?;
+
+        let Some(data) = data else {
+            return Ok(false);
+        };
+        let session: meerkat_core::Session = serde_json::from_slice(&data).map_err(|e| {
+            ContinuityStoreError::Io(format!(
+                "deserialize session snapshot for revision check: {e}"
+            ))
+        })?;
+        let current_revision = meerkat_core::session_store::session_projection_cas_token(&session)
+            .map_err(|e| ContinuityStoreError::Io(e.to_string()))?;
+        if current_revision != expected_current_revision {
+            return Ok(false);
+        }
+
+        let deleted = tx
+            .execute(
+                "DELETE FROM session_snapshots WHERE session_id = ?1",
+                rusqlite::params![session_id.to_string()],
+            )
+            .map_err(|e| ContinuityStoreError::Io(format!("delete snapshot: {e}")))?;
+        tx.commit()
+            .map_err(|e| ContinuityStoreError::Io(format!("commit snapshot delete: {e}")))?;
+        Ok(deleted > 0)
+    }
+
     async fn save_session_snapshot(
         &self,
         identity: &AgentIdentity,
@@ -190,15 +237,22 @@ impl ContinuityStore for LocalContinuityStore {
             .unchecked_transaction()
             .map_err(|e| ContinuityStoreError::Io(format!("begin tx: {e}")))?;
 
-        // Check fencing token and checkpoint version against the continuity record
+        // Check fencing token and checkpoint version against the current
+        // continuity record for this exact session stream.
         let mut stmt = tx
             .prepare_cached(
-                "SELECT fencing_token, checkpoint_version FROM continuity_records WHERE identity = ?1",
+                "SELECT session_id, generation, fencing_token, checkpoint_version
+                 FROM continuity_records WHERE identity = ?1",
             )
             .map_err(|e| ContinuityStoreError::Io(format!("prepare: {e}")))?;
         let existing = stmt
             .query_row(rusqlite::params![identity.as_str()], |row| {
-                Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, u64>(2)?,
+                    row.get::<_, u64>(3)?,
+                ))
             })
             .optional()
             .map_err(|e| ContinuityStoreError::Io(format!("query: {e}")))?;
@@ -206,7 +260,17 @@ impl ContinuityStore for LocalContinuityStore {
         // Drop the statement before further operations on the transaction
         drop(stmt);
 
-        if let Some((current_token, current_version)) = existing {
+        let record_was_present = existing.is_some();
+        if let Some((current_session_id, current_generation, current_token, current_version)) =
+            existing
+        {
+            if current_session_id != session_id.to_string()
+                || current_generation != generation.get()
+            {
+                return Err(ContinuityStoreError::NotFound {
+                    identity: identity.clone(),
+                });
+            }
             if fencing_token.get() < current_token {
                 return Err(ContinuityStoreError::StaleFencingToken {
                     identity: identity.clone(),
@@ -244,12 +308,27 @@ impl ContinuityStore for LocalContinuityStore {
         )
         .map_err(|e| ContinuityStoreError::Io(format!("upsert snapshot: {e}")))?;
 
-        // Update the checkpoint version in the continuity record
+        // Update the continuity fence and checkpoint version. A snapshot write
+        // with a newer fencing token must advance the durable record fence;
+        // otherwise an older owner can still pass a later write.
         tx.execute(
-            "UPDATE continuity_records SET checkpoint_version = ?1 WHERE identity = ?2",
-            rusqlite::params![version.get(), identity.as_str()],
+            "UPDATE continuity_records
+             SET checkpoint_version = ?1, fencing_token = ?2
+             WHERE identity = ?3 AND session_id = ?4 AND generation = ?5",
+            rusqlite::params![
+                version.get(),
+                fencing_token.get(),
+                identity.as_str(),
+                session_id.to_string(),
+                generation.get(),
+            ],
         )
-        .map_err(|e| ContinuityStoreError::Io(format!("update cpv: {e}")))?;
+        .map_err(|e| ContinuityStoreError::Io(format!("update continuity after snapshot: {e}")))?;
+        if record_was_present && tx.changes() == 0 {
+            return Err(ContinuityStoreError::NotFound {
+                identity: identity.clone(),
+            });
+        }
 
         tx.commit()
             .map_err(|e| ContinuityStoreError::Io(format!("commit tx: {e}")))?;
@@ -295,7 +374,12 @@ impl ContinuityStore for LocalContinuityStore {
                 agent_runtime_id = excluded.agent_runtime_id,
                 session_id = excluded.session_id,
                 generation = excluded.generation,
-                checkpoint_version = excluded.checkpoint_version,
+                checkpoint_version = CASE
+                    WHEN continuity_records.session_id = excluded.session_id
+                     AND continuity_records.generation = excluded.generation
+                    THEN MAX(continuity_records.checkpoint_version, excluded.checkpoint_version)
+                    ELSE excluded.checkpoint_version
+                END,
                 fencing_token = excluded.fencing_token",
             rusqlite::params![
                 record.identity.as_str(),
@@ -360,22 +444,5 @@ impl ContinuityStore for LocalContinuityStore {
         .map_err(|e| ContinuityStoreError::Io(format!("delete record: {e}")))?;
 
         Ok(())
-    }
-}
-
-/// Extension trait for optional row helpers.
-trait OptionalRow {
-    type Output;
-    fn optional(self) -> Result<Option<Self::Output>, rusqlite::Error>;
-}
-
-impl<T> OptionalRow for Result<T, rusqlite::Error> {
-    type Output = T;
-    fn optional(self) -> Result<Option<T>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
     }
 }

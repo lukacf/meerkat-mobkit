@@ -1824,6 +1824,10 @@ export interface ContinuityStore {
   ): Promise<void>;
   upsertContinuityRecord(record: ContinuityRecord, fencingToken: number): Promise<void>;
   deleteContinuityRecord(identity: string, fencingToken: number): Promise<void>;
+  deleteSessionSnapshotIfCurrentRevision?(
+    sessionId: string,
+    expectedCurrentRevision: string,
+  ): Promise<boolean>;
 }
 
 export interface LeaseProvider {

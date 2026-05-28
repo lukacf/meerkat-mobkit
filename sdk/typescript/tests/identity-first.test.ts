@@ -1075,6 +1075,59 @@ describe("CallbackDispatcher provider routing (REQ-51)", () => {
     assert.deepEqual(deleted, { identity: "lead:main", fencingToken: 42 });
   });
 
+  it("routes optional callback/continuity_store/delete_session_snapshot_if_current_revision", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+    let deleted: Record<string, unknown> | null = null;
+
+    dispatcher.registerContinuityStore({
+      async resolveMany() { return {}; },
+      async loadSessionSnapshot() { return null; },
+      async saveSessionSnapshot() {},
+      async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
+      async deleteSessionSnapshotIfCurrentRevision(sessionId, expectedCurrentRevision) {
+        deleted = { sessionId, expectedCurrentRevision };
+        return true;
+      },
+    });
+
+    const result = await dispatcher.handleCallback(
+      "callback/continuity_store/delete_session_snapshot_if_current_revision",
+      {
+        session_id: "sess-1",
+        expected_current_revision: "row-sha256:abc",
+      },
+    );
+    assert.equal(result, true);
+    assert.deepEqual(deleted, {
+      sessionId: "sess-1",
+      expectedCurrentRevision: "row-sha256:abc",
+    });
+  });
+
+  it("returns false for optional snapshot CAS delete when provider lacks support", async () => {
+    const { CallbackDispatcher } = await import("../src/agent-builder.js");
+    const dispatcher = new CallbackDispatcher();
+
+    dispatcher.registerContinuityStore({
+      async resolveMany() { return {}; },
+      async loadSessionSnapshot() { return null; },
+      async saveSessionSnapshot() {},
+      async upsertContinuityRecord() {},
+      async deleteContinuityRecord() {},
+    });
+
+    const result = await dispatcher.handleCallback(
+      "callback/continuity_store/delete_session_snapshot_if_current_revision",
+      {
+        session_id: "sess-1",
+        expected_current_revision: "row-sha256:abc",
+      },
+    );
+    assert.equal(result, false);
+  });
+
   it("routes callback/lease_provider/acquire_leases to LeaseProvider", async () => {
     const { CallbackDispatcher } = await import("../src/agent-builder.js");
     const dispatcher = new CallbackDispatcher();

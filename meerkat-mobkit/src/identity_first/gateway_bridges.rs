@@ -104,6 +104,40 @@ impl ContinuityStore for GatewayContinuityStore {
         Ok(Some(snapshot))
     }
 
+    async fn delete_session_snapshot_if_current_revision(
+        &self,
+        session_id: &meerkat_core::types::SessionId,
+        expected_current_revision: &str,
+    ) -> Result<bool, ContinuityStoreError> {
+        let params = json!({
+            "session_id": session_id.to_string(),
+            "expected_current_revision": expected_current_revision,
+        });
+        let result = self
+            .bridge
+            .call(
+                "callback/continuity_store/delete_session_snapshot_if_current_revision",
+                params,
+            )
+            .await;
+
+        match result {
+            Ok(value) => serde_json::from_value(value).map_err(|e| {
+                ContinuityStoreError::Io(format!(
+                    "deserialize delete_session_snapshot_if_current_revision: {e}"
+                ))
+            }),
+            Err(e)
+                if e.contains("unknown continuity_store operation")
+                    || e.contains("method not found")
+                    || e.contains("not implemented") =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(parse_continuity_store_error(&e)),
+        }
+    }
+
     async fn save_session_snapshot(
         &self,
         identity: &AgentIdentity,

@@ -190,6 +190,16 @@ class CallbackDispatcher:
             snap = await store.load_session_snapshot(params["session_id"])
             return snap.to_dict() if snap is not None else None
 
+        if op == "delete_session_snapshot_if_current_revision":
+            handler = getattr(
+                store, "delete_session_snapshot_if_current_revision", None
+            )
+            if handler is None:
+                return False
+            return await handler(
+                params["session_id"], params["expected_current_revision"]
+            )
+
         if op == "save_session_snapshot":
             snapshot = SessionSnapshot.from_dict(params["snapshot"])
             await store.save_session_snapshot(
