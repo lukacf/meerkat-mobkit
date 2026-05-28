@@ -83,7 +83,7 @@ jobs:
           - runs-on: windows-2022
             target: x86_64-pc-windows-msvc
             archive_ext: zip
-            cargo_jobs: 2
+            cargo_jobs: 1
 
     steps:
       - name: Checkout
