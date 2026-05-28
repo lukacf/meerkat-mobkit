@@ -359,12 +359,24 @@ test("sidebar can group agents by configured metadata selectors and subgroups", 
 class MemoryStorage {
   private readonly values = new Map<string, string>();
 
+  get length(): number {
+    return this.values.size;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.values.keys())[index] ?? null;
+  }
+
   getItem(key: string): string | null {
     return this.values.has(key) ? this.values.get(key)! : null;
   }
 
   setItem(key: string, value: string): void {
     this.values.set(key, value);
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key);
   }
 }
 
@@ -591,4 +603,49 @@ test("sidebar configured OB3-like grouping yields configured sections and scope 
       ["member:initiative-liveops", "liveops"],
     ],
   );
+});
+
+test("sidebar treats an agent pinned by member_id as pinned even when it has a durable identity", () => {
+  const agent = ob3Agent({
+    id: "ops-lead",
+    label: "Ops Lead",
+    group: "coordinators",
+    scope: "cto",
+    identity: "identity:ops-lead",
+  });
+  // A legacy/default pin stored under the volatile member_id must still match,
+  // and unpinning must clear both forms (see ConsoleApp.togglePinnedAgent).
+  assert.equal(__sidebarTest.isAgentPinned(agent, new Set(["member:ops-lead"])), true);
+  assert.equal(__sidebarTest.isAgentPinned(agent, new Set(["identity:ops-lead"])), true);
+
+  const pinId = __sidebarTest.sidebarAgentPinId(agent);
+  const pinned = new Set(["member:ops-lead"]);
+  pinned.delete(pinId);
+  pinned.delete(agent.member_id);
+  assert.equal(__sidebarTest.isAgentPinned(agent, pinned), false);
+});
+
+test("sidebar prunes stale-namespace keys for the active scope while preserving other scopes", () => {
+  const storage = new MemoryStorage();
+  const scope = "runtime-a";
+  const activeNamespace = `${encodeURIComponent(scope)}:hash-new`;
+  const staleNamespace = `${encodeURIComponent(scope)}:hash-old`;
+  const otherScopeNamespace = `${encodeURIComponent("runtime-b")}:hash-new`;
+
+  const activePinsKey = __sidebarTest.sidebarStorageKey(__sidebarTest.SIDEBAR_PINS_STORAGE_PREFIX, activeNamespace);
+  const stalePinsKey = __sidebarTest.sidebarStorageKey(__sidebarTest.SIDEBAR_PINS_STORAGE_PREFIX, staleNamespace);
+  const staleSectionsKey = __sidebarTest.sidebarStorageKey(__sidebarTest.SECTION_COLLAPSE_STORAGE_PREFIX, staleNamespace);
+  const otherScopeKey = __sidebarTest.sidebarStorageKey(__sidebarTest.SUBGROUP_COLLAPSE_STORAGE_PREFIX, otherScopeNamespace);
+
+  __sidebarTest.writeSidebarStringSet(storage, activePinsKey, new Set(["identity:keep"]));
+  __sidebarTest.writeSidebarStringSet(storage, stalePinsKey, new Set(["identity:drop"]));
+  __sidebarTest.writeSidebarStringSet(storage, staleSectionsKey, new Set(["initiatives"]));
+  __sidebarTest.writeSidebarStringSet(storage, otherScopeKey, new Set(["[\"initiatives\",\"cto\"]"]));
+
+  __sidebarTest.pruneStaleSidebarStorage(storage, scope, activeNamespace);
+
+  assert.notEqual(storage.getItem(activePinsKey), null, "active key retained");
+  assert.equal(storage.getItem(stalePinsKey), null, "stale pins pruned");
+  assert.equal(storage.getItem(staleSectionsKey), null, "stale sections pruned");
+  assert.notEqual(storage.getItem(otherScopeKey), null, "other scope preserved");
 });

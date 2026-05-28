@@ -195,14 +195,20 @@ function sectionIconForGroup(group: string): string | null {
   return "i-folder";
 }
 
-function sidebarPinId(agent: ConsoleAgent): string {
+/**
+ * Durable pin identity for an agent. Prefers the stable identity (or the
+ * configured `labels.agent_identity`) so pins survive respawns, falling back to
+ * the volatile `member_id` only when no durable identity exists.
+ */
+export function sidebarAgentPinId(agent: ConsoleAgent): string {
   return agent.identity?.trim()
     || agent.labels?.agent_identity?.trim()
-    || agent.member_id;
+    || agent.member_id.trim();
 }
 
-function sidebarPinned(agent: ConsoleAgent, pinnedAgentIds: Set<string>): boolean {
-  return pinnedAgentIds.has(sidebarPinId(agent)) || pinnedAgentIds.has(agent.member_id);
+export function isAgentPinned(agent: ConsoleAgent, pinnedAgentIds: Set<string> | undefined): boolean {
+  if (!pinnedAgentIds) return false;
+  return pinnedAgentIds.has(sidebarAgentPinId(agent)) || pinnedAgentIds.has(agent.member_id);
 }
 
 export function buildSidebarViewState(args: {
@@ -214,8 +220,8 @@ export function buildSidebarViewState(args: {
   const { agents, selectedMemberId, pinnedAgentIds = new Set(), sortMode = "group" } = args;
 
   const sorted = [...agents].sort((a, b) => {
-    const aPinned = sidebarPinned(a, pinnedAgentIds) ? 0 : 1;
-    const bPinned = sidebarPinned(b, pinnedAgentIds) ? 0 : 1;
+    const aPinned = isAgentPinned(a, pinnedAgentIds) ? 0 : 1;
+    const bPinned = isAgentPinned(b, pinnedAgentIds) ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
 
     if (sortMode === "alpha") return a.label.localeCompare(b.label);
@@ -242,7 +248,7 @@ export function buildSidebarViewState(args: {
     meta: [{ id: "count", label: `${members.length}` }] as Array<{ id: string; label: string; tone?: ConsoleSidebarMetaTone }>,
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
-      const isPinned = sidebarPinned(agent, pinnedAgentIds);
+      const isPinned = isAgentPinned(agent, pinnedAgentIds);
       const watchFields = normalizeSidebarWatchFields(agent);
       return {
         id: agent.member_id,

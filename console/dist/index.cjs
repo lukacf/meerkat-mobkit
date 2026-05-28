@@ -2341,17 +2341,18 @@ function sectionIconForGroup(group) {
   if (lower.includes("personal") || lower.includes("identity")) return "i-team";
   return "i-folder";
 }
-function sidebarPinId(agent) {
-  return agent.identity?.trim() || agent.labels?.agent_identity?.trim() || agent.member_id;
+function sidebarAgentPinId(agent) {
+  return agent.identity?.trim() || agent.labels?.agent_identity?.trim() || agent.member_id.trim();
 }
-function sidebarPinned(agent, pinnedAgentIds) {
-  return pinnedAgentIds.has(sidebarPinId(agent)) || pinnedAgentIds.has(agent.member_id);
+function isAgentPinned(agent, pinnedAgentIds) {
+  if (!pinnedAgentIds) return false;
+  return pinnedAgentIds.has(sidebarAgentPinId(agent)) || pinnedAgentIds.has(agent.member_id);
 }
 function buildSidebarViewState(args) {
   const { agents, selectedMemberId, pinnedAgentIds = /* @__PURE__ */ new Set(), sortMode = "group" } = args;
   const sorted = [...agents].sort((a, b) => {
-    const aPinned = sidebarPinned(a, pinnedAgentIds) ? 0 : 1;
-    const bPinned = sidebarPinned(b, pinnedAgentIds) ? 0 : 1;
+    const aPinned = isAgentPinned(a, pinnedAgentIds) ? 0 : 1;
+    const bPinned = isAgentPinned(b, pinnedAgentIds) ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
     if (sortMode === "alpha") return a.label.localeCompare(b.label);
     if (sortMode === "status") {
@@ -2375,7 +2376,7 @@ function buildSidebarViewState(args) {
     meta: [{ id: "count", label: `${members.length}` }],
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
-      const isPinned = sidebarPinned(agent, pinnedAgentIds);
+      const isPinned = isAgentPinned(agent, pinnedAgentIds);
       const watchFields = normalizeSidebarWatchFields(agent);
       return {
         id: agent.member_id,
@@ -7738,8 +7739,14 @@ var SIDEBAR_ROW_HEIGHT = {
   agent: 72
 };
 var SIDEBAR_OVERSCAN_PX = 360;
+var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
 var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+var SIDEBAR_STORAGE_PREFIXES = [
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX
+];
 function sidebarStorageKey(prefix, namespace) {
   return `${prefix}:${namespace?.trim() || "default"}`;
 }
@@ -7770,6 +7777,23 @@ function localSidebarStorage() {
     return null;
   }
 }
+function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
+  if (!storage) return;
+  try {
+    const scopePrefix = encodeURIComponent(scope.trim());
+    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
+    const stale = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (!key || activeKeys.has(key)) continue;
+      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
+        stale.push(key);
+      }
+    }
+    for (const key of stale) storage.removeItem(key);
+  } catch {
+  }
+}
 function isWorkerish(a) {
   const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
   return haystack.includes("worker") || haystack.includes("delegate") || haystack.includes("helper");
@@ -7781,14 +7805,6 @@ function isCommanderLike(a) {
 }
 function agentKeys(a) {
   return [a?.identity, a?.member_id, a?.agent_id].filter((value) => Boolean(value)).map((value) => value.toLowerCase());
-}
-function sidebarAgentPinId(agent) {
-  return agent.identity?.trim() || agent.labels?.agent_identity?.trim() || agent.member_id.trim();
-}
-function isAgentPinned(agent, pinnedAgentIds) {
-  if (!pinnedAgentIds) return false;
-  const durableId = sidebarAgentPinId(agent);
-  return pinnedAgentIds.has(durableId) || pinnedAgentIds.has(agent.member_id);
 }
 function referenceMatchesAgentKey(reference, key) {
   const normalizedReference = reference.toLowerCase();
@@ -8473,6 +8489,7 @@ function Sidebar({
                 {
                   type: "button",
                   className: "sidebar__sec-head sidebar__sec-head--button",
+                  "aria-expanded": !row.collapsed,
                   onClick: () => {
                     setCollapsedSections((current) => {
                       const next = new Set(current);
@@ -8498,6 +8515,7 @@ function Sidebar({
                   type: "button",
                   className: "sidebar__subgroup sidebar__subgroup--button",
                   "data-collapsed": row.collapsed ? "true" : void 0,
+                  "aria-expanded": !row.collapsed,
                   "data-testid": `sidebar-subgroup-toggle:${row.bucket}:${row.label}`,
                   onClick: () => {
                     setCollapsedSubgroups((current) => {
@@ -10513,7 +10531,6 @@ function normalizeConsoleInspectResult(value) {
 }
 var DEFAULT_APPROVER_ID = "console-ops-lead";
 var DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
-var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 function createIdempotencyKey() {
   return createConsoleId("console");
 }
@@ -10547,11 +10564,13 @@ function sidebarAgentListConfigIdentity(experience) {
     sections
   }));
 }
-function sidebarPreferencesNamespace(baseUrl, experience) {
+function sidebarPreferencesScope(baseUrl, experience) {
   const runtimeId = experience?.runtime_id?.trim();
   const title = experience?.console_config?.title?.trim();
-  const scope = runtimeId || title || baseUrl;
-  return [scope, sidebarAgentListConfigIdentity(experience)].map((part) => encodeURIComponent(part)).join(":");
+  return runtimeId || title || baseUrl;
+}
+function sidebarPreferencesNamespace(baseUrl, experience) {
+  return [sidebarPreferencesScope(baseUrl, experience), sidebarAgentListConfigIdentity(experience)].map((part) => encodeURIComponent(part)).join(":");
 }
 function browserLocalStorage() {
   if (typeof window === "undefined") return null;
@@ -10678,6 +10697,10 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
+  const sidebarStorageScope = import_react22.default.useMemo(
+    () => sidebarPreferencesScope(baseUrl, experience),
+    [baseUrl, experience]
+  );
   const sidebarStorageNamespace = import_react22.default.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience]
@@ -10686,6 +10709,9 @@ function ConsoleApp({ baseUrl }) {
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace]
   );
+  import_react22.default.useEffect(() => {
+    pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
+  }, [sidebarStorageScope, sidebarStorageNamespace]);
   const [sidebarCollapsed, setSidebarCollapsed] = import_react22.default.useState(
     () => {
       try {
@@ -10741,8 +10767,12 @@ function ConsoleApp({ baseUrl }) {
     const pinId = sidebarAgentPinId(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
-      if (next.has(pinId)) next.delete(pinId);
-      else next.add(pinId);
+      if (next.has(pinId) || next.has(agent.member_id)) {
+        next.delete(pinId);
+        next.delete(agent.member_id);
+      } else {
+        next.add(pinId);
+      }
       writeSidebarStringSet(
         browserLocalStorage(),
         sidebarPinsStorageKey,

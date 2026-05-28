@@ -6,6 +6,9 @@ import type {
   ConsoleSidebarButtonConfig,
 } from "../types";
 import { Icon } from "../icon";
+import { isAgentPinned, sidebarAgentPinId } from "../lib/adapters";
+
+export { sidebarAgentPinId } from "../lib/adapters";
 
 export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health";
 
@@ -91,12 +94,26 @@ const SIDEBAR_ROW_HEIGHT = {
 } as const;
 
 const SIDEBAR_OVERSCAN_PX = 360;
+export const SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 const SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
 const SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+
+/** Every localStorage prefix the sidebar owns, used for namespace pruning. */
+const SIDEBAR_STORAGE_PREFIXES = [
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX,
+] as const;
 
 interface SidebarStorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+}
+
+interface SidebarEnumerableStorage {
+  readonly length: number;
+  key(index: number): string | null;
+  removeItem(key: string): void;
 }
 
 export function sidebarStorageKey(prefix: string, namespace: string | undefined): string {
@@ -134,6 +151,36 @@ function localSidebarStorage(): SidebarStorageLike | null {
   }
 }
 
+/**
+ * Remove sidebar preference keys that belong to the current scope but a stale
+ * config-identity namespace. The namespace embeds a hash of the grouping
+ * config, so editing the config orphans the previous keys; this keeps the
+ * current scope from accumulating dead entries while preserving the keys of
+ * other runtimes/scopes.
+ */
+export function pruneStaleSidebarStorage(
+  storage: SidebarEnumerableStorage | null | undefined,
+  scope: string,
+  activeNamespace: string,
+): void {
+  if (!storage) return;
+  try {
+    const scopePrefix = encodeURIComponent(scope.trim());
+    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
+    const stale: string[] = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (!key || activeKeys.has(key)) continue;
+      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
+        stale.push(key);
+      }
+    }
+    for (const key of stale) storage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 function isWorkerish(a: ConsoleAgent): boolean {
   const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
   return (
@@ -153,18 +200,6 @@ function agentKeys(a: ConsoleAgent | null): string[] {
   return [a?.identity, a?.member_id, a?.agent_id]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
-}
-
-export function sidebarAgentPinId(agent: ConsoleAgent): string {
-  return agent.identity?.trim()
-    || agent.labels?.agent_identity?.trim()
-    || agent.member_id.trim();
-}
-
-function isAgentPinned(agent: ConsoleAgent, pinnedAgentIds: Set<string> | undefined): boolean {
-  if (!pinnedAgentIds) return false;
-  const durableId = sidebarAgentPinId(agent);
-  return pinnedAgentIds.has(durableId) || pinnedAgentIds.has(agent.member_id);
 }
 
 function referenceMatchesAgentKey(reference: string, key: string): boolean {
@@ -268,6 +303,11 @@ export const __sidebarTest = {
   collapsedSubgroupsForStorage,
   sidebarSubgroupStorageId,
   buildSidebarVirtualRows,
+  isAgentPinned,
+  pruneStaleSidebarStorage,
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX,
 };
 
 function bucketOf(a: ConsoleAgent): Bucket {
@@ -980,6 +1020,7 @@ export function Sidebar({
                     <button
                       type="button"
                       className="sidebar__sec-head sidebar__sec-head--button"
+                      aria-expanded={!row.collapsed}
                       onClick={() => {
                         setCollapsedSections((current) => {
                           const next = new Set(current);
@@ -1006,6 +1047,7 @@ export function Sidebar({
                     type="button"
                     className="sidebar__subgroup sidebar__subgroup--button"
                     data-collapsed={row.collapsed ? "true" : undefined}
+                    aria-expanded={!row.collapsed}
                     data-testid={`sidebar-subgroup-toggle:${row.bucket}:${row.label}`}
                     onClick={() => {
                       setCollapsedSubgroups((current) => {

@@ -76,10 +76,12 @@ import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
 import {
   Sidebar as DesignSidebar,
   normalizeNavKind,
+  pruneStaleSidebarStorage,
   readSidebarStringSet,
   sidebarAgentPinId,
   sidebarStorageKey,
   writeSidebarStringSet,
+  SIDEBAR_PINS_STORAGE_PREFIX,
   type NavKind,
 } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
@@ -241,7 +243,6 @@ function normalizeConsoleInspectResult(
 
 const DEFAULT_APPROVER_ID = "console-ops-lead";
 const DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
-const SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 
 function createIdempotencyKey(): string {
   return createConsoleId("console");
@@ -283,14 +284,20 @@ function sidebarAgentListConfigIdentity(experience: ConsoleExperience | null): s
   }));
 }
 
-function sidebarPreferencesNamespace(
+function sidebarPreferencesScope(
   baseUrl: string,
   experience: ConsoleExperience | null,
 ): string {
   const runtimeId = experience?.runtime_id?.trim();
   const title = experience?.console_config?.title?.trim();
-  const scope = runtimeId || title || baseUrl;
-  return [scope, sidebarAgentListConfigIdentity(experience)]
+  return runtimeId || title || baseUrl;
+}
+
+function sidebarPreferencesNamespace(
+  baseUrl: string,
+  experience: ConsoleExperience | null,
+): string {
+  return [sidebarPreferencesScope(baseUrl, experience), sidebarAgentListConfigIdentity(experience)]
     .map((part) => encodeURIComponent(part))
     .join(":");
 }
@@ -442,6 +449,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
+  const sidebarStorageScope = React.useMemo(
+    () => sidebarPreferencesScope(baseUrl, experience),
+    [baseUrl, experience],
+  );
   const sidebarStorageNamespace = React.useMemo(
     () => sidebarPreferencesNamespace(baseUrl, experience),
     [baseUrl, experience],
@@ -450,6 +461,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
     [sidebarStorageNamespace],
   );
+  React.useEffect(() => {
+    pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
+  }, [sidebarStorageScope, sidebarStorageNamespace]);
 
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(
     () => {
@@ -511,8 +525,15 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     const pinId = sidebarAgentPinId(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
-      if (next.has(pinId)) next.delete(pinId);
-      else next.add(pinId);
+      // Pins are matched on either the durable id or the volatile member_id, so
+      // unpinning must clear both forms; otherwise a default/legacy member_id
+      // pin would survive and the toggle would silently re-pin.
+      if (next.has(pinId) || next.has(agent.member_id)) {
+        next.delete(pinId);
+        next.delete(agent.member_id);
+      } else {
+        next.add(pinId);
+      }
       writeSidebarStringSet(
         browserLocalStorage(),
         sidebarPinsStorageKey,
