@@ -12,7 +12,10 @@ use meerkat_mob::{
     WorkSpec,
 };
 
-use crate::mob_handle_runtime::{content_input_has_images, model_capabilities_for_member};
+use crate::mob_handle_runtime::{
+    content_input_has_images, is_previous_member_cleanup_ambiguous_error,
+    is_recoverable_lifecycle_cleanup_error, model_capabilities_for_member,
+};
 
 use super::adapters::{ContinuitySessionStoreAdapter, SessionRuntimeState};
 use super::types::{
@@ -29,13 +32,13 @@ fn is_missing_bridge_session_snapshot_error(error: &str) -> bool {
 }
 
 fn is_repairable_bridge_delivery_error(error: &str) -> bool {
-    is_missing_event_injector_error(error) || is_missing_bridge_session_snapshot_error(error)
+    is_missing_event_injector_error(error)
+        || is_missing_bridge_session_snapshot_error(error)
+        || is_previous_member_cleanup_ambiguous_error(error)
 }
 
-fn is_archive_not_found_cleanup_error(error: &str) -> bool {
-    error.contains("disposal completed but ArchiveSession failed")
-        && error.contains("cancel-before-retire failed")
-        && error.contains("Runtime not ready: running")
+fn is_recoverable_bridge_respawn_cleanup_error(error: &str) -> bool {
+    is_recoverable_lifecycle_cleanup_error(error)
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +522,9 @@ impl SessionBridge for MobSessionBridge {
                 match self.handle.respawn(mid.clone(), None).await {
                     Ok(_) => {}
                     Err(respawn_err)
-                        if is_archive_not_found_cleanup_error(&respawn_err.to_string()) =>
+                        if is_recoverable_bridge_respawn_cleanup_error(
+                            &respawn_err.to_string(),
+                        ) =>
                     {
                         if self.handle.get_member(&mid).await.is_none()
                             && let Some(entry) = member_entry_before_delivery
@@ -588,7 +593,9 @@ impl SessionBridge for MobSessionBridge {
                 match self.handle.respawn(mid.clone(), None).await {
                     Ok(_) => {}
                     Err(respawn_err)
-                        if is_archive_not_found_cleanup_error(&respawn_err.to_string()) =>
+                        if is_recoverable_bridge_respawn_cleanup_error(
+                            &respawn_err.to_string(),
+                        ) =>
                     {
                         if self.handle.get_member(&mid).await.is_none()
                             && let Some(entry) = member_entry_before_delivery
@@ -649,7 +656,7 @@ impl SessionBridge for MobSessionBridge {
         let mid = MeerkatId::from(runtime_id.as_str());
         match self.handle.retire(mid).await {
             Ok(()) => Ok(()),
-            Err(err) if is_archive_not_found_cleanup_error(&err.to_string()) => Ok(()),
+            Err(err) if is_recoverable_lifecycle_cleanup_error(&err.to_string()) => Ok(()),
             Err(err) => Err(BridgeError::Mob(err.to_string())),
         }
     }
@@ -901,6 +908,12 @@ mod tests {
         assert!(
             is_repairable_bridge_delivery_error("missing event injector capability for member"),
             "existing stale event-injector repair path must remain covered"
+        );
+        assert!(
+            is_repairable_bridge_delivery_error(
+                "previous member cleanup ambiguous for member rt:deep-investigator:singleton:0"
+            ),
+            "ambiguous Meerkat respawn cleanup should trigger bridge repair instead of failing delivery"
         );
         assert!(
             !is_repairable_bridge_delivery_error("model provider returned rate limit"),

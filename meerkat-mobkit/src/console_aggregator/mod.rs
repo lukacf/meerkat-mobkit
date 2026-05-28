@@ -20,7 +20,8 @@ use tokio::sync::{Semaphore, broadcast};
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
 use crate::mob_handle_runtime::{
-    MobRuntime, MobRuntimeError, assert_member_accepts_images, send_message_on_mob_with_mode,
+    MobRuntime, MobRuntimeError, assert_member_accepts_images,
+    is_recoverable_lifecycle_cleanup_error, send_message_on_mob_with_mode,
 };
 use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
@@ -2110,9 +2111,7 @@ async fn retire_stale_console_members_for_runtime_entry(
 }
 
 fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
-    error.contains("disposal completed but ArchiveSession failed")
-        && error.contains("cancel-before-retire failed")
-        && error.contains("Runtime not ready: running")
+    is_recoverable_lifecycle_cleanup_error(error)
 }
 
 fn explicit_identity_query_needs_session_history_backfill(frames: &[ConsoleFrame]) -> bool {
