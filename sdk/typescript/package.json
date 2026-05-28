@@ -1,6 +1,6 @@
 {
   "name": "@rkat/mobkit-sdk",
-  "version": "0.6.51",
+  "version": "0.6.52",
   "description": "MobKit TypeScript SDK — companion orchestration for the Meerkat agent runtime",
   "type": "module",
   "main": "./dist/index.js",
