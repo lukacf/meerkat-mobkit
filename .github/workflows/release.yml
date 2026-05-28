@@ -76,7 +76,7 @@ jobs:
             target: aarch64-apple-darwin
             archive_ext: tar.gz
             cargo_jobs: 0
-          - runs-on: macos-15-large
+          - runs-on: macos-15-intel
             target: x86_64-apple-darwin
             archive_ext: tar.gz
             cargo_jobs: 0
