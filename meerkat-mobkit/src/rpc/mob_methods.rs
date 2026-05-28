@@ -10,16 +10,15 @@ use serde_json::Value;
 
 use crate::blob_store::is_valid_blob_id_value;
 use crate::mob_handle_runtime::{
-    assert_member_accepts_images, member_entry_to_json, send_message_on_mob_with_mode,
+    assert_member_accepts_images, is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
+    send_message_on_mob_with_mode,
 };
 use crate::unified_runtime::UnifiedRuntime;
 
 use super::{JSONRPC_VERSION, JsonRpcError, JsonRpcResponse};
 
 pub(super) fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
-    error.contains("disposal completed but ArchiveSession failed")
-        && error.contains("cancel-before-retire failed")
-        && error.contains("Runtime not ready: running")
+    is_recoverable_lifecycle_cleanup_error(error)
 }
 
 /// Parse HelperOptions from an optional JSON "options" object.
@@ -2163,10 +2162,10 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_archive_cleanup_completed_rejects_ambiguous_cleanup() {
+    fn lifecycle_archive_cleanup_completed_accepts_ambiguous_cleanup() {
         let error = "previous member cleanup ambiguous for member rt:review:singleton:0";
 
-        assert!(!lifecycle_archive_cleanup_completed(error));
+        assert!(lifecycle_archive_cleanup_completed(error));
     }
 
     #[test]

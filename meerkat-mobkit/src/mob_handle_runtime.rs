@@ -31,6 +31,17 @@ use crate::blob_store::{
 pub(crate) const DELEGATE_IDLE_RETIRE_SECS_LABEL: &str = "implicit_delegate_idle_retire_secs";
 pub(crate) const DELEGATE_IDLE_RETIRE_DISABLED_LABEL: &str = "disabled";
 
+pub(crate) fn is_previous_member_cleanup_ambiguous_error(error: &str) -> bool {
+    error.contains("previous member cleanup ambiguous for member ")
+}
+
+pub(crate) fn is_recoverable_lifecycle_cleanup_error(error: &str) -> bool {
+    is_previous_member_cleanup_ambiguous_error(error)
+        || (error.contains("disposal completed but ArchiveSession failed")
+            && error.contains("cancel-before-retire failed")
+            && error.contains("Runtime not ready: running"))
+}
+
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
@@ -4668,5 +4679,32 @@ image_generation = true
         hook.before_create(&mut req).await.unwrap();
         assert_eq!(req.model, "hook-overridden");
         assert_eq!(req.system_prompt.as_deref(), Some("injected by hook"));
+    }
+
+    #[test]
+    fn recoverable_lifecycle_cleanup_accepts_ambiguous_member_cleanup() {
+        let error = "previous member cleanup ambiguous for member rt:deep-investigator:singleton:0";
+
+        assert!(is_previous_member_cleanup_ambiguous_error(error));
+        assert!(is_recoverable_lifecycle_cleanup_error(error));
+    }
+
+    #[test]
+    fn recoverable_lifecycle_cleanup_preserves_archive_cancel_race() {
+        let error = "internal error: disposal completed but ArchiveSession failed: \
+            session error: agent error: Internal error: runtime cancel-before-retire failed \
+            for 019e3c52-0f1b-73d3-a5c7-4b21c2bbf131: Runtime not ready: running";
+
+        assert!(is_recoverable_lifecycle_cleanup_error(error));
+    }
+
+    #[test]
+    fn recoverable_lifecycle_cleanup_rejects_unrelated_errors() {
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "actor task dropped"
+        ));
+        assert!(!is_recoverable_lifecycle_cleanup_error(
+            "model provider returned rate limit"
+        ));
     }
 }

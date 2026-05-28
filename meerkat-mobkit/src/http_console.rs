@@ -18,7 +18,8 @@ use meerkat_mob::runtime::reconcile::MemberFilter;
 use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
 
 use crate::mob_handle_runtime::{
-    member_entry_to_json, model_capabilities_for_member_entry, model_capabilities_for_role,
+    is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
+    model_capabilities_for_member_entry, model_capabilities_for_role,
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -2830,9 +2831,7 @@ fn console_identity_inspect_json_from_record(
 }
 
 fn lifecycle_archive_cleanup_completed(error: &str) -> bool {
-    error.contains("disposal completed but ArchiveSession failed")
-        && error.contains("cancel-before-retire failed")
-        && error.contains("Runtime not ready: running")
+    is_recoverable_lifecycle_cleanup_error(error)
 }
 
 async fn respawn_console_member(
