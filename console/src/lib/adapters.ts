@@ -195,6 +195,16 @@ function sectionIconForGroup(group: string): string | null {
   return "i-folder";
 }
 
+function sidebarPinId(agent: ConsoleAgent): string {
+  return agent.identity?.trim()
+    || agent.labels?.agent_identity?.trim()
+    || agent.member_id;
+}
+
+function sidebarPinned(agent: ConsoleAgent, pinnedAgentIds: Set<string>): boolean {
+  return pinnedAgentIds.has(sidebarPinId(agent)) || pinnedAgentIds.has(agent.member_id);
+}
+
 export function buildSidebarViewState(args: {
   agents: ConsoleAgent[];
   selectedMemberId: string;
@@ -204,8 +214,8 @@ export function buildSidebarViewState(args: {
   const { agents, selectedMemberId, pinnedAgentIds = new Set(), sortMode = "group" } = args;
 
   const sorted = [...agents].sort((a, b) => {
-    const aPinned = pinnedAgentIds.has(a.member_id) ? 0 : 1;
-    const bPinned = pinnedAgentIds.has(b.member_id) ? 0 : 1;
+    const aPinned = sidebarPinned(a, pinnedAgentIds) ? 0 : 1;
+    const bPinned = sidebarPinned(b, pinnedAgentIds) ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
 
     if (sortMode === "alpha") return a.label.localeCompare(b.label);
@@ -232,7 +242,7 @@ export function buildSidebarViewState(args: {
     meta: [{ id: "count", label: `${members.length}` }] as Array<{ id: string; label: string; tone?: ConsoleSidebarMetaTone }>,
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
-      const isPinned = pinnedAgentIds.has(agent.member_id);
+      const isPinned = sidebarPinned(agent, pinnedAgentIds);
       const watchFields = normalizeSidebarWatchFields(agent);
       return {
         id: agent.member_id,

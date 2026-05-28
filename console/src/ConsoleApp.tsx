@@ -76,6 +76,10 @@ import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
 import {
   Sidebar as DesignSidebar,
   normalizeNavKind,
+  readSidebarStringSet,
+  sidebarAgentPinId,
+  sidebarStorageKey,
+  writeSidebarStringSet,
   type NavKind,
 } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
@@ -237,6 +241,7 @@ function normalizeConsoleInspectResult(
 
 const DEFAULT_APPROVER_ID = "console-ops-lead";
 const DOCK_LAYOUT_STORAGE_PREFIX = "mobkit-console-dock-state";
+const SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 
 function createIdempotencyKey(): string {
   return createConsoleId("console");
@@ -249,6 +254,54 @@ function dockLayoutStorageKey(
   const runtimeId = experience?.runtime_id?.trim();
   const title = experience?.console_config?.title?.trim();
   return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
+}
+
+function stableHash(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function sidebarAgentListConfigIdentity(experience: ConsoleExperience | null): string {
+  const agentList = experience?.console_config?.agent_list;
+  if (!agentList) return "no-agent-list";
+  const sections = (agentList.sections || []).map((section) => ({
+    name: section.name,
+    empty_title: section.empty_title,
+    empty_text: section.empty_text,
+  }));
+  return stableHash(JSON.stringify({
+    group_by: agentList.group_by || [],
+    subgroup_by: agentList.subgroup_by || [],
+    section_order: agentList.section_order || [],
+    fallback_group: agentList.fallback_group || "",
+    fallback_subgroup: agentList.fallback_subgroup || "",
+    collapse_single_subgroup: agentList.collapse_single_subgroup !== false,
+    sections,
+  }));
+}
+
+function sidebarPreferencesNamespace(
+  baseUrl: string,
+  experience: ConsoleExperience | null,
+): string {
+  const runtimeId = experience?.runtime_id?.trim();
+  const title = experience?.console_config?.title?.trim();
+  const scope = runtimeId || title || baseUrl;
+  return [scope, sidebarAgentListConfigIdentity(experience)]
+    .map((part) => encodeURIComponent(part))
+    .join(":");
+}
+
+function browserLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
 }
 
 function cursorSeq(cursor: string | undefined): number | null {
@@ -389,6 +442,14 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
+  const sidebarStorageNamespace = React.useMemo(
+    () => sidebarPreferencesNamespace(baseUrl, experience),
+    [baseUrl, experience],
+  );
+  const sidebarPinsStorageKey = React.useMemo(
+    () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
+    [sidebarStorageNamespace],
+  );
 
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(
     () => {
@@ -432,6 +493,34 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       return next;
     });
   }, []);
+
+  const defaultPinnedAgentIdsKey = React.useMemo(
+    () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
+    [experience?.console_config?.agent_list?.default_pinned_agent_ids],
+  );
+  React.useEffect(() => {
+    const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
+    const stored = readSidebarStringSet(
+      browserLocalStorage(),
+      sidebarPinsStorageKey,
+    );
+    setPinnedAgentIds(stored ?? defaults);
+  }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
+
+  const togglePinnedAgent = React.useCallback((agent: ConsoleAgent) => {
+    const pinId = sidebarAgentPinId(agent);
+    setPinnedAgentIds((current) => {
+      const next = new Set(current);
+      if (next.has(pinId)) next.delete(pinId);
+      else next.add(pinId);
+      writeSidebarStringSet(
+        browserLocalStorage(),
+        sidebarPinsStorageKey,
+        next,
+      );
+      return next;
+    });
+  }, [sidebarPinsStorageKey]);
 
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
@@ -2931,7 +3020,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           visibleControls={visibleControls}
           customButtons={experience?.console_config?.sidebar?.buttons}
           grouping={experience?.console_config?.agent_list}
+          storageNamespace={sidebarStorageNamespace}
+          pinnedAgentIds={pinnedAgentIds}
           onSelect={(a) => openAgentChat(a)}
+          onTogglePinnedAgent={togglePinnedAgent}
           onOpenControl={(kind) => {
             dock.openTarget(buildControlTarget(kind), "replace_focused");
           }}

@@ -5,6 +5,7 @@ import type {
   ConsoleFrame,
   ConsoleSidebarButtonConfig,
 } from "../types";
+import { Icon } from "../icon";
 
 export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health";
 
@@ -16,7 +17,10 @@ interface SidebarProps {
   visibleControls?: NavKind[];
   customButtons?: ConsoleSidebarButtonConfig[];
   grouping?: ConsoleAgentListConfig;
+  storageNamespace?: string;
+  pinnedAgentIds?: Set<string>;
   onSelect: (agent: ConsoleAgent) => void;
+  onTogglePinnedAgent?: (agent: ConsoleAgent) => void;
   onOpenControl: (kind: NavKind) => void;
 }
 
@@ -76,7 +80,7 @@ interface AgentRow {
 type SidebarVirtualRow =
   | { kind: "section"; key: string; bucket: string; count: number; collapsed: boolean }
   | { kind: "empty"; key: string; bucket: string; sectionConfig: ReturnType<typeof sectionConfigFor> }
-  | { kind: "subgroup"; key: string; bucket: string; label: string }
+  | { kind: "subgroup"; key: string; bucket: string; label: string; count: number; collapsed: boolean; storageKey: string }
   | { kind: "agent"; key: string; bucket: string; row: AgentRow };
 
 const SIDEBAR_ROW_HEIGHT = {
@@ -87,6 +91,48 @@ const SIDEBAR_ROW_HEIGHT = {
 } as const;
 
 const SIDEBAR_OVERSCAN_PX = 360;
+const SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
+const SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+
+interface SidebarStorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export function sidebarStorageKey(prefix: string, namespace: string | undefined): string {
+  return `${prefix}:${namespace?.trim() || "default"}`;
+}
+
+export function readSidebarStringSet(storage: SidebarStorageLike | null | undefined, key: string): Set<string> | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0));
+  } catch {
+    return null;
+  }
+}
+
+export function writeSidebarStringSet(storage: SidebarStorageLike | null | undefined, key: string, value: Set<string>): void {
+  if (!storage) return;
+  try {
+    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+  } catch {
+    /* ignore */
+  }
+}
+
+function localSidebarStorage(): SidebarStorageLike | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 
 function isWorkerish(a: ConsoleAgent): boolean {
   const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
@@ -107,6 +153,18 @@ function agentKeys(a: ConsoleAgent | null): string[] {
   return [a?.identity, a?.member_id, a?.agent_id]
     .filter((value): value is string => Boolean(value))
     .map((value) => value.toLowerCase());
+}
+
+export function sidebarAgentPinId(agent: ConsoleAgent): string {
+  return agent.identity?.trim()
+    || agent.labels?.agent_identity?.trim()
+    || agent.member_id.trim();
+}
+
+function isAgentPinned(agent: ConsoleAgent, pinnedAgentIds: Set<string> | undefined): boolean {
+  if (!pinnedAgentIds) return false;
+  const durableId = sidebarAgentPinId(agent);
+  return pinnedAgentIds.has(durableId) || pinnedAgentIds.has(agent.member_id);
 }
 
 function referenceMatchesAgentKey(reference: string, key: string): boolean {
@@ -143,6 +201,7 @@ function isWiredTo(a: ConsoleAgent, host: ConsoleAgent | null): boolean {
 function isSpawnedDelegateLike(a: ConsoleAgent, host: ConsoleAgent | null): boolean {
   if (!isWorkerish(a)) return false;
   if (isWiredTo(a, host)) return true;
+  if (a.labels?.group?.trim() || a.labels?.console_group?.trim()) return false;
 
   const role = (a.role || "").toLowerCase();
   const group = (a.group || "").toLowerCase();
@@ -197,9 +256,18 @@ export const __sidebarTest = {
   isSpawnedDelegateLike,
   findSpawnHost,
   groupSidebarAgents,
+  orderedSectionNames,
   configuredAgentGroup,
   configuredAgentSubgroup,
   configuredAgentBadges,
+  sidebarAgentPinId,
+  sidebarStorageKey,
+  readSidebarStringSet,
+  writeSidebarStringSet,
+  collapsedSectionsForStorage,
+  collapsedSubgroupsForStorage,
+  sidebarSubgroupStorageId,
+  buildSidebarVirtualRows,
 };
 
 function bucketOf(a: ConsoleAgent): Bucket {
@@ -430,6 +498,130 @@ function sectionConfigFor(name: string, config?: ConsoleAgentListConfig) {
   return (config?.sections || []).find((section) => section.name?.toLowerCase() === needle) || null;
 }
 
+function defaultCollapsedSections(config?: ConsoleAgentListConfig): Set<string> {
+  return new Set((config?.sections || [])
+    .filter((section) => section.collapsed === true)
+    .map((section) => section.name));
+}
+
+function collapsedSectionsForStorage(
+  config: ConsoleAgentListConfig | undefined,
+  storageKey: string,
+  storage: SidebarStorageLike | null | undefined = localSidebarStorage(),
+): Set<string> {
+  return readSidebarStringSet(storage, storageKey) ?? defaultCollapsedSections(config);
+}
+
+function collapsedSubgroupsForStorage(
+  storageKey: string,
+  storage: SidebarStorageLike | null | undefined = localSidebarStorage(),
+): Set<string> {
+  return readSidebarStringSet(storage, storageKey) ?? new Set();
+}
+
+function sidebarSubgroupStorageId(bucket: string, subgroup: string): string {
+  return JSON.stringify([bucket, subgroup]);
+}
+
+function pinnedOrderedRows(rows: AgentRow[], pinnedAgentIds: Set<string> | undefined): AgentRow[] {
+  const ordered: AgentRow[] = [];
+  let segment: Array<{ row: AgentRow; index: number }> = [];
+  let currentSubgroup: string | null | undefined;
+  const flush = () => {
+    segment.sort((a, b) => {
+      const aPinned = isAgentPinned(a.row.agent, pinnedAgentIds);
+      const bPinned = isAgentPinned(b.row.agent, pinnedAgentIds);
+      if (aPinned !== bPinned) return aPinned ? -1 : 1;
+      return a.index - b.index;
+    });
+    ordered.push(...segment.map((item) => item.row));
+    segment = [];
+  };
+  rows.forEach((row, index) => {
+    if (segment.length > 0 && row.subgroup !== currentSubgroup) flush();
+    currentSubgroup = row.subgroup;
+    segment.push({ row, index });
+  });
+  flush();
+  return ordered;
+}
+
+function buildSidebarVirtualRows(args: {
+  sectionNames: string[];
+  grouped: Map<string, AgentRow[]>;
+  grouping?: ConsoleAgentListConfig;
+  collapsedSections: Set<string>;
+  collapsedSubgroups: Set<string>;
+  pinnedAgentIds?: Set<string>;
+  searchActive?: boolean;
+}): SidebarVirtualRow[] {
+  const rows: SidebarVirtualRow[] = [];
+  for (const bucket of args.sectionNames) {
+    const list = args.grouped.get(bucket) || [];
+    const sectionConfig = sectionConfigFor(bucket, args.grouping);
+    if (list.length === 0 && !sectionConfig) continue;
+    const collapsedSection = args.searchActive ? false : args.collapsedSections.has(bucket);
+    rows.push({
+      kind: "section",
+      key: `section:${bucket}`,
+      bucket,
+      count: list.length,
+      collapsed: collapsedSection,
+    });
+    if (collapsedSection) continue;
+    if (list.length === 0) {
+      rows.push({
+        kind: "empty",
+        key: `empty:${bucket}`,
+        bucket,
+        sectionConfig,
+      });
+      continue;
+    }
+
+    const orderedList = pinnedOrderedRows(list, args.pinnedAgentIds);
+    const subgroups = new Set(orderedList.map((row) => row.subgroup).filter((value): value is string => Boolean(value)));
+    const showSubgroups = configuredSelectors(args.grouping, "subgroup_by").length > 0
+      && subgroups.size > (args.grouping?.collapse_single_subgroup === false ? 0 : 1);
+    const subgroupCounts = new Map<string, number>();
+    for (const row of orderedList) {
+      if (!row.subgroup) continue;
+      subgroupCounts.set(row.subgroup, (subgroupCounts.get(row.subgroup) || 0) + 1);
+    }
+
+    let lastSubgroup: string | null = null;
+    let currentSubgroupCollapsed = false;
+    for (const row of orderedList) {
+      if (showSubgroups && !row.subgroup) {
+        lastSubgroup = null;
+        currentSubgroupCollapsed = false;
+      }
+      if (showSubgroups && row.subgroup && row.subgroup !== lastSubgroup) {
+        lastSubgroup = row.subgroup;
+        const storageKey = sidebarSubgroupStorageId(bucket, row.subgroup);
+        currentSubgroupCollapsed = args.searchActive ? false : args.collapsedSubgroups.has(storageKey);
+        rows.push({
+          kind: "subgroup",
+          key: `subgroup:${bucket}:${row.subgroup}`,
+          bucket,
+          label: row.subgroup,
+          count: subgroupCounts.get(row.subgroup) || 0,
+          collapsed: currentSubgroupCollapsed,
+          storageKey,
+        });
+      }
+      if (currentSubgroupCollapsed) continue;
+      rows.push({
+        kind: "agent",
+        key: `agent:${row.agent.member_id}`,
+        bucket,
+        row,
+      });
+    }
+  }
+  return rows;
+}
+
 function deriveStateAttr(agent: ConsoleAgent): "active" | "degraded" | "retired" {
   const state = (agent.state || "").toLowerCase();
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
@@ -496,13 +688,16 @@ function renderAgentRow(
   selectedMemberId: string,
   recentActivity: ConsoleFrame[],
   grouping: ConsoleAgentListConfig | undefined,
+  pinnedAgentIds: Set<string> | undefined,
   onSelect: (agent: ConsoleAgent) => void,
+  onTogglePinnedAgent: ((agent: ConsoleAgent) => void) | undefined,
 ): React.JSX.Element {
   const { agent, childOfHost, depth } = row;
   const stateAttr = deriveStateAttr(agent);
   const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
   const inbox = inboxCount(agent);
   const badges = configuredAgentBadges(agent, grouping);
+  const pinned = isAgentPinned(agent, pinnedAgentIds);
   return (
     <div
       className={`agent ${childOfHost ? "agent--child" : ""} ${agent.member_id === selectedMemberId ? "is-active" : ""}`}
@@ -540,6 +735,26 @@ function renderAgentRow(
           </span>
         ) : null}
       </span>
+      <span className="agent__actions">
+        {onTogglePinnedAgent ? (
+          <button
+            type="button"
+            className="agent__pin"
+            data-active={pinned ? "true" : undefined}
+            aria-label={pinned ? `Unpin ${agent.label}` : `Pin ${agent.label}`}
+            aria-pressed={pinned}
+            title={pinned ? "Unpin agent" : "Pin agent"}
+            data-testid={`sidebar-agent-pin:${agent.member_id}`}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onTogglePinnedAgent(agent);
+            }}
+          >
+            <Icon name="i-pin" className="agent__pin-icon" />
+          </button>
+        ) : null}
+      </span>
       <span className="agent__meta">
         <span className="agent__pulse">
           {pulse.map((v, i) => (
@@ -565,7 +780,10 @@ export function Sidebar({
   visibleControls,
   customButtons,
   grouping,
+  storageNamespace,
+  pinnedAgentIds,
   onSelect,
+  onTogglePinnedAgent,
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
@@ -596,64 +814,41 @@ export function Sidebar({
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
     [grouping?.sections],
   );
+  const sectionCollapseStorageKey = React.useMemo(
+    () => sidebarStorageKey(SECTION_COLLAPSE_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace],
+  );
+  const subgroupCollapseStorageKey = React.useMemo(
+    () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace],
+  );
   const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(() => {
-    return new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name));
+    return collapsedSectionsForStorage(grouping, sectionCollapseStorageKey);
   });
   React.useEffect(() => {
-    setCollapsedSections(new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name)));
-  }, [defaultCollapsedKey]);
+    setCollapsedSections(collapsedSectionsForStorage(grouping, sectionCollapseStorageKey));
+  }, [defaultCollapsedKey, grouping, sectionCollapseStorageKey]);
+  const [collapsedSubgroups, setCollapsedSubgroups] = React.useState<Set<string>>(() => {
+    return collapsedSubgroupsForStorage(subgroupCollapseStorageKey);
+  });
+  React.useEffect(() => {
+    setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
+  }, [subgroupCollapseStorageKey]);
   const customSidebarButtons = React.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons],
   );
   const virtualRows = React.useMemo<SidebarVirtualRow[]>(() => {
-    const rows: SidebarVirtualRow[] = [];
-    for (const bucket of sectionNames) {
-      const list = grouped.get(bucket) || [];
-      const sectionConfig = sectionConfigFor(bucket, grouping);
-      if (list.length === 0 && !sectionConfig) continue;
-      const collapsedSection = q ? false : collapsedSections.has(bucket);
-      rows.push({
-        kind: "section",
-        key: `section:${bucket}`,
-        bucket,
-        count: list.length,
-        collapsed: collapsedSection,
-      });
-      if (collapsedSection) continue;
-      if (list.length === 0) {
-        rows.push({
-          kind: "empty",
-          key: `empty:${bucket}`,
-          bucket,
-          sectionConfig,
-        });
-        continue;
-      }
-      const subgroups = new Set(list.map((row) => row.subgroup).filter((value): value is string => Boolean(value)));
-      const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0
-        && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
-      let lastSubgroup: string | null = null;
-      for (const row of list) {
-        if (showSubgroups && row.subgroup && row.subgroup !== lastSubgroup) {
-          lastSubgroup = row.subgroup;
-          rows.push({
-            kind: "subgroup",
-            key: `subgroup:${bucket}:${row.subgroup}`,
-            bucket,
-            label: row.subgroup,
-          });
-        }
-        rows.push({
-          kind: "agent",
-          key: `agent:${row.agent.member_id}`,
-          bucket,
-          row,
-        });
-      }
-    }
-    return rows;
-  }, [sectionNames, grouped, grouping, collapsedSections]);
+    return buildSidebarVirtualRows({
+      sectionNames,
+      grouped,
+      grouping,
+      collapsedSections,
+      collapsedSubgroups,
+      pinnedAgentIds,
+      searchActive: Boolean(q),
+    });
+  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, q]);
   const virtualOffsets = React.useMemo(() => {
     const offsets: number[] = [];
     let total = 0;
@@ -790,6 +985,7 @@ export function Sidebar({
                           const next = new Set(current);
                           if (next.has(row.bucket)) next.delete(row.bucket);
                           else next.add(row.bucket);
+                          writeSidebarStringSet(localSidebarStorage(), sectionCollapseStorageKey, next);
                           return next;
                         });
                       }}
@@ -806,11 +1002,27 @@ export function Sidebar({
                     <span>{row.sectionConfig?.empty_text || "No agents in this section."}</span>
                   </div>
                 ) : row.kind === "subgroup" ? (
-                  <div className="sidebar__subgroup">
+                  <button
+                    type="button"
+                    className="sidebar__subgroup sidebar__subgroup--button"
+                    data-collapsed={row.collapsed ? "true" : undefined}
+                    data-testid={`sidebar-subgroup-toggle:${row.bucket}:${row.label}`}
+                    onClick={() => {
+                      setCollapsedSubgroups((current) => {
+                        const next = new Set(current);
+                        if (next.has(row.storageKey)) next.delete(row.storageKey);
+                        else next.add(row.storageKey);
+                        writeSidebarStringSet(localSidebarStorage(), subgroupCollapseStorageKey, next);
+                        return next;
+                      });
+                    }}
+                  >
                     <span>{row.label}</span>
-                  </div>
+                    <span className="sidebar__sec-spacer" />
+                    <span className="sidebar__sec-count">{row.count}</span>
+                  </button>
                 ) : (
-                  renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, onSelect)
+                  renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent)
                 )}
               </div>
             );
