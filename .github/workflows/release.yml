@@ -99,6 +99,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${{ matrix.target }}" == "x86_64-pc-windows-msvc" ]]; then
+            export CARGO_PROFILE_RELEASE_OPT_LEVEL=1
+            export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=256
+          fi
           if [[ "${{ matrix.cargo_jobs }}" != "0" ]]; then
             cargo build -p meerkat-mobkit --release --target "${{ matrix.target }}" -j "${{ matrix.cargo_jobs }}"
           else
