@@ -76,6 +76,12 @@ import { useConsoleVariant, type ConsoleTheme } from "./panels/Tweaks";
 import {
   Sidebar as DesignSidebar,
   normalizeNavKind,
+  pruneStaleSidebarStorage,
+  readSidebarStringSet,
+  sidebarAgentPinId,
+  sidebarStorageKey,
+  writeSidebarStringSet,
+  SIDEBAR_PINS_STORAGE_PREFIX,
   type NavKind,
 } from "./panels/Sidebar";
 import { SignalsRail } from "./panels/SignalsRail";
@@ -251,6 +257,60 @@ function dockLayoutStorageKey(
   return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
 }
 
+function stableHash(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function sidebarAgentListConfigIdentity(experience: ConsoleExperience | null): string {
+  const agentList = experience?.console_config?.agent_list;
+  if (!agentList) return "no-agent-list";
+  const sections = (agentList.sections || []).map((section) => ({
+    name: section.name,
+    empty_title: section.empty_title,
+    empty_text: section.empty_text,
+  }));
+  return stableHash(JSON.stringify({
+    group_by: agentList.group_by || [],
+    subgroup_by: agentList.subgroup_by || [],
+    section_order: agentList.section_order || [],
+    fallback_group: agentList.fallback_group || "",
+    fallback_subgroup: agentList.fallback_subgroup || "",
+    collapse_single_subgroup: agentList.collapse_single_subgroup !== false,
+    sections,
+  }));
+}
+
+function sidebarPreferencesScope(
+  baseUrl: string,
+  experience: ConsoleExperience | null,
+): string {
+  const runtimeId = experience?.runtime_id?.trim();
+  const title = experience?.console_config?.title?.trim();
+  return runtimeId || title || baseUrl;
+}
+
+function sidebarPreferencesNamespace(
+  baseUrl: string,
+  experience: ConsoleExperience | null,
+): string {
+  return [sidebarPreferencesScope(baseUrl, experience), sidebarAgentListConfigIdentity(experience)]
+    .map((part) => encodeURIComponent(part))
+    .join(":");
+}
+
+function browserLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
 function cursorSeq(cursor: string | undefined): number | null {
   if (!cursor) return null;
   const match = /^console:(\d+)$/.exec(cursor);
@@ -389,6 +449,21 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
+  const sidebarStorageScope = React.useMemo(
+    () => sidebarPreferencesScope(baseUrl, experience),
+    [baseUrl, experience],
+  );
+  const sidebarStorageNamespace = React.useMemo(
+    () => sidebarPreferencesNamespace(baseUrl, experience),
+    [baseUrl, experience],
+  );
+  const sidebarPinsStorageKey = React.useMemo(
+    () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
+    [sidebarStorageNamespace],
+  );
+  React.useEffect(() => {
+    pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
+  }, [sidebarStorageScope, sidebarStorageNamespace]);
 
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(
     () => {
@@ -432,6 +507,41 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       return next;
     });
   }, []);
+
+  const defaultPinnedAgentIdsKey = React.useMemo(
+    () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
+    [experience?.console_config?.agent_list?.default_pinned_agent_ids],
+  );
+  React.useEffect(() => {
+    const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
+    const stored = readSidebarStringSet(
+      browserLocalStorage(),
+      sidebarPinsStorageKey,
+    );
+    setPinnedAgentIds(stored ?? defaults);
+  }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
+
+  const togglePinnedAgent = React.useCallback((agent: ConsoleAgent) => {
+    const pinId = sidebarAgentPinId(agent);
+    setPinnedAgentIds((current) => {
+      const next = new Set(current);
+      // Pins are matched on either the durable id or the volatile member_id, so
+      // unpinning must clear both forms; otherwise a default/legacy member_id
+      // pin would survive and the toggle would silently re-pin.
+      if (next.has(pinId) || next.has(agent.member_id)) {
+        next.delete(pinId);
+        next.delete(agent.member_id);
+      } else {
+        next.add(pinId);
+      }
+      writeSidebarStringSet(
+        browserLocalStorage(),
+        sidebarPinsStorageKey,
+        next,
+      );
+      return next;
+    });
+  }, [sidebarPinsStorageKey]);
 
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
@@ -2931,7 +3041,10 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
           visibleControls={visibleControls}
           customButtons={experience?.console_config?.sidebar?.buttons}
           grouping={experience?.console_config?.agent_list}
+          storageNamespace={sidebarStorageNamespace}
+          pinnedAgentIds={pinnedAgentIds}
           onSelect={(a) => openAgentChat(a)}
+          onTogglePinnedAgent={togglePinnedAgent}
           onOpenControl={(kind) => {
             dock.openTarget(buildControlTarget(kind), "replace_focused");
           }}

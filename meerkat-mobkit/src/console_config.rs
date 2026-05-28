@@ -281,6 +281,10 @@ pub struct ConsoleAgentListConfig {
     /// the subgroup header is suppressed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collapse_single_subgroup: Option<bool>,
+    /// Optional default pinned agents for hosts that want a starter view.
+    /// User localStorage preferences take precedence once present.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub default_pinned_agent_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub badges: Vec<ConsoleAgentBadgeConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -298,6 +302,7 @@ impl ConsoleAgentListConfig {
         self.section_order = normalize_string_vec(self.section_order);
         self.fallback_group = normalize_optional_string(self.fallback_group);
         self.fallback_subgroup = normalize_optional_string(self.fallback_subgroup);
+        self.default_pinned_agent_ids = normalize_string_vec(self.default_pinned_agent_ids);
         self.badges = self
             .badges
             .into_iter()
@@ -641,6 +646,8 @@ struct ConsoleAgentListConfigPatch {
     #[serde(default)]
     collapse_single_subgroup: Option<bool>,
     #[serde(default)]
+    default_pinned_agent_ids: Option<Vec<String>>,
+    #[serde(default)]
     badges: Option<Vec<ConsoleAgentBadgeConfig>>,
     #[serde(default)]
     sections: Option<Vec<ConsoleAgentSectionConfig>>,
@@ -665,6 +672,10 @@ impl ConsoleAgentListConfigPatch {
         }
         if let Some(collapse_single_subgroup) = self.collapse_single_subgroup {
             config.collapse_single_subgroup = Some(collapse_single_subgroup);
+        }
+        if let Some(default_pinned_agent_ids) = &self.default_pinned_agent_ids {
+            config.default_pinned_agent_ids =
+                normalize_string_vec(default_pinned_agent_ids.clone());
         }
         if let Some(badges) = &self.badges {
             config.badges = badges
@@ -849,6 +860,7 @@ group_by = ["labels.console_group", "labels.group", "role"]
 subgroup_by = ["labels.org"]
 section_order = ["Personal", "Initiatives", "Internal"]
 fallback_group = "Other"
+default_pinned_agent_ids = ["identity:ops-lead"]
 
 [[agent_list.badges]]
 id = "org"
@@ -887,6 +899,10 @@ show_reset = false
         );
         assert_eq!(config.sidebar.buttons.len(), 1);
         assert_eq!(config.agent_list.subgroup_by, vec!["labels.org"]);
+        assert_eq!(
+            config.agent_list.default_pinned_agent_ids,
+            vec!["identity:ops-lead"]
+        );
         assert_eq!(config.agent_list.badges[0].field, "labels.org");
         assert_eq!(config.agent_list.sections[0].name, "Initiatives");
         assert_eq!(config.actions.inspect_label.as_deref(), Some("Profile"));

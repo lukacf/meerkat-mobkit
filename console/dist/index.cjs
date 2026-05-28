@@ -1500,7 +1500,7 @@ function CopyButton({
   label,
   copiedLabel = "Copied",
   className,
-  Icon: Icon2
+  Icon: Icon3
 }) {
   const [copied, setCopied] = (0, import_react.useState)(false);
   const resetTimerRef = (0, import_react.useRef)(null);
@@ -1539,7 +1539,7 @@ function CopyButton({
       onClick: () => {
         void handleClick();
       },
-      children: Icon2 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Icon2, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
+      children: Icon3 ? /* @__PURE__ */ (0, import_jsx_runtime4.jsx)(Icon3, { name: copied ? "i-check" : "i-copy" }) : copied ? "Copied" : "Copy"
     }
   );
 }
@@ -1584,7 +1584,7 @@ function renderThinkingBlock(block) {
     }
   );
 }
-function renderBlock(block, index, Icon2) {
+function renderBlock(block, index, Icon3) {
   if (block.type === "paragraph") {
     return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)("p", { className: "cc-rich-paragraph", dangerouslySetInnerHTML: markdownHtml(block.text) }, `paragraph-${index}`);
   }
@@ -1607,7 +1607,7 @@ function renderBlock(block, index, Icon2) {
           CopyButton,
           {
             copiedLabel: "Copied code",
-            Icon: Icon2,
+            Icon: Icon3,
             label: "Copy code",
             text: codeBlock.body
           }
@@ -1652,7 +1652,7 @@ function renderBlock(block, index, Icon2) {
             CopyButton,
             {
               copiedLabel: "Copied command output",
-              Icon: Icon2,
+              Icon: Icon3,
               label: "Copy command output",
               text: commandCopyText(block)
             }
@@ -1679,7 +1679,7 @@ function renderBlock(block, index, Icon2) {
           CopyButton,
           {
             copiedLabel: "Copied file change",
-            Icon: Icon2,
+            Icon: Icon3,
             label: "Copy file change",
             text: fileChangeCopyText(block)
           }
@@ -1979,7 +1979,7 @@ function PeerToolGroup({ blocks }) {
 function ConversationRichContent({
   blocks,
   richStyle = "default",
-  Icon: Icon2
+  Icon: Icon3
 }) {
   if (blocks.length > 1 && blocks.every((b) => b.type === "tool-call")) {
     const tools = blocks;
@@ -1992,7 +1992,7 @@ function ConversationRichContent({
       return /* @__PURE__ */ (0, import_jsx_runtime5.jsx)(ToolCallGroup, { blocks: tools });
     }
   }
-  const body = blocks.map((block, index) => renderBlock(block, index, Icon2)).filter(Boolean);
+  const body = blocks.map((block, index) => renderBlock(block, index, Icon3)).filter(Boolean);
   if (body.length === 0) {
     return null;
   }
@@ -2341,11 +2341,18 @@ function sectionIconForGroup(group) {
   if (lower.includes("personal") || lower.includes("identity")) return "i-team";
   return "i-folder";
 }
+function sidebarAgentPinId(agent) {
+  return agent.identity?.trim() || agent.labels?.agent_identity?.trim() || agent.member_id.trim();
+}
+function isAgentPinned(agent, pinnedAgentIds) {
+  if (!pinnedAgentIds) return false;
+  return pinnedAgentIds.has(sidebarAgentPinId(agent)) || pinnedAgentIds.has(agent.member_id);
+}
 function buildSidebarViewState(args) {
   const { agents, selectedMemberId, pinnedAgentIds = /* @__PURE__ */ new Set(), sortMode = "group" } = args;
   const sorted = [...agents].sort((a, b) => {
-    const aPinned = pinnedAgentIds.has(a.member_id) ? 0 : 1;
-    const bPinned = pinnedAgentIds.has(b.member_id) ? 0 : 1;
+    const aPinned = isAgentPinned(a, pinnedAgentIds) ? 0 : 1;
+    const bPinned = isAgentPinned(b, pinnedAgentIds) ? 0 : 1;
     if (aPinned !== bPinned) return aPinned - bPinned;
     if (sortMode === "alpha") return a.label.localeCompare(b.label);
     if (sortMode === "status") {
@@ -2369,7 +2376,7 @@ function buildSidebarViewState(args) {
     meta: [{ id: "count", label: `${members.length}` }],
     items: members.map((agent) => {
       const isAddressable = agent.addressable || agent.affordances?.can_send_message;
-      const isPinned = pinnedAgentIds.has(agent.member_id);
+      const isPinned = isAgentPinned(agent, pinnedAgentIds);
       const watchFields = normalizeSidebarWatchFields(agent);
       return {
         id: agent.member_id,
@@ -5319,6 +5326,9 @@ function SpriteSheet() {
     /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("symbol", { id: "i-star", viewBox: "0 0 24 24", children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("path", { d: "m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.2 6.4 20.2l1.1-6.2L3 9.6l6.2-.9L12 3z" }) })
   ] });
 }
+function Icon({ name, className }) {
+  return /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("svg", { className, "aria-label": name, children: /* @__PURE__ */ (0, import_jsx_runtime16.jsx)("use", { href: `#${name}` }) });
+}
 
 // src/panels/TopologyPanel.tsx
 var import_react10 = __toESM(require("react"));
@@ -7729,6 +7739,61 @@ var SIDEBAR_ROW_HEIGHT = {
   agent: 72
 };
 var SIDEBAR_OVERSCAN_PX = 360;
+var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
+var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
+var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+var SIDEBAR_STORAGE_PREFIXES = [
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX
+];
+function sidebarStorageKey(prefix, namespace) {
+  return `${prefix}:${namespace?.trim() || "default"}`;
+}
+function readSidebarStringSet(storage, key) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
+    return new Set(parsed.filter((value) => typeof value === "string" && value.trim().length > 0));
+  } catch {
+    return null;
+  }
+}
+function writeSidebarStringSet(storage, key, value) {
+  if (!storage) return;
+  try {
+    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+  } catch {
+  }
+}
+function localSidebarStorage() {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
+  if (!storage) return;
+  try {
+    const scopePrefix = encodeURIComponent(scope.trim());
+    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
+    const stale = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (!key || activeKeys.has(key)) continue;
+      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
+        stale.push(key);
+      }
+    }
+    for (const key of stale) storage.removeItem(key);
+  } catch {
+  }
+}
 function isWorkerish(a) {
   const haystack = [a.label, a.identity, a.member_id, a.role].filter(Boolean).join(" ").toLowerCase();
   return haystack.includes("worker") || haystack.includes("delegate") || haystack.includes("helper");
@@ -7771,6 +7836,7 @@ function isWiredTo(a, host) {
 function isSpawnedDelegateLike(a, host) {
   if (!isWorkerish(a)) return false;
   if (isWiredTo(a, host)) return true;
+  if (a.labels?.group?.trim() || a.labels?.console_group?.trim()) return false;
   const role = (a.role || "").toLowerCase();
   const group = (a.group || "").toLowerCase();
   return !group || group === role || group === "worker" || group === "delegate" || group.includes("helper");
@@ -8004,6 +8070,104 @@ function sectionConfigFor(name, config) {
   const needle = name.toLowerCase();
   return (config?.sections || []).find((section) => section.name?.toLowerCase() === needle) || null;
 }
+function defaultCollapsedSections(config) {
+  return new Set((config?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name));
+}
+function collapsedSectionsForStorage(config, storageKey, storage = localSidebarStorage()) {
+  return readSidebarStringSet(storage, storageKey) ?? defaultCollapsedSections(config);
+}
+function collapsedSubgroupsForStorage(storageKey, storage = localSidebarStorage()) {
+  return readSidebarStringSet(storage, storageKey) ?? /* @__PURE__ */ new Set();
+}
+function sidebarSubgroupStorageId(bucket, subgroup) {
+  return JSON.stringify([bucket, subgroup]);
+}
+function pinnedOrderedRows(rows, pinnedAgentIds) {
+  const ordered = [];
+  let segment = [];
+  let currentSubgroup;
+  const flush = () => {
+    segment.sort((a, b) => {
+      const aPinned = isAgentPinned(a.row.agent, pinnedAgentIds);
+      const bPinned = isAgentPinned(b.row.agent, pinnedAgentIds);
+      if (aPinned !== bPinned) return aPinned ? -1 : 1;
+      return a.index - b.index;
+    });
+    ordered.push(...segment.map((item) => item.row));
+    segment = [];
+  };
+  rows.forEach((row, index) => {
+    if (segment.length > 0 && row.subgroup !== currentSubgroup) flush();
+    currentSubgroup = row.subgroup;
+    segment.push({ row, index });
+  });
+  flush();
+  return ordered;
+}
+function buildSidebarVirtualRows(args) {
+  const rows = [];
+  for (const bucket of args.sectionNames) {
+    const list = args.grouped.get(bucket) || [];
+    const sectionConfig = sectionConfigFor(bucket, args.grouping);
+    if (list.length === 0 && !sectionConfig) continue;
+    const collapsedSection = args.searchActive ? false : args.collapsedSections.has(bucket);
+    rows.push({
+      kind: "section",
+      key: `section:${bucket}`,
+      bucket,
+      count: list.length,
+      collapsed: collapsedSection
+    });
+    if (collapsedSection) continue;
+    if (list.length === 0) {
+      rows.push({
+        kind: "empty",
+        key: `empty:${bucket}`,
+        bucket,
+        sectionConfig
+      });
+      continue;
+    }
+    const orderedList = pinnedOrderedRows(list, args.pinnedAgentIds);
+    const subgroups = new Set(orderedList.map((row) => row.subgroup).filter((value) => Boolean(value)));
+    const showSubgroups = configuredSelectors(args.grouping, "subgroup_by").length > 0 && subgroups.size > (args.grouping?.collapse_single_subgroup === false ? 0 : 1);
+    const subgroupCounts = /* @__PURE__ */ new Map();
+    for (const row of orderedList) {
+      if (!row.subgroup) continue;
+      subgroupCounts.set(row.subgroup, (subgroupCounts.get(row.subgroup) || 0) + 1);
+    }
+    let lastSubgroup = null;
+    let currentSubgroupCollapsed = false;
+    for (const row of orderedList) {
+      if (showSubgroups && !row.subgroup) {
+        lastSubgroup = null;
+        currentSubgroupCollapsed = false;
+      }
+      if (showSubgroups && row.subgroup && row.subgroup !== lastSubgroup) {
+        lastSubgroup = row.subgroup;
+        const storageKey = sidebarSubgroupStorageId(bucket, row.subgroup);
+        currentSubgroupCollapsed = args.searchActive ? false : args.collapsedSubgroups.has(storageKey);
+        rows.push({
+          kind: "subgroup",
+          key: `subgroup:${bucket}:${row.subgroup}`,
+          bucket,
+          label: row.subgroup,
+          count: subgroupCounts.get(row.subgroup) || 0,
+          collapsed: currentSubgroupCollapsed,
+          storageKey
+        });
+      }
+      if (currentSubgroupCollapsed) continue;
+      rows.push({
+        kind: "agent",
+        key: `agent:${row.agent.member_id}`,
+        bucket,
+        row
+      });
+    }
+  }
+  return rows;
+}
 function deriveStateAttr(agent) {
   const state = (agent.state || "").toLowerCase();
   if (state === "retired" || state === "retiring" || state === "stopped") return "retired";
@@ -8058,12 +8222,13 @@ function useMeasuredHeight() {
   }, []);
   return [ref, height];
 }
-function renderAgentRow(row, selectedMemberId, recentActivity, grouping, onSelect) {
+function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent) {
   const { agent, childOfHost, depth } = row;
   const stateAttr = deriveStateAttr(agent);
   const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
   const inbox = inboxCount(agent);
   const badges = configuredAgentBadges(agent, grouping);
+  const pinned = isAgentPinned(agent, pinnedAgentIds);
   return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
     "div",
     {
@@ -8100,6 +8265,24 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, onSelec
             badge.id
           )) }) : null
         ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__actions", children: onTogglePinnedAgent ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+          "button",
+          {
+            type: "button",
+            className: "agent__pin",
+            "data-active": pinned ? "true" : void 0,
+            "aria-label": pinned ? `Unpin ${agent.label}` : `Pin ${agent.label}`,
+            "aria-pressed": pinned,
+            title: pinned ? "Unpin agent" : "Pin agent",
+            "data-testid": `sidebar-agent-pin:${agent.member_id}`,
+            onClick: (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onTogglePinnedAgent(agent);
+            },
+            children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(Icon, { name: "i-pin", className: "agent__pin-icon" })
+          }
+        ) : null }),
         /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "agent__meta", children: [
           /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__pulse", children: pulse.map((v, i) => /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { style: { height: `${Math.max(1, Math.min(12, v * 2 + 1))}px` } }, i)) }),
           inbox > 0 && /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__inbox", children: inbox })
@@ -8120,7 +8303,10 @@ function Sidebar({
   visibleControls,
   customButtons,
   grouping,
+  storageNamespace,
+  pinnedAgentIds,
   onSelect,
+  onTogglePinnedAgent,
   onOpenControl
 }) {
   const [q, setQ] = import_react17.default.useState("");
@@ -8145,63 +8331,41 @@ function Sidebar({
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
     [grouping?.sections]
   );
+  const sectionCollapseStorageKey = import_react17.default.useMemo(
+    () => sidebarStorageKey(SECTION_COLLAPSE_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace]
+  );
+  const subgroupCollapseStorageKey = import_react17.default.useMemo(
+    () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace]
+  );
   const [collapsedSections, setCollapsedSections] = import_react17.default.useState(() => {
-    return new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name));
+    return collapsedSectionsForStorage(grouping, sectionCollapseStorageKey);
   });
   import_react17.default.useEffect(() => {
-    setCollapsedSections(new Set((grouping?.sections || []).filter((section) => section.collapsed === true).map((section) => section.name)));
-  }, [defaultCollapsedKey]);
+    setCollapsedSections(collapsedSectionsForStorage(grouping, sectionCollapseStorageKey));
+  }, [defaultCollapsedKey, grouping, sectionCollapseStorageKey]);
+  const [collapsedSubgroups, setCollapsedSubgroups] = import_react17.default.useState(() => {
+    return collapsedSubgroupsForStorage(subgroupCollapseStorageKey);
+  });
+  import_react17.default.useEffect(() => {
+    setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
+  }, [subgroupCollapseStorageKey]);
   const customSidebarButtons = import_react17.default.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
   );
   const virtualRows = import_react17.default.useMemo(() => {
-    const rows = [];
-    for (const bucket of sectionNames) {
-      const list = grouped.get(bucket) || [];
-      const sectionConfig = sectionConfigFor(bucket, grouping);
-      if (list.length === 0 && !sectionConfig) continue;
-      const collapsedSection = q ? false : collapsedSections.has(bucket);
-      rows.push({
-        kind: "section",
-        key: `section:${bucket}`,
-        bucket,
-        count: list.length,
-        collapsed: collapsedSection
-      });
-      if (collapsedSection) continue;
-      if (list.length === 0) {
-        rows.push({
-          kind: "empty",
-          key: `empty:${bucket}`,
-          bucket,
-          sectionConfig
-        });
-        continue;
-      }
-      const subgroups = new Set(list.map((row) => row.subgroup).filter((value) => Boolean(value)));
-      const showSubgroups = configuredSelectors(grouping, "subgroup_by").length > 0 && subgroups.size > (grouping?.collapse_single_subgroup === false ? 0 : 1);
-      let lastSubgroup = null;
-      for (const row of list) {
-        if (showSubgroups && row.subgroup && row.subgroup !== lastSubgroup) {
-          lastSubgroup = row.subgroup;
-          rows.push({
-            kind: "subgroup",
-            key: `subgroup:${bucket}:${row.subgroup}`,
-            bucket,
-            label: row.subgroup
-          });
-        }
-        rows.push({
-          kind: "agent",
-          key: `agent:${row.agent.member_id}`,
-          bucket,
-          row
-        });
-      }
-    }
-    return rows;
-  }, [sectionNames, grouped, grouping, collapsedSections]);
+    return buildSidebarVirtualRows({
+      sectionNames,
+      grouped,
+      grouping,
+      collapsedSections,
+      collapsedSubgroups,
+      pinnedAgentIds,
+      searchActive: Boolean(q)
+    });
+  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, q]);
   const virtualOffsets = import_react17.default.useMemo(() => {
     const offsets = [];
     let total = 0;
@@ -8325,11 +8489,13 @@ function Sidebar({
                 {
                   type: "button",
                   className: "sidebar__sec-head sidebar__sec-head--button",
+                  "aria-expanded": !row.collapsed,
                   onClick: () => {
                     setCollapsedSections((current) => {
                       const next = new Set(current);
                       if (next.has(row.bucket)) next.delete(row.bucket);
                       else next.add(row.bucket);
+                      writeSidebarStringSet(localSidebarStorage(), sectionCollapseStorageKey, next);
                       return next;
                     });
                   },
@@ -8343,7 +8509,30 @@ function Sidebar({
               ) }) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
                 row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
                 /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
-              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__subgroup", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.label }) }) : renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, onSelect)
+              ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+                "button",
+                {
+                  type: "button",
+                  className: "sidebar__subgroup sidebar__subgroup--button",
+                  "data-collapsed": row.collapsed ? "true" : void 0,
+                  "aria-expanded": !row.collapsed,
+                  "data-testid": `sidebar-subgroup-toggle:${row.bucket}:${row.label}`,
+                  onClick: () => {
+                    setCollapsedSubgroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(row.storageKey)) next.delete(row.storageKey);
+                      else next.add(row.storageKey);
+                      writeSidebarStringSet(localSidebarStorage(), subgroupCollapseStorageKey, next);
+                      return next;
+                    });
+                  },
+                  children: [
+                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.label }),
+                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
+                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                  ]
+                }
+              ) : renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent)
             },
             row.key
           );
@@ -10350,6 +10539,47 @@ function dockLayoutStorageKey(baseUrl, experience) {
   const title = experience?.console_config?.title?.trim();
   return `${DOCK_LAYOUT_STORAGE_PREFIX}:${runtimeId || title || baseUrl}`;
 }
+function stableHash(value) {
+  let hash2 = 5381;
+  for (let i = 0; i < value.length; i += 1) {
+    hash2 = (hash2 << 5) + hash2 ^ value.charCodeAt(i);
+  }
+  return (hash2 >>> 0).toString(36);
+}
+function sidebarAgentListConfigIdentity(experience) {
+  const agentList = experience?.console_config?.agent_list;
+  if (!agentList) return "no-agent-list";
+  const sections = (agentList.sections || []).map((section) => ({
+    name: section.name,
+    empty_title: section.empty_title,
+    empty_text: section.empty_text
+  }));
+  return stableHash(JSON.stringify({
+    group_by: agentList.group_by || [],
+    subgroup_by: agentList.subgroup_by || [],
+    section_order: agentList.section_order || [],
+    fallback_group: agentList.fallback_group || "",
+    fallback_subgroup: agentList.fallback_subgroup || "",
+    collapse_single_subgroup: agentList.collapse_single_subgroup !== false,
+    sections
+  }));
+}
+function sidebarPreferencesScope(baseUrl, experience) {
+  const runtimeId = experience?.runtime_id?.trim();
+  const title = experience?.console_config?.title?.trim();
+  return runtimeId || title || baseUrl;
+}
+function sidebarPreferencesNamespace(baseUrl, experience) {
+  return [sidebarPreferencesScope(baseUrl, experience), sidebarAgentListConfigIdentity(experience)].map((part) => encodeURIComponent(part)).join(":");
+}
+function browserLocalStorage() {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
 function cursorSeq2(cursor) {
   if (!cursor) return null;
   const match = /^console:(\d+)$/.exec(cursor);
@@ -10467,6 +10697,21 @@ function ConsoleApp({ baseUrl }) {
     }
   });
   const [variant, setVariant] = useConsoleVariant();
+  const sidebarStorageScope = import_react22.default.useMemo(
+    () => sidebarPreferencesScope(baseUrl, experience),
+    [baseUrl, experience]
+  );
+  const sidebarStorageNamespace = import_react22.default.useMemo(
+    () => sidebarPreferencesNamespace(baseUrl, experience),
+    [baseUrl, experience]
+  );
+  const sidebarPinsStorageKey = import_react22.default.useMemo(
+    () => sidebarStorageKey(SIDEBAR_PINS_STORAGE_PREFIX, sidebarStorageNamespace),
+    [sidebarStorageNamespace]
+  );
+  import_react22.default.useEffect(() => {
+    pruneStaleSidebarStorage(browserLocalStorage(), sidebarStorageScope, sidebarStorageNamespace);
+  }, [sidebarStorageScope, sidebarStorageNamespace]);
   const [sidebarCollapsed, setSidebarCollapsed] = import_react22.default.useState(
     () => {
       try {
@@ -10506,6 +10751,36 @@ function ConsoleApp({ baseUrl }) {
       return next;
     });
   }, []);
+  const defaultPinnedAgentIdsKey = import_react22.default.useMemo(
+    () => JSON.stringify(experience?.console_config?.agent_list?.default_pinned_agent_ids || []),
+    [experience?.console_config?.agent_list?.default_pinned_agent_ids]
+  );
+  import_react22.default.useEffect(() => {
+    const defaults = new Set(experience?.console_config?.agent_list?.default_pinned_agent_ids || []);
+    const stored = readSidebarStringSet(
+      browserLocalStorage(),
+      sidebarPinsStorageKey
+    );
+    setPinnedAgentIds(stored ?? defaults);
+  }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
+  const togglePinnedAgent = import_react22.default.useCallback((agent) => {
+    const pinId = sidebarAgentPinId(agent);
+    setPinnedAgentIds((current) => {
+      const next = new Set(current);
+      if (next.has(pinId) || next.has(agent.member_id)) {
+        next.delete(pinId);
+        next.delete(agent.member_id);
+      } else {
+        next.add(pinId);
+      }
+      writeSidebarStringSet(
+        browserLocalStorage(),
+        sidebarPinsStorageKey,
+        next
+      );
+      return next;
+    });
+  }, [sidebarPinsStorageKey]);
   const [, setRenderTick] = import_react22.default.useState(0);
   const forceRender = import_react22.default.useCallback(() => setRenderTick((n) => n + 1), []);
   const stagedAttachmentsRef = import_react22.default.useRef(stagedAttachmentsByIdentity);
@@ -12305,7 +12580,10 @@ function ConsoleApp({ baseUrl }) {
                   visibleControls,
                   customButtons: experience?.console_config?.sidebar?.buttons,
                   grouping: experience?.console_config?.agent_list,
+                  storageNamespace: sidebarStorageNamespace,
+                  pinnedAgentIds,
                   onSelect: (a) => openAgentChat(a),
+                  onTogglePinnedAgent: togglePinnedAgent,
                   onOpenControl: (kind) => {
                     dock.openTarget(buildControlTarget(kind), "replace_focused");
                   }

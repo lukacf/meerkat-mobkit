@@ -129,6 +129,7 @@ export interface ConsoleAgentListConfig {
   fallback_group?: string;
   fallback_subgroup?: string;
   collapse_single_subgroup?: boolean;
+  default_pinned_agent_ids?: string[];
   badges?: ConsoleAgentBadgeConfig[];
   sections?: ConsoleAgentSectionConfig[];
 }
