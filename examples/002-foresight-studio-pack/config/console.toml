@@ -66,6 +66,7 @@ section_order = ["Studio Leads", "Signal Pods", "Analysis Pods", "Review Board",
 fallback_group = "Studio"
 fallback_subgroup = "Unassigned"
 collapse_single_subgroup = false
+default_pinned_agent_ids = ["risk-red-team"]
 
 [[agent_list.badges]]
 id = "lane"

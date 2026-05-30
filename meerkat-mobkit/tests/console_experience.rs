@@ -523,6 +523,7 @@ target = "_blank"
 group_by = ["labels.console_group", "labels.group", "role"]
 subgroup_by = ["labels.org"]
 section_order = ["Personal", "Initiatives", "Internal"]
+default_pinned_agent_ids = ["review:singleton"]
 
 [[agent_list.badges]]
 id = "org"
@@ -585,6 +586,10 @@ show_reset = false
     assert_eq!(
         response.body["console_config"]["agent_list"]["subgroup_by"],
         json!(["labels.org"])
+    );
+    assert_eq!(
+        response.body["console_config"]["agent_list"]["default_pinned_agent_ids"],
+        json!(["review:singleton"])
     );
     assert_eq!(
         response.body["console_config"]["agent_list"]["badges"][0]["field"],

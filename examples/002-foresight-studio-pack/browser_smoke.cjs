@@ -63,6 +63,10 @@ async function main() {
     experience.console_config.agent_list.subgroup_by.slice(0, 2),
     ["labels.org", "labels.lane"],
   );
+  assert.deepEqual(
+    experience.console_config.agent_list.default_pinned_agent_ids,
+    ["risk-red-team"],
+  );
 
   const experienceText = JSON.stringify(experience);
   for (const expected of [
@@ -120,12 +124,43 @@ async function main() {
     await expectVisible(page.locator(".agent__badge").filter({ hasText: "Lane" }), "lane badge");
     await expectVisible(page.locator(".agent__badge").filter({ hasText: "Confidence" }), "confidence badge");
     await expectVisible(page.locator(".sidebar__subgroup").filter({ hasText: "Strategy Office" }), "org subgroup");
+    const riskRow = page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Risk Red Team" }).first();
+    await expectVisible(riskRow, "default pinned risk row");
+    await expectVisible(riskRow.locator(".agent__pin[aria-pressed=\"true\"]"), "default pinned risk button");
     shot = await screenshot(page, artifactDir, shot, "grouped-roster");
 
     await page.getByTestId("sidebar-search").fill("risk");
     await expectVisible(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Risk Red Team" }), "filtered risk agent");
     await expectHidden(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Studio Director" }), "filtered-out director");
     await page.getByTestId("sidebar-search").fill("");
+
+    await page.getByTestId("sidebar-section-toggle:Analysis Pods").click();
+    await expectHidden(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Financial Modeler" }), "collapsed financial modeler");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expectVisible(page.getByTestId("meerkat-console"), "console root after collapse reload");
+    await expectHidden(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Financial Modeler" }), "persisted collapsed financial modeler");
+    await page.getByTestId("sidebar-search").fill("financial");
+    await expectVisible(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Financial Modeler" }), "search expands collapsed financial modeler");
+    await page.getByTestId("sidebar-search").fill("");
+    await expectHidden(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Financial Modeler" }), "clearing search restores persisted collapse");
+    await page.getByTestId("sidebar-section-toggle:Analysis Pods").click();
+    await expectVisible(page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Financial Modeler" }), "expanded financial modeler");
+
+    await riskRow.locator(".agent__pin").click();
+    await expectVisible(riskRow.locator(".agent__pin[aria-pressed=\"false\"]"), "risk unpinned button");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expectVisible(page.getByTestId("meerkat-console"), "console root after pin reload");
+    const reloadedRiskRow = page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Risk Red Team" }).first();
+    await expectVisible(reloadedRiskRow.locator(".agent__pin[aria-pressed=\"false\"]"), "risk unpin persisted");
+    await reloadedRiskRow.locator(".agent__pin").click();
+    await expectVisible(reloadedRiskRow.locator(".agent__pin[aria-pressed=\"true\"]"), "risk repinned button");
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const repinnedRiskButton = page
+      .locator('[data-testid^="sidebar-agent:"]')
+      .filter({ hasText: "Risk Red Team" })
+      .first()
+      .locator(".agent__pin[aria-pressed=\"true\"]");
+    await expectVisible(repinnedRiskButton, "risk repin persisted");
 
     await page.locator('[data-testid^="sidebar-agent:"]').filter({ hasText: "Risk Red Team" }).first().click();
     await expectVisible(page.locator('[data-testid^="chat-pane:"]').filter({ hasText: "Risk Red Team" }), "risk chat pane");
