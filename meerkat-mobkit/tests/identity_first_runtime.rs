@@ -5033,6 +5033,123 @@ async fn identity_first_runtime_healthy_lease_does_not_call_renew_provider() {
 }
 
 #[tokio::test]
+async fn identity_first_runtime_background_renewal_refreshes_idle_active_lease() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(20),
+        Duration::from_mins(5),
+        RenewBehavior::RenewRotatedToken,
+    ));
+    let runtime = Arc::new(make_runtime(store, lease.clone()));
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant.clone()),
+        )
+        .await;
+    let mut events = runtime.subscribe(&identity).await.unwrap();
+    let task = runtime
+        .clone()
+        .spawn_lease_renewal_task_with_poll_interval(Duration::from_millis(10));
+
+    tokio::time::sleep(Duration::from_millis(45)).await;
+    task.abort();
+
+    let status = runtime.status(&identity).await.unwrap();
+    let renewed = status.lease.unwrap().fencing_token;
+    assert!(
+        renewed > grant.fencing_token,
+        "idle background renewal should rotate the expired lease"
+    );
+    assert!(lease.renew_calls() >= 1);
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        IdentityEvent::LeaseUpdated { fencing_token, .. } if fencing_token == renewed
+    ));
+}
+
+#[tokio::test]
+async fn identity_first_runtime_background_renewal_does_not_touch_healthy_lease() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_mins(5),
+        Duration::from_mins(5),
+        RenewBehavior::RenewRotatedToken,
+    ));
+    let runtime = Arc::new(make_runtime(store, lease.clone()));
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant.clone()),
+        )
+        .await;
+    let task = runtime
+        .clone()
+        .spawn_lease_renewal_task_with_poll_interval(Duration::from_millis(10));
+
+    tokio::time::sleep(Duration::from_millis(35)).await;
+    task.abort();
+
+    assert_eq!(lease.renew_calls(), 0);
+    assert_eq!(
+        runtime
+            .status(&identity)
+            .await
+            .unwrap()
+            .lease
+            .unwrap()
+            .fencing_token,
+        grant.fencing_token
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_background_lost_renewal_marks_lease_lost() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(20),
+        Duration::from_mins(5),
+        RenewBehavior::Lost,
+    ));
+    let runtime = Arc::new(make_runtime(store, lease.clone()));
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant),
+        )
+        .await;
+    let mut events = runtime.subscribe(&identity).await.unwrap();
+    let task = runtime
+        .clone()
+        .spawn_lease_renewal_task_with_poll_interval(Duration::from_millis(10));
+
+    tokio::time::sleep(Duration::from_millis(45)).await;
+    task.abort();
+
+    assert!(lease.renew_calls() >= 1);
+    assert!(runtime.status(&identity).await.unwrap().lease.is_none());
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        IdentityEvent::LeaseLost { .. }
+    ));
+}
+
+#[tokio::test]
 async fn identity_first_runtime_lost_renewal_marks_lease_lost_and_blocks_send() {
     let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
     let lease = Arc::new(ControlledLeaseProvider::new(

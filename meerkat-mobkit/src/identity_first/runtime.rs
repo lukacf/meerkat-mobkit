@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use futures::stream::{self, StreamExt};
 use meerkat_core::types::{HandlingMode, SessionId};
 use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::task::JoinHandle;
 
 use super::bridge::SessionBridge;
 use super::contracts::{
@@ -212,6 +213,8 @@ pub enum IdentityEvent {
 
 /// Per-identity event channel capacity.
 const IDENTITY_EVENT_CHANNEL_CAPACITY: usize = 64;
+const DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 // ---------------------------------------------------------------------------
 // IdentityRuntime
@@ -365,6 +368,82 @@ impl IdentityRuntime {
 
     pub async fn set_agent_customizer(&self, customizer: Option<Arc<dyn AgentCustomizer>>) {
         *self.customizer.write().await = customizer;
+    }
+
+    /// Spawn a background supervisor that renews active identity leases before
+    /// they reach their TTL deadline.
+    pub fn spawn_lease_renewal_task(self: Arc<Self>) -> JoinHandle<()> {
+        self.spawn_lease_renewal_task_with_poll_interval(DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL)
+    }
+
+    /// Spawn a lease renewal supervisor with a caller-provided maximum poll
+    /// interval. Embedders can use this for shorter external lease TTLs; tests
+    /// use it to exercise renewal without waiting on wall-clock TTLs.
+    pub fn spawn_lease_renewal_task_with_poll_interval(
+        self: Arc<Self>,
+        max_poll_interval: Duration,
+    ) -> JoinHandle<()> {
+        let max_poll_interval = max_poll_interval.max(DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(self.lease_renewal_sleep_interval(max_poll_interval).await)
+                    .await;
+                if let Err(err) = self.renew_due_leases_once().await {
+                    tracing::warn!(
+                        error = %err,
+                        "identity-first proactive lease renewal tick failed"
+                    );
+                }
+            }
+        })
+    }
+
+    async fn lease_renewal_sleep_interval(&self, max_poll_interval: Duration) -> Duration {
+        let entries = self.entries.read().await;
+        entries
+            .values()
+            .filter(|entry| entry.state == IdentityLifecycleState::Active)
+            .filter_map(|entry| entry.lease.as_ref())
+            .map(|lease| (lease.ttl / 10).max(DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL))
+            .min()
+            .unwrap_or(max_poll_interval)
+            .min(max_poll_interval)
+    }
+
+    /// Renew every active lease that has entered the runtime's renewal window.
+    pub async fn renew_due_leases_once(&self) -> Result<usize, IdentityRuntimeError> {
+        let due = {
+            let entries = self.entries.read().await;
+            entries
+                .iter()
+                .filter(|(_, entry)| entry.state == IdentityLifecycleState::Active)
+                .filter_map(|(identity, entry)| {
+                    entry
+                        .lease
+                        .as_ref()
+                        .filter(|lease| !lease.is_healthy())
+                        .map(|_| identity.clone())
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut renewed = 0;
+        let mut first_error = None;
+        for identity in due {
+            match self.ensure_active_lease(&identity).await {
+                Ok(_) => renewed += 1,
+                Err(err) => {
+                    if first_error.is_none() {
+                        first_error = Some(err);
+                    }
+                }
+            }
+        }
+        if let Some(err) = first_error {
+            Err(err)
+        } else {
+            Ok(renewed)
+        }
     }
 
     async fn release_uninstalled_materialize_lease(&self, grant: &LeaseGrant) -> Option<String> {
