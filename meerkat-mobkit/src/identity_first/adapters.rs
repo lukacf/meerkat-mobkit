@@ -64,6 +64,8 @@ pub fn agent_discovery_to_durable(
         additional_instructions: spec.additional_instructions.clone(),
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     })
 }
 

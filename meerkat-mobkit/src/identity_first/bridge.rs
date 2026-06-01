@@ -370,6 +370,10 @@ pub(crate) fn build_spawn_spec(
     if let Some(runtime_mode) = spec.runtime_mode_override {
         spawn_spec = spawn_spec.with_runtime_mode(runtime_mode);
     }
+    spawn_spec.backend = spec.backend;
+    if let Some(binding) = spec.binding.clone() {
+        spawn_spec.binding = runtime_binding_from_wire(binding);
+    }
     if let Some(ref ctx) = draft.app_context {
         spawn_spec = spawn_spec.with_context(ctx.clone());
     }
@@ -396,6 +400,29 @@ pub(crate) fn build_spawn_spec(
     }
 
     spawn_spec
+}
+
+fn runtime_binding_from_wire(
+    binding: meerkat_contracts::WireRuntimeBinding,
+) -> Option<meerkat_mob::RuntimeBinding> {
+    match binding {
+        meerkat_contracts::WireRuntimeBinding::Session => {
+            Some(meerkat_mob::RuntimeBinding::Session)
+        }
+        meerkat_contracts::WireRuntimeBinding::External {
+            address,
+            bootstrap_token,
+            identity,
+        } => {
+            let resolved = identity.resolve().ok()?;
+            Some(meerkat_mob::RuntimeBinding::External {
+                peer_id: resolved.peer_id.to_string(),
+                address,
+                bootstrap_token,
+                pubkey: Some(resolved.pubkey),
+            })
+        }
+    }
 }
 
 #[async_trait]
@@ -846,6 +873,8 @@ mod tests {
             additional_instructions: Vec::new(),
             initial_message: Some(meerkat_core::ContentInput::Text("hello".to_string())),
             runtime_mode_override: Some(MobRuntimeMode::TurnDriven),
+            backend: None,
+            binding: None,
         }
     }
 
@@ -895,6 +924,57 @@ mod tests {
                 .map(String::as_str),
             Some("agent:alpha")
         );
+    }
+
+    #[test]
+    fn build_spawn_spec_maps_remote_runtime_binding() {
+        let runtime_id = AgentRuntimeId::parse("rt:agent:alpha:0").expect("runtime id");
+        let mut spec = durable_spec();
+        spec.backend = Some(meerkat_mob::MobBackendKind::External);
+        spec.binding = Some(
+            serde_json::from_value(serde_json::json!({
+                "kind": "external",
+                "address": "tcp://127.0.0.1:4777",
+                "identity": {
+                    "kind": "ed25519_public_key",
+                    "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+                }
+            }))
+            .expect("wire binding"),
+        );
+        let draft = AgentBuildDraft {
+            model: None,
+            system_prompt: None,
+            additional_instructions: Vec::new(),
+            labels: Default::default(),
+            app_context: None,
+            external_tools: Vec::new(),
+            local_external_tools: Default::default(),
+        };
+
+        let spawn = build_spawn_spec(&runtime_id, &spec, &draft);
+
+        assert_eq!(spawn.backend, Some(meerkat_mob::MobBackendKind::External));
+        assert!(
+            matches!(
+                spawn.binding,
+                Some(meerkat_mob::RuntimeBinding::External {
+                    pubkey: Some(_),
+                    ..
+                })
+            ),
+            "expected external runtime binding, got {:?}",
+            spawn.binding
+        );
+        if let Some(meerkat_mob::RuntimeBinding::External {
+            address,
+            pubkey: Some(pubkey),
+            ..
+        }) = spawn.binding
+        {
+            assert_eq!(address.as_str(), "tcp://127.0.0.1:4777");
+            assert_eq!(pubkey, [7; 32]);
+        }
     }
 
     #[test]

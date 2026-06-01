@@ -544,8 +544,8 @@ mod tests {
 
     use super::super::types::{
         AgentAddressability, AgentRuntimeId, CheckpointVersion, ContinuityGeneration,
-        ContinuityRecord, ContinuityResolveState, DisplayName, ExternalToolDef, FencingToken,
-        LeaseGrant, ManagedPeerEdge, SessionSnapshot,
+        ContinuityRecord, ContinuityResolveState, ExternalToolDef, FencingToken, LeaseGrant,
+        ManagedPeerEdge, SessionSnapshot,
     };
 
     // -----------------------------------------------------------------------
@@ -696,6 +696,8 @@ mod tests {
             additional_instructions: vec![],
             initial_message: None,
             runtime_mode_override: None,
+            backend: None,
+            binding: None,
         };
         let mut draft = AgentBuildDraft {
             model: None,
@@ -1056,24 +1058,29 @@ mod tests {
     #[tokio::test]
     async fn test_identity_first_gateway_roster_provider_roster() {
         let mock = Arc::new(MockBridge::new());
-        let specs = vec![DurableAgentSpec {
-            identity: AgentIdentity::parse("triage:main").unwrap(),
-            profile: meerkat_mob::ProfileName::from("default"),
-            addressability: AgentAddressability::Addressable,
-            display_name: Some(DisplayName::parse("Triage").unwrap()),
-            labels: {
-                let mut m = BTreeMap::new();
-                m.insert("role".to_string(), "triage".to_string());
-                m
-            },
-            context: Some(json!({"key": "value"})),
-            additional_instructions: vec!["Be helpful.".to_string()],
-            initial_message: None,
-            runtime_mode_override: None,
-        }];
         mock.set_response(
             "callback/roster_provider/roster",
-            Ok(serde_json::to_value(&specs).unwrap()),
+            Ok(json!([
+                {
+                    "identity": "triage:main",
+                    "profile": "default",
+                    "addressability": "addressable",
+                    "display_name": "Triage",
+                    "labels": { "role": "triage" },
+                    "context": { "key": "value" },
+                    "additional_instructions": ["Be helpful."],
+                    "runtime_mode_override": "turn_driven",
+                    "backend": "external",
+                    "binding": {
+                        "kind": "external",
+                        "address": "tcp://127.0.0.1:4777",
+                        "identity": {
+                            "kind": "ed25519_public_key",
+                            "public_key": "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+                        }
+                    }
+                }
+            ])),
         )
         .await;
 
@@ -1088,6 +1095,18 @@ mod tests {
         assert_eq!(result[0].display_name.as_ref().unwrap().as_str(), "Triage");
         assert_eq!(result[0].labels["role"], "triage");
         assert_eq!(result[0].additional_instructions[0], "Be helpful.");
+        assert_eq!(
+            result[0].runtime_mode_override,
+            Some(meerkat_mob::MobRuntimeMode::TurnDriven)
+        );
+        assert_eq!(
+            result[0].backend,
+            Some(meerkat_mob::MobBackendKind::External)
+        );
+        assert!(matches!(
+            result[0].binding,
+            Some(meerkat_contracts::WireRuntimeBinding::External { .. })
+        ));
 
         // Verify previous_identities was sent
         let (_, params) = mock.last_call().await;
@@ -1151,6 +1170,8 @@ mod tests {
             additional_instructions: vec![],
             initial_message: None,
             runtime_mode_override: None,
+            backend: None,
+            binding: None,
         };
         let mut draft = AgentBuildDraft {
             model: None,
@@ -1262,6 +1283,8 @@ mod tests {
             additional_instructions: vec![],
             initial_message: None,
             runtime_mode_override: None,
+            backend: None,
+            binding: None,
         };
         let ctx = TopologyContext {
             roster: vec![roster_spec],

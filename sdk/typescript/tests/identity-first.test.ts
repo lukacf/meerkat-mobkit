@@ -23,6 +23,16 @@ describe("DurableAgentSpec (REQ-46)", () => {
       labels: { tier: "1" },
       context: { key: "value" },
       additional_instructions: ["Be concise."],
+      runtime_mode_override: "turn_driven",
+      backend: "external",
+      binding: {
+        kind: "external",
+        address: "tcp://127.0.0.1:4777",
+        identity: {
+          kind: "ed25519_public_key",
+          public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        },
+      },
     });
     assert.equal(spec.identity, "triage:main");
     assert.equal(spec.profile, "triage");
@@ -31,6 +41,16 @@ describe("DurableAgentSpec (REQ-46)", () => {
     assert.deepEqual(spec.labels, { tier: "1" });
     assert.deepEqual(spec.context, { key: "value" });
     assert.deepEqual(spec.additionalInstructions, ["Be concise."]);
+    assert.equal(spec.runtimeModeOverride, "turn_driven");
+    assert.equal(spec.backend, "external");
+    assert.deepEqual(spec.binding, {
+      kind: "external",
+      address: "tcp://127.0.0.1:4777",
+      identity: {
+        kind: "ed25519_public_key",
+        public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+      },
+    });
   });
 
   it("addressability defaults to 'addressable' when omitted", async () => {
@@ -64,6 +84,16 @@ describe("DurableAgentSpec (REQ-46)", () => {
       labels: { tier: "1" },
       context: { k: "v" },
       additionalInstructions: ["Be concise."],
+      runtimeModeOverride: "turn_driven",
+      backend: "external",
+      binding: {
+        kind: "external",
+        address: "tcp://127.0.0.1:4777",
+        identity: {
+          kind: "ed25519_public_key",
+          public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        },
+      },
     });
     assert.equal(wire.identity, "triage:main");
     assert.equal(wire.profile, "triage");
@@ -72,6 +102,16 @@ describe("DurableAgentSpec (REQ-46)", () => {
     assert.deepEqual(wire.labels, { tier: "1" });
     assert.deepEqual(wire.context, { k: "v" });
     assert.deepEqual(wire.additional_instructions, ["Be concise."]);
+    assert.equal(wire.runtime_mode_override, "turn_driven");
+    assert.equal(wire.backend, "external");
+    assert.deepEqual(wire.binding, {
+      kind: "external",
+      address: "tcp://127.0.0.1:4777",
+      identity: {
+        kind: "ed25519_public_key",
+        public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+      },
+    });
   });
 });
 
@@ -726,6 +766,15 @@ describe("Provider interfaces (REQ-48)", () => {
             labels: {},
             context: null,
             additionalInstructions: [],
+            backend: "external",
+            binding: {
+              kind: "external",
+              address: "tcp://127.0.0.1:4777",
+              identity: {
+                kind: "ed25519_public_key",
+                public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+              },
+            },
           },
         ];
       },
@@ -733,6 +782,15 @@ describe("Provider interfaces (REQ-48)", () => {
     const specs = await provider.roster({});
     assert.equal(specs.length, 1);
     assert.equal(specs[0].identity, "triage:main");
+    assert.equal(specs[0].backend, "external");
+    assert.deepEqual(specs[0].binding, {
+      kind: "external",
+      address: "tcp://127.0.0.1:4777",
+      identity: {
+        kind: "ed25519_public_key",
+        public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+      },
+    });
   });
 
   it("AgentCustomizer interface is implementable", async () => {

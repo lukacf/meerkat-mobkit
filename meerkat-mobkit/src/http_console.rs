@@ -9,13 +9,16 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use futures::future::join_all;
+use meerkat_contracts::WireRuntimeBinding;
 use meerkat_core::ContentInput;
 use meerkat_core::comms::TrustedPeerDescriptor;
 use meerkat_mob::MobState;
 use meerkat_mob::ids::{MeerkatId, MobId};
 use meerkat_mob::launch::MemberLaunchMode;
 use meerkat_mob::runtime::reconcile::MemberFilter;
-use meerkat_mob::{MobHandle, PeerTarget, ProfileName, SpawnMemberSpec};
+use meerkat_mob::{
+    MobBackendKind, MobHandle, MobRuntimeMode, PeerTarget, ProfileName, SpawnMemberSpec,
+};
 
 use crate::mob_handle_runtime::{
     is_recoverable_lifecycle_cleanup_error, member_entry_to_json,
@@ -1909,6 +1912,60 @@ fn invalid_params(id: Value, message: impl Into<String>) -> Value {
             data: None,
         }),
     )
+}
+
+fn runtime_binding_from_wire(
+    binding: WireRuntimeBinding,
+) -> Result<meerkat_mob::RuntimeBinding, String> {
+    match binding {
+        WireRuntimeBinding::Session => Ok(meerkat_mob::RuntimeBinding::Session),
+        WireRuntimeBinding::External {
+            address,
+            bootstrap_token,
+            identity,
+        } => {
+            let resolved = identity.resolve().map_err(|err| err.to_string())?;
+            Ok(meerkat_mob::RuntimeBinding::External {
+                peer_id: resolved.peer_id.to_string(),
+                address,
+                bootstrap_token,
+                pubkey: Some(resolved.pubkey),
+            })
+        }
+    }
+}
+
+fn parse_optional_runtime_mode(params: &Value) -> Result<Option<MobRuntimeMode>, String> {
+    match params.get("runtime_mode") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value::<MobRuntimeMode>(value.clone())
+            .map(Some)
+            .map_err(|err| {
+                format!("runtime_mode must be \"autonomous_host\" or \"turn_driven\": {err}")
+            }),
+    }
+}
+
+fn parse_optional_backend(params: &Value) -> Result<Option<MobBackendKind>, String> {
+    match params.get("backend") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => serde_json::from_value::<MobBackendKind>(value.clone())
+            .map(Some)
+            .map_err(|err| format!("backend must be \"session\" or \"external\": {err}")),
+    }
+}
+
+fn parse_optional_runtime_binding(
+    params: &Value,
+) -> Result<Option<meerkat_mob::RuntimeBinding>, String> {
+    match params.get("binding") {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => {
+            let wire = serde_json::from_value::<WireRuntimeBinding>(value.clone())
+                .map_err(|err| format!("binding: {err}"))?;
+            runtime_binding_from_wire(wire).map(Some)
+        }
+    }
 }
 
 async fn member_entry_to_console_json(
@@ -4637,8 +4694,29 @@ async fn handle_console_runtime_rpc_with_visibility(
                     );
                 }
             };
+            let runtime_mode = match parse_optional_runtime_mode(&request.params) {
+                Ok(value) => value,
+                Err(message) => return invalid_params(response_id, message),
+            };
+            let backend = match parse_optional_backend(&request.params) {
+                Ok(value) => value,
+                Err(message) => return invalid_params(response_id, message),
+            };
+            let binding = match parse_optional_runtime_binding(&request.params) {
+                Ok(value) => value,
+                Err(message) => return invalid_params(response_id, message),
+            };
             let mut spec =
                 SpawnMemberSpec::new(ProfileName::from(role), MeerkatId::from(agent_identity));
+            if let Some(runtime_mode) = runtime_mode {
+                spec = spec.with_runtime_mode(runtime_mode);
+            }
+            if let Some(backend) = backend {
+                spec = spec.with_backend(backend);
+            }
+            if let Some(binding) = binding {
+                spec.binding = Some(binding);
+            }
             if !labels.is_empty() {
                 spec = spec.with_labels(labels);
             }
@@ -7198,6 +7276,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -7309,6 +7389,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -7432,6 +7514,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -7531,6 +7615,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -7777,6 +7863,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -7934,6 +8022,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(ContinuityRecord {
@@ -8054,6 +8144,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -8195,6 +8287,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -8328,6 +8422,8 @@ comms = true
                         additional_instructions: Vec::new(),
                         initial_message: None,
                         runtime_mode_override: None,
+                        backend: None,
+                        binding: None,
                     },
                     IdentityLifecycleState::Active,
                     Some(record),
@@ -8402,6 +8498,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record.clone()),
@@ -8567,6 +8665,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record.clone()),
@@ -8656,6 +8756,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),
@@ -8734,6 +8836,8 @@ comms = true
                     additional_instructions: Vec::new(),
                     initial_message: None,
                     runtime_mode_override: None,
+                    backend: None,
+                    binding: None,
                 },
                 IdentityLifecycleState::Active,
                 Some(record),

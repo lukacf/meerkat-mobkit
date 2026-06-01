@@ -12,39 +12,62 @@ import {
   type DurableAgentSpec,
   type ManagedPeerEdge,
   type RosterProvider,
-  type SessionAgentBuilder,
-  type SessionBuildOptions,
   type TopologyProvider,
 } from "../../sdk/typescript/src/index.ts";
-
-import { MdmKennel } from "./src/kennel.js";
-import { startTargetDaemon } from "./src/targetd.js";
-import {
-  authHeaders,
-  getJson,
-  parseArgs,
-  postJson,
-  targetLabels,
-  waitFor,
-  type ProcessHandle,
-  type Scenario,
-  type ScenarioTarget,
-  type TargetRecord,
-} from "./src/protocol.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../..");
 const configDir = join(here, "config");
 const scenarioPath = join(here, "scenario.yaml");
+
+type ScenarioTarget = {
+  id: string;
+  name: string;
+  site: string;
+  platform: string;
+  labels?: Record<string, string>;
+};
+
+type Scenario = {
+  scenario_id: string;
+  default_operator: string;
+  console_expected_title: string;
+  targets: ScenarioTarget[];
+  links: Array<[string, string]>;
+};
+
+type RemoteTargetBinding = {
+  id: string;
+  name?: string;
+  site?: string;
+  platform?: string;
+  address?: string;
+  public_key?: string;
+  bootstrap_token?: string;
+  binding?: Record<string, unknown>;
+  labels?: Record<string, string>;
+};
+
+type Args = Record<string, string | boolean>;
+
 const scenario = YAML.parse(readFileSync(scenarioPath, "utf8")) as Scenario;
 
-type ToolContext = {
-  kind: "hive" | "target";
-  targetId?: string;
-  kennelUrl: string;
-  kennelAuthToken?: string;
-  operator: string;
-};
+function parseArgs(argv = process.argv.slice(2)): Args {
+  const result: Args = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const next = argv[index + 1];
+    if (next && !next.startsWith("--")) {
+      result[key] = next;
+      index += 1;
+    } else {
+      result[key] = true;
+    }
+  }
+  return result;
+}
 
 function repoCargoEnv(): Record<string, string> {
   const result = spawnSync(join(repoRoot, "scripts/repo-cargo"), ["--print-env"], {
@@ -78,57 +101,87 @@ function ensureGatewayBin(skipBuild: boolean): string {
   return gateway;
 }
 
-function targetFromScenario(targetId: string): ScenarioTarget | undefined {
-  return scenario.targets.find((target) => target.id === targetId);
+function readTargetBindings(args: Args): RemoteTargetBinding[] {
+  const explicitPath =
+    typeof args.targets === "string"
+      ? args.targets
+      : process.env.MDM_REMOTE_TARGETS_FILE;
+  const raw =
+    process.env.MDM_REMOTE_TARGETS_JSON ??
+    (explicitPath ? readFileSync(resolve(explicitPath), "utf8") : "[]");
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) {
+    throw new Error("remote targets must be a JSON array");
+  }
+  return parsed.map((target, index) => {
+    if (!target || typeof target !== "object") {
+      throw new Error(`remote target ${index} must be an object`);
+    }
+    const value = target as RemoteTargetBinding;
+    if (!value.id) throw new Error(`remote target ${index} is missing id`);
+    return value;
+  });
 }
 
-function labelsForTarget(target: ScenarioTarget, registered?: TargetRecord): Record<string, string> {
+function bindingFor(target: RemoteTargetBinding): Record<string, unknown> {
+  if (target.binding) return target.binding;
+  if (!target.address || !target.public_key) {
+    throw new Error(
+      `remote target ${target.id} must provide either binding or address + public_key`,
+    );
+  }
   return {
-    ...targetLabels(target),
-    ...(registered?.labels ?? {}),
+    kind: "external",
+    address: target.address,
+    bootstrap_token: target.bootstrap_token,
+    identity: {
+      kind: "ed25519_public_key",
+      public_key: target.public_key,
+    },
+  };
+}
+
+function scenarioTarget(id: string): ScenarioTarget | undefined {
+  return scenario.targets.find((target) => target.id === id);
+}
+
+function targetLabels(target: RemoteTargetBinding): Record<string, string> {
+  const scenarioEntry = scenarioTarget(target.id);
+  return {
+    ...(scenarioEntry?.labels ?? {}),
+    ...(target.labels ?? {}),
     console_group: "Managed Targets",
-    display_name: target.name,
     durable_identity: target.id,
-    claim_state: registered?.claim_state ?? "available",
-    online: String(Boolean(registered)),
-    transport: registered?.transport ?? target.transport,
-    console_alert_level: registered ? (registered.claim_state === "available" ? "elevated" : "") : "critical",
+    site: target.site ?? scenarioEntry?.site ?? "remote",
+    platform: target.platform ?? scenarioEntry?.platform ?? "unknown",
+    transport: "mob_remote",
+    claim_state: "remote",
   };
 }
 
 class MdmRosterProvider implements RosterProvider {
-  constructor(
-    private readonly kennelUrl: string,
-    private readonly operator: string,
-    private readonly kennelAuthToken?: string,
-  ) {}
+  constructor(private readonly targets: RemoteTargetBinding[]) {}
 
   async roster(): Promise<DurableAgentSpec[]> {
-    const registered = await getJson<{ targets: TargetRecord[] }>(
-      `${this.kennelUrl}/api/targets`,
-      10_000,
-      this.kennelAuthToken,
-    )
-      .catch(() => ({ targets: [] }));
-    const byId = new Map(registered.targets.map((target) => [target.target_id, target]));
-    const targets: DurableAgentSpec[] = scenario.targets.map((target) => ({
-      identity: target.id,
-      profile: "target_proxy",
-      addressability: "addressable",
-      displayName: target.name,
-      labels: labelsForTarget(target, byId.get(target.id)),
-      context: {
-        kind: "target",
-        targetId: target.id,
-        kennelUrl: this.kennelUrl,
-        kennelAuthToken: this.kennelAuthToken,
-        operator: this.operator,
-      } satisfies ToolContext,
-      additionalInstructions: [
-        `You are the console proxy for remote target ${target.name}.`,
-        `The target lives at site=${target.site}, platform=${target.platform}.`,
-      ],
-    }));
+    const targetSpecs: DurableAgentSpec[] = this.targets.map((target) => {
+      const scenarioEntry = scenarioTarget(target.id);
+      const displayName = target.name ?? scenarioEntry?.name ?? target.id;
+      return {
+        identity: target.id,
+        profile: "target",
+        addressability: "addressable",
+        displayName,
+        labels: {
+          ...targetLabels(target),
+          display_name: displayName,
+        },
+        context: null,
+        additionalInstructions: [],
+        runtimeModeOverride: "turn_driven",
+        backend: "external",
+        binding: bindingFor(target),
+      };
+    });
     return [
       {
         identity: "hive",
@@ -138,297 +191,76 @@ class MdmRosterProvider implements RosterProvider {
         labels: {
           console_group: "Fleet Control",
           site: "all",
-          platform: "kennel",
+          platform: "mobkit",
           claim_state: "coordinator",
           durable_identity: "hive",
         },
-        context: {
-          kind: "hive",
-          kennelUrl: this.kennelUrl,
-          kennelAuthToken: this.kennelAuthToken,
-          operator: this.operator,
-        } satisfies ToolContext,
+        context: null,
         additionalInstructions: [
-          "You are the fleet-level MDM hive. Use MDM tools before making fleet claims.",
+          "Targets are real mob peers, not records in a target registry.",
+          "When the operator asks targets a question, send the question to the target peers through comms and wait for their replies.",
+          "Do not answer target machine questions from labels, metadata, or assumptions.",
         ],
       },
-      ...targets,
+      ...targetSpecs,
     ];
   }
 }
 
 class MdmTopologyProvider implements TopologyProvider {
+  constructor(private readonly targets: RemoteTargetBinding[]) {}
+
   async computeEdges(targetIdentities: string[]): Promise<ManagedPeerEdge[]> {
-    const targets = new Set(targetIdentities);
+    const identities = new Set(targetIdentities);
     const edges: ManagedPeerEdge[] = [];
     const add = (a: string, b: string) => {
-      if (targets.has(a) && targets.has(b) && a !== b) edges.push({ a, b });
+      if (identities.has(a) && identities.has(b) && a !== b) edges.push({ a, b });
     };
     for (const [a, b] of scenario.links) add(a, b);
+    for (const target of this.targets) add("hive", target.id);
     return edges;
   }
 }
 
 class MdmCustomizer implements AgentCustomizer {
-  constructor(
-    private readonly kennelUrl: string,
-    private readonly kennelAuthToken?: string,
-  ) {}
-
   async customizeBuild(
     _context: AgentBuildContext,
     spec: DurableAgentSpec,
     draft: AgentBuildDraft,
   ): Promise<void> {
-    if (spec.identity === "hive") return;
-    const target = targetFromScenario(spec.identity);
-    if (!target) return;
-    const registered = await getJson<{ target: TargetRecord }>(
-      `${this.kennelUrl}/api/targets/${target.id}`,
-      10_000,
-      this.kennelAuthToken,
-    )
-      .then((value) => value.target)
-      .catch(() => undefined);
     draft.labels = {
       ...draft.labels,
-      ...labelsForTarget(target, registered),
+      ...spec.labels,
+      sdk_toolbelt: "mdm-mob-roster",
     };
+    draft.additionalInstructions.push(...spec.additionalInstructions);
   }
 }
 
-function mdmTools(context: ToolContext): Record<string, (args: Record<string, unknown>) => Promise<unknown>> {
-  const targetId = () => {
-    const value = context.targetId;
-    if (!value) throw new Error("tool requires target context");
-    return value;
+async function getConsoleTitle(baseUrl: string): Promise<string | undefined> {
+  const response = await fetch(`${baseUrl}/console/experience`);
+  if (!response.ok) throw new Error(`/console/experience returned ${response.status}`);
+  const experience = (await response.json()) as {
+    console_config?: { title?: string };
   };
-  return {
-    async mdm_target_status(args) {
-      const id = String(args.target_id ?? targetId());
-      return getJson(`${context.kennelUrl}/api/targets/${id}`, 10_000, context.kennelAuthToken);
-    },
-    async mdm_remote_turn(args) {
-      const id = String(args.target_id ?? targetId());
-      return postJson(
-        `${context.kennelUrl}/api/targets/${id}/turn`,
-        {
-          prompt: String(args.prompt ?? args.command ?? ""),
-          operator: String(args.operator ?? context.operator),
-          handling_mode: args.handling_mode === "steer" ? "steer" : "queue",
-          model: typeof args.model === "string" ? args.model : undefined,
-        },
-        10_000,
-        context.kennelAuthToken,
-      );
-    },
-    async mdm_claim_target(args) {
-      const id = String(args.target_id ?? targetId());
-      return postJson(
-        `${context.kennelUrl}/api/targets/${id}/claim`,
-        {
-          operator: String(args.operator ?? context.operator),
-        },
-        10_000,
-        context.kennelAuthToken,
-      );
-    },
-    async mdm_release_target(args) {
-      const id = String(args.target_id ?? targetId());
-      return postJson(`${context.kennelUrl}/api/targets/${id}/release`, {}, 10_000, context.kennelAuthToken);
-    },
-    async mdm_respawn_target(args) {
-      const id = String(args.target_id ?? targetId());
-      return postJson(`${context.kennelUrl}/api/targets/${id}/respawn`, {}, 10_000, context.kennelAuthToken);
-    },
-    async mdm_set_model(args) {
-      const id = String(args.target_id ?? targetId());
-      return postJson(
-        `${context.kennelUrl}/api/targets/${id}/model`,
-        {
-          model: String(args.model ?? "demo-target-model"),
-        },
-        10_000,
-        context.kennelAuthToken,
-      );
-    },
-    async mdm_list_targets() {
-      return getJson(`${context.kennelUrl}/api/targets`, 10_000, context.kennelAuthToken);
-    },
-    async mdm_hive_fanout(args) {
-      const prompt = String(args.prompt ?? "");
-      const targets = await getJson<{ targets: TargetRecord[] }>(
-        `${context.kennelUrl}/api/targets`,
-        10_000,
-        context.kennelAuthToken,
-      );
-      const results = [];
-      for (const target of targets.targets) {
-        results.push(
-          await postJson(
-            `${context.kennelUrl}/api/targets/${target.target_id}/turn`,
-            {
-              prompt,
-              operator: context.operator,
-              handling_mode: "queue",
-            },
-            10_000,
-            context.kennelAuthToken,
-          ),
-        );
-      }
-      return { prompt, results };
-    },
-  };
-}
-
-class MdmSessionBuilder implements SessionAgentBuilder {
-  async buildAgent(options: SessionBuildOptions): Promise<void> {
-    const context = (options.appContext ?? {}) as ToolContext;
-    options.additionalInstructions.push(
-      "MDM tools are authoritative for target state and remote execution.",
-      "When using mdm_remote_turn, quote the returned target text rather than inventing output.",
-    );
-    options.labels = {
-      ...options.labels,
-      sdk_toolbelt: "mdm-console",
-    };
-    for (const [name, handler] of Object.entries(mdmTools(context))) {
-      options.registerTool(name, handler);
-    }
-  }
-}
-
-async function spawnScenarioTargets(
-  kennelUrl: string,
-  kennelAuthToken?: string,
-  targetAuthToken?: string,
-): Promise<ProcessHandle[]> {
-  const handles: ProcessHandle[] = [];
-  const baseState = join(here, ".target-state");
-  mkdirSync(baseState, { recursive: true });
-  for (const target of scenario.targets) {
-    handles.push(await startTargetDaemon({
-      id: target.id,
-      name: target.name,
-      site: target.site,
-      platform: target.platform,
-      transport: target.transport,
-      listen: `127.0.0.1:${target.port}`,
-      kennelUrl,
-      kennelAuthToken,
-      controlAuthToken: targetAuthToken,
-      stateDir: join(baseState, target.id),
-      allowShell: true,
-      labels: target.labels ?? {},
-    }));
-  }
-  return handles;
-}
-
-async function runSmoke(kennelUrl: string, consoleUrl: string, kennelAuthToken?: string): Promise<void> {
-  await waitFor("registered targets", async () => {
-    const response = await getJson<{ targets: TargetRecord[] }>(
-      `${kennelUrl}/api/targets`,
-      10_000,
-      kennelAuthToken,
-    );
-    return response.targets.length >= scenario.targets.length;
-  });
-  const target = scenario.targets[1] ?? scenario.targets[0];
-  await postJson(
-    `${kennelUrl}/api/targets/${target.id}/claim`,
-    { operator: scenario.default_operator },
-    10_000,
-    kennelAuthToken,
-  );
-  const turn = await postJson<{ text: string }>(
-    `${kennelUrl}/api/targets/${target.id}/turn`,
-    {
-      prompt: "shell: echo MOBKIT_MDM_SMOKE",
-      operator: scenario.default_operator,
-    },
-    10_000,
-    kennelAuthToken,
-  );
-  if (!turn.text.includes("MOBKIT_MDM_SMOKE")) {
-    throw new Error(`remote smoke turn did not include marker: ${turn.text}`);
-  }
-  const experience = await getJson<Record<string, unknown>>(`${consoleUrl}/console/experience`);
-  const consoleConfig = experience.console_config as Record<string, unknown> | undefined;
-  if (consoleConfig?.title !== scenario.console_expected_title) {
-    throw new Error(`unexpected console title: ${String(consoleConfig?.title)}`);
-  }
-  const contacts = await fetch(`${kennelUrl}/api/contacts.toml`, {
-    headers: authHeaders(kennelAuthToken),
-  }).then((response) => response.text());
-  if (!contacts.includes(target.id)) throw new Error("generated contacts did not include target");
-  console.log("[mdm-smoke] ok");
+  return experience.console_config?.title;
 }
 
 async function main() {
   const args = parseArgs();
   const skipBuild = Boolean(args["skip-build"]);
-  const spawnTargets = Boolean(args["spawn-targets"]) || Boolean(args.smoke) || Boolean(args["browser-smoke"]);
   const smoke = Boolean(args.smoke);
   const wait = Boolean(args.wait) || Boolean(args["browser-smoke"]);
-  const apiOnly = Boolean(args["api-only"]);
   const useDemoLlm = Boolean(args["demo-llm"]) || !process.env.OPENAI_API_KEY;
-  const operator = String(args.operator ?? scenario.default_operator);
-  const kennelAuthToken = typeof args["auth-token"] === "string" ? args["auth-token"] : process.env.MDM_AUTH_TOKEN;
-  const targetAuthToken =
-    typeof args["target-auth-token"] === "string" ? args["target-auth-token"] : process.env.MDM_TARGET_AUTH_TOKEN;
-  const requireAuth = Boolean(args["require-auth"]) || process.env.MDM_REQUIRE_AUTH === "true";
-  const requireTls = Boolean(args["require-tls"]) || process.env.MDM_REQUIRE_TLS === "true";
-  const tlsCertPath = typeof args["tls-cert"] === "string" ? args["tls-cert"] : process.env.MDM_TLS_CERT_PATH;
-  const tlsKeyPath = typeof args["tls-key"] === "string" ? args["tls-key"] : process.env.MDM_TLS_KEY_PATH;
-  if (requireAuth && (!kennelAuthToken || !targetAuthToken)) {
-    throw new Error("--require-auth requires MDM_AUTH_TOKEN and MDM_TARGET_AUTH_TOKEN");
+  const targets = readTargetBindings(args);
+  if (targets.length === 0 && !Boolean(args["allow-empty-targets"])) {
+    throw new Error(
+      "no remote targets configured; pass --targets <json> or set MDM_REMOTE_TARGETS_JSON",
+    );
   }
-  if (requireTls && (!tlsCertPath || !tlsKeyPath)) {
-    throw new Error("--require-tls requires MDM_TLS_CERT_PATH and MDM_TLS_KEY_PATH");
-  }
-  const expectedTargets = Number(
-    args["expect-targets"] ?? process.env.MDM_EXPECT_TARGETS ?? (spawnTargets ? scenario.targets.length : 0),
-  );
-  const apiListen = String(args["api-listen"] ?? process.env.MDM_API_LISTEN_ADDR ?? scenario.api_listen_addr);
+
   const stateDir = join(here, ".state");
   mkdirSync(stateDir, { recursive: true });
-
-  const kennel = new MdmKennel({
-    listen: apiListen,
-    stateDir,
-    defaultOperator: operator,
-    authToken: kennelAuthToken,
-    targetAuthToken,
-    tlsCertPath,
-    tlsKeyPath,
-  });
-  const kennelHandle = await kennel.start();
-  const targetHandles = spawnTargets
-    ? await spawnScenarioTargets(kennelHandle.url, kennelAuthToken, targetAuthToken)
-    : [];
-  await waitFor("target registration", async () => {
-    if (expectedTargets <= 0) return true;
-    return kennel.listTargets().filter((target) => target.labels.online === "true").length >= expectedTargets;
-  });
-
-  if (apiOnly) {
-    console.log(`[mdm] api: ${kennelHandle.url}`);
-    console.log(`[mdm] contacts: ${join(stateDir, "contacts.generated.toml")}`);
-    try {
-      if (wait) {
-        await new Promise<void>((resolve) => {
-          process.once("SIGINT", resolve);
-          process.once("SIGTERM", resolve);
-        });
-      }
-    } finally {
-      await Promise.all(targetHandles.map((handle) => handle.close()));
-      await kennelHandle.close();
-    }
-    return;
-  }
 
   let builder = MobKit.builder()
     .mob(join(configDir, "mob.toml"))
@@ -437,10 +269,9 @@ async function main() {
     .consoleAuthRequired(false)
     .consoleFetchTimeoutMs(120_000)
     .persistentState(stateDir)
-    .sessionService(new MdmSessionBuilder())
-    .rosterProvider(new MdmRosterProvider(kennelHandle.url, operator, kennelAuthToken))
-    .topologyProvider(new MdmTopologyProvider())
-    .agentCustomizer(new MdmCustomizer(kennelHandle.url, kennelAuthToken));
+    .rosterProvider(new MdmRosterProvider(targets))
+    .topologyProvider(new MdmTopologyProvider(targets))
+    .agentCustomizer(new MdmCustomizer());
   if (useDemoLlm) builder = builder.demoLlm();
   const runtime = await builder.build();
 
@@ -449,16 +280,21 @@ async function main() {
     await handle.setMobLabels({
       example_pack: "004-mdm-console",
       scenario: scenario.scenario_id,
-      remote_targets: String(kennel.targets.size),
+      remote_targets: String(targets.length),
+      remote_topology: "mob-roster",
     });
+    await handle.reconcileEdges();
     const baseUrl = runtime.rustHttpBaseUrl;
     if (!baseUrl) throw new Error("MobKit runtime did not expose an HTTP console URL");
-    console.log(`[mdm] api: ${kennelHandle.url}`);
     console.log(`[mdm] console: ${baseUrl}/console`);
-    console.log(`[mdm] contacts: ${join(stateDir, "contacts.generated.toml")}`);
+    console.log(`[mdm] remote-targets: ${targets.length}`);
 
     if (smoke) {
-      await runSmoke(kennelHandle.url, baseUrl, kennelAuthToken);
+      const title = await getConsoleTitle(baseUrl);
+      if (title !== scenario.console_expected_title) {
+        throw new Error(`unexpected console title: ${String(title)}`);
+      }
+      console.log("[mdm-smoke] ok");
       return;
     }
     if (wait) {
@@ -469,8 +305,6 @@ async function main() {
     }
   } finally {
     await runtime.shutdown();
-    await Promise.all(targetHandles.map((handle) => handle.close()));
-    await kennelHandle.close();
   }
 }
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=MobKit MDM kennel console
+Description=MobKit MDM mob console
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 EnvironmentFile=/etc/mdm-console/mdm-console.env
 WorkingDirectory=/opt/meerkat-mobkit/examples
-ExecStart=/usr/bin/env npx tsx 004-mdm-console-pack/run.ts --api-listen ${MDM_API_LISTEN_ADDR} --wait --require-auth --require-tls --auth-token ${MDM_AUTH_TOKEN} --target-auth-token ${MDM_TARGET_AUTH_TOKEN} --tls-cert ${MDM_TLS_CERT_PATH} --tls-key ${MDM_TLS_KEY_PATH}
+ExecStart=/usr/bin/env npx tsx 004-mdm-console-pack/run.ts --wait --targets ${MDM_REMOTE_TARGETS_FILE}
 Restart=always
 RestartSec=5
 User=mdm-console

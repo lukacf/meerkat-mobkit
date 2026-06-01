@@ -293,6 +293,8 @@ async fn identity_first_contracts_roster_provider_mock() {
         additional_instructions: vec![],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
     let provider: Arc<dyn RosterProvider> = Arc::new(MockRosterProvider {
         specs: vec![spec.clone()],
@@ -329,6 +331,8 @@ async fn identity_first_contracts_customizer_mock_modifies_draft() {
         additional_instructions: vec![],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
     let mut draft = AgentBuildDraft {
         model: None,
@@ -931,6 +935,8 @@ async fn identity_first_contracts_session_hook_customizer_adapter_model_mutation
         additional_instructions: vec![],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
     let mut draft = AgentBuildDraft {
         model: None,
@@ -989,6 +995,8 @@ async fn identity_first_contracts_session_hook_customizer_resume_warning() {
         additional_instructions: vec![],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
     let mut draft = AgentBuildDraft {
         model: None,
@@ -1045,6 +1053,8 @@ async fn identity_first_contracts_session_hook_customizer_unsupported_field_warn
         additional_instructions: vec![],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
     let mut draft = AgentBuildDraft {
         model: Some("claude-sonnet-4-6".to_string()),

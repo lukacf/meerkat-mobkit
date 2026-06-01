@@ -873,6 +873,9 @@ export class MobHandle {
       context?: unknown;
       resumeSessionId?: string;
       additionalInstructions?: string[];
+      runtimeMode?: "autonomous_host" | "turn_driven";
+      backend?: "session" | "external";
+      binding?: Record<string, unknown>;
     },
   ): Promise<MemberSnapshot> {
     const params: Record<string, unknown> = {
@@ -887,6 +890,9 @@ export class MobHandle {
     if (options?.additionalInstructions) {
       params.additional_instructions = options.additionalInstructions;
     }
+    if (options?.runtimeMode) params.runtime_mode = options.runtimeMode;
+    if (options?.backend) params.backend = options.backend;
+    if (options?.binding) params.binding = options.binding;
     return parseMemberSnapshot(
       await this._runtime._rpc("mobkit/ensure_member", params),
     );

@@ -31,7 +31,7 @@ function waitForLine(child, pattern, timeoutMs = 120000) {
       join(examplesRoot, "node_modules/tsx/dist/cli.mjs"),
       join(here, "run.ts"),
       "--browser-smoke",
-      "--spawn-targets",
+      "--allow-empty-targets",
       "--demo-llm",
       "--skip-build",
     ],
@@ -44,8 +44,7 @@ function waitForLine(child, pattern, timeoutMs = 120000) {
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     await page.goto(consoleUrl, { waitUntil: "domcontentloaded", timeout: 120000 });
     await page.getByText("MDM Console").first().waitFor({ timeout: 60000 });
-    await page.getByText("lab-mac-a").first().waitFor({ timeout: 60000 });
-    await page.getByText("lab-linux-b").first().waitFor({ timeout: 60000 });
+    await page.getByText("Hive").first().waitFor({ timeout: 60000 });
     const screenshot = join(here, ".state", "mdm-console-browser-smoke.png");
     await page.screenshot({ path: screenshot, fullPage: true });
     console.log(`[mdm-browser-smoke] screenshot: ${screenshot}`);

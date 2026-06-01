@@ -36,12 +36,6 @@ alert_levels = ["critical"]
 visible_controls = ["roster", "topology", "timeline", "logs", "health"]
 hidden_controls = []
 
-[[sidebar.buttons]]
-id = "mdm-api-targets"
-label = "Target API"
-href = "http://127.0.0.1:5788/api/targets"
-target = "_blank"
-
 [agent_list]
 group_by = ["labels.console_group", "labels.site", "role"]
 subgroup_by = ["labels.platform", "labels.claim_state"]

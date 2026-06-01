@@ -11,7 +11,7 @@ const result = spawnSync(
     join(examplesRoot, "node_modules/tsx/dist/cli.mjs"),
     join(here, "run.ts"),
     "--smoke",
-    "--spawn-targets",
+    "--allow-empty-targets",
     "--demo-llm",
     "--skip-build",
   ],

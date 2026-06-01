@@ -60,6 +60,8 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         additional_instructions: Vec::new(),
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     }
 }
 

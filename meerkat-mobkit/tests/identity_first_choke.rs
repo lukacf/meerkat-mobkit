@@ -65,6 +65,8 @@ fn make_spec(name: &str) -> DurableAgentSpec {
         additional_instructions: Vec::new(),
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     }
 }
 
@@ -644,6 +646,8 @@ async fn identity_first_choke_09_durable_agent_spec_gateway_round_trip() {
         additional_instructions: vec!["be thorough".to_string()],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
 
     // Serialize to JSON (simulates gateway wire)

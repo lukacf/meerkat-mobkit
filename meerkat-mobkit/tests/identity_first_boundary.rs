@@ -144,6 +144,8 @@ system_prompt = "You are a worker agent."
         additional_instructions: vec![],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
 
     // The fact that this compiles proves ProfileName type compatibility

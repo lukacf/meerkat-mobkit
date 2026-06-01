@@ -328,6 +328,8 @@ fn durable_spec(identity: &str) -> DurableAgentSpec {
         additional_instructions: Vec::new(),
         initial_message: None,
         runtime_mode_override: Some(meerkat_mob::MobRuntimeMode::TurnDriven),
+        backend: None,
+        binding: None,
     }
 }
 

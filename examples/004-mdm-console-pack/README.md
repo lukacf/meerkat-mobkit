@@ -1,83 +1,73 @@
 # 004 - MDM Console Pack
 
-This pack re-imagines the old terminal MDM flow as a MobKit console
-deployment. It is independent of the Meerkat `035-mdm-tux-rs` example.
-See `../../docs/design/mdm-kennel-target-deployment.md` for the kennel/target
-deployment model.
+This pack re-imagines the old TUX MDM flow as a MobKit console over one real
+mob roster. There is no kennel service and no target HTTP registry in this
+design. MobKit owns the roster, the hive is a local member, and every target is
+declared as a remote `backend: external` mob member with a real Meerkat comms
+address and Ed25519 public key.
 
-## Local Smoke
+The important test is whether hive-to-target traffic is actual peer/comms
+traffic. A roster label saying `platform=linux-gcp-vm` is not a target answer.
+
+## Target Bindings
+
+Run or provision target agents separately, then pass their bindings to the
+console:
+
+```json
+[
+  {
+    "id": "target-a",
+    "name": "this-mac",
+    "site": "local",
+    "platform": "darwin-local",
+    "address": "tcp://127.0.0.1:5791",
+    "public_key": "ed25519:...",
+    "bootstrap_token": "..."
+  }
+]
+```
+
+The same value can be supplied as `binding` in the canonical MobKit/Meerkat
+wire shape:
+
+```json
+{
+  "kind": "external",
+  "address": "tcp://127.0.0.1:5791",
+  "identity": {
+    "kind": "ed25519_public_key",
+    "public_key": "ed25519:..."
+  },
+  "bootstrap_token": "..."
+}
+```
+
+See `target-bindings.example.json` for the file shape. The example keys are not
+live credentials.
+
+## Run
 
 ```bash
 cd examples
 npm install
-npm run mdm:smoke
-npm run mdm:auth-smoke
-npm run mdm:browser-smoke
+./004-mdm-console-pack/examples.sh --run --targets ./004-mdm-console-pack/target-bindings.json
 ```
 
-The local smoke starts a kennel API, two remote target daemons on loopback, a
-MobKit console runtime, claims a target, runs a remote shell marker, verifies
-generated contacts, and checks `/console/experience`.
-The auth smoke runs the same target path with bearer-token auth enabled and
-verifies unauthenticated kennel API calls are rejected.
+Open the printed `/console` URL. The roster should show `Hive` plus the remote
+targets from the binding file. Asking the hive to query hardware should produce
+peer messages to the target members; if the timeline only shows local metadata,
+that is a MobKit/Meerkat remote-support gap.
 
-## Run The Console
+## Smoke
 
 ```bash
 cd examples
-./004-mdm-console-pack/examples.sh --run
+npm run mdm:smoke
+npm run mdm:browser-smoke
 ```
 
-Open the printed `/console` URL. The target daemons are separate processes and
-all target turns go through the kennel to target-owned HTTP endpoints.
-
-## Docker Remote Targets
-
-```bash
-cd examples/004-mdm-console-pack
-docker compose up
-```
-
-The compose file runs a central kennel-console service plus two target
-containers. Targets bind inside their own container and advertise service-DNS
-URLs back to the kennel, so the kennel never tries to dial a target's loopback
-address. To run the API-level container smoke:
-
-```bash
-./examples.sh --docker-smoke
-```
-
-GCP is optional and not required for normal development.
-
-## Optional GCP
-
-Copy `deploy/gcp.env.example` to `.env.gcp` and fill it locally. The scripts
-only read local environment files and do not commit project IDs, zones, keys, or
-other private infrastructure values. The installer advertises each VM's first
-private IP address to the kennel; the kennel must be able to reach TCP/5792 on
-that address for remote turns to work.
-
-```bash
-./scripts/gcp-create-targets.sh
-./scripts/gcp-install-targetd.sh
-./scripts/gcp-smoke.sh
-./scripts/gcp-cleanup-targets.sh
-```
-
-`gcp-smoke.sh` creates a kennel VM and target VMs, syncs the current checkout,
-runs a remote target turn, and expects you to run cleanup afterwards. The script
-uses only the ignored `.env.gcp` file for project, zone, prefix, and token
-values.
-
-## Production State
-
-The kennel writes `kennel-state.json`, `contacts.generated.toml`, and MobKit
-SQLite state under `.state/` by default. Use:
-
-```bash
-./scripts/backup-kennel-state.sh
-```
-
-Systemd and launchd target installers live under `scripts/`. They copy a local
-env file into `/etc/mdm-targetd`; keep that env file local because it contains
-the kennel and target bearer tokens.
+These local smokes only verify that the console boots without the old kennel
+path. They do not prove remote execution. Live validation requires at least one
+local target runtime and one remote target runtime with unrestricted shell tools
+enabled on the target side.

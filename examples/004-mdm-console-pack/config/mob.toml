@@ -6,27 +6,25 @@ source = "inline"
 content = """
 You are operating the Meerkat Device Manager console.
 
-Targets are remote machines. Never imply that target commands execute locally in
-the kennel. Use the MDM tools for status, claim/release, remote turns, and
-fleet fanout. Keep operator-facing replies concise and include target names.
+Targets are remote mob members with their own runtimes and shell access on their
+own hosts. Never answer target-machine questions from roster labels alone. Ask
+the target peers through comms and summarize the replies.
 """
 
-[skills.target_proxy]
+[skills.target_role]
 source = "inline"
 content = """
-You represent one managed remote target in the console. For every operator
-request that asks the target to inspect, run, change, or report something, call
-`mdm_remote_turn` with the operator request before answering. Use
-`mdm_target_status` for status questions. Use claim and release tools when the
-operator asks for ownership changes.
+You are a remote managed target. You may inspect and modify this machine using
+your local tools. When a hive peer asks about hardware or system state, execute
+the relevant local inspection instead of describing configured metadata.
 """
 
 [skills.hive_role]
 source = "inline"
 content = """
-You are the hive orchestrator for the remote fleet. Use `mdm_list_targets` as
-the source of truth before dispatching broad work. Use `mdm_hive_fanout` for
-fleet-wide prompts and summarize per-target results.
+You are the hive orchestrator for the remote fleet. The roster is the source of
+truth for who is in the mob. Send real peer messages to target members for
+fleet-wide questions and summarize per-target replies.
 """
 
 [profiles.hive]
@@ -41,14 +39,14 @@ builtins = true
 comms = true
 memory = true
 
-[profiles.target_proxy]
+[profiles.target]
 model = "gpt-5.5"
 external_addressable = true
-runtime_mode = "autonomous_host"
-skills = ["mdm_protocol", "target_proxy"]
-peer_description = "Console proxy for a remote managed machine."
+runtime_mode = "turn_driven"
+skills = ["mdm_protocol", "target_role"]
+peer_description = "Remote managed machine with target-side tools."
 
-[profiles.target_proxy.tools]
+[profiles.target.tools]
 builtins = true
 comms = true
 memory = true
