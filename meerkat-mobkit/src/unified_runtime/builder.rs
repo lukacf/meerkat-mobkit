@@ -725,6 +725,9 @@ impl UnifiedRuntimeBuilder {
         } else {
             None
         };
+        let identity_lease_renewal_task = identity_first_context
+            .as_ref()
+            .map(|context| context.runtime.clone().spawn_lease_renewal_task());
 
         // Set immutable outer fields by rebuilding the struct
         let runtime = UnifiedRuntime {
@@ -737,6 +740,7 @@ impl UnifiedRuntimeBuilder {
             contact_directory: self.contact_directory,
             session_bridge,
             identity_first_context,
+            identity_lease_renewal_task: tokio::sync::Mutex::new(identity_lease_renewal_task),
             console_log_store,
             ..runtime
         };

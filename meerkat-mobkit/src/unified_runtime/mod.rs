@@ -135,6 +135,7 @@ pub struct UnifiedRuntime {
     mob_events: MobEventsStore,
     mob_events_subscriber_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     implicit_delegate_retirement_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    identity_lease_renewal_task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
 
     // Cross-mob communication
     contact_directory: Option<crate::contact_directory::ContactDirectory>,
@@ -213,6 +214,7 @@ impl UnifiedRuntime {
             mob_events: mob_events_store,
             mob_events_subscriber_task: tokio::sync::Mutex::new(mob_events_task),
             implicit_delegate_retirement_task: tokio::sync::Mutex::new(None),
+            identity_lease_renewal_task: tokio::sync::Mutex::new(None),
             contact_directory: None,
             peer_mob_handles: tokio::sync::RwLock::new(BTreeMap::new()),
             gateway_peer_keys: None,

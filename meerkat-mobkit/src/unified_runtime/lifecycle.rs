@@ -159,6 +159,9 @@ impl UnifiedRuntime {
         if let Some(task) = self.implicit_delegate_retirement_task.lock().await.take() {
             task.abort();
         }
+        if let Some(task) = self.identity_lease_renewal_task.lock().await.take() {
+            task.abort();
+        }
 
         // Phase 1: Drain in-flight events
         let drain_start = std::time::Instant::now();
