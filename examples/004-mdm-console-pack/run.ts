@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -6,6 +6,7 @@ import YAML from "yaml";
 
 import {
   MobKit,
+  type MobHandle,
   type AgentBuildContext,
   type AgentBuildDraft,
   type AgentCustomizer,
@@ -69,6 +70,63 @@ function parseArgs(argv = process.argv.slice(2)): Args {
   return result;
 }
 
+function stringArg(args: Args, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function socketHost(socketAddress: string): string {
+  if (socketAddress.startsWith("[")) {
+    const end = socketAddress.indexOf("]");
+    if (end > 0) return socketAddress.slice(1, end);
+  }
+  const colon = socketAddress.lastIndexOf(":");
+  return colon >= 0 ? socketAddress.slice(0, colon) : socketAddress;
+}
+
+function isUnspecifiedHost(host: string): boolean {
+  return host === "0.0.0.0" || host === "::" || host === "[::]";
+}
+
+function defaultSupervisorAdvertisedAddress(bindAddress: string): string {
+  const host = socketHost(bindAddress);
+  if (isUnspecifiedHost(host)) {
+    throw new Error(
+      "MDM supervisor bridge bind address is unspecified; set --supervisor-advertised tcp://<console-reachable-host>:<port> or MDM_SUPERVISOR_ADVERTISED_ADDRESS",
+    );
+  }
+  return `tcp://${bindAddress}`;
+}
+
+function writeRuntimeMobConfig(args: Args, stateDir: string): {
+  path: string;
+  bindAddress: string;
+  advertisedAddress: string;
+} {
+  const bindAddress =
+    stringArg(args, "supervisor-bind") ??
+    process.env.MDM_SUPERVISOR_BIND_ADDRESS ??
+    "127.0.0.1:5790";
+  const advertisedAddress =
+    stringArg(args, "supervisor-advertised") ??
+    process.env.MDM_SUPERVISOR_ADVERTISED_ADDRESS ??
+    defaultSupervisorAdvertisedAddress(bindAddress);
+  const source = readFileSync(join(configDir, "mob.toml"), "utf8");
+  const path = join(stateDir, "mob.generated.toml");
+  const content = `${source.trimEnd()}
+
+[backend.external.supervisor_bridge]
+bind_address = ${tomlString(bindAddress)}
+advertised_address = ${tomlString(advertisedAddress)}
+`;
+  writeFileSync(path, content);
+  return { path, bindAddress, advertisedAddress };
+}
+
 function repoCargoEnv(): Record<string, string> {
   const result = spawnSync(join(repoRoot, "scripts/repo-cargo"), ["--print-env"], {
     cwd: repoRoot,
@@ -110,10 +168,8 @@ function readTargetBindings(args: Args): RemoteTargetBinding[] {
     process.env.MDM_REMOTE_TARGETS_JSON ??
     (explicitPath ? readFileSync(resolve(explicitPath), "utf8") : "[]");
   const parsed = JSON.parse(raw) as unknown;
-  if (!Array.isArray(parsed)) {
-    throw new Error("remote targets must be a JSON array");
-  }
-  return parsed.map((target, index) => {
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+  return entries.map((target, index) => {
     if (!target || typeof target !== "object") {
       throw new Error(`remote target ${index} must be an object`);
     }
@@ -246,11 +302,48 @@ async function getConsoleTitle(baseUrl: string): Promise<string | undefined> {
   return experience.console_config?.title;
 }
 
+async function runRealTargetSmoke(
+  handle: MobHandle,
+  targets: RemoteTargetBinding[],
+): Promise<void> {
+  if (targets.length === 0) {
+    throw new Error("real target smoke requires at least one target binding");
+  }
+  const members = await handle.listMembers();
+  const activeMembers = new Set(members.map((member) => member.agentIdentity));
+  for (const target of targets) {
+    if (!activeMembers.has(target.id)) {
+      throw new Error(
+        `real target smoke expected active mob member '${target.id}', got: ${[...activeMembers].join(", ")}`,
+      );
+    }
+  }
+
+  for (const target of targets) {
+    const prompt = [
+      "MDM real-target smoke.",
+      "This is a peer turn delivered through the MobKit/Meerkat mob path.",
+      "Inspect the local target host before answering.",
+      "Report hostname, OS/kernel, current user, and whether shell tools are available.",
+      "Do not answer from roster labels or binding metadata.",
+    ].join(" ");
+    const result = await handle.send(target.id, prompt, { handlingMode: "queue" });
+    if (!result.accepted) {
+      throw new Error(`real target smoke was not accepted by ${target.id}`);
+    }
+    console.log(
+      `[mdm-real-target-smoke] ${target.id}: accepted session=${result.sessionId}`,
+    );
+  }
+}
+
 async function main() {
   const args = parseArgs();
   const skipBuild = Boolean(args["skip-build"]);
   const smoke = Boolean(args.smoke);
+  const realTargetSmoke = Boolean(args["real-target-smoke"]);
   const wait = Boolean(args.wait) || Boolean(args["browser-smoke"]);
+  const hiveKickoff = stringArg(args, "hive-kickoff");
   const useDemoLlm = Boolean(args["demo-llm"]) || !process.env.OPENAI_API_KEY;
   const targets = readTargetBindings(args);
   if (targets.length === 0 && !Boolean(args["allow-empty-targets"])) {
@@ -261,9 +354,10 @@ async function main() {
 
   const stateDir = join(here, ".state");
   mkdirSync(stateDir, { recursive: true });
+  const mobConfig = writeRuntimeMobConfig(args, stateDir);
 
   let builder = MobKit.builder()
-    .mob(join(configDir, "mob.toml"))
+    .mob(mobConfig.path)
     .gateway(ensureGatewayBin(skipBuild))
     .consoleConfig(join(configDir, "console.toml"))
     .consoleAuthRequired(false)
@@ -282,20 +376,32 @@ async function main() {
       scenario: scenario.scenario_id,
       remote_targets: String(targets.length),
       remote_topology: "mob-roster",
+      supervisor_bridge: mobConfig.advertisedAddress,
     });
     await handle.reconcileEdges();
     const baseUrl = runtime.rustHttpBaseUrl;
     if (!baseUrl) throw new Error("MobKit runtime did not expose an HTTP console URL");
     console.log(`[mdm] console: ${baseUrl}/console`);
     console.log(`[mdm] remote-targets: ${targets.length}`);
+    console.log(`[mdm] supervisor-bridge: ${mobConfig.advertisedAddress}`);
 
-    if (smoke) {
+    if (smoke || realTargetSmoke) {
       const title = await getConsoleTitle(baseUrl);
       if (title !== scenario.console_expected_title) {
         throw new Error(`unexpected console title: ${String(title)}`);
       }
+    }
+    if (realTargetSmoke) {
+      await runRealTargetSmoke(handle, targets);
+      console.log("[mdm-real-target-smoke] ok");
+    }
+    if (smoke) {
       console.log("[mdm-smoke] ok");
       return;
+    }
+    if (hiveKickoff) {
+      console.log("[mdm] sending hive kickoff");
+      await runtime.send("hive", hiveKickoff);
     }
     if (wait) {
       await new Promise<void>((resolve) => {

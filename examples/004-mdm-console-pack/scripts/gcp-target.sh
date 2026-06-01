@@ -44,6 +44,7 @@ if [[ $# -gt 0 ]]; then shift; fi
 id=""
 name=""
 listen=""
+advertise=""
 site="gcp-live"
 platform="linux-gcp-vm"
 model="${MDM_TARGET_MODEL:-gpt-5.5}"
@@ -54,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --id) id="$2"; shift 2 ;;
     --name) name="$2"; shift 2 ;;
     --listen) listen="$2"; shift 2 ;;
+    --advertise) advertise="$2"; shift 2 ;;
     --site) site="$2"; shift 2 ;;
     --platform) platform="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
@@ -141,6 +143,7 @@ sync_remote_env() {
 
 remote_start() {
   local target_listen="$1"
+  local target_advertise="$2"
   "${ssh_base[@]}" --command "
     set -euo pipefail
     set -a
@@ -166,6 +169,7 @@ remote_start() {
       --id '${id}' \
       --name '${name}' \
       --listen '${target_listen}' \
+      --advertise '${target_advertise}' \
       --site '${site}' \
       --platform '${platform}' \
       --data-dir ~/.cache/mdm-mob-target/${id} \
@@ -197,7 +201,10 @@ case "$command" in
     ensure_instance
     sync_repo
     sync_remote_env
-    remote_start "${listen:-$(internal_ip):5791}"
+    if [[ -n "$listen" && -z "$advertise" ]]; then
+      advertise="tcp://${listen}"
+    fi
+    remote_start "${listen:-0.0.0.0:5791}" "${advertise:-tcp://$(internal_ip):5791}"
     fetch_binding
     ;;
   fetch)

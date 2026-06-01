@@ -76,11 +76,23 @@ credential env vars such as `OPENAI_API_KEY`, starts the same real target
 runtime on the VM, fetches its binding, and merges it into the console target
 file.
 
-Important: `--listen HOST:PORT` is both the bind address and the advertised
-MobKit address. The console host must be able to reach that address. The GCP
-helper defaults to the VM's internal IP, which is right for a VPN/VPC-reachable
-operator machine. Pass `--listen <reachable-ip>:5791` if your network path is
-different.
+Important: target `--listen HOST:PORT` is the bind address. Target
+`--advertise tcp://HOST:PORT` is the address the console host dials. The GCP
+helper defaults to binding `0.0.0.0:5791` and advertising the VM internal IP,
+which is right for a VPN/VPC-reachable console host. Pass `--advertise` if your
+network path is different.
+
+For cross-host targets, the console's Meerkat supervisor bridge must also be
+reachable from the targets:
+
+```bash
+MDM_SUPERVISOR_BIND_ADDRESS=0.0.0.0:5790 \
+MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790 \
+./004-mdm-console-pack/scripts/start-console.sh
+```
+
+For a local-only demo, the default supervisor bridge is
+`tcp://127.0.0.1:5790`.
 
 To run with a pre-existing binding file:
 
@@ -99,30 +111,47 @@ The success signal is not "target is listed." The success signal is a target
 turn that runs on the target host, uses target-side tools or shell where
 appropriate, and returns over the MobKit/Meerkat peer path.
 
-## Current Remote Gap
-
-Live binding currently reaches the target-side comms drain, but Meerkat's mob
-supervisor bridge still advertises its supervisor as an in-process address
-(`inproc://<mob>/__mob_supervisor__`). A remote target can accept `BindMember`
-and publish supervisor trust, but it cannot route the bridge response back to
-that in-process supervisor. The observed failure is a target-side
-`failed to send bridge response ... peer not found` followed by a MobKit
-`supervisor request ... timed out`.
-
-That is the next real remote-support gap to close in Meerkat/MobKit before a
-GCP target can complete the full bind-and-turn loop.
-
 ## Smoke
 
 ```bash
 cd examples
 npm run mdm:smoke
 npm run mdm:browser-smoke
+npm run mdm:real-target-smoke
 npm run mdm:local-target
 npm run mdm:console
 ```
 
-These local smokes only verify that the console boots without the old kennel
-path. They do not prove remote execution. Live validation requires at least one
-local target runtime and one remote target runtime with unrestricted shell tools
-enabled on the target side.
+The empty-target smokes verify that the console boots without the old kennel
+path. `mdm:real-target-smoke` starts a disposable real `mdm_mob_target`, binds it
+as an external mob member, and sends a queued mob turn to that target. That is
+the release gate for the Meerkat bridge fix.
+
+When Meerkat `0.6.30` is visible on crates.io, upgrade and validate with:
+
+```bash
+cd examples
+npm run mdm:upgrade-meerkat -- 0.6.30
+npm run mdm:real-target-smoke
+```
+
+Full operator validation requires at least one local or remote target runtime
+with unrestricted shell tools enabled on the target side. The useful prompt is
+something like: "Ask every target what machine it is running on." The answer
+should come from target-side peer turns, not from roster labels.
+
+On the current published Meerkat 0.6.29 line, `mdm:real-target-smoke` is still
+expected to fail before the target turn. The currently observed failure is the
+supervisor side decoding a typed bridge reply as a bare bind payload:
+
+```text
+failed to decode bridge command response: unknown field `result`
+```
+
+Older local runs also exposed the companion production reply-route symptom:
+
+```text
+comms_drain: failed to send bridge response ... error=peer not found: <supervisor-peer-id>
+```
+
+Meerkat 0.6.30 is expected to include both sides of that fix.

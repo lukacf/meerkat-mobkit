@@ -37,6 +37,7 @@ struct Args {
     id: String,
     name: String,
     listen: String,
+    advertise: Option<String>,
     data_dir: PathBuf,
     binding_out: Option<PathBuf>,
     model: String,
@@ -252,7 +253,7 @@ fn parse_args() -> anyhow::Result<Args> {
     };
     if raw.iter().any(|arg| arg == "--help" || arg == "-h") {
         eprintln!(
-            "Usage: mdm_mob_target --id ID --listen HOST:PORT [--name NAME] [--binding-out PATH]"
+            "Usage: mdm_mob_target --id ID --listen HOST:PORT [--advertise tcp://HOST:PORT] [--name NAME] [--binding-out PATH]"
         );
         std::process::exit(0);
     }
@@ -266,6 +267,7 @@ fn parse_args() -> anyhow::Result<Args> {
         id,
         name,
         listen,
+        advertise: value("--advertise"),
         data_dir,
         binding_out: value("--binding-out").map(PathBuf::from),
         model: value("--model").unwrap_or_else(|| "gpt-5.5".to_string()),
@@ -279,6 +281,11 @@ fn advertised_address(args: &Args) -> anyhow::Result<String> {
     args.listen
         .parse::<SocketAddr>()
         .with_context(|| format!("invalid --listen address '{}'", args.listen))?;
+    if let Some(address) = args.advertise.as_ref() {
+        meerkat_core::comms::PeerAddress::parse(address)
+            .map_err(|error| anyhow::anyhow!("invalid --advertise address '{address}': {error}"))?;
+        return Ok(address.clone());
+    }
     Ok(format!("tcp://{}", args.listen))
 }
 

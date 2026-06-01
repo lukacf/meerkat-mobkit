@@ -10,7 +10,7 @@ targets_file="${MDM_TARGET_BINDINGS_FILE:-${state_dir}/target-bindings.json}"
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  local-target.sh start [--id target-a] [--name this-mac] [--listen 127.0.0.1:5791]
+  local-target.sh start [--id target-a] [--name this-mac] [--listen 127.0.0.1:5791] [--advertise tcp://127.0.0.1:5791]
   local-target.sh foreground [same options]
   local-target.sh stop [--id target-a]
   local-target.sh status [--id target-a]
@@ -28,6 +28,7 @@ if [[ $# -gt 0 ]]; then shift; fi
 id="target-a"
 name="$(hostname -s 2>/dev/null || hostname)"
 listen="127.0.0.1:5791"
+advertise=""
 site="local"
 platform="$(uname -s | tr '[:upper:]' '[:lower:]')-local"
 model="${MDM_TARGET_MODEL:-gpt-5.5}"
@@ -38,6 +39,7 @@ while [[ $# -gt 0 ]]; do
     --id) id="$2"; shift 2 ;;
     --name) name="$2"; shift 2 ;;
     --listen) listen="$2"; shift 2 ;;
+    --advertise) advertise="$2"; shift 2 ;;
     --site) site="$2"; shift 2 ;;
     --platform) platform="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
@@ -63,6 +65,9 @@ target_bin_args=(
   --model "$model"
   --provider "$provider"
 )
+if [[ -n "$advertise" ]]; then
+  target_bin_args+=(--advertise "$advertise")
+fi
 
 target_bin() {
   local cargo_target_dir
