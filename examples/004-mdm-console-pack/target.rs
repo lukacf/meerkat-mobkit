@@ -160,8 +160,17 @@ impl CoreExecutor for TargetCoreExecutor {
             }
             _ => Vec::new(),
         };
+        let prompt = primitive.extract_content_input();
+        let prompt_preview = match &prompt {
+            ContentInput::Text(text) => text.replace('\n', " "),
+            ContentInput::Blocks(blocks) => format!("{} content blocks", blocks.len()),
+        };
+        eprintln!(
+            "[mdm-target] peer turn accepted: {}",
+            prompt_preview.chars().take(160).collect::<String>()
+        );
         let req = StartTurnRequest {
-            prompt: primitive.extract_content_input(),
+            prompt,
             system_prompt: None,
             event_tx: None,
             runtime: StartTurnRuntimeSemantics::new(
@@ -378,7 +387,7 @@ async fn create_or_resume_session(
     comms_runtime: Arc<meerkat_comms::CommsRuntime>,
 ) -> anyhow::Result<SessionId> {
     if let Ok(mut sessions) = surface.jsonl_store.list(SessionFilter::default()).await {
-        sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
         if let Some(latest) = sessions.first() {
             match setup_session(
                 args,

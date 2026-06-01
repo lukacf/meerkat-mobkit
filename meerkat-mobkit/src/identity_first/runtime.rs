@@ -28,6 +28,14 @@ use super::types::{
 
 const MANAGED_PEER_RECONCILE_CONCURRENCY: usize = 64;
 
+fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
+    matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
+        || matches!(
+            spec.binding.as_ref(),
+            Some(meerkat_contracts::WireRuntimeBinding::External { .. })
+        )
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -672,6 +680,12 @@ impl IdentityRuntime {
             }
             (entry.spec.clone(), entry.continuity.clone(), entry.state)
         };
+        let original_continuity = continuity.clone();
+        let continuity = if durable_spec_uses_external_binding(&spec) {
+            None
+        } else {
+            continuity
+        };
 
         match state {
             IdentityLifecycleState::Dormant | IdentityLifecycleState::Uninitialized => {}
@@ -744,7 +758,6 @@ impl IdentityRuntime {
             )));
         }
 
-        let original_continuity = continuity.clone();
         let mut abandoned_session_registrations: Vec<SessionId> = Vec::new();
         let mut record = if let Some(mut record) = continuity {
             let snapshot = match self

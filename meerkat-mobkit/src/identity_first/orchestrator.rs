@@ -19,6 +19,14 @@ use super::types::{
 // Restore flow result
 // ---------------------------------------------------------------------------
 
+fn durable_spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
+    matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
+        || matches!(
+            spec.binding.as_ref(),
+            Some(meerkat_contracts::WireRuntimeBinding::External { .. })
+        )
+}
+
 /// Result of the restore flow for a single identity.
 #[derive(Debug, Clone)]
 pub enum RestoreOutcome {
@@ -289,11 +297,16 @@ pub async fn restore_flow(
             activated_identities.insert(identity.clone());
         }
 
-        let resolve_state = resolved.get(identity).ok_or_else(|| {
+        let persisted_resolve_state = resolved.get(identity).ok_or_else(|| {
             IdentityRuntimeError::Internal(format!(
                 "resolve_many did not return state for {identity}"
             ))
         })?;
+        let resolve_state = if !already_active && durable_spec_uses_external_binding(spec) {
+            ContinuityResolveState::Uninitialized
+        } else {
+            persisted_resolve_state.clone()
+        };
 
         // Step 5: build context
         let build_context = AgentBuildContext {

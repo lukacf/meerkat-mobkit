@@ -291,6 +291,7 @@ pub struct MobSessionBridge {
     /// Continuity-backed session store, when installed by the identity-first builder.
     continuity_session_store: Option<Arc<ContinuitySessionStoreAdapter>>,
     runtime_members: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
+    runtime_sessions: Arc<tokio::sync::RwLock<HashMap<String, meerkat_core::types::SessionId>>>,
 }
 
 impl MobSessionBridge {
@@ -302,6 +303,7 @@ impl MobSessionBridge {
             session_service: None,
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -316,6 +318,7 @@ impl MobSessionBridge {
             session_service: Some(session_service),
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -330,6 +333,7 @@ impl MobSessionBridge {
             session_service: None,
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -345,6 +349,7 @@ impl MobSessionBridge {
             session_service: Some(session_service),
             continuity_session_store: None,
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -360,6 +365,7 @@ impl MobSessionBridge {
             session_service,
             continuity_session_store: Some(session_store),
             runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            runtime_sessions: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -370,8 +376,23 @@ impl MobSessionBridge {
         );
     }
 
+    async fn remember_runtime_session(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        session_id: &meerkat_core::types::SessionId,
+    ) {
+        self.runtime_sessions
+            .write()
+            .await
+            .insert(runtime_id.as_str().to_string(), session_id.clone());
+    }
+
     async fn forget_runtime_member(&self, runtime_id: &AgentRuntimeId) {
         self.runtime_members
+            .write()
+            .await
+            .remove(runtime_id.as_str());
+        self.runtime_sessions
             .write()
             .await
             .remove(runtime_id.as_str());
@@ -383,6 +404,38 @@ impl MobSessionBridge {
             .get(runtime_id.as_str())
             .map(|member| MeerkatId::from(member.as_str()))
             .unwrap_or_else(|| MeerkatId::from(runtime_id.as_str()))
+    }
+
+    async fn runtime_session_id(
+        &self,
+        runtime_id: &AgentRuntimeId,
+    ) -> Option<meerkat_core::types::SessionId> {
+        self.runtime_sessions
+            .read()
+            .await
+            .get(runtime_id.as_str())
+            .cloned()
+    }
+
+    async fn resolve_runtime_session_id(
+        &self,
+        runtime_id: &AgentRuntimeId,
+        member_id: &MeerkatId,
+        missing_message: &'static str,
+    ) -> Result<meerkat_core::types::SessionId, BridgeError> {
+        if let Some(session_id) = self.handle.resolve_bridge_session_id(member_id).await {
+            self.remember_runtime_session(runtime_id, &session_id).await;
+            return Ok(session_id);
+        }
+
+        if member_id.as_str() != runtime_id.as_str()
+            && self.handle.get_member(member_id).await.is_some()
+            && let Some(session_id) = self.runtime_session_id(runtime_id).await
+        {
+            return Ok(session_id);
+        }
+
+        Err(BridgeError::Mob(missing_message.to_string()))
     }
 }
 
@@ -490,14 +543,10 @@ impl SessionBridge for MobSessionBridge {
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
         self.remember_runtime_member(runtime_id, &mid).await;
+        self.remember_runtime_session(runtime_id, session_id).await;
 
-        let actual_session_id = self
-            .handle
-            .resolve_bridge_session_id(&mid)
+        self.resolve_runtime_session_id(runtime_id, &mid, "member spawned but has no session ID")
             .await
-            .ok_or_else(|| BridgeError::Mob("member spawned but has no session ID".to_string()))?;
-        let _ = session_id;
-        Ok(actual_session_id)
     }
 
     async fn resume_session(
@@ -509,6 +558,23 @@ impl SessionBridge for MobSessionBridge {
         session_id: &meerkat_core::types::SessionId,
         _snapshot: &SessionSnapshot,
     ) -> Result<ResumeSessionOutcome, BridgeError> {
+        if spec_uses_external_binding(spec) {
+            let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft);
+            spawn_spec.launch_mode = MemberLaunchMode::Resume {
+                bridge_session_id: session_id.clone(),
+            };
+            let mid = member_id_for_spawn_spec(runtime_id, spec);
+            self.handle
+                .spawn_spec(spawn_spec)
+                .await
+                .map_err(|e| BridgeError::Mob(e.to_string()))?;
+            self.remember_runtime_member(runtime_id, &mid).await;
+            self.remember_runtime_session(runtime_id, session_id).await;
+            return Ok(ResumeSessionOutcome::Resumed {
+                session_id: session_id.clone(),
+            });
+        }
+
         // Try MemberLaunchMode::Resume first — this loads the existing session
         // from the session store (conversation history intact).
         let mut spawn_spec = build_spawn_spec(runtime_id, spec, draft);
@@ -521,6 +587,7 @@ impl SessionBridge for MobSessionBridge {
         match self.handle.spawn_spec(spawn_spec).await {
             Ok(_) => {
                 self.remember_runtime_member(runtime_id, &mid).await;
+                self.remember_runtime_session(runtime_id, session_id).await;
                 Ok(ResumeSessionOutcome::Resumed {
                     session_id: session_id.clone(),
                 })
@@ -544,14 +611,12 @@ impl SessionBridge for MobSessionBridge {
 
                 self.remember_runtime_member(runtime_id, &mid).await;
                 let session_id = self
-                    .handle
-                    .resolve_bridge_session_id(&mid)
-                    .await
-                    .ok_or_else(|| {
-                        BridgeError::Mob(
-                            "member spawned (fresh fallback) but has no session ID".to_string(),
-                        )
-                    })?;
+                    .resolve_runtime_session_id(
+                        runtime_id,
+                        &mid,
+                        "member spawned (fresh fallback) but has no session ID",
+                    )
+                    .await?;
                 Ok(ResumeSessionOutcome::FreshSpawned {
                     session_id,
                     reason: ResumeFallbackReason::RuntimeIdentityIncompatible {
@@ -629,12 +694,12 @@ impl SessionBridge for MobSessionBridge {
 
         // Meerkat 0.6: MemberDeliveryReceipt no longer carries session_id.
         // Query the bridge session id directly from the mob handle.
-        self.handle
-            .resolve_bridge_session_id(&mid)
-            .await
-            .ok_or_else(|| {
-                BridgeError::Mob("member has no bridge session after deliver".to_string())
-            })
+        self.resolve_runtime_session_id(
+            runtime_id,
+            &mid,
+            "member has no bridge session after deliver",
+        )
+        .await
     }
 
     async fn deliver_with_mode(
@@ -697,12 +762,12 @@ impl SessionBridge for MobSessionBridge {
             Err(err) => return Err(BridgeError::Mob(err.to_string())),
         }
 
-        self.handle
-            .resolve_bridge_session_id(&mid)
-            .await
-            .ok_or_else(|| {
-                BridgeError::Mob("member has no bridge session after deliver".to_string())
-            })
+        self.resolve_runtime_session_id(
+            runtime_id,
+            &mid,
+            "member has no bridge session after deliver",
+        )
+        .await
     }
 
     async fn checkpoint_session(

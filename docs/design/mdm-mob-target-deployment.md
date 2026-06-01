@@ -72,24 +72,12 @@ MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790 \
 ./scripts/start-console.sh
 ```
 
-## Current Upstream Gate
+## Current Integration Gate
 
 The deployment helpers now create real target runtimes and real MobKit external
-member bindings. Meerkat 0.6.29 still has bridge reply gaps. The currently
-observed published-crate failure is that the supervisor side decodes a typed
-`BridgeReply` as a bare bind payload:
-
-```text
-failed to decode bridge command response: unknown field `result`
-```
-
-Earlier local validation also exposed the live TCP reply-route gap: in the real
-`mdm_mob_target` path, the target receives the supervisor `BindMember` request
-and then fails to send the response because the supervisor sender peer is not
-present in the target comms trust router.
-
-PR `lukacf/meerkat#746` fixes that production trust repair. When the fix is
-published as Meerkat 0.6.30, cut over from `examples/` with:
+member bindings. The pack is pinned to the Meerkat 0.6.30 family, which includes
+the typed bridge reply and production reply-route fixes needed for peer-only
+external targets. Validate from `examples/` with:
 
 ```bash
 npm run mdm:upgrade-meerkat -- 0.6.30
@@ -102,18 +90,11 @@ Run this from the repository root to reproduce the current gate:
 npm --prefix examples run mdm:real-target-smoke
 ```
 
-Expected failures until Meerkat 0.6.30:
-
-```text
-failed to decode bridge command response: unknown field `result`
-supervisor request '<uuid>' timed out after 30000ms
-comms_drain: failed to send bridge response ... error=peer not found: <supervisor-peer-id>
-```
-
-After the upstream fix, the same script is the acceptance check for local target
-bind plus delivery of a queued mob turn to the target. The GCP helper uses the
-same target binary and binding path, so it exercises the same mechanics across
-hosts once the console supervisor advertised address is routable.
+The script is the acceptance check for local target bind plus delivery of a
+queued mob turn to the target. It fails if the target process never logs an
+observed peer turn. The GCP helper uses the same target binary and binding path,
+so it exercises the same mechanics across hosts once the console supervisor
+advertised address is routable.
 
 ## Production Hardening
 

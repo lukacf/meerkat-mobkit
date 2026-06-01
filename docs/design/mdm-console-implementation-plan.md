@@ -58,14 +58,11 @@ MDM_SUPERVISOR_BIND_ADDRESS=0.0.0.0:5790
 MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790
 ```
 
-The advertised address must be reachable from every target. Meerkat 0.6.29 has
-the configuration surface but is blocked by bridge reply compatibility and
-production reply-route trust gaps. PR `lukacf/meerkat#746` fixes the typed
-bridge reply decode path and the missing production trust repair; once that
-ships as Meerkat 0.6.30 the MobKit-side cutover is only the dependency bump plus
-the real-target smoke.
+The advertised address must be reachable from every target. The pack is pinned
+to the Meerkat 0.6.30 family, which includes the bridge reply decode and
+production reply-route fixes needed by real external members.
 
-Release-day cutover:
+Version check and smoke:
 
 ```bash
 cd examples
@@ -104,20 +101,6 @@ MDM_SUPERVISOR_ADVERTISED_ADDRESS=tcp://<console-reachable-host>:5790 \
 Ask hive to query target hardware or OS state. Passing means the target answers
 from its own host via peer traffic, not from labels or static bindings.
 
-Current published-crate status before the 0.6.30 cutover: `mdm:smoke` passes,
-but `mdm:real-target-smoke` is expected to fail on Meerkat 0.6.29 at external
-member bind. The currently observed failure is:
-
-```text
-failed to decode bridge command response: unknown field `result`
-```
-
-Earlier local runs also exposed the companion production reply-route failure:
-
-```text
-supervisor request '<uuid>' timed out after 30000ms
-comms_drain: failed to send bridge response ... error=peer not found: <supervisor-peer-id>
-```
-
-Those are upstream Meerkat bridge blockers, not kennel/MobKit registry gaps.
-Once 0.6.30 is live, the same script is the acceptance gate.
+Current published-crate status: `mdm:smoke` and `mdm:real-target-smoke` pass on
+Meerkat 0.6.30. The real-target smoke now also checks that the target process
+observed a peer turn, so a supervisor-side accepted-send is not enough.

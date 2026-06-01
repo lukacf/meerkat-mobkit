@@ -54,6 +54,7 @@ MDM_SUPERVISOR_BIND_ADDRESS="$supervisor_bind" \
 MDM_SUPERVISOR_ADVERTISED_ADDRESS="tcp://${supervisor_bind}" \
 npx tsx 004-mdm-console-pack/run.ts \
   --targets "$binding_file" \
+  --state-dir "${tmp_dir}/console-state" \
   --real-target-smoke \
   --smoke \
   --demo-llm
@@ -63,6 +64,20 @@ set -e
 if [[ "$status" -ne 0 ]]; then
   echo "[mdm-real-target-smoke] console bind failed; target log follows" >&2
   tail -100 "${tmp_dir}/target.log" >&2 || true
+else
+  peer_seen=""
+  for _ in {1..60}; do
+    if grep -q "\\[mdm-target\\] peer turn accepted:" "${tmp_dir}/target.log"; then
+      peer_seen="yes"
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ -z "$peer_seen" ]]; then
+    echo "[mdm-real-target-smoke] target never observed a peer turn; target log follows" >&2
+    tail -100 "${tmp_dir}/target.log" >&2 || true
+    exit 1
+  fi
 fi
 
 exit "$status"

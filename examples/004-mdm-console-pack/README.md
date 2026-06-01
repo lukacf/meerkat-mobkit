@@ -124,10 +124,12 @@ npm run mdm:console
 
 The empty-target smokes verify that the console boots without the old kennel
 path. `mdm:real-target-smoke` starts a disposable real `mdm_mob_target`, binds it
-as an external mob member, and sends a queued mob turn to that target. That is
-the release gate for the Meerkat bridge fix.
+as an external mob member, sends a queued mob turn to that target, and checks
+that the target process observed the peer turn. That is the release gate for the
+Meerkat bridge integration.
 
-When Meerkat `0.6.30` is visible on crates.io, upgrade and validate with:
+The pack is pinned to the Meerkat 0.6.30 family. Re-apply and validate the pin
+with:
 
 ```bash
 cd examples
@@ -140,18 +142,6 @@ with unrestricted shell tools enabled on the target side. The useful prompt is
 something like: "Ask every target what machine it is running on." The answer
 should come from target-side peer turns, not from roster labels.
 
-On the current published Meerkat 0.6.29 line, `mdm:real-target-smoke` is still
-expected to fail before the target turn. The currently observed failure is the
-supervisor side decoding a typed bridge reply as a bare bind payload:
-
-```text
-failed to decode bridge command response: unknown field `result`
-```
-
-Older local runs also exposed the companion production reply-route symptom:
-
-```text
-comms_drain: failed to send bridge response ... error=peer not found: <supervisor-peer-id>
-```
-
-Meerkat 0.6.30 is expected to include both sides of that fix.
+`mdm:real-target-smoke` passes on the published Meerkat 0.6.30 line. If it
+fails, treat that as a real bridge or MobKit regression rather than falling back
+to labels, demo model text, or static binding metadata.

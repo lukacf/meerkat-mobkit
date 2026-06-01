@@ -331,8 +331,9 @@ async function runRealTargetSmoke(
     if (!result.accepted) {
       throw new Error(`real target smoke was not accepted by ${target.id}`);
     }
+    const sessionLabel = result.sessionId || "peer-only";
     console.log(
-      `[mdm-real-target-smoke] ${target.id}: accepted session=${result.sessionId}`,
+      `[mdm-real-target-smoke] ${target.id}: accepted session=${sessionLabel}`,
     );
   }
 }
@@ -352,7 +353,7 @@ async function main() {
     );
   }
 
-  const stateDir = join(here, ".state");
+  const stateDir = stringArg(args, "state-dir") ?? join(here, ".state");
   mkdirSync(stateDir, { recursive: true });
   const mobConfig = writeRuntimeMobConfig(args, stateDir);
 
