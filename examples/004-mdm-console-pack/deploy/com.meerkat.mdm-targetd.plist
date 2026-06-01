@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.meerkat.mdm-targetd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>set -a; . /etc/mdm-targetd/mdm-targetd.env; set +a; cd /opt/meerkat-mobkit/examples; exec npx tsx 004-mdm-console-pack/src/targetd.ts --id "$MDM_TARGET_ID" --name "$MDM_TARGET_NAME" --site "$MDM_TARGET_SITE" --platform "${MDM_TARGET_PLATFORM:-darwin}" --transport "${MDM_TARGET_TRANSPORT:-control}" --listen "${MDM_TARGET_LISTEN:-0.0.0.0:5792}" --advertise-url "$MDM_TARGET_ADVERTISE_URL" --kennel "$MDM_KENNEL_URL" --state-dir "${MDM_TARGET_STATE_DIR:-/var/lib/mdm-targetd}" --kennel-auth-token "$MDM_AUTH_TOKEN" --control-auth-token "$MDM_TARGET_AUTH_TOKEN" --allow-shell</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/mdm-targetd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/mdm-targetd.log</string>
+</dict>
+</plist>

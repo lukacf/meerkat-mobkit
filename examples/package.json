@@ -6,5 +6,11 @@
     "playwright": "1.55.0",
     "tsx": "4.20.5",
     "yaml": "2.8.1"
+  },
+  "scripts": {
+    "mdm:smoke": "tsx 004-mdm-console-pack/ts_smoke.ts",
+    "mdm:auth-smoke": "tsx 004-mdm-console-pack/auth_smoke.ts",
+    "mdm:browser-smoke": "node 004-mdm-console-pack/browser_smoke.cjs",
+    "mdm:docker-smoke": "004-mdm-console-pack/scripts/docker-smoke.sh"
   }
 }
