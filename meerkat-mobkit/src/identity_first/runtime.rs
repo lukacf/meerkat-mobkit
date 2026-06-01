@@ -213,7 +213,7 @@ pub enum IdentityEvent {
 
 /// Per-identity event channel capacity.
 const IDENTITY_EVENT_CHANNEL_CAPACITY: usize = 64;
-const DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL: Duration = Duration::from_secs(60);
+const DEFAULT_LEASE_RENEWAL_MAX_POLL_INTERVAL: Duration = Duration::from_mins(1);
 const DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 // ---------------------------------------------------------------------------
