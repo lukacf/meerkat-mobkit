@@ -1391,6 +1391,91 @@ impl IdentityRuntime {
         }
     }
 
+    async fn ensure_active_lease(
+        &self,
+        identity: &AgentIdentity,
+    ) -> Result<FencingToken, IdentityRuntimeError> {
+        let (grant, continuity) = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            let lease = match &entry.lease {
+                Some(lease) if lease.is_healthy() => return Ok(lease.fencing_token),
+                Some(lease) => lease,
+                None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
+            };
+            (
+                LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: lease.fencing_token,
+                    ttl: lease.ttl,
+                },
+                entry.continuity.clone(),
+            )
+        };
+
+        let renewed = self
+            .lease_provider
+            .renew_leases(std::slice::from_ref(&grant))
+            .await
+            .map_err(IdentityRuntimeError::Lease)?;
+        let renewed_grant = match renewed.get(identity) {
+            Some(super::types::LeaseRenewResult::Renewed(grant)) => grant.clone(),
+            Some(super::types::LeaseRenewResult::Lost { .. }) | None => {
+                self.mark_lease_lost(identity).await?;
+                return Err(IdentityRuntimeError::LeaseLost(identity.clone()));
+            }
+        };
+
+        if let Some(record) = continuity.as_ref() {
+            self.continuity_store
+                .upsert_continuity_record(record, renewed_grant.fencing_token)
+                .await
+                .map_err(IdentityRuntimeError::Store)?;
+            if let Some(bridge) = self.bridge.as_ref() {
+                bridge
+                    .register_session_runtime_state(
+                        &record.session_id,
+                        identity,
+                        record.generation,
+                        record.checkpoint_version,
+                        renewed_grant.fencing_token,
+                    )
+                    .await
+                    .map_err(|err| {
+                        IdentityRuntimeError::Internal(format!(
+                            "bridge refresh session runtime state after lease renewal: {err}"
+                        ))
+                    })?;
+            }
+        }
+
+        let fencing_token = renewed_grant.fencing_token;
+        let mut entries = self.entries.write().await;
+        let entry = entries
+            .get_mut(identity)
+            .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+        match entry.lease.as_ref() {
+            Some(current) if current.fencing_token == grant.fencing_token => {
+                entry.lease = Some(Self::lease_entry_from_grant(&renewed_grant));
+            }
+            Some(current) => return Ok(current.fencing_token),
+            None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
+        }
+        drop(entries);
+
+        self.emit_event(
+            identity,
+            IdentityEvent::LeaseUpdated {
+                identity: identity.clone(),
+                fencing_token,
+            },
+        )
+        .await;
+        Ok(fencing_token)
+    }
+
     async fn mark_lifecycle_in_progress(
         &self,
         identity: &AgentIdentity,
@@ -1732,12 +1817,11 @@ impl IdentityRuntime {
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
-        let (token, runtime_id) = {
+        {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-
             if entry.state != IdentityLifecycleState::Active {
                 return Err(IdentityRuntimeError::InvalidState {
                     identity: identity.clone(),
@@ -1745,16 +1829,18 @@ impl IdentityRuntime {
                     operation: "send",
                 });
             }
+        }
 
-            // INV-01 / INV-02: require active lease
-            let token = Self::check_lease(entry)?;
-
-            let runtime_id = entry
+        let token = self.ensure_active_lease(identity).await?;
+        let runtime_id = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
+            entry
                 .continuity
                 .as_ref()
-                .map(|c| c.agent_runtime_id.clone());
-
-            (token, runtime_id)
+                .map(|c| c.agent_runtime_id.clone())
         };
 
         // Deliver through the session bridge when available.
@@ -1801,12 +1887,11 @@ impl IdentityRuntime {
 
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
-        let (token, is_durable, runtime_id) = {
+        {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
                 .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
-
             if entry.state != IdentityLifecycleState::Active {
                 return Err(IdentityRuntimeError::InvalidState {
                     identity: identity.clone(),
@@ -1814,10 +1899,14 @@ impl IdentityRuntime {
                     operation: "dispatch",
                 });
             }
+        }
 
-            // INV-01 / INV-02: require active lease
-            let token = Self::check_lease(entry)?;
-
+        let token = self.ensure_active_lease(identity).await?;
+        let (is_durable, runtime_id) = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
             // REQ-04: durability depends on runtime_store
             let is_durable = entry.has_runtime_store;
 
@@ -1826,7 +1915,7 @@ impl IdentityRuntime {
                 .as_ref()
                 .map(|c| c.agent_runtime_id.clone());
 
-            (token, is_durable, runtime_id)
+            (is_durable, runtime_id)
         };
 
         // Deliver through the session bridge when available.
@@ -1924,6 +2013,7 @@ impl IdentityRuntime {
     ) -> Result<FencingToken, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
+        self.ensure_active_lease(identity).await?;
         let registered_entry = self
             .mark_lifecycle_in_progress(identity, IdentityLifecycleState::Retiring)
             .await?;
@@ -2820,7 +2910,7 @@ impl IdentityRuntime {
     ) -> Result<CheckpointVersion, IdentityRuntimeError> {
         let lifecycle_lock = self.lifecycle_lock_for(identity).await;
         let _lifecycle_guard = lifecycle_lock.lock().await;
-        let (record, token, new_version) = {
+        {
             let entries = self.entries.read().await;
             let entry = entries
                 .get(identity)
@@ -2832,10 +2922,14 @@ impl IdentityRuntime {
                     operation: "checkpoint",
                 });
             }
+        }
 
-            // INV-01: require active lease
-            let token = Self::check_lease(entry)?;
-
+        let token = self.ensure_active_lease(identity).await?;
+        let (record, new_version) = {
+            let entries = self.entries.read().await;
+            let entry = entries
+                .get(identity)
+                .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
             let record = entry
                 .continuity
                 .as_ref()
@@ -2845,7 +2939,7 @@ impl IdentityRuntime {
                 .clone();
 
             let new_version = CheckpointVersion::new(entry.checkpoint_version.get() + 1);
-            (record, token, new_version)
+            (record, new_version)
         };
 
         // REQ-15 + REQ-16: store enforces version ordering and fencing

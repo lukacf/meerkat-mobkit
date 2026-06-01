@@ -13,8 +13,8 @@
 //! to match the `test(identity_first)` filter.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -154,6 +154,136 @@ impl LeaseProvider for MissingLeaseProvider {
     }
 
     async fn release_leases(&self, _grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RenewBehavior {
+    RenewSameToken,
+    RenewRotatedToken,
+    Lost,
+    MissingResult,
+}
+
+struct ControlledLeaseProvider {
+    state: Mutex<BTreeMap<AgentIdentity, FencingToken>>,
+    next_token: AtomicUsize,
+    acquire_ttl: Duration,
+    renew_ttl: Duration,
+    renew_behavior: RenewBehavior,
+    renew_calls: AtomicUsize,
+}
+
+impl ControlledLeaseProvider {
+    fn new(acquire_ttl: Duration, renew_ttl: Duration, renew_behavior: RenewBehavior) -> Self {
+        Self {
+            state: Mutex::new(BTreeMap::new()),
+            next_token: AtomicUsize::new(1),
+            acquire_ttl,
+            renew_ttl,
+            renew_behavior,
+            renew_calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn renew_calls(&self) -> usize {
+        self.renew_calls.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl LeaseProvider for ControlledLeaseProvider {
+    async fn acquire_leases(
+        &self,
+        identities: &[AgentIdentity],
+        _runtime_instance: &str,
+    ) -> Result<BTreeMap<AgentIdentity, LeaseAcquireResult>, LeaseError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut result = BTreeMap::new();
+        for identity in identities {
+            let token = FencingToken::new(self.next_token.fetch_add(1, Ordering::SeqCst) as u64);
+            state.insert(identity.clone(), token);
+            result.insert(
+                identity.clone(),
+                LeaseAcquireResult::Acquired(LeaseGrant {
+                    identity: identity.clone(),
+                    fencing_token: token,
+                    ttl: self.acquire_ttl,
+                }),
+            );
+        }
+        Ok(result)
+    }
+
+    async fn renew_leases(
+        &self,
+        grants: &[LeaseGrant],
+    ) -> Result<BTreeMap<AgentIdentity, LeaseRenewResult>, LeaseError> {
+        self.renew_calls.fetch_add(1, Ordering::SeqCst);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut result = BTreeMap::new();
+        for grant in grants {
+            if matches!(self.renew_behavior, RenewBehavior::MissingResult) {
+                continue;
+            }
+            let Some(current) = state.get(&grant.identity).copied() else {
+                result.insert(
+                    grant.identity.clone(),
+                    LeaseRenewResult::Lost {
+                        identity: grant.identity.clone(),
+                    },
+                );
+                continue;
+            };
+            if current != grant.fencing_token || matches!(self.renew_behavior, RenewBehavior::Lost)
+            {
+                result.insert(
+                    grant.identity.clone(),
+                    LeaseRenewResult::Lost {
+                        identity: grant.identity.clone(),
+                    },
+                );
+                continue;
+            }
+            let token = match self.renew_behavior {
+                RenewBehavior::RenewSameToken => current,
+                RenewBehavior::RenewRotatedToken => {
+                    let token =
+                        FencingToken::new(self.next_token.fetch_add(1, Ordering::SeqCst) as u64);
+                    state.insert(grant.identity.clone(), token);
+                    token
+                }
+                RenewBehavior::Lost | RenewBehavior::MissingResult => unreachable!(),
+            };
+            result.insert(
+                grant.identity.clone(),
+                LeaseRenewResult::Renewed(LeaseGrant {
+                    identity: grant.identity.clone(),
+                    fencing_token: token,
+                    ttl: self.renew_ttl,
+                }),
+            );
+        }
+        Ok(result)
+    }
+
+    async fn release_leases(&self, grants: &[LeaseGrant]) -> Result<(), LeaseError> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for grant in grants {
+            if state.get(&grant.identity) == Some(&grant.fencing_token) {
+                state.remove(&grant.identity);
+            }
+        }
         Ok(())
     }
 }
@@ -694,6 +824,20 @@ fn make_dispatch_input() -> DispatchInput {
         origin: DispatchOrigin::Connector,
         correlation_id: None,
         idempotency_key: None,
+    }
+}
+
+async fn acquire_controlled_grant(
+    provider: &ControlledLeaseProvider,
+    identity: &AgentIdentity,
+) -> LeaseGrant {
+    let acquired = provider
+        .acquire_leases(std::slice::from_ref(identity), "test-runtime")
+        .await
+        .unwrap();
+    match acquired.get(identity).unwrap() {
+        LeaseAcquireResult::Acquired(grant) => grant.clone(),
+        other => panic!("expected acquired controlled lease, got {other:?}"),
     }
 }
 
@@ -4732,6 +4876,232 @@ async fn identity_first_runtime_inv01_checkpoint_without_lease_rejected() {
 // ===========================================================================
 // Task 2.19 — INV-02: Lease loss blocks new work
 // ===========================================================================
+
+#[tokio::test]
+async fn identity_first_runtime_renews_expired_lease_before_send() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::RenewRotatedToken,
+    ));
+    let runtime = make_runtime(store, lease.clone());
+    let identity = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record),
+            Some(grant.clone()),
+        )
+        .await;
+    let mut events = runtime.subscribe(&identity).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let token = runtime.send(&identity, &make_content()).await.unwrap();
+
+    assert!(
+        token > grant.fencing_token,
+        "send should use the renewed fencing token"
+    );
+    assert_eq!(lease.renew_calls(), 1);
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        IdentityEvent::LeaseUpdated { fencing_token, .. } if fencing_token == token
+    ));
+    let status = runtime.status(&identity).await.unwrap();
+    assert_eq!(status.lease.unwrap().fencing_token, token);
+}
+
+#[tokio::test]
+async fn identity_first_runtime_renews_expired_lease_before_dispatch() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::RenewSameToken,
+    ));
+    let runtime = make_runtime(store, lease.clone());
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant.clone()),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let (token, durable) = runtime
+        .dispatch(&identity, &make_dispatch_input())
+        .await
+        .unwrap();
+
+    assert_eq!(token, grant.fencing_token);
+    assert!(!durable);
+    assert_eq!(lease.renew_calls(), 1);
+    assert!(
+        runtime
+            .status(&identity)
+            .await
+            .unwrap()
+            .lease
+            .unwrap()
+            .healthy
+    );
+}
+
+#[tokio::test]
+async fn identity_first_runtime_renewed_checkpoint_advances_store_fence() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::RenewRotatedToken,
+    ));
+    let runtime = make_runtime(store.clone(), lease.clone());
+    let identity = make_identity("triage:main");
+    let record = make_record("triage:main", 0, 0);
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+    store
+        .upsert_continuity_record(&record, grant.fencing_token)
+        .await
+        .unwrap();
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(record.clone()),
+            Some(grant.clone()),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let version = runtime
+        .checkpoint(
+            &identity,
+            &SessionSnapshot {
+                data: b"renewed".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(version, CheckpointVersion::new(1));
+    assert_eq!(lease.renew_calls(), 1);
+    assert_old_token_snapshot_write_rejected(
+        store.as_ref(),
+        &identity,
+        &record,
+        grant.fencing_token,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn identity_first_runtime_healthy_lease_does_not_call_renew_provider() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_mins(5),
+        Duration::from_mins(5),
+        RenewBehavior::MissingResult,
+    ));
+    let runtime = make_runtime(store, lease.clone());
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant.clone()),
+        )
+        .await;
+
+    let token = runtime.send(&identity, &make_content()).await.unwrap();
+
+    assert_eq!(token, grant.fencing_token);
+    assert_eq!(lease.renew_calls(), 0);
+}
+
+#[tokio::test]
+async fn identity_first_runtime_lost_renewal_marks_lease_lost_and_blocks_send() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::Lost,
+    ));
+    let runtime = make_runtime(store, lease.clone());
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant),
+        )
+        .await;
+    let mut events = runtime.subscribe(&identity).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let err = runtime.send(&identity, &make_content()).await.unwrap_err();
+
+    assert!(matches!(err, IdentityRuntimeError::LeaseLost(_)));
+    assert_eq!(lease.renew_calls(), 1);
+    assert!(matches!(
+        events.try_recv().unwrap(),
+        IdentityEvent::LeaseLost { .. }
+    ));
+    assert!(runtime.status(&identity).await.unwrap().lease.is_none());
+}
+
+#[tokio::test]
+async fn identity_first_runtime_missing_renew_result_is_treated_as_lease_lost() {
+    let store = Arc::new(LocalContinuityStore::in_memory().unwrap());
+    let lease = Arc::new(ControlledLeaseProvider::new(
+        Duration::from_millis(1),
+        Duration::from_mins(5),
+        RenewBehavior::MissingResult,
+    ));
+    let runtime = make_runtime(store, lease.clone());
+    let identity = make_identity("triage:main");
+    let grant = acquire_controlled_grant(&lease, &identity).await;
+
+    runtime
+        .register(
+            make_spec("triage:main"),
+            IdentityLifecycleState::Active,
+            Some(make_record("triage:main", 0, 0)),
+            Some(grant),
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let err = runtime
+        .checkpoint(
+            &identity,
+            &SessionSnapshot {
+                data: b"missing".to_vec(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(err, IdentityRuntimeError::LeaseLost(_)));
+    assert_eq!(lease.renew_calls(), 1);
+    assert!(runtime.status(&identity).await.unwrap().lease.is_none());
+}
 
 #[tokio::test]
 async fn identity_first_runtime_inv02_lease_loss_blocks_send() {
