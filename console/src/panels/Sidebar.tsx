@@ -23,7 +23,7 @@ interface SidebarProps {
   storageNamespace?: string;
   pinnedAgentIds?: Set<string>;
   onSelect: (agent: ConsoleAgent) => void;
-  onTogglePinnedAgent?: (agent: ConsoleAgent) => void;
+  onTogglePinnedAgent?: (agent: ConsoleAgent, familyPinIds?: Set<string>) => void;
   onOpenControl: (kind: NavKind) => void;
 }
 
@@ -77,14 +77,21 @@ interface AgentRow {
   agent: ConsoleAgent;
   childOfHost: boolean;
   depth: number;
+  parentMemberId?: string | null;
   subgroup?: string | null;
 }
 
 type SidebarVirtualRow =
-  | { kind: "section"; key: string; bucket: string; count: number; collapsed: boolean }
+  | { kind: "section"; key: string; bucket: string; count: number; collapsed: boolean; pinned?: boolean; reorderable: boolean }
   | { kind: "empty"; key: string; bucket: string; sectionConfig: ReturnType<typeof sectionConfigFor> }
-  | { kind: "subgroup"; key: string; bucket: string; label: string; count: number; collapsed: boolean; storageKey: string }
+  | { kind: "subgroup"; key: string; bucket: string; label: string; count: number; collapsed: boolean; storageKey: string; reorderable: boolean }
   | { kind: "agent"; key: string; bucket: string; row: AgentRow };
+
+interface SidebarDragPreview {
+  x: number;
+  y: number;
+  width: number;
+}
 
 const SIDEBAR_ROW_HEIGHT = {
   section: 36,
@@ -95,12 +102,17 @@ const SIDEBAR_ROW_HEIGHT = {
 
 const SIDEBAR_OVERSCAN_PX = 360;
 export const SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
+export const SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
+export const SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
 const SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
 const SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+const PINNED_SECTION_NAME = "Pinned";
 
 /** Every localStorage prefix the sidebar owns, used for namespace pruning. */
 const SIDEBAR_STORAGE_PREFIXES = [
   SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
   SECTION_COLLAPSE_STORAGE_PREFIX,
   SUBGROUP_COLLAPSE_STORAGE_PREFIX,
 ] as const;
@@ -137,6 +149,45 @@ export function writeSidebarStringSet(storage: SidebarStorageLike | null | undef
   if (!storage) return;
   try {
     storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+  } catch {
+    /* ignore */
+  }
+}
+
+export function readSidebarStringList(storage: SidebarStorageLike | null | undefined, key: string): string[] | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const value of parsed) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSidebarStringList(storage: SidebarStorageLike | null | undefined, key: string, value: string[]): void {
+  if (!storage) return;
+  try {
+    const seen = new Set<string>();
+    const normalized = value
+      .map((item) => item.trim())
+      .filter((item) => {
+        if (!item || seen.has(item)) return false;
+        seen.add(item);
+        return true;
+      });
+    storage.setItem(key, JSON.stringify(normalized));
   } catch {
     /* ignore */
   }
@@ -299,16 +350,46 @@ export const __sidebarTest = {
   sidebarStorageKey,
   readSidebarStringSet,
   writeSidebarStringSet,
+  readSidebarStringList,
+  writeSidebarStringList,
   collapsedSectionsForStorage,
   collapsedSubgroupsForStorage,
   sidebarSubgroupStorageId,
   buildSidebarVirtualRows,
+  sidebarDragPreviewRows,
+  applySidebarOrder,
+  reorderSidebarOrder,
   isAgentPinned,
+  sidebarPinnedFamilyPinIds,
   pruneStaleSidebarStorage,
   SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
   SECTION_COLLAPSE_STORAGE_PREFIX,
   SUBGROUP_COLLAPSE_STORAGE_PREFIX,
 };
+
+export function sidebarPinnedFamilyPinIds(agent: ConsoleAgent, agents: ConsoleAgent[]): Set<string> {
+  const host = agents.find(isCommanderLike);
+  const byId = new Map(agents.map((candidate) => [candidate.member_id, candidate]));
+  const childrenById = new Map<string, ConsoleAgent[]>();
+  for (const candidate of agents) {
+    const parent = findSpawnHost(candidate, agents, host || null);
+    if (!parent) continue;
+    if (!childrenById.has(parent.member_id)) childrenById.set(parent.member_id, []);
+    childrenById.get(parent.member_id)!.push(candidate);
+  }
+
+  const ids = new Set<string>();
+  const visit = (current: ConsoleAgent | undefined): void => {
+    if (!current || ids.has(current.member_id)) return;
+    ids.add(sidebarAgentPinId(current));
+    ids.add(current.member_id);
+    for (const child of childrenById.get(current.member_id) || []) visit(byId.get(child.member_id));
+  };
+  visit(agent);
+  return ids;
+}
 
 function bucketOf(a: ConsoleAgent): Bucket {
   const g = (a.group || "").toLowerCase();
@@ -393,16 +474,21 @@ function configuredAgentSubgroup(
 ): string | null {
   const selectors = configuredSelectors(config, "subgroup_by");
   if (selectors.length === 0) return null;
+  const chain: ConsoleAgent[] = [];
   let current: ConsoleAgent | undefined = agent;
   const seen = new Set<string>();
-  while (current) {
-    const value = firstConfiguredValue(current, selectors);
-    if (value) return value;
-    if (!parentById || !byId || seen.has(current.member_id)) break;
+  while (current && !seen.has(current.member_id)) {
     seen.add(current.member_id);
+    chain.push(current);
+    if (!parentById || !byId) break;
     const parentId = parentById.get(current.member_id);
     if (!parentId) break;
     current = byId.get(parentId);
+  }
+  const searchOrder = chain.length > 1 ? [...chain].reverse() : chain;
+  for (const candidate of searchOrder) {
+    const value = firstConfiguredValue(candidate, selectors);
+    if (value) return value;
   }
   return config?.fallback_subgroup?.trim() || null;
 }
@@ -494,6 +580,35 @@ function orderRowsPreorder(rows: AgentRow[], parentById: Map<string, string>, ho
   return ordered;
 }
 
+function orderRowsPreorderByIndex(rows: AgentRow[], orderIndex: Map<string, number>): AgentRow[] {
+  const byParent = new Map<string, AgentRow[]>();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const roots: AgentRow[] = [];
+  for (const row of rows) {
+    const parentId = row.parentMemberId || undefined;
+    if (parentId && rowById.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId)!.push(row);
+    } else {
+      roots.push(row);
+    }
+  }
+  const sortByExistingOrder = (a: AgentRow, b: AgentRow) => {
+    return (orderIndex.get(a.agent.member_id) ?? Number.MAX_SAFE_INTEGER)
+      - (orderIndex.get(b.agent.member_id) ?? Number.MAX_SAFE_INTEGER);
+  };
+  roots.sort(sortByExistingOrder);
+  for (const children of byParent.values()) children.sort(sortByExistingOrder);
+
+  const ordered: AgentRow[] = [];
+  const visit = (row: AgentRow): void => {
+    ordered.push(row);
+    for (const child of byParent.get(row.agent.member_id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return ordered;
+}
+
 function groupSidebarAgents(filtered: ConsoleAgent[], config?: ConsoleAgentListConfig): Map<string, AgentRow[]> {
   const g = new Map<string, AgentRow[]>();
   const host = filtered.find(isCommanderLike);
@@ -509,7 +624,13 @@ function groupSidebarAgents(filtered: ConsoleAgent[], config?: ConsoleAgentListC
     const key = configuredGroup || bucketForAgent(a, parentById, byId);
     const subgroup = configuredAgentSubgroup(a, config, parentById, byId);
     if (!g.has(key)) g.set(key, []);
-    g.get(key)!.push({ agent: a, childOfHost, depth: depthForAgent(a, parentById), subgroup });
+    g.get(key)!.push({
+      agent: a,
+      childOfHost,
+      depth: depthForAgent(a, parentById),
+      parentMemberId: parentById.get(a.member_id) || null,
+      subgroup,
+    });
   }
   for (const [key, rows] of g.entries()) {
     g.set(key, orderRowsPreorder(rows, parentById, host || null, configuredSelectors(config, "subgroup_by").length > 0));
@@ -563,27 +684,143 @@ function sidebarSubgroupStorageId(bucket: string, subgroup: string): string {
   return JSON.stringify([bucket, subgroup]);
 }
 
-function pinnedOrderedRows(rows: AgentRow[], pinnedAgentIds: Set<string> | undefined): AgentRow[] {
-  const ordered: AgentRow[] = [];
-  let segment: Array<{ row: AgentRow; index: number }> = [];
-  let currentSubgroup: string | null | undefined;
-  const flush = () => {
-    segment.sort((a, b) => {
-      const aPinned = isAgentPinned(a.row.agent, pinnedAgentIds);
-      const bPinned = isAgentPinned(b.row.agent, pinnedAgentIds);
-      if (aPinned !== bPinned) return aPinned ? -1 : 1;
-      return a.index - b.index;
-    });
-    ordered.push(...segment.map((item) => item.row));
-    segment = [];
-  };
-  rows.forEach((row, index) => {
-    if (segment.length > 0 && row.subgroup !== currentSubgroup) flush();
-    currentSubgroup = row.subgroup;
-    segment.push({ row, index });
-  });
-  flush();
+export type SidebarDropPosition = "before" | "after";
+
+function applySidebarOrder(items: string[], storedOrder: string[] | null | undefined): string[] {
+  const available = new Set(items);
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  for (const item of storedOrder || []) {
+    if (!available.has(item) || seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
   return ordered;
+}
+
+function reorderSidebarOrder(
+  items: string[],
+  dragged: string,
+  target: string,
+  where: SidebarDropPosition,
+): string[] {
+  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
+  const withoutDragged = items.filter((item) => item !== dragged);
+  const targetIndex = withoutDragged.indexOf(target);
+  if (targetIndex < 0) return items;
+  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
+  const next = [...withoutDragged];
+  next.splice(insertAt, 0, dragged);
+  return next;
+}
+
+function collectPinnedRows(rows: AgentRow[], pinnedAgentIds: Set<string> | undefined): Set<string> {
+  const pinned = new Set<string>();
+  if (!pinnedAgentIds || pinnedAgentIds.size === 0) return pinned;
+
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const childrenById = new Map<string, AgentRow[]>();
+  for (const row of rows) {
+    if (!row.parentMemberId) continue;
+    if (!childrenById.has(row.parentMemberId)) childrenById.set(row.parentMemberId, []);
+    childrenById.get(row.parentMemberId)!.push(row);
+  }
+
+  const includeAncestors = (row: AgentRow): void => {
+    let current: AgentRow | undefined = row;
+    const seen = new Set<string>();
+    while (current && !seen.has(current.agent.member_id)) {
+      seen.add(current.agent.member_id);
+      pinned.add(current.agent.member_id);
+      current = current.parentMemberId ? rowById.get(current.parentMemberId) : undefined;
+    }
+  };
+  const includeDescendants = (row: AgentRow): void => {
+    for (const child of childrenById.get(row.agent.member_id) || []) {
+      if (pinned.has(child.agent.member_id)) continue;
+      pinned.add(child.agent.member_id);
+      includeDescendants(child);
+    }
+  };
+
+  for (const row of rows) {
+    if (!isAgentPinned(row.agent, pinnedAgentIds)) continue;
+    includeAncestors(row);
+    includeDescendants(row);
+  }
+  return pinned;
+}
+
+function orderRowsBySubgroupOrder(rows: AgentRow[], bucket: string, subgroupOrder: string[] | undefined): AgentRow[] {
+  if (rows.length <= 1) return rows;
+  const orderIndex = new Map(rows.map((row, index) => [row.agent.member_id, index] as const));
+  const defaultSubgroups = rows
+    .map((row) => row.subgroup)
+    .filter((value): value is string => Boolean(value));
+  const subgroupIds = applySidebarOrder(
+    Array.from(new Set(defaultSubgroups)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup)),
+    subgroupOrder,
+  );
+  const subgroupRank = new Map(subgroupIds.map((id, index) => [id, index] as const));
+  const byParent = new Map<string, AgentRow[]>();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const roots: AgentRow[] = [];
+  for (const row of rows) {
+    const parentId = row.parentMemberId || undefined;
+    if (parentId && rowById.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId)!.push(row);
+    } else {
+      roots.push(row);
+    }
+  }
+  const sortBySubgroup = (a: AgentRow, b: AgentRow) => {
+    const ar = a.subgroup ? subgroupRank.get(sidebarSubgroupStorageId(bucket, a.subgroup)) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    const br = b.subgroup ? subgroupRank.get(sidebarSubgroupStorageId(bucket, b.subgroup)) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return (orderIndex.get(a.agent.member_id) ?? 0) - (orderIndex.get(b.agent.member_id) ?? 0);
+  };
+  roots.sort(sortBySubgroup);
+  for (const children of byParent.values()) children.sort((a, b) =>
+    (orderIndex.get(a.agent.member_id) ?? 0) - (orderIndex.get(b.agent.member_id) ?? 0),
+  );
+
+  const ordered: AgentRow[] = [];
+  const visit = (row: AgentRow): void => {
+    ordered.push(row);
+    for (const child of byParent.get(row.agent.member_id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return ordered;
+}
+
+function sidebarFamilyPinIdsByMemberId(grouped: Map<string, AgentRow[]>): Map<string, Set<string>> {
+  const rows = Array.from(grouped.values()).flat();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const childrenById = new Map<string, AgentRow[]>();
+  for (const row of rows) {
+    if (!row.parentMemberId) continue;
+    if (!childrenById.has(row.parentMemberId)) childrenById.set(row.parentMemberId, []);
+    childrenById.get(row.parentMemberId)!.push(row);
+  }
+  const familyById = new Map<string, Set<string>>();
+  const visit = (row: AgentRow | undefined, ids: Set<string>): void => {
+    if (!row || ids.has(row.agent.member_id)) return;
+    ids.add(sidebarAgentPinId(row.agent));
+    ids.add(row.agent.member_id);
+    for (const child of childrenById.get(row.agent.member_id) || []) visit(rowById.get(child.agent.member_id), ids);
+  };
+  for (const row of rows) {
+    const ids = new Set<string>();
+    visit(row, ids);
+    familyById.set(row.agent.member_id, ids);
+  }
+  return familyById;
 }
 
 function buildSidebarVirtualRows(args: {
@@ -593,11 +830,44 @@ function buildSidebarVirtualRows(args: {
   collapsedSections: Set<string>;
   collapsedSubgroups: Set<string>;
   pinnedAgentIds?: Set<string>;
+  sectionOrder?: string[];
+  subgroupOrder?: string[];
   searchActive?: boolean;
 }): SidebarVirtualRow[] {
   const rows: SidebarVirtualRow[] = [];
-  for (const bucket of args.sectionNames) {
-    const list = args.grouped.get(bucket) || [];
+  const orderedSections = applySidebarOrder(args.sectionNames, args.sectionOrder);
+  const baseRows = orderedSections.flatMap((bucket) => args.grouped.get(bucket) || []);
+  const baseOrderIndex = new Map(baseRows.map((row, index) => [row.agent.member_id, index] as const));
+  const pinnedRowIds = collectPinnedRows(baseRows, args.pinnedAgentIds);
+  if (pinnedRowIds.size > 0) {
+    const pinnedRows = orderRowsPreorderByIndex(
+      baseRows.filter((row) => pinnedRowIds.has(row.agent.member_id)),
+      baseOrderIndex,
+    );
+    const collapsedPinned = args.searchActive ? false : args.collapsedSections.has(PINNED_SECTION_NAME);
+    rows.push({
+      kind: "section",
+      key: `section:${PINNED_SECTION_NAME}`,
+      bucket: PINNED_SECTION_NAME,
+      count: pinnedRows.length,
+      collapsed: collapsedPinned,
+      pinned: true,
+      reorderable: false,
+    });
+    if (!collapsedPinned) {
+      for (const row of pinnedRows) {
+        rows.push({
+          kind: "agent",
+          key: `agent:${PINNED_SECTION_NAME}:${row.agent.member_id}`,
+          bucket: PINNED_SECTION_NAME,
+          row,
+        });
+      }
+    }
+  }
+
+  for (const bucket of orderedSections) {
+    const list = (args.grouped.get(bucket) || []).filter((row) => !pinnedRowIds.has(row.agent.member_id));
     const sectionConfig = sectionConfigFor(bucket, args.grouping);
     if (list.length === 0 && !sectionConfig) continue;
     const collapsedSection = args.searchActive ? false : args.collapsedSections.has(bucket);
@@ -607,6 +877,7 @@ function buildSidebarVirtualRows(args: {
       bucket,
       count: list.length,
       collapsed: collapsedSection,
+      reorderable: true,
     });
     if (collapsedSection) continue;
     if (list.length === 0) {
@@ -619,7 +890,7 @@ function buildSidebarVirtualRows(args: {
       continue;
     }
 
-    const orderedList = pinnedOrderedRows(list, args.pinnedAgentIds);
+    const orderedList = orderRowsBySubgroupOrder(list, bucket, args.subgroupOrder);
     const subgroups = new Set(orderedList.map((row) => row.subgroup).filter((value): value is string => Boolean(value)));
     const showSubgroups = configuredSelectors(args.grouping, "subgroup_by").length > 0
       && subgroups.size > (args.grouping?.collapse_single_subgroup === false ? 0 : 1);
@@ -648,6 +919,7 @@ function buildSidebarVirtualRows(args: {
           count: subgroupCounts.get(row.subgroup) || 0,
           collapsed: currentSubgroupCollapsed,
           storageKey,
+          reorderable: true,
         });
       }
       if (currentSubgroupCollapsed) continue;
@@ -690,6 +962,75 @@ function virtualRowHeight(row: SidebarVirtualRow): number {
   return SIDEBAR_ROW_HEIGHT[row.kind];
 }
 
+function sidebarDragPreviewRows(
+  rows: SidebarVirtualRow[],
+  item: { kind: "section" | "subgroup"; id: string; bucket?: string } | null,
+): SidebarVirtualRow[] {
+  if (!item) return [];
+  const start = rows.findIndex((row) => {
+    if (item.kind === "section") return row.kind === "section" && row.bucket === item.id;
+    return row.kind === "subgroup" && row.storageKey === item.id && row.bucket === item.bucket;
+  });
+  if (start < 0) return [];
+  const out: SidebarVirtualRow[] = [];
+  for (let index = start; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (index > start) {
+      if (item.kind === "section" && row.kind === "section") break;
+      if (item.kind === "subgroup" && (row.kind === "section" || row.kind === "subgroup")) break;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+function renderSidebarDragPreviewRows(rows: SidebarVirtualRow[]): React.JSX.Element[] {
+  return rows.map((row) => {
+    if (row.kind === "section") {
+      return (
+        <div
+          className="sidebar__drag-preview-section"
+          key={`preview:${row.key}`}
+          data-pinned={row.pinned ? "true" : undefined}
+        >
+          <span className="sidebar__sec-label">{row.bucket}</span>
+          <span className="sidebar__sec-spacer" />
+          <span className="sidebar__sec-count">{row.count}</span>
+        </div>
+      );
+    }
+    if (row.kind === "subgroup") {
+      return (
+        <div className="sidebar__drag-preview-subgroup" key={`preview:${row.key}`}>
+          <span>{row.label}</span>
+          <span className="sidebar__sec-spacer" />
+          <span className="sidebar__sec-count">{row.count}</span>
+        </div>
+      );
+    }
+    if (row.kind === "empty") {
+      return (
+        <div className="sidebar__drag-preview-empty" key={`preview:${row.key}`}>
+          {row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents"}
+        </div>
+      );
+    }
+    return (
+      <div
+        className={`sidebar__drag-preview-agent ${row.row.childOfHost ? "sidebar__drag-preview-agent--child" : ""}`}
+        data-depth={row.row.childOfHost ? String(Math.min(row.row.depth, 3)) : undefined}
+        key={`preview:${row.key}`}
+      >
+        <span className="agent__dot" />
+        <span className="sidebar__drag-preview-agent-body">
+          <span className="agent__name">{row.row.agent.label}</span>
+          <span className="agent__id">{row.row.agent.identity || row.row.agent.member_id}</span>
+        </span>
+      </div>
+    );
+  });
+}
+
 function lowerBound(values: number[], needle: number): number {
   let lo = 0;
   let hi = values.length;
@@ -730,7 +1071,8 @@ function renderAgentRow(
   grouping: ConsoleAgentListConfig | undefined,
   pinnedAgentIds: Set<string> | undefined,
   onSelect: (agent: ConsoleAgent) => void,
-  onTogglePinnedAgent: ((agent: ConsoleAgent) => void) | undefined,
+  onTogglePinnedAgent: ((agent: ConsoleAgent, familyPinIds?: Set<string>) => void) | undefined,
+  familyPinIds?: Set<string>,
 ): React.JSX.Element {
   const { agent, childOfHost, depth } = row;
   const stateAttr = deriveStateAttr(agent);
@@ -788,7 +1130,7 @@ function renderAgentRow(
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              onTogglePinnedAgent(agent);
+              onTogglePinnedAgent(agent, familyPinIds);
             }}
           >
             <Icon name="i-pin" className="agent__pin-icon" />
@@ -827,6 +1169,24 @@ export function Sidebar({
   onOpenControl,
 }: SidebarProps): React.JSX.Element {
   const [q, setQ] = React.useState("");
+  const [draggingOrder, setDraggingOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
+  const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);
+  const [dragPreview, setDragPreview] = React.useState<SidebarDragPreview | null>(null);
+  const draggingOrderRef = React.useRef<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
+  const pointerDragRef = React.useRef<{
+    kind: "section" | "subgroup";
+    id: string;
+    bucket?: string;
+    startX: number;
+    startY: number;
+    previewWidth: number;
+    moved: boolean;
+    over: { id: string; bucket?: string; where: SidebarDropPosition } | null;
+  } | null>(null);
+  const suppressOrderClickRef = React.useRef(false);
+  React.useEffect(() => {
+    draggingOrderRef.current = draggingOrder;
+  }, [draggingOrder]);
   // Computed once; URL-driven config doesn't change without a reload.
   const navKinds = React.useMemo(() => {
     const configured = visibleNavKinds();
@@ -849,6 +1209,7 @@ export function Sidebar({
   const grouped = React.useMemo(() => {
     return groupSidebarAgents(filtered, grouping);
   }, [filtered, grouping]);
+  const familyPinIdsByMemberId = React.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
   const sectionNames = React.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
   const defaultCollapsedKey = React.useMemo(
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
@@ -860,6 +1221,14 @@ export function Sidebar({
   );
   const subgroupCollapseStorageKey = React.useMemo(
     () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace],
+  );
+  const sectionOrderStorageKey = React.useMemo(
+    () => sidebarStorageKey(SIDEBAR_SECTION_ORDER_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace],
+  );
+  const subgroupOrderStorageKey = React.useMemo(
+    () => sidebarStorageKey(SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace],
   );
   const [collapsedSections, setCollapsedSections] = React.useState<Set<string>>(() => {
@@ -874,10 +1243,139 @@ export function Sidebar({
   React.useEffect(() => {
     setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
   }, [subgroupCollapseStorageKey]);
+  const [sectionOrder, setSectionOrder] = React.useState<string[]>(() => {
+    return readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || [];
+  });
+  React.useEffect(() => {
+    setSectionOrder(readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || []);
+  }, [sectionOrderStorageKey]);
+  const [subgroupOrder, setSubgroupOrder] = React.useState<string[]>(() => {
+    return readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || [];
+  });
+  React.useEffect(() => {
+    setSubgroupOrder(readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || []);
+  }, [subgroupOrderStorageKey]);
   const customSidebarButtons = React.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons],
   );
+  const completeSectionDrop = React.useCallback((target: string, where: SidebarDropPosition, draggedId = draggingOrderRef.current?.id) => {
+    if (!draggedId || draggedId === target) return;
+    setSectionOrder((current) => {
+      const baseOrder = applySidebarOrder(sectionNames, current);
+      const next = reorderSidebarOrder(baseOrder, draggedId, target, where);
+      writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
+      return next;
+    });
+  }, [sectionNames, sectionOrderStorageKey]);
+  const subgroupIdsForBucket = React.useCallback((bucket: string): string[] => {
+    const list = grouped.get(bucket) || [];
+    const ids = list
+      .map((row) => row.subgroup)
+      .filter((value): value is string => Boolean(value))
+      .map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
+    return Array.from(new Set(ids));
+  }, [grouped]);
+  const completeSubgroupDrop = React.useCallback((target: string, bucket: string, where: SidebarDropPosition, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
+    if (
+      !draggedId ||
+      draggedBucket !== bucket ||
+      draggedId === target
+    ) return;
+    setSubgroupOrder((current) => {
+      const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
+      const nextBucketOrder = reorderSidebarOrder(bucketOrder, draggedId, target, where);
+      const nextBucketSet = new Set(nextBucketOrder);
+      const next = [
+        ...current.filter((id) => !nextBucketSet.has(id)),
+        ...nextBucketOrder,
+      ];
+      writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
+      return next;
+    });
+  }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
+  const beginPointerOrderDrag = React.useCallback((
+    event: React.PointerEvent<HTMLElement>,
+    item: { kind: "section" | "subgroup"; id: string; bucket?: string },
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    pointerDragRef.current = {
+      ...item,
+      startX: event.clientX,
+      startY: event.clientY,
+      previewWidth: event.currentTarget.closest(".sidebar")?.getBoundingClientRect().width || event.currentTarget.getBoundingClientRect().width,
+      moved: false,
+      over: null,
+    };
+    setDraggingOrder(item);
+    draggingOrderRef.current = item;
+  }, []);
+  const movePointerOrderDrag = React.useCallback((event: Pick<PointerEvent | React.PointerEvent<HTMLElement>, "clientX" | "clientY" | "preventDefault">) => {
+    const drag = pointerDragRef.current;
+    if (!drag) return;
+    if (!drag.moved && Math.max(Math.abs(event.clientX - drag.startX), Math.abs(event.clientY - drag.startY)) < 4) return;
+    drag.moved = true;
+    event.preventDefault();
+    setDragPreview({
+      x: event.clientX,
+      y: event.clientY,
+      width: drag.previewWidth,
+    });
+    const target = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-sidebar-order-kind]");
+    if (!target) {
+      drag.over = null;
+      setDragOverOrder(null);
+      return;
+    }
+    const kind = target.dataset.sidebarOrderKind as "section" | "subgroup" | undefined;
+    const id = target.dataset.sidebarOrderId;
+    const bucket = target.dataset.sidebarOrderBucket;
+    if (!kind || !id || kind !== drag.kind || id === drag.id || (kind === "subgroup" && bucket !== drag.bucket)) {
+      drag.over = null;
+      setDragOverOrder(null);
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    const where: SidebarDropPosition = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+    drag.over = { id, bucket, where };
+    setDragOverOrder({ kind, id, where });
+  }, []);
+  const finishPointerOrderDrag = React.useCallback(() => {
+    const drag = pointerDragRef.current;
+    if (!drag) return;
+    pointerDragRef.current = null;
+    if (drag.moved && drag.over) {
+      if (drag.kind === "section") {
+        completeSectionDrop(drag.over.id, drag.over.where, drag.id);
+      } else if (drag.over.bucket) {
+        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket);
+      }
+      suppressOrderClickRef.current = true;
+      window.setTimeout(() => {
+        suppressOrderClickRef.current = false;
+      }, 0);
+    }
+    draggingOrderRef.current = null;
+    setDraggingOrder(null);
+    setDragOverOrder(null);
+    setDragPreview(null);
+  }, [completeSectionDrop, completeSubgroupDrop]);
+  React.useEffect(() => {
+    if (!draggingOrder) return undefined;
+    const onMove = (event: PointerEvent) => movePointerOrderDrag(event);
+    const onDone = () => finishPointerOrderDrag();
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onDone);
+    window.addEventListener("pointercancel", onDone);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onDone);
+      window.removeEventListener("pointercancel", onDone);
+    };
+  }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
   const virtualRows = React.useMemo<SidebarVirtualRow[]>(() => {
     return buildSidebarVirtualRows({
       sectionNames,
@@ -886,9 +1384,11 @@ export function Sidebar({
       collapsedSections,
       collapsedSubgroups,
       pinnedAgentIds,
+      sectionOrder,
+      subgroupOrder,
       searchActive: Boolean(q),
     });
-  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, q]);
+  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
   const virtualOffsets = React.useMemo(() => {
     const offsets: number[] = [];
     let total = 0;
@@ -903,7 +1403,7 @@ export function Sidebar({
   React.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, listRef]);
+  }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
   const visibleRange = React.useMemo(() => {
     if (virtualRows.length === 0) return { start: 0, end: 0 };
     const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
@@ -915,6 +1415,10 @@ export function Sidebar({
   const visibleRows = React.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange],
+  );
+  const dragPreviewRows = React.useMemo(
+    () => sidebarDragPreviewRows(virtualRows, draggingOrder),
+    [virtualRows, draggingOrder],
   );
 
   if (collapsed) {
@@ -1016,12 +1520,22 @@ export function Sidebar({
                 style={{ transform: `translateY(${top}px)`, height: `${height}px` }}
               >
                 {row.kind === "section" ? (
-                  <div className="sidebar__section" data-collapsed={row.collapsed ? "true" : undefined}>
+                  <div
+                    className="sidebar__section"
+                    data-collapsed={row.collapsed ? "true" : undefined}
+                    data-pinned={row.pinned ? "true" : undefined}
+                    data-drag-over={dragOverOrder?.kind === "section" && dragOverOrder.id === row.bucket ? dragOverOrder.where : undefined}
+                  >
                     <button
                       type="button"
-                      className="sidebar__sec-head sidebar__sec-head--button"
+                      className={`sidebar__sec-head sidebar__sec-head--button ${row.reorderable ? "sidebar__order-target" : ""}`}
                       aria-expanded={!row.collapsed}
+                      data-sidebar-order-kind={row.reorderable ? "section" : undefined}
+                      data-sidebar-order-id={row.reorderable ? row.bucket : undefined}
+                      data-reorderable={row.reorderable ? "true" : undefined}
+                      onPointerDown={row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "section", id: row.bucket }) : undefined}
                       onClick={() => {
+                        if (suppressOrderClickRef.current) return;
                         setCollapsedSections((current) => {
                           const next = new Set(current);
                           if (next.has(row.bucket)) next.delete(row.bucket);
@@ -1045,11 +1559,18 @@ export function Sidebar({
                 ) : row.kind === "subgroup" ? (
                   <button
                     type="button"
-                    className="sidebar__subgroup sidebar__subgroup--button"
+                    className={`sidebar__subgroup sidebar__subgroup--button ${row.reorderable ? "sidebar__order-target" : ""}`}
                     data-collapsed={row.collapsed ? "true" : undefined}
+                    data-drag-over={dragOverOrder?.kind === "subgroup" && dragOverOrder.id === row.storageKey ? dragOverOrder.where : undefined}
                     aria-expanded={!row.collapsed}
+                    data-sidebar-order-kind={row.reorderable ? "subgroup" : undefined}
+                    data-sidebar-order-id={row.reorderable ? row.storageKey : undefined}
+                    data-sidebar-order-bucket={row.reorderable ? row.bucket : undefined}
+                    data-reorderable={row.reorderable ? "true" : undefined}
                     data-testid={`sidebar-subgroup-toggle:${row.bucket}:${row.label}`}
+                    onPointerDown={row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : undefined}
                     onClick={() => {
+                      if (suppressOrderClickRef.current) return;
                       setCollapsedSubgroups((current) => {
                         const next = new Set(current);
                         if (next.has(row.storageKey)) next.delete(row.storageKey);
@@ -1064,13 +1585,35 @@ export function Sidebar({
                     <span className="sidebar__sec-count">{row.count}</span>
                   </button>
                 ) : (
-                  renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent)
+                  renderAgentRow(
+                    row.row,
+                    selectedMemberId,
+                    recentActivity,
+                    grouping,
+                    pinnedAgentIds,
+                    onSelect,
+                    onTogglePinnedAgent,
+                    familyPinIdsByMemberId.get(row.row.agent.member_id),
+                  )
                 )}
               </div>
             );
           })}
         </div>
       </div>
+      {dragPreview && dragPreviewRows.length > 0 ? (
+        <div
+          className="sidebar__drag-preview"
+          data-testid="sidebar-drag-preview"
+          style={{
+            width: `${Math.max(160, dragPreview.width)}px`,
+            transform: `translate3d(${dragPreview.x + 12}px, ${dragPreview.y + 12}px, 0)`,
+          }}
+          aria-hidden="true"
+        >
+          {renderSidebarDragPreviewRows(dragPreviewRows)}
+        </div>
+      ) : null}
     </aside>
   );
 }

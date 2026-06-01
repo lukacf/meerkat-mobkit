@@ -7740,10 +7740,15 @@ var SIDEBAR_ROW_HEIGHT = {
 };
 var SIDEBAR_OVERSCAN_PX = 360;
 var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
+var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
+var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
 var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
 var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+var PINNED_SECTION_NAME = "Pinned";
 var SIDEBAR_STORAGE_PREFIXES = [
   SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
   SECTION_COLLAPSE_STORAGE_PREFIX,
   SUBGROUP_COLLAPSE_STORAGE_PREFIX
 ];
@@ -7766,6 +7771,40 @@ function writeSidebarStringSet(storage, key, value) {
   if (!storage) return;
   try {
     storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+  } catch {
+  }
+}
+function readSidebarStringList(storage, key) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const value of parsed) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+function writeSidebarStringList(storage, key, value) {
+  if (!storage) return;
+  try {
+    const seen = /* @__PURE__ */ new Set();
+    const normalized = value.map((item) => item.trim()).filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+    storage.setItem(key, JSON.stringify(normalized));
   } catch {
   }
 }
@@ -7868,6 +7907,26 @@ function findSpawnHost(a, agents, commander) {
   if (commander && commander.member_id !== a.member_id && isSpawnedDelegateLike(a, commander)) return commander;
   return null;
 }
+function sidebarPinnedFamilyPinIds(agent, agents) {
+  const host = agents.find(isCommanderLike);
+  const byId = new Map(agents.map((candidate) => [candidate.member_id, candidate]));
+  const childrenById = /* @__PURE__ */ new Map();
+  for (const candidate of agents) {
+    const parent = findSpawnHost(candidate, agents, host || null);
+    if (!parent) continue;
+    if (!childrenById.has(parent.member_id)) childrenById.set(parent.member_id, []);
+    childrenById.get(parent.member_id).push(candidate);
+  }
+  const ids = /* @__PURE__ */ new Set();
+  const visit = (current) => {
+    if (!current || ids.has(current.member_id)) return;
+    ids.add(sidebarAgentPinId(current));
+    ids.add(current.member_id);
+    for (const child of childrenById.get(current.member_id) || []) visit(byId.get(child.member_id));
+  };
+  visit(agent);
+  return ids;
+}
 function bucketOf(a) {
   const g = (a.group || "").toLowerCase();
   const p = (a.role || a.kind || "").toLowerCase();
@@ -7942,16 +8001,21 @@ function configuredAgentGroup(agent, config, parentById, byId) {
 function configuredAgentSubgroup(agent, config, parentById, byId) {
   const selectors = configuredSelectors(config, "subgroup_by");
   if (selectors.length === 0) return null;
+  const chain = [];
   let current = agent;
   const seen = /* @__PURE__ */ new Set();
-  while (current) {
-    const value = firstConfiguredValue(current, selectors);
-    if (value) return value;
-    if (!parentById || !byId || seen.has(current.member_id)) break;
+  while (current && !seen.has(current.member_id)) {
     seen.add(current.member_id);
+    chain.push(current);
+    if (!parentById || !byId) break;
     const parentId = parentById.get(current.member_id);
     if (!parentId) break;
     current = byId.get(parentId);
+  }
+  const searchOrder = chain.length > 1 ? [...chain].reverse() : chain;
+  for (const candidate of searchOrder) {
+    const value = firstConfiguredValue(candidate, selectors);
+    if (value) return value;
   }
   return config?.fallback_subgroup?.trim() || null;
 }
@@ -8029,6 +8093,32 @@ function orderRowsPreorder(rows, parentById, host, orderSubgroups = false) {
   for (const root of roots) visit(root);
   return ordered;
 }
+function orderRowsPreorderByIndex(rows, orderIndex) {
+  const byParent = /* @__PURE__ */ new Map();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const roots = [];
+  for (const row of rows) {
+    const parentId = row.parentMemberId || void 0;
+    if (parentId && rowById.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId).push(row);
+    } else {
+      roots.push(row);
+    }
+  }
+  const sortByExistingOrder = (a, b) => {
+    return (orderIndex.get(a.agent.member_id) ?? Number.MAX_SAFE_INTEGER) - (orderIndex.get(b.agent.member_id) ?? Number.MAX_SAFE_INTEGER);
+  };
+  roots.sort(sortByExistingOrder);
+  for (const children of byParent.values()) children.sort(sortByExistingOrder);
+  const ordered = [];
+  const visit = (row) => {
+    ordered.push(row);
+    for (const child of byParent.get(row.agent.member_id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return ordered;
+}
 function groupSidebarAgents(filtered, config) {
   const g = /* @__PURE__ */ new Map();
   const host = filtered.find(isCommanderLike);
@@ -8044,7 +8134,13 @@ function groupSidebarAgents(filtered, config) {
     const key = configuredGroup || bucketForAgent(a, parentById, byId);
     const subgroup = configuredAgentSubgroup(a, config, parentById, byId);
     if (!g.has(key)) g.set(key, []);
-    g.get(key).push({ agent: a, childOfHost, depth: depthForAgent(a, parentById), subgroup });
+    g.get(key).push({
+      agent: a,
+      childOfHost,
+      depth: depthForAgent(a, parentById),
+      parentMemberId: parentById.get(a.member_id) || null,
+      subgroup
+    });
   }
   for (const [key, rows] of g.entries()) {
     g.set(key, orderRowsPreorder(rows, parentById, host || null, configuredSelectors(config, "subgroup_by").length > 0));
@@ -8082,32 +8178,161 @@ function collapsedSubgroupsForStorage(storageKey, storage = localSidebarStorage(
 function sidebarSubgroupStorageId(bucket, subgroup) {
   return JSON.stringify([bucket, subgroup]);
 }
-function pinnedOrderedRows(rows, pinnedAgentIds) {
+function applySidebarOrder(items, storedOrder) {
+  const available = new Set(items);
+  const seen = /* @__PURE__ */ new Set();
   const ordered = [];
-  let segment = [];
-  let currentSubgroup;
-  const flush = () => {
-    segment.sort((a, b) => {
-      const aPinned = isAgentPinned(a.row.agent, pinnedAgentIds);
-      const bPinned = isAgentPinned(b.row.agent, pinnedAgentIds);
-      if (aPinned !== bPinned) return aPinned ? -1 : 1;
-      return a.index - b.index;
-    });
-    ordered.push(...segment.map((item) => item.row));
-    segment = [];
-  };
-  rows.forEach((row, index) => {
-    if (segment.length > 0 && row.subgroup !== currentSubgroup) flush();
-    currentSubgroup = row.subgroup;
-    segment.push({ row, index });
-  });
-  flush();
+  for (const item of storedOrder || []) {
+    if (!available.has(item) || seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
   return ordered;
+}
+function reorderSidebarOrder(items, dragged, target, where) {
+  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
+  const withoutDragged = items.filter((item) => item !== dragged);
+  const targetIndex = withoutDragged.indexOf(target);
+  if (targetIndex < 0) return items;
+  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
+  const next = [...withoutDragged];
+  next.splice(insertAt, 0, dragged);
+  return next;
+}
+function collectPinnedRows(rows, pinnedAgentIds) {
+  const pinned = /* @__PURE__ */ new Set();
+  if (!pinnedAgentIds || pinnedAgentIds.size === 0) return pinned;
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const childrenById = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (!row.parentMemberId) continue;
+    if (!childrenById.has(row.parentMemberId)) childrenById.set(row.parentMemberId, []);
+    childrenById.get(row.parentMemberId).push(row);
+  }
+  const includeAncestors = (row) => {
+    let current = row;
+    const seen = /* @__PURE__ */ new Set();
+    while (current && !seen.has(current.agent.member_id)) {
+      seen.add(current.agent.member_id);
+      pinned.add(current.agent.member_id);
+      current = current.parentMemberId ? rowById.get(current.parentMemberId) : void 0;
+    }
+  };
+  const includeDescendants = (row) => {
+    for (const child of childrenById.get(row.agent.member_id) || []) {
+      if (pinned.has(child.agent.member_id)) continue;
+      pinned.add(child.agent.member_id);
+      includeDescendants(child);
+    }
+  };
+  for (const row of rows) {
+    if (!isAgentPinned(row.agent, pinnedAgentIds)) continue;
+    includeAncestors(row);
+    includeDescendants(row);
+  }
+  return pinned;
+}
+function orderRowsBySubgroupOrder(rows, bucket, subgroupOrder) {
+  if (rows.length <= 1) return rows;
+  const orderIndex = new Map(rows.map((row, index) => [row.agent.member_id, index]));
+  const defaultSubgroups = rows.map((row) => row.subgroup).filter((value) => Boolean(value));
+  const subgroupIds = applySidebarOrder(
+    Array.from(new Set(defaultSubgroups)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup)),
+    subgroupOrder
+  );
+  const subgroupRank = new Map(subgroupIds.map((id, index) => [id, index]));
+  const byParent = /* @__PURE__ */ new Map();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const roots = [];
+  for (const row of rows) {
+    const parentId = row.parentMemberId || void 0;
+    if (parentId && rowById.has(parentId)) {
+      if (!byParent.has(parentId)) byParent.set(parentId, []);
+      byParent.get(parentId).push(row);
+    } else {
+      roots.push(row);
+    }
+  }
+  const sortBySubgroup = (a, b) => {
+    const ar = a.subgroup ? subgroupRank.get(sidebarSubgroupStorageId(bucket, a.subgroup)) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    const br = b.subgroup ? subgroupRank.get(sidebarSubgroupStorageId(bucket, b.subgroup)) ?? Number.MAX_SAFE_INTEGER : Number.MAX_SAFE_INTEGER;
+    if (ar !== br) return ar - br;
+    return (orderIndex.get(a.agent.member_id) ?? 0) - (orderIndex.get(b.agent.member_id) ?? 0);
+  };
+  roots.sort(sortBySubgroup);
+  for (const children of byParent.values()) children.sort(
+    (a, b) => (orderIndex.get(a.agent.member_id) ?? 0) - (orderIndex.get(b.agent.member_id) ?? 0)
+  );
+  const ordered = [];
+  const visit = (row) => {
+    ordered.push(row);
+    for (const child of byParent.get(row.agent.member_id) || []) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return ordered;
+}
+function sidebarFamilyPinIdsByMemberId(grouped) {
+  const rows = Array.from(grouped.values()).flat();
+  const rowById = new Map(rows.map((row) => [row.agent.member_id, row]));
+  const childrenById = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    if (!row.parentMemberId) continue;
+    if (!childrenById.has(row.parentMemberId)) childrenById.set(row.parentMemberId, []);
+    childrenById.get(row.parentMemberId).push(row);
+  }
+  const familyById = /* @__PURE__ */ new Map();
+  const visit = (row, ids) => {
+    if (!row || ids.has(row.agent.member_id)) return;
+    ids.add(sidebarAgentPinId(row.agent));
+    ids.add(row.agent.member_id);
+    for (const child of childrenById.get(row.agent.member_id) || []) visit(rowById.get(child.agent.member_id), ids);
+  };
+  for (const row of rows) {
+    const ids = /* @__PURE__ */ new Set();
+    visit(row, ids);
+    familyById.set(row.agent.member_id, ids);
+  }
+  return familyById;
 }
 function buildSidebarVirtualRows(args) {
   const rows = [];
-  for (const bucket of args.sectionNames) {
-    const list = args.grouped.get(bucket) || [];
+  const orderedSections = applySidebarOrder(args.sectionNames, args.sectionOrder);
+  const baseRows = orderedSections.flatMap((bucket) => args.grouped.get(bucket) || []);
+  const baseOrderIndex = new Map(baseRows.map((row, index) => [row.agent.member_id, index]));
+  const pinnedRowIds = collectPinnedRows(baseRows, args.pinnedAgentIds);
+  if (pinnedRowIds.size > 0) {
+    const pinnedRows = orderRowsPreorderByIndex(
+      baseRows.filter((row) => pinnedRowIds.has(row.agent.member_id)),
+      baseOrderIndex
+    );
+    const collapsedPinned = args.searchActive ? false : args.collapsedSections.has(PINNED_SECTION_NAME);
+    rows.push({
+      kind: "section",
+      key: `section:${PINNED_SECTION_NAME}`,
+      bucket: PINNED_SECTION_NAME,
+      count: pinnedRows.length,
+      collapsed: collapsedPinned,
+      pinned: true,
+      reorderable: false
+    });
+    if (!collapsedPinned) {
+      for (const row of pinnedRows) {
+        rows.push({
+          kind: "agent",
+          key: `agent:${PINNED_SECTION_NAME}:${row.agent.member_id}`,
+          bucket: PINNED_SECTION_NAME,
+          row
+        });
+      }
+    }
+  }
+  for (const bucket of orderedSections) {
+    const list = (args.grouped.get(bucket) || []).filter((row) => !pinnedRowIds.has(row.agent.member_id));
     const sectionConfig = sectionConfigFor(bucket, args.grouping);
     if (list.length === 0 && !sectionConfig) continue;
     const collapsedSection = args.searchActive ? false : args.collapsedSections.has(bucket);
@@ -8116,7 +8341,8 @@ function buildSidebarVirtualRows(args) {
       key: `section:${bucket}`,
       bucket,
       count: list.length,
-      collapsed: collapsedSection
+      collapsed: collapsedSection,
+      reorderable: true
     });
     if (collapsedSection) continue;
     if (list.length === 0) {
@@ -8128,7 +8354,7 @@ function buildSidebarVirtualRows(args) {
       });
       continue;
     }
-    const orderedList = pinnedOrderedRows(list, args.pinnedAgentIds);
+    const orderedList = orderRowsBySubgroupOrder(list, bucket, args.subgroupOrder);
     const subgroups = new Set(orderedList.map((row) => row.subgroup).filter((value) => Boolean(value)));
     const showSubgroups = configuredSelectors(args.grouping, "subgroup_by").length > 0 && subgroups.size > (args.grouping?.collapse_single_subgroup === false ? 0 : 1);
     const subgroupCounts = /* @__PURE__ */ new Map();
@@ -8154,7 +8380,8 @@ function buildSidebarVirtualRows(args) {
           label: row.subgroup,
           count: subgroupCounts.get(row.subgroup) || 0,
           collapsed: currentSubgroupCollapsed,
-          storageKey
+          storageKey,
+          reorderable: true
         });
       }
       if (currentSubgroupCollapsed) continue;
@@ -8191,6 +8418,68 @@ function pulseSamples(activity, identity) {
 function virtualRowHeight(row) {
   return SIDEBAR_ROW_HEIGHT[row.kind];
 }
+function sidebarDragPreviewRows(rows, item) {
+  if (!item) return [];
+  const start = rows.findIndex((row) => {
+    if (item.kind === "section") return row.kind === "section" && row.bucket === item.id;
+    return row.kind === "subgroup" && row.storageKey === item.id && row.bucket === item.bucket;
+  });
+  if (start < 0) return [];
+  const out = [];
+  for (let index = start; index < rows.length; index += 1) {
+    const row = rows[index];
+    if (index > start) {
+      if (item.kind === "section" && row.kind === "section") break;
+      if (item.kind === "subgroup" && (row.kind === "section" || row.kind === "subgroup")) break;
+    }
+    out.push(row);
+  }
+  return out;
+}
+function renderSidebarDragPreviewRows(rows) {
+  return rows.map((row) => {
+    if (row.kind === "section") {
+      return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+        "div",
+        {
+          className: "sidebar__drag-preview-section",
+          "data-pinned": row.pinned ? "true" : void 0,
+          children: [
+            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
+            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+          ]
+        },
+        `preview:${row.key}`
+      );
+    }
+    if (row.kind === "subgroup") {
+      return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__drag-preview-subgroup", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.label }),
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
+        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+      ] }, `preview:${row.key}`);
+    }
+    if (row.kind === "empty") {
+      return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__drag-preview-empty", children: row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents" }, `preview:${row.key}`);
+    }
+    return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+      "div",
+      {
+        className: `sidebar__drag-preview-agent ${row.row.childOfHost ? "sidebar__drag-preview-agent--child" : ""}`,
+        "data-depth": row.row.childOfHost ? String(Math.min(row.row.depth, 3)) : void 0,
+        children: [
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__dot" }),
+          /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("span", { className: "sidebar__drag-preview-agent-body", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__name", children: row.row.agent.label }),
+            /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "agent__id", children: row.row.agent.identity || row.row.agent.member_id })
+          ] })
+        ]
+      },
+      `preview:${row.key}`
+    );
+  });
+}
 function lowerBound(values, needle) {
   let lo = 0;
   let hi = values.length;
@@ -8222,7 +8511,7 @@ function useMeasuredHeight() {
   }, []);
   return [ref, height];
 }
-function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent) {
+function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent, familyPinIds) {
   const { agent, childOfHost, depth } = row;
   const stateAttr = deriveStateAttr(agent);
   const pulse = pulseSamples(recentActivity, agent.identity || agent.member_id);
@@ -8278,7 +8567,7 @@ function renderAgentRow(row, selectedMemberId, recentActivity, grouping, pinnedA
             onClick: (event) => {
               event.preventDefault();
               event.stopPropagation();
-              onTogglePinnedAgent(agent);
+              onTogglePinnedAgent(agent, familyPinIds);
             },
             children: /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(Icon, { name: "i-pin", className: "agent__pin-icon" })
           }
@@ -8310,6 +8599,15 @@ function Sidebar({
   onOpenControl
 }) {
   const [q, setQ] = import_react17.default.useState("");
+  const [draggingOrder, setDraggingOrder] = import_react17.default.useState(null);
+  const [dragOverOrder, setDragOverOrder] = import_react17.default.useState(null);
+  const [dragPreview, setDragPreview] = import_react17.default.useState(null);
+  const draggingOrderRef = import_react17.default.useRef(null);
+  const pointerDragRef = import_react17.default.useRef(null);
+  const suppressOrderClickRef = import_react17.default.useRef(false);
+  import_react17.default.useEffect(() => {
+    draggingOrderRef.current = draggingOrder;
+  }, [draggingOrder]);
   const navKinds = import_react17.default.useMemo(() => {
     const configured = visibleNavKinds();
     if (!visibleControls) return configured;
@@ -8326,6 +8624,7 @@ function Sidebar({
   const grouped = import_react17.default.useMemo(() => {
     return groupSidebarAgents(filtered, grouping);
   }, [filtered, grouping]);
+  const familyPinIdsByMemberId = import_react17.default.useMemo(() => sidebarFamilyPinIdsByMemberId(grouped), [grouped]);
   const sectionNames = import_react17.default.useMemo(() => orderedSectionNames(grouped, grouping), [grouped, grouping]);
   const defaultCollapsedKey = import_react17.default.useMemo(
     () => JSON.stringify((grouping?.sections || []).map((section) => [section.name, section.collapsed === true])),
@@ -8337,6 +8636,14 @@ function Sidebar({
   );
   const subgroupCollapseStorageKey = import_react17.default.useMemo(
     () => sidebarStorageKey(SUBGROUP_COLLAPSE_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace]
+  );
+  const sectionOrderStorageKey = import_react17.default.useMemo(
+    () => sidebarStorageKey(SIDEBAR_SECTION_ORDER_STORAGE_PREFIX, storageNamespace),
+    [storageNamespace]
+  );
+  const subgroupOrderStorageKey = import_react17.default.useMemo(
+    () => sidebarStorageKey(SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX, storageNamespace),
     [storageNamespace]
   );
   const [collapsedSections, setCollapsedSections] = import_react17.default.useState(() => {
@@ -8351,10 +8658,127 @@ function Sidebar({
   import_react17.default.useEffect(() => {
     setCollapsedSubgroups(collapsedSubgroupsForStorage(subgroupCollapseStorageKey));
   }, [subgroupCollapseStorageKey]);
+  const [sectionOrder, setSectionOrder] = import_react17.default.useState(() => {
+    return readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || [];
+  });
+  import_react17.default.useEffect(() => {
+    setSectionOrder(readSidebarStringList(localSidebarStorage(), sectionOrderStorageKey) || []);
+  }, [sectionOrderStorageKey]);
+  const [subgroupOrder, setSubgroupOrder] = import_react17.default.useState(() => {
+    return readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || [];
+  });
+  import_react17.default.useEffect(() => {
+    setSubgroupOrder(readSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey) || []);
+  }, [subgroupOrderStorageKey]);
   const customSidebarButtons = import_react17.default.useMemo(
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
   );
+  const completeSectionDrop = import_react17.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id) => {
+    if (!draggedId || draggedId === target) return;
+    setSectionOrder((current) => {
+      const baseOrder = applySidebarOrder(sectionNames, current);
+      const next = reorderSidebarOrder(baseOrder, draggedId, target, where);
+      writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
+      return next;
+    });
+  }, [sectionNames, sectionOrderStorageKey]);
+  const subgroupIdsForBucket = import_react17.default.useCallback((bucket) => {
+    const list = grouped.get(bucket) || [];
+    const ids = list.map((row) => row.subgroup).filter((value) => Boolean(value)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
+    return Array.from(new Set(ids));
+  }, [grouped]);
+  const completeSubgroupDrop = import_react17.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
+    if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
+    setSubgroupOrder((current) => {
+      const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
+      const nextBucketOrder = reorderSidebarOrder(bucketOrder, draggedId, target, where);
+      const nextBucketSet = new Set(nextBucketOrder);
+      const next = [
+        ...current.filter((id) => !nextBucketSet.has(id)),
+        ...nextBucketOrder
+      ];
+      writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
+      return next;
+    });
+  }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
+  const beginPointerOrderDrag = import_react17.default.useCallback((event, item) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    pointerDragRef.current = {
+      ...item,
+      startX: event.clientX,
+      startY: event.clientY,
+      previewWidth: event.currentTarget.closest(".sidebar")?.getBoundingClientRect().width || event.currentTarget.getBoundingClientRect().width,
+      moved: false,
+      over: null
+    };
+    setDraggingOrder(item);
+    draggingOrderRef.current = item;
+  }, []);
+  const movePointerOrderDrag = import_react17.default.useCallback((event) => {
+    const drag = pointerDragRef.current;
+    if (!drag) return;
+    if (!drag.moved && Math.max(Math.abs(event.clientX - drag.startX), Math.abs(event.clientY - drag.startY)) < 4) return;
+    drag.moved = true;
+    event.preventDefault();
+    setDragPreview({
+      x: event.clientX,
+      y: event.clientY,
+      width: drag.previewWidth
+    });
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-sidebar-order-kind]");
+    if (!target) {
+      drag.over = null;
+      setDragOverOrder(null);
+      return;
+    }
+    const kind = target.dataset.sidebarOrderKind;
+    const id = target.dataset.sidebarOrderId;
+    const bucket = target.dataset.sidebarOrderBucket;
+    if (!kind || !id || kind !== drag.kind || id === drag.id || kind === "subgroup" && bucket !== drag.bucket) {
+      drag.over = null;
+      setDragOverOrder(null);
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    const where = event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+    drag.over = { id, bucket, where };
+    setDragOverOrder({ kind, id, where });
+  }, []);
+  const finishPointerOrderDrag = import_react17.default.useCallback(() => {
+    const drag = pointerDragRef.current;
+    if (!drag) return;
+    pointerDragRef.current = null;
+    if (drag.moved && drag.over) {
+      if (drag.kind === "section") {
+        completeSectionDrop(drag.over.id, drag.over.where, drag.id);
+      } else if (drag.over.bucket) {
+        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket);
+      }
+      suppressOrderClickRef.current = true;
+      window.setTimeout(() => {
+        suppressOrderClickRef.current = false;
+      }, 0);
+    }
+    draggingOrderRef.current = null;
+    setDraggingOrder(null);
+    setDragOverOrder(null);
+    setDragPreview(null);
+  }, [completeSectionDrop, completeSubgroupDrop]);
+  import_react17.default.useEffect(() => {
+    if (!draggingOrder) return void 0;
+    const onMove = (event) => movePointerOrderDrag(event);
+    const onDone = () => finishPointerOrderDrag();
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onDone);
+    window.addEventListener("pointercancel", onDone);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onDone);
+      window.removeEventListener("pointercancel", onDone);
+    };
+  }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
   const virtualRows = import_react17.default.useMemo(() => {
     return buildSidebarVirtualRows({
       sectionNames,
@@ -8363,9 +8787,11 @@ function Sidebar({
       collapsedSections,
       collapsedSubgroups,
       pinnedAgentIds,
+      sectionOrder,
+      subgroupOrder,
       searchActive: Boolean(q)
     });
-  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, q]);
+  }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
   const virtualOffsets = import_react17.default.useMemo(() => {
     const offsets = [];
     let total = 0;
@@ -8380,7 +8806,7 @@ function Sidebar({
   import_react17.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, listRef]);
+  }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
   const visibleRange = import_react17.default.useMemo(() => {
     if (virtualRows.length === 0) return { start: 0, end: 0 };
     const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
@@ -8392,6 +8818,10 @@ function Sidebar({
   const visibleRows = import_react17.default.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
+  );
+  const dragPreviewRows = import_react17.default.useMemo(
+    () => sidebarDragPreviewRows(virtualRows, draggingOrder),
+    [virtualRows, draggingOrder]
   );
   if (collapsed) {
     return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
@@ -8484,40 +8914,61 @@ function Sidebar({
             {
               className: `sidebar__virtual-row sidebar__virtual-row--${row.kind}`,
               style: { transform: `translateY(${top}px)`, height: `${height}px` },
-              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__section", "data-collapsed": row.collapsed ? "true" : void 0, children: /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
-                "button",
+              children: row.kind === "section" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+                "div",
                 {
-                  type: "button",
-                  className: "sidebar__sec-head sidebar__sec-head--button",
-                  "aria-expanded": !row.collapsed,
-                  onClick: () => {
-                    setCollapsedSections((current) => {
-                      const next = new Set(current);
-                      if (next.has(row.bucket)) next.delete(row.bucket);
-                      else next.add(row.bucket);
-                      writeSidebarStringSet(localSidebarStorage(), sectionCollapseStorageKey, next);
-                      return next;
-                    });
-                  },
-                  "data-testid": `sidebar-section-toggle:${row.bucket}`,
-                  children: [
-                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
-                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
-                    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
-                  ]
+                  className: "sidebar__section",
+                  "data-collapsed": row.collapsed ? "true" : void 0,
+                  "data-pinned": row.pinned ? "true" : void 0,
+                  "data-drag-over": dragOverOrder?.kind === "section" && dragOverOrder.id === row.bucket ? dragOverOrder.where : void 0,
+                  children: /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
+                    "button",
+                    {
+                      type: "button",
+                      className: `sidebar__sec-head sidebar__sec-head--button ${row.reorderable ? "sidebar__order-target" : ""}`,
+                      "aria-expanded": !row.collapsed,
+                      "data-sidebar-order-kind": row.reorderable ? "section" : void 0,
+                      "data-sidebar-order-id": row.reorderable ? row.bucket : void 0,
+                      "data-reorderable": row.reorderable ? "true" : void 0,
+                      onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "section", id: row.bucket }) : void 0,
+                      onClick: () => {
+                        if (suppressOrderClickRef.current) return;
+                        setCollapsedSections((current) => {
+                          const next = new Set(current);
+                          if (next.has(row.bucket)) next.delete(row.bucket);
+                          else next.add(row.bucket);
+                          writeSidebarStringSet(localSidebarStorage(), sectionCollapseStorageKey, next);
+                          return next;
+                        });
+                      },
+                      "data-testid": `sidebar-section-toggle:${row.bucket}`,
+                      children: [
+                        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-label", children: row.bucket }),
+                        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-spacer" }),
+                        /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
+                      ]
+                    }
+                  )
                 }
-              ) }) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
+              ) : row.kind === "empty" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__empty", "data-testid": `sidebar-section-empty:${row.bucket}`, children: [
                 row.sectionConfig?.empty_title ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__empty-title", children: row.sectionConfig.empty_title }) : null,
                 /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { children: row.sectionConfig?.empty_text || "No agents in this section." })
               ] }) : row.kind === "subgroup" ? /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)(
                 "button",
                 {
                   type: "button",
-                  className: "sidebar__subgroup sidebar__subgroup--button",
+                  className: `sidebar__subgroup sidebar__subgroup--button ${row.reorderable ? "sidebar__order-target" : ""}`,
                   "data-collapsed": row.collapsed ? "true" : void 0,
+                  "data-drag-over": dragOverOrder?.kind === "subgroup" && dragOverOrder.id === row.storageKey ? dragOverOrder.where : void 0,
                   "aria-expanded": !row.collapsed,
+                  "data-sidebar-order-kind": row.reorderable ? "subgroup" : void 0,
+                  "data-sidebar-order-id": row.reorderable ? row.storageKey : void 0,
+                  "data-sidebar-order-bucket": row.reorderable ? row.bucket : void 0,
+                  "data-reorderable": row.reorderable ? "true" : void 0,
                   "data-testid": `sidebar-subgroup-toggle:${row.bucket}:${row.label}`,
+                  onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : void 0,
                   onClick: () => {
+                    if (suppressOrderClickRef.current) return;
                     setCollapsedSubgroups((current) => {
                       const next = new Set(current);
                       if (next.has(row.storageKey)) next.delete(row.storageKey);
@@ -8532,13 +8983,35 @@ function Sidebar({
                     /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("span", { className: "sidebar__sec-count", children: row.count })
                   ]
                 }
-              ) : renderAgentRow(row.row, selectedMemberId, recentActivity, grouping, pinnedAgentIds, onSelect, onTogglePinnedAgent)
+              ) : renderAgentRow(
+                row.row,
+                selectedMemberId,
+                recentActivity,
+                grouping,
+                pinnedAgentIds,
+                onSelect,
+                onTogglePinnedAgent,
+                familyPinIdsByMemberId.get(row.row.agent.member_id)
+              )
             },
             row.key
           );
         }) })
       }
-    )
+    ),
+    dragPreview && dragPreviewRows.length > 0 ? /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+      "div",
+      {
+        className: "sidebar__drag-preview",
+        "data-testid": "sidebar-drag-preview",
+        style: {
+          width: `${Math.max(160, dragPreview.width)}px`,
+          transform: `translate3d(${dragPreview.x + 12}px, ${dragPreview.y + 12}px, 0)`
+        },
+        "aria-hidden": "true",
+        children: renderSidebarDragPreviewRows(dragPreviewRows)
+      }
+    ) : null
   ] });
 }
 
@@ -10763,13 +11236,14 @@ function ConsoleApp({ baseUrl }) {
     );
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
-  const togglePinnedAgent = import_react22.default.useCallback((agent) => {
+  const togglePinnedAgent = import_react22.default.useCallback((agent, renderedFamilyPinIds) => {
     const pinId = sidebarAgentPinId(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
-      if (next.has(pinId) || next.has(agent.member_id)) {
-        next.delete(pinId);
-        next.delete(agent.member_id);
+      const familyPinIds = renderedFamilyPinIds && renderedFamilyPinIds.size > 0 ? renderedFamilyPinIds : sidebarPinnedFamilyPinIds(agent, agents);
+      const familyPinned = Array.from(familyPinIds).some((id) => next.has(id));
+      if (next.has(pinId) || next.has(agent.member_id) || familyPinned) {
+        for (const id of familyPinIds) next.delete(id);
       } else {
         next.add(pinId);
       }
@@ -10780,7 +11254,7 @@ function ConsoleApp({ baseUrl }) {
       );
       return next;
     });
-  }, [sidebarPinsStorageKey]);
+  }, [agents, sidebarPinsStorageKey]);
   const [, setRenderTick] = import_react22.default.useState(0);
   const forceRender = import_react22.default.useCallback(() => setRenderTick((n) => n + 1), []);
   const stagedAttachmentsRef = import_react22.default.useRef(stagedAttachmentsByIdentity);

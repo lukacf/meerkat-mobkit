@@ -79,6 +79,7 @@ import {
   pruneStaleSidebarStorage,
   readSidebarStringSet,
   sidebarAgentPinId,
+  sidebarPinnedFamilyPinIds,
   sidebarStorageKey,
   writeSidebarStringSet,
   SIDEBAR_PINS_STORAGE_PREFIX,
@@ -521,16 +522,19 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     setPinnedAgentIds(stored ?? defaults);
   }, [defaultPinnedAgentIdsKey, experience?.console_config?.agent_list, sidebarPinsStorageKey]);
 
-  const togglePinnedAgent = React.useCallback((agent: ConsoleAgent) => {
+  const togglePinnedAgent = React.useCallback((agent: ConsoleAgent, renderedFamilyPinIds?: Set<string>) => {
     const pinId = sidebarAgentPinId(agent);
     setPinnedAgentIds((current) => {
       const next = new Set(current);
-      // Pins are matched on either the durable id or the volatile member_id, so
-      // unpinning must clear both forms; otherwise a default/legacy member_id
-      // pin would survive and the toggle would silently re-pin.
-      if (next.has(pinId) || next.has(agent.member_id)) {
-        next.delete(pinId);
-        next.delete(agent.member_id);
+      const familyPinIds = renderedFamilyPinIds && renderedFamilyPinIds.size > 0
+        ? renderedFamilyPinIds
+        : sidebarPinnedFamilyPinIds(agent, agents);
+      const familyPinned = Array.from(familyPinIds).some((id) => next.has(id));
+      // Pins are matched on either durable ids or volatile member_ids. When a
+      // descendant pin pulls an ancestor into Pinned for context, unpinning the
+      // ancestor should clear the visible pinned family instead of looking inert.
+      if (next.has(pinId) || next.has(agent.member_id) || familyPinned) {
+        for (const id of familyPinIds) next.delete(id);
       } else {
         next.add(pinId);
       }
@@ -541,7 +545,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       );
       return next;
     });
-  }, [sidebarPinsStorageKey]);
+  }, [agents, sidebarPinsStorageKey]);
 
   // --- Render trigger ---
   const [, setRenderTick] = React.useState(0);
