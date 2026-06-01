@@ -1,6 +1,9 @@
 [mob]
 id = "mdm-console"
 
+[backend.external]
+address_base = "mdm-console"
+
 [skills.mdm_protocol]
 source = "inline"
 content = """

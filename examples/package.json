@@ -9,6 +9,9 @@
   },
   "scripts": {
     "mdm:smoke": "tsx 004-mdm-console-pack/ts_smoke.ts",
-    "mdm:browser-smoke": "node 004-mdm-console-pack/browser_smoke.cjs"
+    "mdm:browser-smoke": "node 004-mdm-console-pack/browser_smoke.cjs",
+    "mdm:local-target": "004-mdm-console-pack/scripts/local-target.sh start",
+    "mdm:console": "004-mdm-console-pack/scripts/start-console.sh",
+    "mdm:gcp-target": "004-mdm-console-pack/scripts/gcp-target.sh start"
   }
 }

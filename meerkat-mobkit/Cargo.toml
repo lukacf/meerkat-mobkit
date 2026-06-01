@@ -69,6 +69,10 @@ integration-real-tests = []
 name = "incident_command_center"
 path = "../examples/001-incident-command-center-pack/server.rs"
 
+[[example]]
+name = "mdm_mob_target"
+path = "../examples/004-mdm-console-pack/target.rs"
+
 [dev-dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

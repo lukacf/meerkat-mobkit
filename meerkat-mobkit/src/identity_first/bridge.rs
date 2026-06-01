@@ -1,6 +1,7 @@
 //! Session bridge: connects the identity-first control plane to the Meerkat
 //! session pipeline for real session creation, delivery, and retirement.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -277,8 +278,10 @@ pub struct MemberInspection {
 
 /// Concrete `SessionBridge` backed by a `MobHandle`.
 ///
-/// `AgentRuntimeId` is used as the `MeerkatId` at the mob layer — the runtime
-/// ID IS the member's mob-level identifier.
+/// `AgentRuntimeId` is usually used as the `MeerkatId` at the mob layer. Real
+/// external bindings are the exception: Meerkat's external peer names require
+/// identifier-safe `<mob>/<profile>/<member>` segments, so the bridge maps the
+/// runtime ID to the durable identity for those members.
 pub struct MobSessionBridge {
     handle: MobHandle,
     /// Session store used for checkpoint (loading session data to serialize).
@@ -287,6 +290,7 @@ pub struct MobSessionBridge {
     session_service: Option<Arc<dyn MobSessionService>>,
     /// Continuity-backed session store, when installed by the identity-first builder.
     continuity_session_store: Option<Arc<ContinuitySessionStoreAdapter>>,
+    runtime_members: Arc<tokio::sync::RwLock<HashMap<String, String>>>,
 }
 
 impl MobSessionBridge {
@@ -297,6 +301,7 @@ impl MobSessionBridge {
             session_store: None,
             session_service: None,
             continuity_session_store: None,
+            runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -310,6 +315,7 @@ impl MobSessionBridge {
             session_store: None,
             session_service: Some(session_service),
             continuity_session_store: None,
+            runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -323,6 +329,7 @@ impl MobSessionBridge {
             session_store: Some(session_store),
             session_service: None,
             continuity_session_store: None,
+            runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -337,6 +344,7 @@ impl MobSessionBridge {
             session_store: Some(session_store),
             session_service: Some(session_service),
             continuity_session_store: None,
+            runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
     }
 
@@ -351,7 +359,46 @@ impl MobSessionBridge {
             session_store: Some(session_store.clone()),
             session_service,
             continuity_session_store: Some(session_store),
+            runtime_members: Arc::new(tokio::sync::RwLock::new(HashMap::new())),
         }
+    }
+
+    async fn remember_runtime_member(&self, runtime_id: &AgentRuntimeId, member_id: &MeerkatId) {
+        self.runtime_members.write().await.insert(
+            runtime_id.as_str().to_string(),
+            member_id.as_str().to_string(),
+        );
+    }
+
+    async fn forget_runtime_member(&self, runtime_id: &AgentRuntimeId) {
+        self.runtime_members
+            .write()
+            .await
+            .remove(runtime_id.as_str());
+    }
+
+    async fn member_id_for_runtime_id(&self, runtime_id: &AgentRuntimeId) -> MeerkatId {
+        let members = self.runtime_members.read().await;
+        members
+            .get(runtime_id.as_str())
+            .map(|member| MeerkatId::from(member.as_str()))
+            .unwrap_or_else(|| MeerkatId::from(runtime_id.as_str()))
+    }
+}
+
+fn spec_uses_external_binding(spec: &DurableAgentSpec) -> bool {
+    matches!(spec.backend, Some(meerkat_mob::MobBackendKind::External))
+        || matches!(
+            spec.binding.as_ref(),
+            Some(meerkat_contracts::WireRuntimeBinding::External { .. })
+        )
+}
+
+fn member_id_for_spawn_spec(runtime_id: &AgentRuntimeId, spec: &DurableAgentSpec) -> MeerkatId {
+    if spec_uses_external_binding(spec) {
+        MeerkatId::from(spec.identity.as_str())
+    } else {
+        MeerkatId::from(runtime_id.as_str())
     }
 }
 
@@ -361,7 +408,7 @@ pub(crate) fn build_spawn_spec(
     spec: &DurableAgentSpec,
     draft: &AgentBuildDraft,
 ) -> SpawnMemberSpec {
-    let mid = MeerkatId::from(runtime_id.as_str());
+    let mid = member_id_for_spawn_spec(runtime_id, spec);
     let mut spawn_spec = SpawnMemberSpec::new(spec.profile.clone(), mid);
 
     if let Some(message) = spec.initial_message.as_ref() {
@@ -435,13 +482,14 @@ impl SessionBridge for MobSessionBridge {
         draft: &AgentBuildDraft,
         session_id: &meerkat_core::types::SessionId,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let mid = MeerkatId::from(runtime_id.as_str());
+        let mid = member_id_for_spawn_spec(runtime_id, spec);
         let spawn_spec = build_spawn_spec(runtime_id, spec, draft);
 
         self.handle
             .spawn_spec(spawn_spec)
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))?;
+        self.remember_runtime_member(runtime_id, &mid).await;
 
         let actual_session_id = self
             .handle
@@ -468,10 +516,15 @@ impl SessionBridge for MobSessionBridge {
             bridge_session_id: session_id.clone(),
         };
 
+        let mid = member_id_for_spawn_spec(runtime_id, spec);
+
         match self.handle.spawn_spec(spawn_spec).await {
-            Ok(_) => Ok(ResumeSessionOutcome::Resumed {
-                session_id: session_id.clone(),
-            }),
+            Ok(_) => {
+                self.remember_runtime_member(runtime_id, &mid).await;
+                Ok(ResumeSessionOutcome::Resumed {
+                    session_id: session_id.clone(),
+                })
+            }
             Err(e) => {
                 // Resume can fail if the old session's comms identity is still
                 // claimed (e.g., in-process restart where the previous mob actor
@@ -489,7 +542,7 @@ impl SessionBridge for MobSessionBridge {
                     .await
                     .map_err(|e2| BridgeError::Mob(e2.to_string()))?;
 
-                let mid = MeerkatId::from(runtime_id.as_str());
+                self.remember_runtime_member(runtime_id, &mid).await;
                 let session_id = self
                     .handle
                     .resolve_bridge_session_id(&mid)
@@ -514,7 +567,7 @@ impl SessionBridge for MobSessionBridge {
         runtime_id: &AgentRuntimeId,
         content: &meerkat_core::ContentInput,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let mid = MeerkatId::from(runtime_id.as_str());
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
         let member_entry_before_delivery = self.handle.get_member(&mid).await;
         if content_input_has_images(content) {
             let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
@@ -590,7 +643,7 @@ impl SessionBridge for MobSessionBridge {
         content: &meerkat_core::ContentInput,
         handling_mode: HandlingMode,
     ) -> Result<meerkat_core::types::SessionId, BridgeError> {
-        let mid = MeerkatId::from(runtime_id.as_str());
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
         let member_entry_before_delivery = self.handle.get_member(&mid).await;
         if content_input_has_images(content) {
             let member_entry = self.handle.get_member(&mid).await.ok_or_else(|| {
@@ -680,19 +733,24 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn retire_member(&self, runtime_id: &AgentRuntimeId) -> Result<(), BridgeError> {
-        let mid = MeerkatId::from(runtime_id.as_str());
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
         match self.handle.retire(mid).await {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.forget_runtime_member(runtime_id).await;
+                Ok(())
+            }
             Err(err) if is_recoverable_lifecycle_cleanup_error(&err.to_string()) => Ok(()),
             Err(err) => Err(BridgeError::Mob(err.to_string())),
         }
     }
 
     async fn wire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
+        let member_a = self.member_id_for_runtime_id(a).await;
+        let member_b = self.member_id_for_runtime_id(b).await;
         self.handle
             .wire(
-                meerkat_mob::AgentIdentity::from(a.as_str()),
-                MeerkatId::from(b.as_str()),
+                meerkat_mob::AgentIdentity::from(member_a.as_str()),
+                member_b,
             )
             .await
             .map_err(|e| BridgeError::Mob(e.to_string()))
@@ -702,13 +760,17 @@ impl SessionBridge for MobSessionBridge {
         &self,
         edges: &[(AgentRuntimeId, AgentRuntimeId)],
     ) -> Result<(), BridgeError> {
+        let mut member_edges = Vec::with_capacity(edges.len());
+        for (a, b) in edges {
+            let member_a = self.member_id_for_runtime_id(a).await;
+            let member_b = self.member_id_for_runtime_id(b).await;
+            member_edges.push((
+                meerkat_mob::AgentIdentity::from(member_a.as_str()),
+                meerkat_mob::AgentIdentity::from(member_b.as_str()),
+            ));
+        }
         self.handle
-            .wire_members_batch(edges.iter().map(|(a, b)| {
-                (
-                    meerkat_mob::AgentIdentity::from(a.as_str()),
-                    meerkat_mob::AgentIdentity::from(b.as_str()),
-                )
-            }))
+            .wire_members_batch(member_edges)
             .await
             .map(|_| ())
             .map_err(|e| BridgeError::Mob(e.to_string()))
@@ -718,6 +780,11 @@ impl SessionBridge for MobSessionBridge {
         &self,
     ) -> Result<Vec<(AgentRuntimeId, AgentRuntimeId)>, BridgeError> {
         let members = self.handle.list_members_including_retiring().await;
+        let runtime_members = self.runtime_members.read().await;
+        let member_runtimes = runtime_members
+            .iter()
+            .map(|(runtime, member)| (member.clone(), runtime.clone()))
+            .collect::<HashMap<_, _>>();
         let active_ids = members
             .iter()
             .map(|member| member.agent_identity.to_string())
@@ -741,6 +808,8 @@ impl SessionBridge for MobSessionBridge {
         Ok(edges
             .into_iter()
             .filter_map(|(a, b)| {
+                let a = member_runtimes.get(&a).cloned().unwrap_or(a);
+                let b = member_runtimes.get(&b).cloned().unwrap_or(b);
                 Some((
                     AgentRuntimeId::parse(&a).ok()?,
                     AgentRuntimeId::parse(&b).ok()?,
@@ -750,11 +819,13 @@ impl SessionBridge for MobSessionBridge {
     }
 
     async fn unwire_peer(&self, a: &AgentRuntimeId, b: &AgentRuntimeId) -> Result<(), BridgeError> {
+        let member_a = self.member_id_for_runtime_id(a).await;
+        let member_b = self.member_id_for_runtime_id(b).await;
         match self
             .handle
             .unwire(
-                meerkat_mob::AgentIdentity::from(a.as_str()),
-                MeerkatId::from(b.as_str()),
+                meerkat_mob::AgentIdentity::from(member_a.as_str()),
+                member_b,
             )
             .await
         {
@@ -774,7 +845,7 @@ impl SessionBridge for MobSessionBridge {
         &self,
         runtime_id: &AgentRuntimeId,
     ) -> Result<MemberInspection, BridgeError> {
-        let mid = MeerkatId::from(runtime_id.as_str());
+        let mid = self.member_id_for_runtime_id(runtime_id).await;
         let snap = self
             .handle
             .member_status(&mid)
@@ -954,6 +1025,7 @@ mod tests {
 
         let spawn = build_spawn_spec(&runtime_id, &spec, &draft);
 
+        assert_eq!(spawn.identity.as_str(), "agent:alpha");
         assert_eq!(spawn.backend, Some(meerkat_mob::MobBackendKind::External));
         assert!(
             matches!(

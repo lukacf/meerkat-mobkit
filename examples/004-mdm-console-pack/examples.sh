@@ -15,11 +15,20 @@ case "$command" in
   --browser-smoke)
     npm run mdm:browser-smoke
     ;;
+  --local-target)
+    004-mdm-console-pack/scripts/local-target.sh start "$@"
+    ;;
+  --gcp-target)
+    004-mdm-console-pack/scripts/gcp-target.sh start "$@"
+    ;;
+  --console)
+    004-mdm-console-pack/scripts/start-console.sh "$@"
+    ;;
   --run)
     npx tsx 004-mdm-console-pack/run.ts --demo-llm --wait "$@"
     ;;
   *)
-    echo "Usage: $0 [--smoke|--browser-smoke|--run --targets <target-bindings.json>]" >&2
+    echo "Usage: $0 [--smoke|--browser-smoke|--local-target|--gcp-target|--console|--run --targets <target-bindings.json>]" >&2
     exit 2
     ;;
 esac
