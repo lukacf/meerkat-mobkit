@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use futures::stream::{self, StreamExt};
 use meerkat_core::types::{HandlingMode, SessionId};
-use tokio::sync::{Mutex, RwLock, broadcast};
+use tokio::sync::{Mutex, Notify, RwLock, broadcast};
 use tokio::task::JoinHandle;
 
 use super::bridge::SessionBridge;
@@ -331,6 +331,7 @@ pub struct IdentityRuntime {
     materialization_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     lifecycle_locks: RwLock<BTreeMap<AgentIdentity, Arc<Mutex<()>>>>,
     customizer: RwLock<Option<Arc<dyn AgentCustomizer>>>,
+    lease_renewal_notify: Notify,
     default_timeout: Duration,
 }
 
@@ -353,6 +354,7 @@ impl IdentityRuntime {
             materialization_locks: RwLock::new(BTreeMap::new()),
             lifecycle_locks: RwLock::new(BTreeMap::new()),
             customizer: RwLock::new(None),
+            lease_renewal_notify: Notify::new(),
             default_timeout: config.default_timeout.unwrap_or(Duration::from_secs(90)),
         }
     }
@@ -386,8 +388,11 @@ impl IdentityRuntime {
         let max_poll_interval = max_poll_interval.max(DEFAULT_LEASE_RENEWAL_MIN_POLL_INTERVAL);
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(self.lease_renewal_sleep_interval(max_poll_interval).await)
-                    .await;
+                let sleep = self.lease_renewal_sleep_interval(max_poll_interval).await;
+                tokio::select! {
+                    () = tokio::time::sleep(sleep) => {}
+                    () = self.lease_renewal_notify.notified() => {}
+                }
                 if let Err(err) = self.renew_due_leases_once().await {
                     tracing::warn!(
                         error = %err,
@@ -430,6 +435,8 @@ impl IdentityRuntime {
         let mut renewed = 0;
         let mut first_error = None;
         for identity in due {
+            let lifecycle_lock = self.lifecycle_lock_for(&identity).await;
+            let _lifecycle_guard = lifecycle_lock.lock().await;
             match self.ensure_active_lease(&identity).await {
                 Ok(_) => renewed += 1,
                 Err(err) => {
@@ -693,11 +700,19 @@ impl IdentityRuntime {
             checkpoint_version: cpv,
             has_runtime_store: self.has_runtime_store,
         };
+        let has_active_lease =
+            entry.state == IdentityLifecycleState::Active && entry.lease.is_some();
         self.entries.write().await.insert(identity.clone(), entry);
 
         // Create event channel for this identity
         let (tx, _) = broadcast::channel(IDENTITY_EVENT_CHANNEL_CAPACITY);
-        self.event_channels.write().await.insert(identity, tx);
+        self.event_channels
+            .write()
+            .await
+            .insert(identity.clone(), tx);
+        if has_active_lease {
+            self.lease_renewal_notify.notify_one();
+        }
     }
 
     async fn materialization_lock_for(&self, identity: &AgentIdentity) -> Arc<Mutex<()>> {
@@ -1384,6 +1399,7 @@ impl IdentityRuntime {
             acquired_at: Instant::now(),
         });
         drop(entries);
+        self.lease_renewal_notify.notify_one();
         self.emit_event(
             identity,
             IdentityEvent::LeaseUpdated {
@@ -1435,6 +1451,9 @@ impl IdentityRuntime {
             .ok_or_else(|| IdentityRuntimeError::UnknownIdentity(identity.clone()))?;
         entry.state = state;
         drop(entries);
+        if state == IdentityLifecycleState::Active {
+            self.lease_renewal_notify.notify_one();
+        }
         self.emit_event(
             identity,
             IdentityEvent::StateChanged {
@@ -1543,6 +1562,7 @@ impl IdentityRuntime {
             None => return Err(IdentityRuntimeError::NoActiveLease(identity.clone())),
         }
         drop(entries);
+        self.lease_renewal_notify.notify_one();
 
         self.emit_event(
             identity,
@@ -1614,6 +1634,9 @@ impl IdentityRuntime {
             entry.lease = restore_live_lease.then(|| Self::lease_entry_from_grant(grant));
         }
         self.restore_entry(identity, entry).await;
+        if restore_live_lease {
+            self.lease_renewal_notify.notify_one();
+        }
     }
 
     pub(crate) async fn refresh_active_restore_grant(
