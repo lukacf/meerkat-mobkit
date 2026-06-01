@@ -151,6 +151,46 @@ test("sidebar configured grouping keeps spawned investigation workers under thei
   );
 });
 
+test("sidebar configured subgroups inherit from parents so children stay under their parent subgroup", () => {
+  const parent: ConsoleAgent = {
+    agent_id: "initiative:parent",
+    member_id: "initiative:parent",
+    identity: "initiative:parent",
+    label: "Parent Initiative",
+    kind: "mob_agent",
+    role: "initiative",
+    group: "initiatives",
+    labels: {
+      group: "initiatives",
+      scope_id: "parent-scope",
+    },
+    wired_to: ["initiative:child"],
+  };
+  const child: ConsoleAgent = {
+    agent_id: "initiative:child",
+    member_id: "initiative:child",
+    identity: "initiative:child",
+    label: "Child Worker",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    labels: {
+      group: "workers",
+      scope_id: "child-scope",
+    },
+    wired_to: ["initiative:parent"],
+  };
+  const grouped = __sidebarTest.groupSidebarAgents([child, parent], ob3Grouping);
+
+  assert.deepEqual(
+    grouped.get("initiatives")?.map((row) => [row.agent.member_id, row.subgroup, row.depth]),
+    [
+      ["initiative:parent", "parent-scope", 0],
+      ["initiative:child", "parent-scope", 1],
+    ],
+  );
+});
+
 test("sidebar resolves worker-spawned workers from implicit delegate parent refs", () => {
   const commander: ConsoleAgent = {
     agent_id: "incident-commander",
@@ -494,6 +534,32 @@ test("sidebar subgroup collapse state persists through storage", () => {
   );
 });
 
+test("sidebar exact order preferences persist through storage without sorting", () => {
+  const storage = new MemoryStorage();
+  const sectionOrderKey = __sidebarTest.sidebarStorageKey(
+    __sidebarTest.SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+    "runtime-a",
+  );
+  const subgroupOrderKey = __sidebarTest.sidebarStorageKey(
+    __sidebarTest.SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
+    "runtime-a",
+  );
+  const subgroupBeta = __sidebarTest.sidebarSubgroupStorageId("initiatives", "beta");
+  const subgroupAlpha = __sidebarTest.sidebarSubgroupStorageId("initiatives", "alpha");
+
+  __sidebarTest.writeSidebarStringList(storage, sectionOrderKey, ["recipients", "workers", "initiatives"]);
+  __sidebarTest.writeSidebarStringList(storage, subgroupOrderKey, [subgroupBeta, subgroupAlpha]);
+
+  assert.deepEqual(
+    __sidebarTest.readSidebarStringList(storage, sectionOrderKey),
+    ["recipients", "workers", "initiatives"],
+  );
+  assert.deepEqual(
+    __sidebarTest.readSidebarStringList(storage, subgroupOrderKey),
+    [subgroupBeta, subgroupAlpha],
+  );
+});
+
 test("sidebar search expands section and subgroup matches without mutating saved collapse state", () => {
   const agents = [
     ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
@@ -515,7 +581,7 @@ test("sidebar search expands section and subgroup matches without mutating saved
   assert.equal(collapsedSubgroups.has(__sidebarTest.sidebarSubgroupStorageId("initiatives", "cto")), true);
 });
 
-test("sidebar pinned agents sort first inside their configured subgroup only", () => {
+test("sidebar pinned agents render in a special Pinned section and leave their configured section", () => {
   const agents = [
     ob3Agent({ id: "initiative-alpha", label: "Alpha", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:alpha" }),
     ob3Agent({ id: "initiative-beta", label: "Beta", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:beta" }),
@@ -526,11 +592,182 @@ test("sidebar pinned agents sort first inside their configured subgroup only", (
   });
 
   assert.deepEqual(
+    rows.filter((row) => row.kind === "section").map((row) => [row.bucket, row.count]),
+    [
+      ["Pinned", 2],
+      ["initiatives", 1],
+    ],
+  );
+  assert.deepEqual(
     rows.filter((row) => row.kind === "agent").map((row) => [row.bucket, row.row.subgroup, row.row.agent.identity]),
     [
-      ["initiatives", "cto", "initiative:beta"],
+      ["Pinned", "cto", "initiative:beta"],
+      ["Pinned", "liveops", "initiative:gamma"],
       ["initiatives", "cto", "initiative:alpha"],
-      ["initiatives", "liveops", "initiative:gamma"],
+    ],
+  );
+});
+
+test("sidebar keeps pinned child agents under their parent by moving the visible hierarchy to Pinned", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "incident-commander",
+    member_id: "incident-commander",
+    identity: "incident-commander",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["qa-parent-worker"],
+  };
+  const parentWorker: ConsoleAgent = {
+    agent_id: "qa-parent-worker",
+    member_id: "qa-parent-worker",
+    identity: "qa-parent-worker",
+    label: "qa-parent-worker",
+    kind: "mob_agent",
+    role: "delegate",
+    group: "worker",
+    wired_to: ["incident-commander", "qa-child-worker"],
+  };
+  const childWorker: ConsoleAgent = {
+    agent_id: "qa-child-worker",
+    member_id: "qa-child-worker",
+    identity: "qa-child-worker",
+    label: "qa-child-worker",
+    kind: "mob_agent",
+    role: "delegate",
+    group: "worker",
+    wired_to: ["qa-parent-worker"],
+  };
+  const grouped = __sidebarTest.groupSidebarAgents([childWorker, commander, parentWorker]);
+  const rows = __sidebarTest.buildSidebarVirtualRows({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped),
+    grouped,
+    collapsedSections: new Set(),
+    collapsedSubgroups: new Set(),
+    pinnedAgentIds: new Set(["qa-child-worker"]),
+  });
+
+  assert.deepEqual(
+    rows.filter((row) => row.kind === "agent").map((row) => [row.bucket, row.row.agent.member_id, row.row.depth]),
+    [
+      ["Pinned", "incident-commander", 0],
+      ["Pinned", "qa-parent-worker", 1],
+      ["Pinned", "qa-child-worker", 2],
+    ],
+  );
+});
+
+test("sidebar pinned family ids let an ancestor clear descendant pins that keep it in Pinned", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "incident-commander",
+    member_id: "incident-commander",
+    identity: "incident-commander",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["qa-parent-worker"],
+  };
+  const parentWorker: ConsoleAgent = {
+    agent_id: "qa-parent-worker",
+    member_id: "qa-parent-worker",
+    identity: "qa-parent-worker",
+    label: "qa-parent-worker",
+    kind: "mob_agent",
+    role: "delegate",
+    group: "worker",
+    wired_to: ["incident-commander", "qa-child-worker"],
+  };
+  const childWorker: ConsoleAgent = {
+    agent_id: "qa-child-worker",
+    member_id: "qa-child-worker",
+    identity: "qa-child-worker",
+    label: "qa-child-worker",
+    kind: "mob_agent",
+    role: "delegate",
+    group: "worker",
+    wired_to: ["qa-parent-worker"],
+  };
+
+  assert.deepEqual(
+    Array.from(__sidebarTest.sidebarPinnedFamilyPinIds(commander, [childWorker, commander, parentWorker])).sort(),
+    [
+      "incident-commander",
+      "qa-child-worker",
+      "qa-parent-worker",
+    ],
+  );
+});
+
+test("sidebar Pinned section can be collapsed and search temporarily expands it", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-alpha", label: "Alpha", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:alpha" }),
+    ob3Agent({ id: "initiative-beta", label: "Beta", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:beta" }),
+  ];
+  const collapsed = virtualRowsForAgents(agents, {
+    pinnedAgentIds: new Set(["initiative:beta"]),
+    collapsedSections: new Set(["Pinned"]),
+  });
+
+  assert.deepEqual(
+    collapsed.map((row) => row.kind === "section" ? [row.kind, row.bucket, row.collapsed] : [row.kind, row.bucket]),
+    [
+      ["section", "Pinned", true],
+      ["section", "initiatives", false],
+      ["agent", "initiatives"],
+    ],
+  );
+
+  const searchExpanded = virtualRowsForAgents(agents, {
+    pinnedAgentIds: new Set(["initiative:beta"]),
+    collapsedSections: new Set(["Pinned"]),
+    searchActive: true,
+  });
+  assert.deepEqual(
+    searchExpanded.filter((row) => row.kind === "agent").map((row) => [row.bucket, row.row.agent.identity]),
+    [
+      ["Pinned", "initiative:beta"],
+      ["initiatives", "initiative:alpha"],
+    ],
+  );
+});
+
+test("sidebar moves children with a pinned parent so subagents remain under the parent", () => {
+  const commander: ConsoleAgent = {
+    agent_id: "incident-commander",
+    member_id: "incident-commander",
+    identity: "incident-commander",
+    label: "Incident Commander",
+    kind: "mob_agent",
+    role: "commander",
+    group: "Coordinators",
+    wired_to: ["qa-worker"],
+  };
+  const worker: ConsoleAgent = {
+    agent_id: "qa-worker",
+    member_id: "qa-worker",
+    identity: "qa-worker",
+    label: "qa-worker",
+    kind: "mob_agent",
+    role: "worker",
+    group: "worker",
+    wired_to: ["incident-commander"],
+  };
+  const grouped = __sidebarTest.groupSidebarAgents([worker, commander]);
+  const rows = __sidebarTest.buildSidebarVirtualRows({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped),
+    grouped,
+    collapsedSections: new Set(),
+    collapsedSubgroups: new Set(),
+    pinnedAgentIds: new Set(["incident-commander"]),
+  });
+
+  assert.deepEqual(
+    rows.filter((row) => row.kind === "agent").map((row) => [row.bucket, row.row.agent.member_id, row.row.depth]),
+    [
+      ["Pinned", "incident-commander", 0],
+      ["Pinned", "qa-worker", 1],
     ],
   );
 });
@@ -602,6 +839,87 @@ test("sidebar configured OB3-like grouping yields configured sections and scope 
       ["member:initiative-game-production", "game-production"],
       ["member:initiative-liveops", "liveops"],
     ],
+  );
+});
+
+test("sidebar applies persisted section and subgroup drag order without moving Pinned from the top", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    ob3Agent({ id: "initiative-cto-two", label: "Second CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    ob3Agent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
+    ob3Agent({ id: "recipient-cto", label: "CTO Recipient", group: "recipients", scope: "cto", role: "recipient" }),
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const rows = __sidebarTest.buildSidebarVirtualRows({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set(),
+    collapsedSubgroups: new Set(),
+    pinnedAgentIds: new Set(["initiative:cto"]),
+    sectionOrder: ["recipients", "workers", "initiatives"],
+    subgroupOrder: [
+      __sidebarTest.sidebarSubgroupStorageId("initiatives", "liveops"),
+      __sidebarTest.sidebarSubgroupStorageId("initiatives", "cto"),
+    ],
+  });
+
+  assert.deepEqual(
+    rows.filter((row) => row.kind === "section").map((row) => row.bucket),
+    ["Pinned", "recipients", "workers", "initiatives"],
+  );
+  assert.deepEqual(
+    rows
+      .filter((row) => row.kind === "subgroup" && row.bucket === "initiatives")
+      .map((row) => row.label),
+    ["liveops", "cto"],
+  );
+});
+
+test("sidebar drag preview includes the dragged category or subgroup tree", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-alpha", label: "Alpha Initiative", group: "initiatives", scope: "alpha", role: "initiative" }),
+    ob3Agent({ id: "worker-alpha", label: "Alpha Worker", group: "workers", scope: "alpha", role: "worker" }),
+    ob3Agent({ id: "initiative-beta", label: "Beta Initiative", group: "initiatives", scope: "beta", role: "initiative" }),
+    ob3Agent({ id: "recipient-beta", label: "Beta Recipient", group: "recipients", scope: "beta", role: "recipient" }),
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const rows = __sidebarTest.buildSidebarVirtualRows({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set(),
+    collapsedSubgroups: new Set(),
+  });
+
+  assert.deepEqual(
+    __sidebarTest.sidebarDragPreviewRows(rows, { kind: "section", id: "initiatives" })
+      .map((row) => row.kind === "agent" ? row.row.agent.member_id : `${row.kind}:${row.kind === "subgroup" ? row.label : row.bucket}`),
+    [
+      "section:initiatives",
+      "subgroup:alpha",
+      "member:initiative-alpha",
+      "subgroup:beta",
+      "member:initiative-beta",
+    ],
+  );
+  assert.deepEqual(
+    __sidebarTest.sidebarDragPreviewRows(rows, {
+      kind: "subgroup",
+      id: __sidebarTest.sidebarSubgroupStorageId("initiatives", "alpha"),
+      bucket: "initiatives",
+    }).map((row) => row.kind === "agent" ? row.row.agent.member_id : `${row.kind}:${row.kind === "subgroup" ? row.label : row.bucket}`),
+    ["subgroup:alpha", "member:initiative-alpha"],
+  );
+});
+
+test("sidebar reorder helper preserves unknown new categories at the end", () => {
+  const current = __sidebarTest.applySidebarOrder(["alpha", "beta", "gamma"], ["gamma", "alpha"]);
+  assert.deepEqual(current, ["gamma", "alpha", "beta"]);
+  assert.deepEqual(
+    __sidebarTest.reorderSidebarOrder(current, "beta", "gamma", "before"),
+    ["beta", "gamma", "alpha"],
   );
 });
 
