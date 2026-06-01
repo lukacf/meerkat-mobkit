@@ -2986,15 +2986,18 @@ pub async fn send_message_on_mob_with_mode(
         .await?
         .send(content, handling_mode)
         .await?;
-    let session_id = handle
-        .resolve_bridge_session_id(&mid)
-        .await
-        .ok_or_else(|| {
-            MobRuntimeError::Mob(MobError::Internal(
-                "member has no bridge session after send".to_string(),
-            ))
-        })?;
-    Ok(session_id.to_string())
+    if let Some(session_id) = handle.resolve_bridge_session_id(&mid).await {
+        return Ok(session_id.to_string());
+    }
+
+    let status = handle.member_status(&mid).await?;
+    if status.external_member.is_some() {
+        return Ok(String::new());
+    }
+
+    Err(MobRuntimeError::Mob(MobError::Internal(
+        "member has no bridge session after send".to_string(),
+    )))
 }
 
 #[cfg(test)]

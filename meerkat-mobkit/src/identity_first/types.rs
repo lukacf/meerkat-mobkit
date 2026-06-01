@@ -569,6 +569,10 @@ pub struct DurableAgentSpec {
     pub initial_message: Option<meerkat_core::ContentInput>,
     #[serde(default)]
     pub runtime_mode_override: Option<meerkat_mob::MobRuntimeMode>,
+    #[serde(default)]
+    pub backend: Option<meerkat_mob::MobBackendKind>,
+    #[serde(default)]
+    pub binding: Option<meerkat_contracts::WireRuntimeBinding>,
 }
 
 // ---------------------------------------------------------------------------

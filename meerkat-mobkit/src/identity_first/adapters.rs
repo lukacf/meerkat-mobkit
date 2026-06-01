@@ -64,6 +64,8 @@ pub fn agent_discovery_to_durable(
         additional_instructions: spec.additional_instructions.clone(),
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     })
 }
 
@@ -535,9 +537,11 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     .await?;
             }
             None => {
-                return Err(meerkat_store::SessionStoreError::Internal(format!(
-                    "authoritative projection requires registered identity runtime state for session {sid_str}"
-                )));
+                let mut pending = self
+                    .pending_unregistered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.insert(sid_str, data);
             }
         }
         Ok(())
@@ -564,9 +568,14 @@ impl meerkat::SessionStore for ContinuitySessionStoreAdapter {
                     .await?;
                 Ok(())
             }
-            None => Err(meerkat_store::SessionStoreError::Internal(format!(
-                "authoritative projection requires registered identity runtime state for session {sid_str}"
-            ))),
+            None => {
+                let mut pending = self
+                    .pending_unregistered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                pending.insert(sid_str, data);
+                Ok(())
+            }
         }
     }
 
@@ -1404,25 +1413,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuity_session_store_adapter_rejects_unregistered_authoritative_projection() {
+    async fn continuity_session_store_adapter_queues_unregistered_authoritative_projection() {
         let store = Arc::new(LocalContinuityStore::in_memory().expect("store"));
-        let adapter = ContinuitySessionStoreAdapter::new(store);
+        let adapter = ContinuitySessionStoreAdapter::new(store.clone());
         let session = meerkat_core::Session::new();
 
-        let err = meerkat::SessionStore::save_authoritative_projection(&adapter, &session)
+        meerkat::SessionStore::save_authoritative_projection(&adapter, &session)
             .await
-            .expect_err("unregistered authoritative projection must fail closed");
-        assert!(
-            err.to_string()
-                .contains("requires registered identity runtime state"),
-            "unexpected error: {err}"
-        );
+            .expect("create-time authoritative projection should queue before registration");
         assert!(
             meerkat::SessionStore::load(&adapter, session.id())
                 .await
                 .expect("load")
                 .is_none(),
-            "failed authoritative projection must not queue a later-visible pending row"
+            "pending authoritative projection must stay invisible until registration"
+        );
+
+        let identity = AgentIdentity::parse("agent:queued").expect("identity");
+        let record = ContinuityRecord {
+            identity: identity.clone(),
+            agent_runtime_id: AgentRuntimeId::parse("rt:agent:queued:0").expect("runtime id"),
+            session_id: session.id().clone(),
+            generation: ContinuityGeneration::new(0),
+            checkpoint_version: CheckpointVersion::new(0),
+        };
+        let fencing_token = FencingToken::new(7);
+        store
+            .upsert_continuity_record(&record, fencing_token)
+            .await
+            .expect("seed record");
+        adapter
+            .register_session(
+                session.id(),
+                SessionRuntimeState {
+                    identity,
+                    generation: record.generation,
+                    fencing_token,
+                    checkpoint_version: record.checkpoint_version,
+                },
+            )
+            .await
+            .expect("register flushes pending authoritative projection");
+        assert!(
+            meerkat::SessionStore::load(&adapter, session.id())
+                .await
+                .expect("load after register")
+                .is_some(),
+            "registration must flush the pending authoritative projection"
         );
     }
 

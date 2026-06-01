@@ -15,6 +15,7 @@ Numbered packs are intentionally browser-first and can include:
 - `001-incident-command-center-pack`
 - `002-foresight-studio-pack`
 - `003-swarm-stress-pack`
+- `004-mdm-console-pack`
 
 Run the first pack with:
 
@@ -40,4 +41,13 @@ Run the third pack's browser-driven real Gemini stress smoke with a 300-agent ba
 
 ```bash
 ./003-swarm-stress-pack/examples.sh --browser-smoke
+```
+
+Run the MDM console pack's local target smoke:
+
+```bash
+npm run mdm:smoke
+npm run mdm:auth-smoke
+npm run mdm:browser-smoke
+npm run mdm:docker-smoke
 ```

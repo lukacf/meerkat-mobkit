@@ -351,6 +351,8 @@ fn identity_first_types_durable_agent_spec_roundtrip() {
         additional_instructions: vec!["Be helpful.".to_string()],
         initial_message: None,
         runtime_mode_override: None,
+        backend: None,
+        binding: None,
     };
     let json = serde_json::to_string(&spec).expect("serialize");
     let back: DurableAgentSpec = serde_json::from_str(&json).expect("deserialize");
@@ -676,6 +678,8 @@ fn identity_first_types_topology_context_roundtrip() {
             additional_instructions: vec![],
             initial_message: None,
             runtime_mode_override: None,
+            backend: None,
+            binding: None,
         }],
     };
     let json = serde_json::to_string(&ctx).expect("serialize");

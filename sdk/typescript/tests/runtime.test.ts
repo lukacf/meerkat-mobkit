@@ -629,6 +629,16 @@ describe("MobHandle.ensureMember()", () => {
       context: { foo: "bar" },
       resumeSessionId: "sess-old",
       additionalInstructions: ["Be nice"],
+      runtimeMode: "turn_driven",
+      backend: "external",
+      binding: {
+        kind: "external",
+        address: "tcp://127.0.0.1:4799",
+        identity: {
+          kind: "ed25519_public_key",
+          public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+        },
+      },
     });
 
     assert.equal(calls[0].method, "mobkit/ensure_member");
@@ -638,6 +648,16 @@ describe("MobHandle.ensureMember()", () => {
     assert.deepEqual(calls[0].params!.context, { foo: "bar" });
     assert.equal(calls[0].params!.resume_session_id, "sess-old");
     assert.deepEqual(calls[0].params!.additional_instructions, ["Be nice"]);
+    assert.equal(calls[0].params!.runtime_mode, "turn_driven");
+    assert.equal(calls[0].params!.backend, "external");
+    assert.deepEqual(calls[0].params!.binding, {
+      kind: "external",
+      address: "tcp://127.0.0.1:4799",
+      identity: {
+        kind: "ed25519_public_key",
+        public_key: "ed25519:BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=",
+      },
+    });
     assert.equal(result.agentIdentity, "m-1");
     assert.equal(result.role, "assistant");
     assert.equal(result.state, "active");

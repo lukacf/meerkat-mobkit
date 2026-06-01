@@ -1189,6 +1189,9 @@ export interface DurableAgentSpec {
   readonly labels: Readonly<Record<string, string>>;
   readonly context: unknown | null;
   readonly additionalInstructions: readonly string[];
+  readonly runtimeModeOverride?: "autonomous_host" | "turn_driven" | null;
+  readonly backend?: "session" | "external" | null;
+  readonly binding?: Readonly<Record<string, unknown>> | null;
 }
 
 export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
@@ -1201,6 +1204,16 @@ export function parseDurableAgentSpec(raw: unknown): DurableAgentSpec {
     labels: asStringRecord(d.labels),
     context: d.context !== undefined && d.context !== null ? d.context : null,
     additionalInstructions: asStringArray(d.additional_instructions),
+    runtimeModeOverride:
+      d.runtime_mode_override === "autonomous_host" || d.runtime_mode_override === "turn_driven"
+        ? d.runtime_mode_override
+        : null,
+    backend:
+      d.backend === "session" || d.backend === "external" ? d.backend : null,
+    binding:
+      d.binding != null && typeof d.binding === "object"
+        ? { ...(d.binding as Record<string, unknown>) }
+        : null,
   };
 }
 
@@ -1218,6 +1231,11 @@ export function durableAgentSpecToDict(
   if (spec.additionalInstructions.length > 0) {
     result.additional_instructions = [...spec.additionalInstructions];
   }
+  if (spec.runtimeModeOverride) {
+    result.runtime_mode_override = spec.runtimeModeOverride;
+  }
+  if (spec.backend) result.backend = spec.backend;
+  if (spec.binding) result.binding = { ...spec.binding };
   return result;
 }
 
