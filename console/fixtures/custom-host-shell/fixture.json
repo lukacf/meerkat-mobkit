@@ -1,0 +1,45 @@
+{
+  "name": "custom-host-shell",
+  "models": "custom host navigation with selected MobKit components",
+  "rendererTransport": {
+    "kind": "host-adapter",
+    "directBrowserRpc": false,
+    "rawRuntimeCalls": false,
+    "preservesTypedErrors": true,
+    "preservesCursors": true,
+    "preservesBlobs": true
+  },
+  "hostRecords": [
+    {
+      "kind": "host/project",
+      "id": "project:alpha",
+      "title": "Project Alpha",
+      "mobkitTarget": {
+        "kind": "mobkit/identity-chat",
+        "id": "chat:identity:project-alpha",
+        "identity": "identity:project-alpha"
+      }
+    },
+    {
+      "kind": "host/thread",
+      "id": "thread:alpha:plan",
+      "title": "Planning Thread",
+      "mobkitTarget": {
+        "kind": "mobkit/identity-chat",
+        "id": "chat:identity:thread-alpha-plan",
+        "identity": "identity:thread-alpha-plan"
+      }
+    }
+  ],
+  "hostNavigation": {
+    "orientation": "horizontal",
+    "records": ["project:alpha", "thread:alpha:plan"],
+    "bindsMobKitTargets": true
+  },
+  "mobkitComponents": [
+    "ConsoleDock",
+    "ConsoleComposer",
+    "ConversationPane",
+    "ConversationTranscript"
+  ]
+}

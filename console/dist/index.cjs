@@ -1462,6 +1462,119 @@ function buildConsoleDockViewState(state, options = {}) {
   };
 }
 
+// ../packages/console-core/src/sidebar-preferences.ts
+var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
+var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
+var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
+var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
+var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+var SIDEBAR_STORAGE_PREFIXES = [
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX
+];
+function sidebarStorageKey(prefix, namespace) {
+  return `${prefix}:${namespace?.trim() || "default"}`;
+}
+function readSidebarStringSet(storage, key) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
+    return new Set(parsed.filter((value) => typeof value === "string" && value.trim().length > 0));
+  } catch {
+    return null;
+  }
+}
+function writeSidebarStringSet(storage, key, value) {
+  if (!storage) return;
+  try {
+    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+  } catch {
+  }
+}
+function readSidebarStringList(storage, key) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const value of parsed) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+function writeSidebarStringList(storage, key, value) {
+  if (!storage) return;
+  try {
+    const seen = /* @__PURE__ */ new Set();
+    const normalized = value.map((item) => item.trim()).filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+    storage.setItem(key, JSON.stringify(normalized));
+  } catch {
+  }
+}
+function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
+  if (!storage) return;
+  try {
+    const scopePrefix = encodeURIComponent(scope.trim());
+    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
+    const stale = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (!key || activeKeys.has(key)) continue;
+      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
+        stale.push(key);
+      }
+    }
+    for (const key of stale) storage.removeItem(key);
+  } catch {
+  }
+}
+function applyConsoleSidebarOrder(items, storedOrder) {
+  const available = new Set(items);
+  const seen = /* @__PURE__ */ new Set();
+  const ordered = [];
+  for (const item of storedOrder || []) {
+    if (!available.has(item) || seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
+  return ordered;
+}
+function reorderConsoleSidebarOrder(items, dragged, target, where) {
+  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
+  const withoutDragged = items.filter((item) => item !== dragged);
+  const targetIndex = withoutDragged.indexOf(target);
+  if (targetIndex < 0) return items;
+  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
+  const next = [...withoutDragged];
+  next.splice(insertAt, 0, dragged);
+  return next;
+}
+
 // ../packages/console-core/src/format.ts
 function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
@@ -4613,6 +4726,25 @@ function errorMessage(error) {
   return String(error);
 }
 
+// src/lib/contract.ts
+var CONSOLE_REST_PATHS = {
+  experience: "/console/experience",
+  modules: "/console/modules",
+  timeline: "/console/timeline",
+  timelineStream: "/console/timeline/stream"
+};
+var CONSOLE_RPC_PATHS = {
+  jsonRpc: "/console/rpc",
+  multipartJsonRpc: "/console/rpc/multipart"
+};
+var CONSOLE_RPC_METHODS = {
+  capabilities: "mobkit/capabilities",
+  send: "mobkit/console/send",
+  queryTimeline: "mobkit/console/query_timeline",
+  blobUpload: "mobkit/blob/upload"
+};
+var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013;
+
 // src/lib/network.ts
 function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
@@ -4772,7 +4904,7 @@ async function fetchJson(baseUrl, path, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOU
   }
 }
 async function rpc(baseUrl, method, params) {
-  const response = await fetch(`${baseUrl}/console/rpc`, {
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -4795,7 +4927,7 @@ async function rpc(baseUrl, method, params) {
       throw error;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
-    if (replayError || result.error.code === -32013) {
+    if (replayError || result.error.code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
       const error = new Error(
         `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`
       );
@@ -4828,8 +4960,8 @@ async function sendConsoleMultipart(baseUrl, identity, message, attachments, ori
   });
   form.append("payload", JSON.stringify({
     jsonrpc: "2.0",
-    id: `mobkit/console/send:${Date.now()}`,
-    method: "mobkit/console/send",
+    id: `${CONSOLE_RPC_METHODS.send}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.send,
     params: {
       identity,
       content,
@@ -4838,17 +4970,17 @@ async function sendConsoleMultipart(baseUrl, identity, message, attachments, ori
       handling_mode: handlingMode
     }
   }));
-  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
     method: "POST",
     body: form
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}: ${text}`);
   }
   const result = await response.json();
   if (result.error) {
-    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return normalizeConsoleTimelineAccepted(result.result, identity);
 }
@@ -5025,7 +5157,7 @@ function flushTrailingSseBlock(buffer, onFrame) {
   }
 }
 async function queryTimeline(baseUrl, target, limit = 400) {
-  const result = await rpc(baseUrl, "mobkit/console/query_timeline", {
+  const result = await rpc(baseUrl, CONSOLE_RPC_METHODS.queryTimeline, {
     limit,
     ...target.identity?.trim() ? { identity: target.identity.trim() } : {},
     ...target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {},
@@ -5047,7 +5179,7 @@ async function queryTimeline(baseUrl, target, limit = 400) {
   };
 }
 async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue") {
-  const accepted = await rpc(baseUrl, "mobkit/console/send", {
+  const accepted = await rpc(baseUrl, CONSOLE_RPC_METHODS.send, {
     identity,
     content,
     origin,
@@ -5055,7 +5187,7 @@ async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, h
     handling_mode: handlingMode
   });
   if (!accepted || typeof accepted !== "object") {
-    throw new Error("mobkit/console/send returned an invalid acceptance payload");
+    throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
   }
   const record = accepted;
   return normalizeConsoleTimelineAccepted(record, identity);
@@ -5079,7 +5211,7 @@ function timelineStreamPath(target) {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+  return `${CONSOLE_REST_PATHS.timelineStream}${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 function cursorFromTimelineFrame(frame) {
   const cursor = frame.cursor?.trim();
@@ -7739,98 +7871,13 @@ var SIDEBAR_ROW_HEIGHT = {
   agent: 72
 };
 var SIDEBAR_OVERSCAN_PX = 360;
-var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
-var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
-var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
-var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
-var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
 var PINNED_SECTION_NAME = "Pinned";
-var SIDEBAR_STORAGE_PREFIXES = [
-  SIDEBAR_PINS_STORAGE_PREFIX,
-  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
-  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
-  SECTION_COLLAPSE_STORAGE_PREFIX,
-  SUBGROUP_COLLAPSE_STORAGE_PREFIX
-];
-function sidebarStorageKey(prefix, namespace) {
-  return `${prefix}:${namespace?.trim() || "default"}`;
-}
-function readSidebarStringSet(storage, key) {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
-    return new Set(parsed.filter((value) => typeof value === "string" && value.trim().length > 0));
-  } catch {
-    return null;
-  }
-}
-function writeSidebarStringSet(storage, key, value) {
-  if (!storage) return;
-  try {
-    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
-  } catch {
-  }
-}
-function readSidebarStringList(storage, key) {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const seen = /* @__PURE__ */ new Set();
-    const out = [];
-    for (const value of parsed) {
-      if (typeof value !== "string") continue;
-      const trimmed = value.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      out.push(trimmed);
-    }
-    return out;
-  } catch {
-    return null;
-  }
-}
-function writeSidebarStringList(storage, key, value) {
-  if (!storage) return;
-  try {
-    const seen = /* @__PURE__ */ new Set();
-    const normalized = value.map((item) => item.trim()).filter((item) => {
-      if (!item || seen.has(item)) return false;
-      seen.add(item);
-      return true;
-    });
-    storage.setItem(key, JSON.stringify(normalized));
-  } catch {
-  }
-}
 function localSidebarStorage() {
   if (typeof window === "undefined") return null;
   try {
     return window.localStorage;
   } catch {
     return null;
-  }
-}
-function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
-  if (!storage) return;
-  try {
-    const scopePrefix = encodeURIComponent(scope.trim());
-    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
-    const stale = [];
-    for (let i = 0; i < storage.length; i += 1) {
-      const key = storage.key(i);
-      if (!key || activeKeys.has(key)) continue;
-      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
-        stale.push(key);
-      }
-    }
-    for (const key of stale) storage.removeItem(key);
-  } catch {
   }
 }
 function isWorkerish(a) {
@@ -8178,32 +8225,6 @@ function collapsedSubgroupsForStorage(storageKey, storage = localSidebarStorage(
 function sidebarSubgroupStorageId(bucket, subgroup) {
   return JSON.stringify([bucket, subgroup]);
 }
-function applySidebarOrder(items, storedOrder) {
-  const available = new Set(items);
-  const seen = /* @__PURE__ */ new Set();
-  const ordered = [];
-  for (const item of storedOrder || []) {
-    if (!available.has(item) || seen.has(item)) continue;
-    ordered.push(item);
-    seen.add(item);
-  }
-  for (const item of items) {
-    if (seen.has(item)) continue;
-    ordered.push(item);
-    seen.add(item);
-  }
-  return ordered;
-}
-function reorderSidebarOrder(items, dragged, target, where) {
-  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
-  const withoutDragged = items.filter((item) => item !== dragged);
-  const targetIndex = withoutDragged.indexOf(target);
-  if (targetIndex < 0) return items;
-  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
-  const next = [...withoutDragged];
-  next.splice(insertAt, 0, dragged);
-  return next;
-}
 function collectPinnedRows(rows, pinnedAgentIds) {
   const pinned = /* @__PURE__ */ new Set();
   if (!pinnedAgentIds || pinnedAgentIds.size === 0) return pinned;
@@ -8241,7 +8262,7 @@ function orderRowsBySubgroupOrder(rows, bucket, subgroupOrder) {
   if (rows.length <= 1) return rows;
   const orderIndex = new Map(rows.map((row, index) => [row.agent.member_id, index]));
   const defaultSubgroups = rows.map((row) => row.subgroup).filter((value) => Boolean(value));
-  const subgroupIds = applySidebarOrder(
+  const subgroupIds = applyConsoleSidebarOrder(
     Array.from(new Set(defaultSubgroups)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup)),
     subgroupOrder
   );
@@ -8301,7 +8322,7 @@ function sidebarFamilyPinIdsByMemberId(grouped) {
 }
 function buildSidebarVirtualRows(args) {
   const rows = [];
-  const orderedSections = applySidebarOrder(args.sectionNames, args.sectionOrder);
+  const orderedSections = applyConsoleSidebarOrder(args.sectionNames, args.sectionOrder);
   const baseRows = orderedSections.flatMap((bucket) => args.grouped.get(bucket) || []);
   const baseOrderIndex = new Map(baseRows.map((row, index) => [row.agent.member_id, index]));
   const pinnedRowIds = collectPinnedRows(baseRows, args.pinnedAgentIds);
@@ -8490,6 +8511,23 @@ function lowerBound(values, needle) {
   }
   return lo;
 }
+function sidebarVirtualOffsets(rows) {
+  const offsets = [];
+  let total = 0;
+  for (const row of rows) {
+    offsets.push(total);
+    total += virtualRowHeight(row);
+  }
+  return { offsets, total };
+}
+function sidebarVisibleRange(args) {
+  if (args.rowCount === 0) return { start: 0, end: 0 };
+  const startNeedle = Math.max(0, args.scrollTop - SIDEBAR_OVERSCAN_PX);
+  const endNeedle = Math.min(args.total, args.scrollTop + Math.max(1, args.listHeight) + SIDEBAR_OVERSCAN_PX);
+  const start = Math.max(0, lowerBound(args.offsets, startNeedle) - 1);
+  const end = Math.min(args.rowCount, lowerBound(args.offsets, endNeedle) + 1);
+  return { start, end };
+}
 function useMeasuredHeight() {
   const ref = import_react17.default.useRef(null);
   const [height, setHeight] = import_react17.default.useState(0);
@@ -8677,8 +8715,8 @@ function Sidebar({
   const completeSectionDrop = import_react17.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id) => {
     if (!draggedId || draggedId === target) return;
     setSectionOrder((current) => {
-      const baseOrder = applySidebarOrder(sectionNames, current);
-      const next = reorderSidebarOrder(baseOrder, draggedId, target, where);
+      const baseOrder = applyConsoleSidebarOrder(sectionNames, current);
+      const next = reorderConsoleSidebarOrder(baseOrder, draggedId, target, where);
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
@@ -8691,8 +8729,8 @@ function Sidebar({
   const completeSubgroupDrop = import_react17.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
     setSubgroupOrder((current) => {
-      const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
-      const nextBucketOrder = reorderSidebarOrder(bucketOrder, draggedId, target, where);
+      const bucketOrder = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), current);
+      const nextBucketOrder = reorderConsoleSidebarOrder(bucketOrder, draggedId, target, where);
       const nextBucketSet = new Set(nextBucketOrder);
       const next = [
         ...current.filter((id) => !nextBucketSet.has(id)),
@@ -8792,29 +8830,20 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
-  const virtualOffsets = import_react17.default.useMemo(() => {
-    const offsets = [];
-    let total = 0;
-    for (const row of virtualRows) {
-      offsets.push(total);
-      total += virtualRowHeight(row);
-    }
-    return { offsets, total };
-  }, [virtualRows]);
+  const virtualOffsets = import_react17.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
   const [scrollTop, setScrollTop] = import_react17.default.useState(0);
   import_react17.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
-  const visibleRange = import_react17.default.useMemo(() => {
-    if (virtualRows.length === 0) return { start: 0, end: 0 };
-    const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
-    const endNeedle = Math.min(virtualOffsets.total, scrollTop + Math.max(1, listHeight) + SIDEBAR_OVERSCAN_PX);
-    const start = Math.max(0, lowerBound(virtualOffsets.offsets, startNeedle) - 1);
-    const end = Math.min(virtualRows.length, lowerBound(virtualOffsets.offsets, endNeedle) + 1);
-    return { start, end };
-  }, [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
+  const visibleRange = import_react17.default.useMemo(() => sidebarVisibleRange({
+    rowCount: virtualRows.length,
+    offsets: virtualOffsets.offsets,
+    total: virtualOffsets.total,
+    scrollTop,
+    listHeight
+  }), [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
   const visibleRows = import_react17.default.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]

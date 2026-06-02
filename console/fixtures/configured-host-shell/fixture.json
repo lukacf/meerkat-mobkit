@@ -1,0 +1,27 @@
+{
+  "name": "configured-host-shell",
+  "models": "configured stock console in a host shell",
+  "consoleToml": "config/console.toml",
+  "hostToolbarActions": [
+    {
+      "id": "reset-project-cache",
+      "label": "Reset Cache",
+      "provenance": "host-adapter",
+      "requiresConfirmation": true,
+      "postRoute": "/host/actions/reset-project-cache"
+    }
+  ],
+  "sidebarButtons": {
+    "mutationSemantics": false,
+    "allowedFields": ["id", "label", "href", "target", "control", "icon_name"]
+  },
+  "directRouteProtectionWhenMobKitAuthDisabled": {
+    "/console": "host-proxy",
+    "/console/assets/console-app.js": "host-proxy",
+    "/console/rpc": "host-proxy",
+    "/console/rpc/multipart": "host-proxy",
+    "/console/timeline": "host-proxy",
+    "/console/timeline/stream": "host-proxy",
+    "/blobs/{blob_id}": "host-proxy"
+  }
+}

@@ -2,7 +2,11 @@
 
 `console-components` owns the reusable React surfaces for the shared console UI.
 
-## Stable public exports
+## Workspace-stable exports
+
+This package is currently private to the MobKit console workspace. The exports
+below are the curated internal surface used by local console code and proving
+fixtures; they are not an npm-public API promise.
 
 Components:
 
@@ -82,6 +86,8 @@ The most useful overrides are:
 - Shared components do not import app stores, Electron APIs, or network code.
 - `useConsoleDockController` owns dock layout, tabs, splits, focus, and target placement only.
 - Hosts keep panel-local session state outside the shared hook.
+- External hosts must not depend on the private `@console-components` package
+  name until MobKit makes an explicit public-package or SDK-subpath decision.
 
 ## Minimal recipe
 

@@ -1,4 +1,21 @@
 import React from "react";
+import {
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX,
+  applyConsoleSidebarOrder as applySidebarOrder,
+  pruneStaleSidebarStorage,
+  readSidebarStringList,
+  readSidebarStringSet,
+  reorderConsoleSidebarOrder as reorderSidebarOrder,
+  sidebarStorageKey,
+  writeSidebarStringList,
+  writeSidebarStringSet,
+  type ConsoleSidebarDropPosition,
+  type ConsoleSidebarStorageLike,
+} from "@console-core";
 import type {
   ConsoleAgent,
   ConsoleAgentListConfig,
@@ -9,6 +26,19 @@ import { Icon } from "../icon";
 import { isAgentPinned, sidebarAgentPinId } from "../lib/adapters";
 
 export { sidebarAgentPinId } from "../lib/adapters";
+export {
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX,
+  pruneStaleSidebarStorage,
+  readSidebarStringList,
+  readSidebarStringSet,
+  sidebarStorageKey,
+  writeSidebarStringList,
+  writeSidebarStringSet,
+};
 
 export type NavKind = "topology" | "timeline" | "gating" | "roster" | "routing" | "logs" | "health";
 
@@ -101,134 +131,14 @@ const SIDEBAR_ROW_HEIGHT = {
 } as const;
 
 const SIDEBAR_OVERSCAN_PX = 360;
-export const SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
-export const SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
-export const SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
-const SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
-const SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
 const PINNED_SECTION_NAME = "Pinned";
 
-/** Every localStorage prefix the sidebar owns, used for namespace pruning. */
-const SIDEBAR_STORAGE_PREFIXES = [
-  SIDEBAR_PINS_STORAGE_PREFIX,
-  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
-  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
-  SECTION_COLLAPSE_STORAGE_PREFIX,
-  SUBGROUP_COLLAPSE_STORAGE_PREFIX,
-] as const;
-
-interface SidebarStorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-}
-
-interface SidebarEnumerableStorage {
-  readonly length: number;
-  key(index: number): string | null;
-  removeItem(key: string): void;
-}
-
-export function sidebarStorageKey(prefix: string, namespace: string | undefined): string {
-  return `${prefix}:${namespace?.trim() || "default"}`;
-}
-
-export function readSidebarStringSet(storage: SidebarStorageLike | null | undefined, key: string): Set<string> | null {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return new Set();
-    return new Set(parsed.filter((value): value is string => typeof value === "string" && value.trim().length > 0));
-  } catch {
-    return null;
-  }
-}
-
-export function writeSidebarStringSet(storage: SidebarStorageLike | null | undefined, key: string, value: Set<string>): void {
-  if (!storage) return;
-  try {
-    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
-  } catch {
-    /* ignore */
-  }
-}
-
-export function readSidebarStringList(storage: SidebarStorageLike | null | undefined, key: string): string[] | null {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const value of parsed) {
-      if (typeof value !== "string") continue;
-      const trimmed = value.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      out.push(trimmed);
-    }
-    return out;
-  } catch {
-    return null;
-  }
-}
-
-export function writeSidebarStringList(storage: SidebarStorageLike | null | undefined, key: string, value: string[]): void {
-  if (!storage) return;
-  try {
-    const seen = new Set<string>();
-    const normalized = value
-      .map((item) => item.trim())
-      .filter((item) => {
-        if (!item || seen.has(item)) return false;
-        seen.add(item);
-        return true;
-      });
-    storage.setItem(key, JSON.stringify(normalized));
-  } catch {
-    /* ignore */
-  }
-}
-
-function localSidebarStorage(): SidebarStorageLike | null {
+function localSidebarStorage(): ConsoleSidebarStorageLike | null {
   if (typeof window === "undefined") return null;
   try {
     return window.localStorage;
   } catch {
     return null;
-  }
-}
-
-/**
- * Remove sidebar preference keys that belong to the current scope but a stale
- * config-identity namespace. The namespace embeds a hash of the grouping
- * config, so editing the config orphans the previous keys; this keeps the
- * current scope from accumulating dead entries while preserving the keys of
- * other runtimes/scopes.
- */
-export function pruneStaleSidebarStorage(
-  storage: SidebarEnumerableStorage | null | undefined,
-  scope: string,
-  activeNamespace: string,
-): void {
-  if (!storage) return;
-  try {
-    const scopePrefix = encodeURIComponent(scope.trim());
-    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
-    const stale: string[] = [];
-    for (let i = 0; i < storage.length; i += 1) {
-      const key = storage.key(i);
-      if (!key || activeKeys.has(key)) continue;
-      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
-        stale.push(key);
-      }
-    }
-    for (const key of stale) storage.removeItem(key);
-  } catch {
-    /* ignore */
   }
 }
 
@@ -357,6 +267,8 @@ export const __sidebarTest = {
   sidebarSubgroupStorageId,
   buildSidebarVirtualRows,
   sidebarDragPreviewRows,
+  sidebarVirtualOffsets,
+  sidebarVisibleRange,
   applySidebarOrder,
   reorderSidebarOrder,
   isAgentPinned,
@@ -668,14 +580,14 @@ function defaultCollapsedSections(config?: ConsoleAgentListConfig): Set<string> 
 function collapsedSectionsForStorage(
   config: ConsoleAgentListConfig | undefined,
   storageKey: string,
-  storage: SidebarStorageLike | null | undefined = localSidebarStorage(),
+  storage: ConsoleSidebarStorageLike | null | undefined = localSidebarStorage(),
 ): Set<string> {
   return readSidebarStringSet(storage, storageKey) ?? defaultCollapsedSections(config);
 }
 
 function collapsedSubgroupsForStorage(
   storageKey: string,
-  storage: SidebarStorageLike | null | undefined = localSidebarStorage(),
+  storage: ConsoleSidebarStorageLike | null | undefined = localSidebarStorage(),
 ): Set<string> {
   return readSidebarStringSet(storage, storageKey) ?? new Set();
 }
@@ -684,40 +596,7 @@ function sidebarSubgroupStorageId(bucket: string, subgroup: string): string {
   return JSON.stringify([bucket, subgroup]);
 }
 
-export type SidebarDropPosition = "before" | "after";
-
-function applySidebarOrder(items: string[], storedOrder: string[] | null | undefined): string[] {
-  const available = new Set(items);
-  const seen = new Set<string>();
-  const ordered: string[] = [];
-  for (const item of storedOrder || []) {
-    if (!available.has(item) || seen.has(item)) continue;
-    ordered.push(item);
-    seen.add(item);
-  }
-  for (const item of items) {
-    if (seen.has(item)) continue;
-    ordered.push(item);
-    seen.add(item);
-  }
-  return ordered;
-}
-
-function reorderSidebarOrder(
-  items: string[],
-  dragged: string,
-  target: string,
-  where: SidebarDropPosition,
-): string[] {
-  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
-  const withoutDragged = items.filter((item) => item !== dragged);
-  const targetIndex = withoutDragged.indexOf(target);
-  if (targetIndex < 0) return items;
-  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
-  const next = [...withoutDragged];
-  next.splice(insertAt, 0, dragged);
-  return next;
-}
+export type SidebarDropPosition = ConsoleSidebarDropPosition;
 
 function collectPinnedRows(rows: AgentRow[], pinnedAgentIds: Set<string> | undefined): Set<string> {
   const pinned = new Set<string>();
@@ -1040,6 +919,31 @@ function lowerBound(values: number[], needle: number): number {
     else hi = mid;
   }
   return lo;
+}
+
+function sidebarVirtualOffsets(rows: SidebarVirtualRow[]): { offsets: number[]; total: number } {
+  const offsets: number[] = [];
+  let total = 0;
+  for (const row of rows) {
+    offsets.push(total);
+    total += virtualRowHeight(row);
+  }
+  return { offsets, total };
+}
+
+function sidebarVisibleRange(args: {
+  rowCount: number;
+  offsets: number[];
+  total: number;
+  scrollTop: number;
+  listHeight: number;
+}): { start: number; end: number } {
+  if (args.rowCount === 0) return { start: 0, end: 0 };
+  const startNeedle = Math.max(0, args.scrollTop - SIDEBAR_OVERSCAN_PX);
+  const endNeedle = Math.min(args.total, args.scrollTop + Math.max(1, args.listHeight) + SIDEBAR_OVERSCAN_PX);
+  const start = Math.max(0, lowerBound(args.offsets, startNeedle) - 1);
+  const end = Math.min(args.rowCount, lowerBound(args.offsets, endNeedle) + 1);
+  return { start, end };
 }
 
 function useMeasuredHeight<T extends HTMLElement>(): [React.RefObject<T>, number] {
@@ -1389,29 +1293,20 @@ export function Sidebar({
       searchActive: Boolean(q),
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
-  const virtualOffsets = React.useMemo(() => {
-    const offsets: number[] = [];
-    let total = 0;
-    for (const row of virtualRows) {
-      offsets.push(total);
-      total += virtualRowHeight(row);
-    }
-    return { offsets, total };
-  }, [virtualRows]);
+  const virtualOffsets = React.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight<HTMLDivElement>();
   const [scrollTop, setScrollTop] = React.useState(0);
   React.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
-  const visibleRange = React.useMemo(() => {
-    if (virtualRows.length === 0) return { start: 0, end: 0 };
-    const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
-    const endNeedle = Math.min(virtualOffsets.total, scrollTop + Math.max(1, listHeight) + SIDEBAR_OVERSCAN_PX);
-    const start = Math.max(0, lowerBound(virtualOffsets.offsets, startNeedle) - 1);
-    const end = Math.min(virtualRows.length, lowerBound(virtualOffsets.offsets, endNeedle) + 1);
-    return { start, end };
-  }, [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
+  const visibleRange = React.useMemo(() => sidebarVisibleRange({
+    rowCount: virtualRows.length,
+    offsets: virtualOffsets.offsets,
+    total: virtualOffsets.total,
+    scrollTop,
+    listHeight,
+  }), [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
   const visibleRows = React.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange],

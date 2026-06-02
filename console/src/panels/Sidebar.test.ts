@@ -497,6 +497,31 @@ test("sidebar section collapse storage overrides config defaults after first loa
   );
 });
 
+test("sidebar storage namespace separates configured defaults from persisted user preferences", () => {
+  const storage = new MemoryStorage();
+  const grouping = {
+    sections: [
+      { name: "initiatives", collapsed: true },
+      { name: "workers", collapsed: false },
+    ],
+  };
+  const runtimeAKey = __sidebarTest.sidebarStorageKey("sections", "runtime-a:hash");
+  const runtimeBKey = __sidebarTest.sidebarStorageKey("sections", "runtime-b:hash");
+
+  __sidebarTest.writeSidebarStringSet(storage, runtimeAKey, new Set(["workers"]));
+
+  assert.deepEqual(
+    Array.from(__sidebarTest.collapsedSectionsForStorage(grouping, runtimeAKey, storage)).sort(),
+    ["workers"],
+    "persisted user preference wins in its namespace",
+  );
+  assert.deepEqual(
+    Array.from(__sidebarTest.collapsedSectionsForStorage(grouping, runtimeBKey, storage)).sort(),
+    ["initiatives"],
+    "unrelated namespace still uses configured defaults",
+  );
+});
+
 test("sidebar subgroup headers render and can remove their agents when collapsed", () => {
   const agents = [
     ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
@@ -912,6 +937,45 @@ test("sidebar drag preview includes the dragged category or subgroup tree", () =
     }).map((row) => row.kind === "agent" ? row.row.agent.member_id : `${row.kind}:${row.kind === "subgroup" ? row.label : row.bucket}`),
     ["subgroup:alpha", "member:initiative-alpha"],
   );
+});
+
+test("sidebar virtualization computes stable visible ranges with overscan", () => {
+  const agents = Array.from({ length: 80 }, (_, index) => ob3Agent({
+    id: `initiative-${index}`,
+    label: `Initiative ${index}`,
+    group: "initiatives",
+    scope: index % 2 === 0 ? "cto" : "liveops",
+    role: "initiative",
+  }));
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const rows = __sidebarTest.buildSidebarVirtualRows({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set(),
+    collapsedSubgroups: new Set(),
+  });
+  const offsets = __sidebarTest.sidebarVirtualOffsets(rows);
+  const topRange = __sidebarTest.sidebarVisibleRange({
+    rowCount: rows.length,
+    offsets: offsets.offsets,
+    total: offsets.total,
+    scrollTop: 0,
+    listHeight: 160,
+  });
+  const lowerRange = __sidebarTest.sidebarVisibleRange({
+    rowCount: rows.length,
+    offsets: offsets.offsets,
+    total: offsets.total,
+    scrollTop: 2400,
+    listHeight: 160,
+  });
+
+  assert.equal(topRange.start, 0);
+  assert.equal(topRange.end < rows.length, true);
+  assert.equal(lowerRange.start > topRange.start, true);
+  assert.equal(lowerRange.end <= rows.length, true);
+  assert.equal(lowerRange.end > lowerRange.start, true);
 });
 
 test("sidebar reorder helper preserves unknown new categories at the end", () => {

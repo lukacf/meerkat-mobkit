@@ -115,6 +115,32 @@ export {
 } from "./dock";
 
 export type {
+  ConsoleNavigationAction,
+  ConsoleNavigationGroup,
+  ConsoleNavigationItem,
+  ConsoleNavigationMeta,
+  ConsoleNavigationModel,
+  ConsoleNavigationMoveInput,
+  ConsoleNavigationMovePosition,
+  ConsoleNavigationMoveResult,
+  ConsoleNavigationNode,
+  ConsoleNavigationNodeType,
+  ConsoleNavigationOrderState,
+  ConsoleNavigationOrientation,
+  ConsoleNavigationSourceRef,
+} from "./navigation";
+export {
+  canMoveConsoleNavigationNode,
+  consoleNavigationFromSidebarViewState,
+  consoleNavigationToSidebarViewState,
+  moveConsoleNavigationNode,
+  normalizeConsoleNavigationModel,
+  pinConsoleNavigationNode,
+  selectConsoleNavigationNode,
+  toggleConsoleNavigationGroup,
+} from "./navigation";
+
+export type {
   ConsoleSidebarAction,
   ConsoleSidebarBlock,
   ConsoleSidebarBlockKind,
@@ -125,6 +151,28 @@ export type {
   ConsoleSidebarViewState,
 } from "./sidebar";
 export { normalizeConsoleSidebarViewState } from "./sidebar";
+
+export type {
+  ConsoleSidebarDropPosition,
+  ConsoleSidebarEnumerableStorage,
+  ConsoleSidebarStorageLike,
+} from "./sidebar-preferences";
+export {
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_STORAGE_PREFIXES,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX,
+  applyConsoleSidebarOrder,
+  pruneStaleSidebarStorage,
+  readSidebarStringList,
+  readSidebarStringSet,
+  reorderConsoleSidebarOrder,
+  sidebarStorageKey,
+  writeSidebarStringList,
+  writeSidebarStringSet,
+} from "./sidebar-preferences";
 
 export type {
   ConsoleActivityAction,
@@ -176,3 +224,16 @@ export {
   formatCount,
   formatRelativeTime,
 } from "./format";
+
+export type {
+  ConsoleWorkbenchTarget,
+  HostWorkbenchTarget,
+  MobKitControlTargetKind,
+  MobKitControlWorkbenchTarget,
+  MobKitIdentityChatTarget,
+  MobKitIdentityInspectTarget,
+  MobKitWorkbenchTarget,
+} from "./targets";
+export {
+  migrateConsoleWorkbenchTarget,
+} from "./targets";
