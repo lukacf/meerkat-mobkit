@@ -15,6 +15,15 @@
     "mutationSemantics": false,
     "allowedFields": ["id", "label", "href", "target", "control", "icon_name"]
   },
+  "persistedPreferences": {
+    "namespace": "configured-host-shell",
+    "configuredSectionOrder": ["Projects", "Workers"],
+    "storedSectionOrder": ["Workers"],
+    "expectedSectionOrder": ["Workers", "Projects"],
+    "configuredPins": ["identity:project-alpha"],
+    "storedPins": ["identity:thread-alpha-plan"],
+    "expectedPins": ["identity:thread-alpha-plan"]
+  },
   "directRouteProtectionWhenMobKitAuthDisabled": {
     "/console": "host-proxy",
     "/console/assets/console-app.js": "host-proxy",

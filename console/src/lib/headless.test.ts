@@ -4,6 +4,7 @@ import test from "node:test";
 import { migrateConsoleWorkbenchTarget, type ConsoleWorkbenchTarget } from "@console-core";
 import { CONSOLE_REST_PATHS, CONSOLE_RPC_METHODS, CONSOLE_RPC_PATHS } from "./contract";
 import {
+  CONSOLE_COMMAND_NAMES,
   createHttpConsoleTransport,
   createMobKitConsoleController,
   type ConsoleCapabilities,
@@ -50,7 +51,7 @@ function createFakeTransport(options: {
     loadExperience: async () => ({ contract_version: "fake" }),
     capabilities: async () => options.capabilities || {
       version: "fake-capabilities",
-      methods: [CONSOLE_RPC_METHODS.send, "mobkit/identity/inspect"],
+      methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
     },
     queryTimeline: async () => queryPages.shift() || { frames: [], available: true },
     subscribeTimeline: (input, onFrame) => {
@@ -168,12 +169,60 @@ test("headless command surface fails closed on missing capabilities and inert ho
   ]) {
     await assert.rejects(
       () => controller.commands.execute({
-        command,
+        command: command as typeof CONSOLE_COMMAND_NAMES.inspectIdentity,
         target: hostTarget(),
       }),
       /host target .* cannot execute/i,
     );
   }
+});
+
+test("headless command execution only accepts modeled commands for allowed target kinds", async () => {
+  const controller = createMobKitConsoleController({ transport: createFakeTransport() });
+
+  assert.deepEqual(await controller.commands.execute({
+    command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+    target: identityTarget(),
+  }), {
+    command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+    accepted: true,
+    result: { ok: true },
+  });
+
+  for (const command of [
+    "mobkit/raw/rpc",
+    "mobkit/member/reset",
+    "mobkit/console/list_identities",
+    "mobkit/inspect_identity",
+  ]) {
+    await assert.rejects(
+      () => controller.commands.execute({
+        command: command as typeof CONSOLE_COMMAND_NAMES.inspectIdentity,
+        target: identityTarget(),
+      }),
+      /unknown MobKit console command/i,
+    );
+  }
+
+  const noInspect = createMobKitConsoleController({
+    transport: createFakeTransport({ capabilities: { methods: [CONSOLE_RPC_METHODS.send] } }),
+  });
+  await assert.rejects(
+    () => noInspect.commands.execute({
+      command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+      target: identityTarget(),
+    }),
+    /capability missing.*mobkit\/console\/inspect_identity/i,
+  );
+
+  const hostController = createMobKitConsoleController({ transport: createFakeTransport() });
+  await assert.rejects(
+    () => hostController.commands.execute({
+      command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+      target: hostTarget(),
+    }),
+    /host target .* cannot execute/i,
+  );
 });
 
 test("headless transport keeps uploads and blob URLs typed optional hooks", async () => {

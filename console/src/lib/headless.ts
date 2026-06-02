@@ -84,14 +84,35 @@ export interface ConsoleUploadResult {
   url?: string;
 }
 
+export const CONSOLE_COMMAND_NAMES = {
+  inspectIdentity: "inspectIdentity",
+} as const;
+
+export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
+
+type ConsoleCommandSpec = {
+  method: typeof CONSOLE_RPC_METHODS[keyof typeof CONSOLE_RPC_METHODS];
+  targetKinds: ReadonlySet<MobKitWorkbenchTarget["kind"]>;
+};
+
+const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
+  [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
+    method: CONSOLE_RPC_METHODS.inspectIdentity,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect",
+    ]),
+  },
+};
+
 export interface ConsoleCommandRequest {
-  command: string;
+  command: ConsoleCommandName;
   target: ConsoleWorkbenchTarget;
   params?: Record<string, unknown>;
 }
 
 export interface ConsoleCommandResult {
-  command: string;
+  command: ConsoleCommandName;
   accepted: boolean;
   result?: unknown;
 }
@@ -225,8 +246,12 @@ function createConsoleCommandSurface(
       if (!isMobKitTarget(input.target)) {
         throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
       }
+      const spec = commandSpec(input.command);
+      if (!spec.targetKinds.has(input.target.kind)) {
+        throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
+      }
       const capabilities = await transport.capabilities();
-      requireCapability(capabilities, input.command);
+      requireCapability(capabilities, spec.method);
       if (!transport.executeCommand) {
         throw new Error(`transport does not implement command ${input.command}`);
       }
@@ -316,6 +341,17 @@ function requireCapability(capabilities: ConsoleCapabilities, method: string) {
   if (!capabilities.methods.includes(method)) {
     throw new Error(`MobKit capability missing for ${method}`);
   }
+}
+
+function commandSpec(command: ConsoleCommandName): ConsoleCommandSpec {
+  if (!isConsoleCommandName(command)) {
+    throw new Error(`unknown MobKit console command ${String(command)}`);
+  }
+  return CONSOLE_COMMAND_SPECS[command];
+}
+
+function isConsoleCommandName(command: unknown): command is ConsoleCommandName {
+  return typeof command === "string" && command in CONSOLE_COMMAND_SPECS;
 }
 
 function identityForSendTarget(target: ConsoleWorkbenchTarget): string | null {

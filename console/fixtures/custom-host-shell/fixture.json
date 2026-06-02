@@ -17,6 +17,7 @@
       "mobkitTarget": {
         "kind": "mobkit/identity-chat",
         "id": "chat:identity:project-alpha",
+        "title": "Project Alpha",
         "identity": "identity:project-alpha"
       }
     },
@@ -27,6 +28,7 @@
       "mobkitTarget": {
         "kind": "mobkit/identity-chat",
         "id": "chat:identity:thread-alpha-plan",
+        "title": "Planning Thread",
         "identity": "identity:thread-alpha-plan"
       }
     }

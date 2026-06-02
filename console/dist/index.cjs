@@ -4730,8 +4730,11 @@ function errorMessage(error) {
 var CONSOLE_REST_PATHS = {
   experience: "/console/experience",
   modules: "/console/modules",
+  identities: "/console/identities",
   timeline: "/console/timeline",
-  timelineStream: "/console/timeline/stream"
+  timelineStream: "/console/timeline/stream",
+  identityTimelineStreamTemplate: "/console/identity/{identity}/stream",
+  legacySend: "/console/send"
 };
 var CONSOLE_RPC_PATHS = {
   jsonRpc: "/console/rpc",
@@ -4740,6 +4743,8 @@ var CONSOLE_RPC_PATHS = {
 var CONSOLE_RPC_METHODS = {
   capabilities: "mobkit/capabilities",
   send: "mobkit/console/send",
+  listIdentities: "mobkit/console/list_identities",
+  inspectIdentity: "mobkit/console/inspect_identity",
   queryTimeline: "mobkit/console/query_timeline",
   blobUpload: "mobkit/blob/upload"
 };

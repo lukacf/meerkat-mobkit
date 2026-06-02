@@ -223,30 +223,31 @@ function insertNode<TTarget>(
   targetId: string,
   position: ConsoleNavigationMovePosition,
   nodeToInsert: ConsoleNavigationNode<TTarget>,
-): ConsoleNavigationNode<TTarget>[] {
+): { nodes: ConsoleNavigationNode<TTarget>[]; inserted: boolean } {
   const next = [...nodes];
   for (let index = 0; index < next.length; index += 1) {
     const node = next[index]!;
     if (node.id === targetId) {
       if (position === "inside" && node.type === "group") {
         next[index] = { ...node, expanded: true, children: [...node.children, nodeToInsert] };
-        return next;
+        return { nodes: next, inserted: true };
       }
       const offset = position === "after" ? 1 : 0;
       next.splice(index + offset, 0, nodeToInsert);
-      return next;
+      return { nodes: next, inserted: true };
     }
     if (node.type === "group") {
-      next[index] = {
-        ...node,
-        children: insertNode(node.children, targetId, position, nodeToInsert),
-      };
-      if (next[index] !== node) {
-        return next;
+      const childResult = insertNode(node.children, targetId, position, nodeToInsert);
+      if (childResult.inserted) {
+        next[index] = {
+          ...node,
+          children: childResult.nodes,
+        };
+        return { nodes: next, inserted: true };
       }
     }
   }
-  return next;
+  return { nodes, inserted: false };
 }
 
 function navigationMoveAnnouncement(
@@ -308,6 +309,10 @@ export function toggleConsoleNavigationGroup<TTarget>(
   id: string,
 ): ConsoleNavigationModel<TTarget> {
   const normalized = normalizeConsoleNavigationModel(model);
+  const located = findNavigationNode(normalized.nodes, id);
+  if (!located || located.node.type !== "group") {
+    return normalized;
+  }
   return {
     ...normalized,
     focusNodeId: id,
@@ -325,6 +330,10 @@ export function pinConsoleNavigationNode<TTarget>(
   pinned = true,
 ): ConsoleNavigationModel<TTarget> {
   const normalized = normalizeConsoleNavigationModel(model);
+  const located = findNavigationNode(normalized.nodes, id);
+  if (!located || located.node.type !== "item") {
+    return normalized;
+  }
   return {
     ...normalized,
     focusNodeId: id,
@@ -385,7 +394,15 @@ export function moveConsoleNavigationNode<TTarget>(
     };
   }
 
-  const nodes = insertNode(removed.nodes, input.targetId, input.position, removed.removed);
+  const inserted = insertNode(removed.nodes, input.targetId, input.position, removed.removed);
+  if (!inserted.inserted) {
+    return {
+      model: normalized,
+      focusNodeId: normalized.focusNodeId || null,
+      announcement: "Move unavailable.",
+    };
+  }
+  const nodes = inserted.nodes;
   const next = normalizeConsoleNavigationModel({
     ...normalized,
     focusNodeId: removed.removed.id,

@@ -51,6 +51,33 @@
           ]
         }
       },
+      "identities": {
+        "method": "GET",
+        "path": "/console/identities",
+        "status": "legacy_compat",
+        "replacement_rpc_method": "mobkit/console/list_identities",
+        "response": {
+          "required_top_level_fields": [
+            "identities"
+          ]
+        },
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "message": "console identities require a valid auth token"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "unavailable",
+              "message": "console aggregator unavailable"
+            }
+          }
+        ]
+      },
       "timeline": {
         "method": "GET",
         "path": "/console/timeline",
@@ -77,6 +104,71 @@
             "recent"
           ]
         }
+      },
+      "legacy_send": {
+        "method": "POST",
+        "path": "/console/send",
+        "status": "legacy_compat",
+        "replacement_rpc_method": "mobkit/console/send",
+        "request": {
+          "type_ref": "TYPE-022",
+          "required_fields": [
+            "identity",
+            "content"
+          ],
+          "optional_fields": [
+            "origin",
+            "idempotency_key",
+            "handling_mode"
+          ]
+        },
+        "success": {
+          "type_ref": "TYPE-023"
+        },
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "message": "console send requires a valid auth token"
+            }
+          },
+          {
+            "status": 400,
+            "shape": {
+              "error": "invalid_request",
+              "message": "string"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "unknown_identity",
+              "message": "string"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "unavailable",
+              "message": "console aggregator unavailable"
+            }
+          },
+          {
+            "status": 409,
+            "shape": {
+              "error": "ambiguous_live_identity_alias|not_addressable|retired|idempotency_conflict",
+              "message": "string"
+            }
+          },
+          {
+            "status": 500,
+            "shape": {
+              "error": "internal_error",
+              "message": "string"
+            }
+          }
+        ]
       },
       "blob": {
         "method": "GET",
@@ -145,6 +237,40 @@
                 -32001,
                 -32002,
                 -32003,
+                -32004,
+                -32602,
+                -32603
+              ]
+            }
+          ]
+        },
+        "mobkit/console/list_identities": {
+          "success": {
+            "required_fields": [
+              "identities"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32004,
+                -32603
+              ]
+            }
+          ]
+        },
+        "mobkit/console/inspect_identity": {
+          "request": {
+            "required_fields": [
+              "identity"
+            ]
+          },
+          "success": {
+            "body": "identity_inspection_or_null"
+          },
+          "errors": [
+            {
+              "codes": [
                 -32004,
                 -32602,
                 -32603
@@ -231,7 +357,44 @@
             "status": 401,
             "shape": {
               "error": "unauthorized",
-              "reason": "console stream requires a valid auth token"
+              "message": "console timeline stream requires a valid auth token"
+            }
+          },
+          {
+            "status": 409,
+            "shape": {
+              "error": "replay_unavailable",
+              "requested_cursor": "console:1",
+              "latest_cursor": "console:99"
+            }
+          }
+        ]
+      },
+      "identity_timeline": {
+        "method": "GET",
+        "path_template": "/console/identity/{identity}/stream",
+        "events": {
+          "type_ref": "TYPE-020"
+        },
+        "headers": {
+          "cursor": "Last-Event-ID"
+        },
+        "required_path_params": [
+          "identity"
+        ],
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "message": "console timeline stream requires a valid auth token"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "unavailable",
+              "message": "console aggregator unavailable"
             }
           },
           {

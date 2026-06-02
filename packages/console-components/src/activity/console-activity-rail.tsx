@@ -64,12 +64,14 @@ function RosterPanel({
   onRemovePanel,
   onSelectItem,
   onTogglePin,
+  onPanelAction,
 }: {
   Icon: IconRenderer;
   panel: ConsoleActivityRosterPanel;
   onRemovePanel?: (panelId: string) => void;
   onSelectItem?: (focusId: string) => void;
   onTogglePin?: (pinId: string, pinned: boolean) => void;
+  onPanelAction?: (panelId: string, actionId: string) => void;
 }) {
   return (
     <section className="cc-activity-rail__section" key={panel.id}>
@@ -327,6 +329,7 @@ function renderPanel({
         onRemovePanel={onRemovePanel}
         onSelectItem={onSelectItem}
         onTogglePin={onTogglePin}
+        onPanelAction={onPanelAction}
         panel={panel}
       />
     );

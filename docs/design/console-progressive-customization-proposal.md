@@ -808,24 +808,28 @@ Implementation tasks:
 Gate checklist:
 
 - [x] `reference-wrapper` proves `/console` and `/console/rpc` are served by
-      MobKit's reference console path, while host status APIs remain
-      host-provenance only.
+      an executable MobKit reference-console dispatch path, while host status
+      APIs remain host-provenance only and are not merged into console
+      protocol responses.
 - [x] `reference-wrapper` proves host wrappers do not rewrite console JS,
       patch protocol responses, synthesize timeline frames, widen CORS, or
       change CSRF posture.
 - [x] `configured-host-shell` proves `config/console.toml` grouping,
       subgroups, pins, inert sidebar button IDs/hrefs, hidden controls,
       `[actions]` visibility such as `show_respawn=false`, initial
-      agent/control, and localStorage precedence.
+      agent/control, and persisted localStorage-style preference precedence
+      through the shared sidebar order/pin helpers.
 - [x] `configured-host-shell` proves a host toolbar can own confirmations and
       POSTs without turning `console.toml` buttons into mutations.
 - [x] `configured-host-shell` proves direct `/console/*`, send, SSE, asset, and
       blob routes have explicit server/proxy/platform protection when MobKit
       app auth is disabled.
 - [x] `custom-host-shell` proves custom host records and navigation can bind
-      transcript/composer/dock to explicit MobKit backing targets.
+      transcript/composer/dock to explicit MobKit backing targets that pass the
+      workbench target migration contract.
 - [x] `custom-host-shell` proves injected non-HTTP transport works without
-      raw browser RPC and without host nouns in MobKit exports.
+      raw browser RPC and without host nouns in MobKit exports by driving
+      `createMobKitConsoleController` with a fixture-backed host adapter.
 - [x] All fixtures run through named local test commands.
 
 Evidence:
@@ -840,6 +844,10 @@ Evidence:
 - Fixture tests:
   `console/src/lib/customization-fixtures.test.ts` and
   `meerkat-mobkit/tests/console_customization_fixtures.rs`.
+  The TS fixture test executes wrapper dispatch, sidebar preference precedence,
+  target migration, headless timeline query, and headless send through a
+  non-HTTP adapter; the Rust fixture test parses the fixture
+  `config/console.toml` through MobKit's config loader.
 - Command:
   `npm --prefix console run fixtures:console-customization --silent`.
 
@@ -903,13 +911,13 @@ Evidence:
 | Gate | Coverage |
 | --- | --- |
 | Protocol | Experience, timeline query/page/stream, replay errors, RPC errors, send, multipart, blobs, capabilities, plus a named contract sync gate that proves TS parsers/types and Rust/schema artifacts match the canonical source |
-| Headless | Reconnect/backfill, optimistic cleanup, ordering, target persistence, capability rejection |
+| Headless | Reconnect/backfill, optimistic cleanup, ordering, target persistence, closed command names, target-kind command allowlists, capability rejection |
 | Core reducers | Navigation groups, pin/order/collapse, dock split/focus/close, host target preservation |
-| Components | Model/callback rendering, no controller imports by default, a11y, no app-only imports |
+| Components | Model/callback rendering, callback interaction tests, no controller imports by default, a11y, no app-only imports |
 | Stock console | No behavior regression, existing `config/console.toml`, localStorage precedence, browser e2e |
 | Embedded console | `npm --prefix console run build --silent`, failing diff check for `meerkat-mobkit/console-dist`, gateway serves fresh assets |
 | Security | Host targets inert, command capability checks, no broad raw RPC escape hatch in headless |
-| Proving fixtures | `reference-wrapper` Level 0, `configured-host-shell` Level 1/1.5, `custom-host-shell` Level 3/4 |
+| Proving fixtures | Executable `reference-wrapper` Level 0, `configured-host-shell` Level 1/1.5, `custom-host-shell` Level 3/4 |
 | Release | Public package decision, semver, changelog, parity, dry-run/publish/readback if applicable |
 
 Executable gates should be added as named scripts or workflow jobs, not only
