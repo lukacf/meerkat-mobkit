@@ -478,6 +478,163 @@
               ]
             }
           ]
+        },
+        "mobkit/retire": {
+          "request": {
+            "required_fields": [
+              "identity"
+            ]
+          },
+          "success": {
+            "body": "identity_lifecycle_result"
+          },
+          "errors": [
+            {
+              "codes": [
+                -32001,
+                -32004,
+                -32602,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/respawn": {
+          "request": {
+            "required_fields": [
+              "identity"
+            ]
+          },
+          "success": {
+            "body": "identity_lifecycle_result"
+          },
+          "errors": [
+            {
+              "codes": [
+                -32001,
+                -32004,
+                -32602,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/reset": {
+          "request": {
+            "required_fields": [
+              "identity"
+            ]
+          },
+          "success": {
+            "body": "identity_lifecycle_result"
+          },
+          "errors": [
+            {
+              "codes": [
+                -32001,
+                -32004,
+                -32602,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/routing/routes/list": {
+          "success": {
+            "body": "routing_routes_response",
+            "required_fields": [
+              "routes"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32004,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/delivery/history": {
+          "request": {
+            "optional_fields": [
+              "limit",
+              "cursor"
+            ]
+          },
+          "success": {
+            "body": "delivery_history_response",
+            "required_fields": [
+              "deliveries"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32004,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/gating/pending": {
+          "success": {
+            "required_fields": [
+              "pending"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32004,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/gating/audit": {
+          "request": {
+            "optional_fields": [
+              "limit"
+            ]
+          },
+          "success": {
+            "required_fields": [
+              "entries"
+            ]
+          },
+          "errors": [
+            {
+              "codes": [
+                -32004,
+                -32000
+              ]
+            }
+          ]
+        },
+        "mobkit/gating/decide": {
+          "request": {
+            "required_fields": [
+              "pending_id",
+              "approver_id",
+              "decision"
+            ],
+            "optional_fields": [
+              "reason"
+            ]
+          },
+          "success": {
+            "body": "gating_decision_result"
+          },
+          "errors": [
+            {
+              "codes": [
+                -32004,
+                -32602,
+                -32000
+              ]
+            }
+          ]
         }
       }
     },

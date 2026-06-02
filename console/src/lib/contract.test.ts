@@ -73,12 +73,13 @@ test("console contract constants stay synchronized with docs/rct contract v0.5.0
   );
   assert.equal(CONSOLE_RPC_PATHS.jsonRpc, schema.surfaces.rpc.console_rpc_endpoint.path);
   assert.equal(CONSOLE_RPC_PATHS.multipartJsonRpc, schema.surfaces.rpc.console_multipart_rpc_endpoint.path);
-  assert.equal(CONSOLE_RPC_METHODS.capabilities in schema.surfaces.rpc.methods, true);
-  assert.equal(CONSOLE_RPC_METHODS.send in schema.surfaces.rpc.methods, true);
-  assert.equal(CONSOLE_RPC_METHODS.listIdentities in schema.surfaces.rpc.methods, true);
-  assert.equal(CONSOLE_RPC_METHODS.inspectIdentity in schema.surfaces.rpc.methods, true);
-  assert.equal(CONSOLE_RPC_METHODS.queryTimeline in schema.surfaces.rpc.methods, true);
-  assert.equal(CONSOLE_RPC_METHODS.blobUpload in schema.surfaces.rpc.methods, true);
+  for (const method of Object.values(CONSOLE_RPC_METHODS)) {
+    assert.equal(
+      method in schema.surfaces.rpc.methods,
+      true,
+      `expected docs/rct contract to document ${method}`,
+    );
+  }
   assert.deepEqual(
     [...CONSOLE_TIMELINE_QUERY_MODES],
     schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.queryTimeline]?.success?.mode_values,

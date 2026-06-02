@@ -5459,6 +5459,7 @@ var CONSOLE_COMMAND_NAMES = {
   listGatingAudit: "listGatingAudit",
   decideGating: "decideGating"
 };
+var LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
 var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
     method: CONSOLE_RPC_METHODS.inspectIdentity,
@@ -5554,7 +5555,15 @@ function createHttpConsoleTransport({
         }
         params.identity = identity;
       }
-      const result = await callConsoleRpc(baseUrl, spec.method, params);
+      let result;
+      try {
+        result = await callConsoleRpc(baseUrl, spec.method, params);
+      } catch (error) {
+        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity) {
+          throw error;
+        }
+        result = await callConsoleRpc(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
+      }
       return {
         command: input.command,
         accepted: true,

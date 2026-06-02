@@ -418,3 +418,48 @@ test("createHttpConsoleTransport uses stock console routes and typed RPC methods
     globalThis.fetch = previousFetch;
   }
 });
+
+test("createHttpConsoleTransport falls back to legacy inspect RPC when the console method is unavailable", async () => {
+  const methods: string[] = [];
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const requestUrl = String(url);
+    if (requestUrl.endsWith(CONSOLE_RPC_PATHS.jsonRpc)) {
+      const body = JSON.parse(String(init?.body || "{}"));
+      methods.push(body.method);
+      if (body.method === CONSOLE_RPC_METHODS.inspectIdentity) {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32601, message: "method not found" },
+        }), { status: 200 });
+      }
+      if (body.method === "mobkit/inspect_identity") {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { identity: body.params.identity, status: "legacy-ready" },
+        }), { status: 200 });
+      }
+    }
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  try {
+    const transport = createHttpConsoleTransport({ baseUrl: "http://console.test" });
+    assert.deepEqual(await transport.executeCommand?.({
+      command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+      target: identityTarget(),
+    }), {
+      command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+      accepted: true,
+      result: { identity: "identity:lead", status: "legacy-ready" },
+    });
+    assert.deepEqual(methods, [
+      CONSOLE_RPC_METHODS.inspectIdentity,
+      "mobkit/inspect_identity",
+    ]);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
+});

@@ -105,6 +105,8 @@ type ConsoleCommandSpec = {
   targetKinds: ReadonlySet<MobKitWorkbenchTarget["kind"]>;
 };
 
+const LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
+
 const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
     method: CONSOLE_RPC_METHODS.inspectIdentity,
@@ -262,7 +264,15 @@ export function createHttpConsoleTransport({
         }
         params.identity = identity;
       }
-      const result = await callConsoleRpc<unknown>(baseUrl, spec.method, params);
+      let result: unknown;
+      try {
+        result = await callConsoleRpc<unknown>(baseUrl, spec.method, params);
+      } catch (error) {
+        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity) {
+          throw error;
+        }
+        result = await callConsoleRpc<unknown>(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
+      }
       return {
         command: input.command,
         accepted: true,
