@@ -7,6 +7,7 @@ const root = path.basename(process.cwd()) === "console"
   ? path.resolve(process.cwd(), "..")
   : process.cwd();
 const componentsSrc = path.join(root, "packages", "console-components", "src");
+const coreActivitySource = path.join(root, "packages", "console-core", "src", "activity.ts");
 const componentIndex = path.join(componentsSrc, "index.ts");
 
 const forbiddenImportPatterns = [
@@ -60,4 +61,11 @@ test("console-components root barrel exposes reusable composition surfaces", () 
   ]) {
     assert.match(source, new RegExp(`\\b${symbol}\\b`));
   }
+});
+
+test("activity rail roster actions are declared in the shared core model", () => {
+  const source = fs.readFileSync(coreActivitySource, "utf8");
+  const rosterPanel = source.match(/export interface ConsoleActivityRosterPanel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body || "";
+
+  assert.match(rosterPanel, /\bactions\?:\s*ConsoleActivityAction\[\]/);
 });

@@ -26,11 +26,18 @@
   },
   "directRouteProtectionWhenMobKitAuthDisabled": {
     "/console": "host-proxy",
+    "/console/": "host-proxy",
     "/console/assets/console-app.js": "host-proxy",
+    "/console/assets/console-app.css": "host-proxy",
+    "/console/experience": "host-proxy",
+    "/console/modules": "host-proxy",
+    "/console/identities": "host-proxy",
     "/console/rpc": "host-proxy",
     "/console/rpc/multipart": "host-proxy",
     "/console/timeline": "host-proxy",
     "/console/timeline/stream": "host-proxy",
+    "/console/identity/{identity}/stream": "host-proxy",
+    "/console/send": "host-proxy",
     "/blobs/{blob_id}": "host-proxy"
   }
 }

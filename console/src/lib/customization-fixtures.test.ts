@@ -160,11 +160,18 @@ test("configured-host-shell fixture keeps host mutations out of console.toml but
 
   for (const route of [
     "/console",
+    "/console/",
     "/console/assets/console-app.js",
+    "/console/assets/console-app.css",
+    CONSOLE_REST_PATHS.experience,
+    CONSOLE_REST_PATHS.modules,
+    CONSOLE_REST_PATHS.identities,
     "/console/rpc",
     "/console/rpc/multipart",
-    "/console/timeline",
-    "/console/timeline/stream",
+    CONSOLE_REST_PATHS.timeline,
+    CONSOLE_REST_PATHS.timelineStream,
+    CONSOLE_REST_PATHS.identityTimelineStreamTemplate,
+    CONSOLE_REST_PATHS.legacySend,
     "/blobs/{blob_id}",
   ]) {
     assert.equal(routeProtection[route], "host-proxy");

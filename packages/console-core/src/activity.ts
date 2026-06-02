@@ -41,6 +41,7 @@ export interface ConsoleActivityRosterPanel {
   kind: "roster";
   title: string;
   meta?: string | null;
+  actions?: ConsoleActivityAction[];
   groups: ConsoleActivityRosterGroup[];
   emptyText?: string | null;
 }

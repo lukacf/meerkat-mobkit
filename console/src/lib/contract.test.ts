@@ -13,6 +13,18 @@ import {
   CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
 } from "./contract";
 
+type ContractError = {
+  status?: number;
+  shape?: {
+    error?: string;
+    message?: string;
+    reason?: string;
+    requested_cursor?: string;
+    latest_cursor?: string;
+  };
+  codes?: number[];
+};
+
 type ContractSchema = {
   contract_version: string;
   surfaces: {
@@ -23,16 +35,22 @@ type ContractSchema = {
       path_prefix?: string;
       response?: { required_top_level_fields?: string[] };
       query_optional_fields?: string[];
+      errors?: ContractError[];
     }>;
     rpc: {
-      console_rpc_endpoint: { method: string; path: string };
-      console_multipart_rpc_endpoint: { method: string; path: string };
+      console_rpc_endpoint: { method: string; path: string; errors?: ContractError[] };
+      console_multipart_rpc_endpoint: { method: string; path: string; errors?: ContractError[] };
       methods: Record<string, {
         success?: { mode_values?: string[] };
-        errors?: Array<{ codes?: number[] }>;
+        errors?: ContractError[];
       }>;
     };
-    sse: Record<string, { method?: string; path?: string; path_template?: string } | string>;
+    sse: Record<string, {
+      method?: string;
+      path?: string;
+      path_template?: string;
+      errors?: ContractError[];
+    } | string>;
   };
 };
 
@@ -70,6 +88,56 @@ test("console contract constants stay synchronized with docs/rct contract v0.5.0
       ?.some((entry) => entry.codes?.includes(CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE)),
     true,
   );
+});
+
+test("console contract documents live REST, SSE, and send RPC error shapes", () => {
+  const schema = JSON.parse(
+    readFileSync(resolve(process.cwd(), "../docs/rct/console-rest-sse-contract-v0.5.0.json"), "utf8"),
+  ) as ContractSchema;
+  const sendCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.send]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const listIdentityCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.listIdentities]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const inspectIdentityCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.inspectIdentity]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const queryTimelineCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.queryTimeline]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const blobUploadErrors = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.blobUpload]?.errors || [];
+  const blobUploadCodes = blobUploadErrors.flatMap((entry) => entry.codes || []);
+  const rpcEndpointErrors = schema.surfaces.rpc.console_rpc_endpoint.errors || [];
+  const multipartEndpointErrors = schema.surfaces.rpc.console_multipart_rpc_endpoint.errors || [];
+
+  assertRestReason(schema.surfaces.rest.experience.errors, 401, "unauthorized", "string");
+  assertRestReason(schema.surfaces.rest.modules.errors, 401, "unauthorized", "string");
+  assertRestError(schema.surfaces.rest.identities.errors, 500, "internal_error", "string");
+  assertRestError(schema.surfaces.rest.timeline.errors, 401, "unauthorized", "console timeline requires a valid auth token");
+  assertRestError(schema.surfaces.rest.timeline.errors, 404, "unavailable", "console aggregator unavailable");
+  assertRestError(schema.surfaces.rest.timeline.errors, 409, "replay_unavailable");
+  assertRestError(schema.surfaces.rest.blob.errors, 401, "unauthorized");
+  assertRestError(schema.surfaces.rest.blob.errors, 400, "invalid_blob_id");
+  assertRestError(schema.surfaces.rest.blob.errors, 404, "blob_store_unavailable");
+  assertRestError(schema.surfaces.rest.blob.errors, 404, "blob_not_found");
+  assertRestError(schema.surfaces.rest.blob.errors, 500, "string");
+  assertRestError((schema.surfaces.sse.timeline as { errors?: ContractError[] }).errors, 404, "unavailable", "console aggregator unavailable");
+  assert.deepEqual(
+    [-32001, -32002, -32004, -32009, -32000, -32602].filter((code) => !sendCodes.includes(code)),
+    [],
+  );
+  assert.equal(sendCodes.includes(-32003), false);
+  assert.equal(sendCodes.includes(-32603), false);
+  assert.deepEqual([-32004, -32000].filter((code) => !listIdentityCodes.includes(code)), []);
+  assert.equal(listIdentityCodes.includes(-32603), false);
+  assert.deepEqual([-32001, -32004, -32602, -32000].filter((code) => !inspectIdentityCodes.includes(code)), []);
+  assert.equal(inspectIdentityCodes.includes(-32603), false);
+  assert.deepEqual([-32004, -32013, -32602].filter((code) => !queryTimelineCodes.includes(code)), []);
+  assert.equal(queryTimelineCodes.includes(-32003), false);
+  assert.equal(queryTimelineCodes.includes(-32603), false);
+  assert.deepEqual([-32600, -32602, -32000].filter((code) => !blobUploadCodes.includes(code)), []);
+  for (const status of [401, 400, 200, 404, 500]) {
+    assert.equal(blobUploadErrors.some((entry) => entry.status === status), true);
+  }
+  assertRpcEndpointError(rpcEndpointErrors, 200, -32600);
+  assertRpcEndpointError(rpcEndpointErrors, 401, -32600);
+  assertRpcEndpointError(multipartEndpointErrors, 401, -32600);
+  assertRpcEndpointError(multipartEndpointErrors, 400, -32602);
+  assertRpcEndpointError(multipartEndpointErrors, 200, -32600);
+  assertRpcEndpointError(multipartEndpointErrors, 200, -32602);
 });
 
 test("console contract route and method names stay synchronized with Rust http console source", () => {
@@ -166,4 +234,53 @@ function contractRoutes(schema: ContractSchema): Set<string> {
     }
   }
   return routes;
+}
+
+function assertRestError(
+  errors: ContractError[] | undefined,
+  status: number,
+  error: string,
+  message?: string,
+) {
+  assert.equal(
+    (errors || []).some((entry) => (
+      entry.status === status
+        && errorMatches(entry.shape?.error, error)
+        && (message === undefined || entry.shape?.message === message)
+    )),
+    true,
+    `expected ${status} ${error}${message ? ` ${message}` : ""}`,
+  );
+}
+
+function assertRestReason(
+  errors: ContractError[] | undefined,
+  status: number,
+  error: string,
+  reason: string,
+) {
+  assert.equal(
+    (errors || []).some((entry) => (
+      entry.status === status
+        && errorMatches(entry.shape?.error, error)
+        && entry.shape?.reason === reason
+    )),
+    true,
+    `expected ${status} ${error} reason ${reason}`,
+  );
+}
+
+function errorMatches(actual: string | undefined, expected: string): boolean {
+  if (expected === "string") {
+    return actual === "string";
+  }
+  return (actual || "").split("|").includes(expected);
+}
+
+function assertRpcEndpointError(errors: ContractError[], status: number, code: number) {
+  assert.equal(
+    errors.some((entry) => entry.status === status && (entry.codes || []).includes(code)),
+    true,
+    `expected endpoint error ${status} ${code}`,
+  );
 }

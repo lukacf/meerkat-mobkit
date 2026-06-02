@@ -39,7 +39,16 @@
             "flows",
             "session_history"
           ]
-        }
+        },
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "reason": "string"
+            }
+          }
+        ]
       },
       "modules": {
         "method": "GET",
@@ -49,7 +58,16 @@
             "contract_version",
             "modules"
           ]
-        }
+        },
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "reason": "string"
+            }
+          }
+        ]
       },
       "identities": {
         "method": "GET",
@@ -74,6 +92,13 @@
             "shape": {
               "error": "unavailable",
               "message": "console aggregator unavailable"
+            }
+          },
+          {
+            "status": 500,
+            "shape": {
+              "error": "internal_error",
+              "message": "string"
             }
           }
         ]
@@ -103,7 +128,30 @@
             "since",
             "recent"
           ]
-        }
+        },
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized",
+              "message": "console timeline requires a valid auth token"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "unavailable",
+              "message": "console aggregator unavailable"
+            }
+          },
+          {
+            "status": 409,
+            "shape": {
+              "error": "replay_unavailable",
+              "message": "string"
+            }
+          }
+        ]
       },
       "legacy_send": {
         "method": "POST",
@@ -180,14 +228,54 @@
           "required_path_params": [
             "blob_id"
           ]
-        }
+        },
+        "errors": [
+          {
+            "status": 401,
+            "shape": {
+              "error": "unauthorized"
+            }
+          },
+          {
+            "status": 400,
+            "shape": {
+              "error": "invalid_blob_id"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "blob_store_unavailable|blob_not_found"
+            }
+          },
+          {
+            "status": 500,
+            "shape": {
+              "error": "string"
+            }
+          }
+        ]
       }
     },
     "rpc": {
       "console_rpc_endpoint": {
         "method": "POST",
         "path": "/console/rpc",
-        "protocol": "JSON-RPC 2.0"
+        "protocol": "JSON-RPC 2.0",
+        "errors": [
+          {
+            "status": 200,
+            "codes": [
+              -32600
+            ]
+          },
+          {
+            "status": 401,
+            "codes": [
+              -32600
+            ]
+          }
+        ]
       },
       "console_multipart_rpc_endpoint": {
         "method": "POST",
@@ -199,7 +287,28 @@
             "payload"
           ],
           "file_part_prefix": "file:"
-        }
+        },
+        "errors": [
+          {
+            "status": 401,
+            "codes": [
+              -32600
+            ]
+          },
+          {
+            "status": 400,
+            "codes": [
+              -32602
+            ]
+          },
+          {
+            "status": 200,
+            "codes": [
+              -32600,
+              -32602
+            ]
+          }
+        ]
       },
       "methods": {
         "mobkit/capabilities": {
@@ -236,10 +345,10 @@
               "codes": [
                 -32001,
                 -32002,
-                -32003,
                 -32004,
-                -32602,
-                -32603
+                -32009,
+                -32000,
+                -32602
               ]
             }
           ]
@@ -254,7 +363,7 @@
             {
               "codes": [
                 -32004,
-                -32603
+                -32000
               ]
             }
           ]
@@ -271,9 +380,10 @@
           "errors": [
             {
               "codes": [
+                -32001,
                 -32004,
                 -32602,
-                -32603
+                -32000
               ]
             }
           ]
@@ -309,13 +419,9 @@
             {
               "type_ref": "TYPE-019",
               "codes": [
-                -32001,
-                -32002,
-                -32003,
                 -32004,
                 -32013,
-                -32602,
-                -32603
+                -32602
               ]
             }
           ]
@@ -338,7 +444,40 @@
               "content_type",
               "size"
             ]
-          }
+          },
+          "errors": [
+            {
+              "status": 401,
+              "codes": [
+                -32600
+              ]
+            },
+            {
+              "status": 400,
+              "codes": [
+                -32602
+              ]
+            },
+            {
+              "status": 200,
+              "codes": [
+                -32600,
+                -32602
+              ]
+            },
+            {
+              "status": 404,
+              "codes": [
+                -32600
+              ]
+            },
+            {
+              "status": 500,
+              "codes": [
+                -32000
+              ]
+            }
+          ]
         }
       }
     },
@@ -358,6 +497,13 @@
             "shape": {
               "error": "unauthorized",
               "message": "console timeline stream requires a valid auth token"
+            }
+          },
+          {
+            "status": 404,
+            "shape": {
+              "error": "unavailable",
+              "message": "console aggregator unavailable"
             }
           },
           {
