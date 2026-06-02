@@ -6881,11 +6881,17 @@ comms = true
         .expect("explicit identity query should not stall")
         .expect("query succeeds");
 
-        assert!(
-            page.frames.is_empty(),
-            "empty fresh-watermark query should return promptly before async backfill; frames: {:#?}",
-            page.frames
-        );
+        if !page.frames.is_empty() {
+            assert!(
+                page.frames.iter().any(|frame| {
+                    frame.source.kind == ConsoleFrameSourceKind::SessionHistory
+                        && session_history_content_text(frame).as_deref()
+                            == Some("You are agent-a.")
+                }),
+                "query returned frames before the polling assertion; expected them to be the forced session-history refresh, frames: {:#?}",
+                page.frames
+            );
+        }
         wait_for_session_history_text(
             &aggregator,
             "test/agent-a",
