@@ -371,6 +371,59 @@ test("sendConsoleMultipart posts identity multipart sends with upload placeholde
   }
 });
 
+test("sendConsoleMultipart preserves structured content before upload placeholders", async () => {
+  const originalFetch = globalThis.fetch;
+  let payload: Record<string, unknown> | null = null;
+
+  globalThis.fetch = (async (_input, init) => {
+    const form = init?.body as FormData;
+    payload = JSON.parse(String(form.get("payload") || "{}")) as Record<string, unknown>;
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "mobkit/console/send:1",
+      result: {
+        interaction_id: "turn-structured",
+        identity: "agent-a",
+        status: "accepted",
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const originalNow = Date.now;
+  try {
+    Date.now = () => Number.parseInt("test", 36);
+    await sendConsoleMultipart(
+      "http://127.0.0.1:7000",
+      "agent-a",
+      [
+        { type: "text", text: "Keep this block" },
+        { type: "tool_context", id: "ctx-1" },
+      ],
+      [new File(["png"], "badge.png", { type: "image/png" })],
+      "console:panel",
+      "idem-structured",
+    );
+
+    const params = payload?.params as { content?: Array<Record<string, unknown>> } | undefined;
+    assert.deepEqual(params?.content, [
+      { type: "text", text: "Keep this block" },
+      { type: "tool_context", id: "ctx-1" },
+      {
+        type: "image_upload",
+        upload_id: "upload-test-0",
+        media_type: "image/png",
+        alt: "badge.png",
+      },
+    ]);
+  } finally {
+    Date.now = originalNow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("parseSseFrames unwraps aggregate timeline frames", () => {
   const frames = parseSseFrames([
     "id: console:4",

@@ -178,7 +178,7 @@ export function createHttpConsoleTransport({ baseUrl }: { baseUrl: string }): Mo
         return sendConsoleMultipart(
           baseUrl,
           input.identity,
-          typeof input.content === "string" ? input.content : "",
+          input.content,
           input.attachments,
           input.origin,
           input.idempotencyKey,

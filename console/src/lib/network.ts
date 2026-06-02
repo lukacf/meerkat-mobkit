@@ -278,16 +278,15 @@ async function rpc<T>(
 export async function sendConsoleMultipart(
   baseUrl: string,
   identity: string,
-  message: string,
+  contentInput: string | Array<Record<string, unknown>>,
   attachments: File[],
   origin: string,
   idempotencyKey: string,
   handlingMode: "queue" | "steer" = "queue",
 ): Promise<ConsoleTimelineAccepted> {
-  const content: Array<Record<string, unknown>> = [];
-  if (message.trim()) {
-    content.push({ type: "text", text: message });
-  }
+  const content: Array<Record<string, unknown>> = typeof contentInput === "string"
+    ? (contentInput.trim() ? [{ type: "text", text: contentInput }] : [])
+    : [...contentInput];
   const form = new FormData();
   attachments.forEach((file, index) => {
     const uploadId = `upload-${Date.now().toString(36)}-${index}`;

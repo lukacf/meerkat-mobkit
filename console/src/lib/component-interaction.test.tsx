@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import * as React from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { JSDOM } from "jsdom";
 
@@ -19,29 +20,30 @@ test("ConsoleActivityRail wires roster panel actions to host callbacks", async (
   const root = createRoot(rootElement);
 
   try {
-    root.render(
-      <ConsoleActivityRail
-        Icon={({ name }) => <span aria-hidden="true" data-icon={name} />}
-        viewState={{
-          collapsed: false,
-          panels: [
-            {
-              kind: "roster",
-              id: "team",
-              title: "Team",
-              actions: [{ id: "refresh", label: "Refresh" }],
-              groups: [],
-            },
-          ],
-        }}
-        onTogglePicker={() => undefined}
-        onCollapse={() => undefined}
-        onPanelAction={(panelId, actionId) => calls.push({ panelId, actionId })}
-        renderSlotPreview={() => null}
-      />,
-    );
+    flushSync(() => {
+      root.render(
+        <ConsoleActivityRail
+          Icon={({ name }) => <span aria-hidden="true" data-icon={name} />}
+          viewState={{
+            collapsed: false,
+            panels: [
+              {
+                kind: "roster",
+                id: "team",
+                title: "Team",
+                actions: [{ id: "refresh", label: "Refresh" }],
+                groups: [],
+              },
+            ],
+          }}
+          onTogglePicker={() => undefined}
+          onCollapse={() => undefined}
+          onPanelAction={(panelId, actionId) => calls.push({ panelId, actionId })}
+          renderSlotPreview={() => null}
+        />,
+      );
+    });
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
     const button = dom.window.document.querySelector("[data-testid='activity-action:team:refresh']");
     assert.ok(button);
     button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));

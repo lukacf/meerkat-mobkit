@@ -4947,11 +4947,8 @@ async function rpc(baseUrl, method, params) {
   }
   return result.result;
 }
-async function sendConsoleMultipart(baseUrl, identity, message, attachments, origin, idempotencyKey, handlingMode = "queue") {
-  const content = [];
-  if (message.trim()) {
-    content.push({ type: "text", text: message });
-  }
+async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments, origin, idempotencyKey, handlingMode = "queue") {
+  const content = typeof contentInput === "string" ? contentInput.trim() ? [{ type: "text", text: contentInput }] : [] : [...contentInput];
   const form = new FormData();
   attachments.forEach((file, index) => {
     const uploadId = `upload-${Date.now().toString(36)}-${index}`;
