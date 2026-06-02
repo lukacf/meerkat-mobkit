@@ -9,6 +9,7 @@ import {
   sendConsole,
   sendConsoleMultipart,
   subscribeTimelineEvents,
+  uploadConsoleBlobMultipart,
 } from "./network";
 import { mapFramesToTimelineEntries } from "./adapters";
 
@@ -365,6 +366,103 @@ test("sendConsoleMultipart posts identity multipart sends with upload placeholde
     assert.equal(hasFilePart, true);
     assert.equal(result.input_frame_id, "console-frame-1");
     assert.equal(result.cursor, "console:1");
+  } finally {
+    Date.now = originalNow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("sendConsoleMultipart preserves structured content before upload placeholders", async () => {
+  const originalFetch = globalThis.fetch;
+  let payload: Record<string, unknown> | null = null;
+
+  globalThis.fetch = (async (_input, init) => {
+    const form = init?.body as FormData;
+    payload = JSON.parse(String(form.get("payload") || "{}")) as Record<string, unknown>;
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "mobkit/console/send:1",
+      result: {
+        interaction_id: "turn-structured",
+        identity: "agent-a",
+        status: "accepted",
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const originalNow = Date.now;
+  try {
+    Date.now = () => Number.parseInt("test", 36);
+    await sendConsoleMultipart(
+      "http://127.0.0.1:7000",
+      "agent-a",
+      [
+        { type: "text", text: "Keep this block" },
+        { type: "tool_context", id: "ctx-1" },
+      ],
+      [new File(["png"], "badge.png", { type: "image/png" })],
+      "console:panel",
+      "idem-structured",
+    );
+
+    const params = payload?.params as { content?: Array<Record<string, unknown>> } | undefined;
+    assert.deepEqual(params?.content, [
+      { type: "text", text: "Keep this block" },
+      { type: "tool_context", id: "ctx-1" },
+      {
+        type: "image_upload",
+        upload_id: "upload-test-0",
+        media_type: "image/png",
+        alt: "badge.png",
+      },
+    ]);
+  } finally {
+    Date.now = originalNow;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("uploadConsoleBlobMultipart posts blob upload multipart RPC with one file", async () => {
+  const originalFetch = globalThis.fetch;
+  let payload: Record<string, unknown> | null = null;
+  let hasFilePart = false;
+
+  globalThis.fetch = (async (_input, init) => {
+    const form = init?.body as FormData;
+    payload = JSON.parse(String(form.get("payload") || "{}")) as Record<string, unknown>;
+    hasFilePart = Boolean(form.get("file:upload-test-0"));
+    return new Response(JSON.stringify({
+      jsonrpc: "2.0",
+      id: "mobkit/blob/upload:1",
+      result: {
+        blob_id: "blob-1",
+        media_type: "image/png",
+        size: 3,
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  const originalNow = Date.now;
+  try {
+    Date.now = () => Number.parseInt("test", 36);
+    const result = await uploadConsoleBlobMultipart("http://127.0.0.1:7000", {
+      file: new File(["png"], "badge.png", { type: "image/png" }),
+    });
+    assert.equal(hasFilePart, true);
+    assert.equal(payload?.method, "mobkit/blob/upload");
+    assert.deepEqual((payload?.params as { upload?: Record<string, unknown> }).upload, {
+      type: "image_upload",
+      upload_id: "upload-test-0",
+      media_type: "image/png",
+      alt: "badge.png",
+    });
+    assert.deepEqual(result, { blob_id: "blob-1", url: undefined });
   } finally {
     Date.now = originalNow;
     globalThis.fetch = originalFetch;

@@ -63,6 +63,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: npm --prefix console install --silent --no-fund --no-audit
       - run: npm --prefix console run phase0:types --silent
+      - run: npm --prefix console run contracts:console --silent
+      - run: npm --prefix console run phase1:targets --silent
+      - run: npm --prefix console run headless:transport --silent
+      - run: npm --prefix console run components:reuse --silent
+      - run: npm --prefix console run fixtures:console-customization --silent
+      - run: npm --prefix console run embedded:freshness --silent
       - run: npm --prefix console exec -- playwright install --with-deps chromium
       - run: scripts/repo-cargo build -p meerkat-mobkit --example library_mode_reference
       - run: npm --prefix console run e2e:browser --silent

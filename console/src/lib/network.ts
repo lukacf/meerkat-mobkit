@@ -2,6 +2,12 @@ import {
   normalizeConsoleInteractionRejectedError,
   normalizeReplayUnavailableError,
 } from "@console-core";
+import {
+  CONSOLE_REST_PATHS,
+  CONSOLE_RPC_METHODS,
+  CONSOLE_RPC_PATHS,
+  CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE,
+} from "./contract";
 import type {
   ConsoleFrame,
   ConsoleTimelineAccepted,
@@ -224,7 +230,7 @@ async function rpc<T>(
   method: string,
   params: Record<string, unknown>
 ): Promise<T> {
-  const response = await fetch(`${baseUrl}/console/rpc`, {
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -249,7 +255,7 @@ async function rpc<T>(
       throw error;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data) as ConsoleReplayUnavailablePayload | null;
-    if (replayError || result.error.code === -32013) {
+    if (replayError || result.error.code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
       const error = new Error(
         `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`,
       );
@@ -272,16 +278,15 @@ async function rpc<T>(
 export async function sendConsoleMultipart(
   baseUrl: string,
   identity: string,
-  message: string,
+  contentInput: string | Array<Record<string, unknown>>,
   attachments: File[],
   origin: string,
   idempotencyKey: string,
   handlingMode: "queue" | "steer" = "queue",
 ): Promise<ConsoleTimelineAccepted> {
-  const content: Array<Record<string, unknown>> = [];
-  if (message.trim()) {
-    content.push({ type: "text", text: message });
-  }
+  const content: Array<Record<string, unknown>> = typeof contentInput === "string"
+    ? (contentInput.trim() ? [{ type: "text", text: contentInput }] : [])
+    : [...contentInput];
   const form = new FormData();
   attachments.forEach((file, index) => {
     const uploadId = `upload-${Date.now().toString(36)}-${index}`;
@@ -295,8 +300,8 @@ export async function sendConsoleMultipart(
   });
   form.append("payload", JSON.stringify({
     jsonrpc: "2.0",
-    id: `mobkit/console/send:${Date.now()}`,
-    method: "mobkit/console/send",
+    id: `${CONSOLE_RPC_METHODS.send}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.send,
     params: {
       identity,
       content,
@@ -306,19 +311,73 @@ export async function sendConsoleMultipart(
     },
   }));
 
-  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
     method: "POST",
     body: form,
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}: ${text}`);
   }
   const result = await response.json();
   if (result.error) {
-    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return normalizeConsoleTimelineAccepted(result.result, identity);
+}
+
+export async function uploadConsoleBlobMultipart(
+  baseUrl: string,
+  input: { blobId?: string; file?: File; mediaType?: string },
+): Promise<{ blob_id: string; url?: string }> {
+  const file = input.file;
+  if (!file) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} requires a file`);
+  }
+  const mediaType = input.mediaType || file.type || "application/octet-stream";
+  const uploadId = input.blobId?.trim() || `upload-${Date.now().toString(36)}-0`;
+  const uploadFile = file.type === mediaType
+    ? file
+    : new File([file], file.name || "upload", { type: mediaType });
+  const form = new FormData();
+  form.append(`file:${uploadId}`, uploadFile, uploadFile.name || file.name || "upload");
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `${CONSOLE_RPC_METHODS.blobUpload}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.blobUpload,
+    params: {
+      upload: {
+        type: "image_upload",
+        upload_id: uploadId,
+        media_type: mediaType,
+        alt: file.name || "upload",
+      },
+    },
+  }));
+
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  const record = result.result && typeof result.result === "object"
+    ? result.result as Record<string, unknown>
+    : {};
+  const blobId = typeof record.blob_id === "string" ? record.blob_id : "";
+  if (!blobId) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} returned an invalid blob payload`);
+  }
+  return {
+    blob_id: blobId,
+    url: typeof record.url === "string" ? record.url : undefined,
+  };
 }
 
 const TERMINAL_SSE_EVENTS = new Set([
@@ -575,7 +634,7 @@ export async function queryTimeline(
   },
   limit = 400,
 ): Promise<ConsoleTimelinePage> {
-  const result = await rpc<unknown>(baseUrl, "mobkit/console/query_timeline", {
+  const result = await rpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.queryTimeline, {
     limit,
     ...(target.identity?.trim() ? { identity: target.identity.trim() } : {}),
     ...(target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {}),
@@ -605,7 +664,7 @@ export async function sendConsole(
   idempotencyKey: string,
   handlingMode: "queue" | "steer" = "queue",
 ): Promise<ConsoleTimelineAccepted> {
-  const accepted = await rpc<unknown>(baseUrl, "mobkit/console/send", {
+  const accepted = await rpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.send, {
     identity,
     content,
     origin,
@@ -613,7 +672,7 @@ export async function sendConsole(
     handling_mode: handlingMode,
   });
   if (!accepted || typeof accepted !== "object") {
-    throw new Error("mobkit/console/send returned an invalid acceptance payload");
+    throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
   }
   const record = accepted as Record<string, unknown>;
   return normalizeConsoleTimelineAccepted(record, identity);
@@ -647,7 +706,7 @@ function timelineStreamPath(target: { identity?: string; conversationId?: string
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+  return `${CONSOLE_REST_PATHS.timelineStream}${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 
 function cursorFromTimelineFrame(frame: ConsoleFrame): string | undefined {

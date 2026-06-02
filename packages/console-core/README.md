@@ -2,7 +2,7 @@
 
 `console-core` owns the normalized, UI-facing model for the shared console surfaces.
 
-## Stable domains
+## Workspace-stable domains
 
 - `conversation`
 - `dock`
@@ -26,7 +26,7 @@
 - panel-local session state such as drafts, provider/model selection, permissions, branches, and execution mode
 - host-specific adapters from app contracts into shared models
 
-## Consumer recipe
+## Internal consumer recipe
 
 1. Define a host target union that extends `ConsoleDockTarget`.
 2. Use `createConsoleDockState`, `openConsoleDockTarget`, `splitConsoleDockPanel`, and related helpers directly, or pair them with `useConsoleDockController` from `console-components`.
@@ -36,8 +36,14 @@
    - `ConsoleActivityRailViewState`
 4. Keep any panel-local state in a host-owned map keyed by `panelId`.
 
-## Public entrypoint
+## Workspace entrypoint
 
-Import from `@console-core`. The root barrel is curated and explicit; compatibility aliases should not be treated as stable package API.
+Import from `@console-core` inside this repository's console workspace. The root
+barrel is curated and explicit, but this package is currently private and is
+not an npm-public API promise.
+
+External hosts must not depend on this package name until MobKit makes an
+explicit public-package or SDK-subpath decision. Compatibility aliases should
+not be treated as stable package API.
 
 The legacy Node runtime helpers remain available at `@console-core/runtime` for existing consumers that still rely on the package root helper bundle.

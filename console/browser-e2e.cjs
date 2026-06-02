@@ -130,6 +130,30 @@ async function assertNoText(page, text) {
   assert.equal(count, 0, `did not expect text to be visible: ${text}`);
 }
 
+function rpcMethodsFromRequests(requests) {
+  return requests
+    .filter((request) => request.method === "POST" && request.url === "/console/rpc")
+    .map((request) => {
+      try {
+        return JSON.parse(request.body || "{}").method;
+      } catch (_) {
+        return null;
+      }
+    })
+    .filter((method) => typeof method === "string");
+}
+
+async function waitForRpcMethod(server, method, minCount = 1) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const count = rpcMethodsFromRequests(server.requests)
+      .filter((candidate) => candidate === method)
+      .length;
+    if (count >= minCount) return;
+    await sleep(50);
+  }
+  throw new Error(`expected ${method} RPC; saw ${JSON.stringify(rpcMethodsFromRequests(server.requests))}`);
+}
+
 function startMockConsoleServer(port, options = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const html = fs.readFileSync(path.join(__dirname, "dist", "index.html"), "utf8");
@@ -178,7 +202,11 @@ function startMockConsoleServer(port, options = {}) {
   const includeImageAgent = options.includeImageAgent === true;
   const includeBusyWorker = options.includeBusyWorker === true;
   const includeToolOnlyWorker = options.includeToolOnlyWorker === true;
+  const includeLifecycleActions = options.includeLifecycleActions === true;
   const collapseWorkersSection = options.collapseWorkersSection === true;
+  const identityAffordances = includeLifecycleActions
+    ? { can_send_message: true, can_respawn: true, can_retire: true }
+    : { can_send_message: true };
   const requests = [];
 
   function cursorOrdinal(cursor, cursorOrder) {
@@ -335,7 +363,7 @@ function startMockConsoleServer(port, options = {}) {
                   profile: "lead",
                   state: "running",
                   addressable: true,
-                  affordances: { can_send_message: true },
+                  affordances: identityAffordances,
                 },
                 {
                   agent_id: "legacy-router",
@@ -447,6 +475,32 @@ function startMockConsoleServer(port, options = {}) {
       if (method === "POST" && url === "/console/rpc") {
         const payload = JSON.parse(body || "{}");
         const rpcId = payload.id || "rpc";
+        if (payload.method === "mobkit/capabilities") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              version: "browser-e2e",
+              methods: [
+                "mobkit/capabilities",
+                "mobkit/console/send",
+                "mobkit/console/inspect_identity",
+                "mobkit/console/query_timeline",
+                "mobkit/blob/upload",
+                "mobkit/retire",
+                "mobkit/respawn",
+                "mobkit/reset",
+                "mobkit/routing/routes/list",
+                "mobkit/delivery/history",
+                "mobkit/gating/pending",
+                "mobkit/gating/audit",
+                "mobkit/gating/decide",
+              ],
+            },
+          }));
+          return;
+        }
         if (payload.method === "mobkit/console/query_timeline") {
           const identity = payload.params?.identity;
           let framesForIdentity = null;
@@ -517,6 +571,112 @@ function startMockConsoleServer(port, options = {}) {
             jsonrpc: "2.0",
             id: rpcId,
             result: { identity: payload.params.identity, peers: [] },
+          }));
+          return;
+        }
+        if (
+          payload.method === "mobkit/retire" ||
+          payload.method === "mobkit/respawn" ||
+          payload.method === "mobkit/reset"
+        ) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              accepted: true,
+              identity: payload.params?.identity,
+              method: payload.method,
+            },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/routing/routes/list") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              routes: [{
+                route_key: "route-control-1",
+                recipient: "identity:luka",
+                channel: "identity",
+                sink: "console",
+                target_module: "mobkit",
+                retry_max: 2,
+                backoff_ms: 25,
+                rate_limit_per_minute: 60,
+              }],
+            },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/delivery/history") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              deliveries: [{
+                delivery_id: "delivery-control-1",
+                route_id: "route-control-1",
+                recipient: "identity:luka",
+                sink: "console",
+                target_module: "mobkit",
+                status: "delivered",
+                first_attempt_ms: 1717171700,
+                final_attempt_ms: 1717171710,
+                attempts: [{ attempt: 1, status: "delivered", backoff_ms: 0 }],
+              }],
+            },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/gating/pending") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              pending: [{
+                pending_id: "gate-control-1",
+                action_id: "deploy-preview",
+                identity: "identity:luka",
+                waited_ms: 1_500,
+                risk_tier: "medium",
+                payload: { branch: "codex/console-progressive-customization" },
+              }],
+            },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/gating/audit") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              entries: [{
+                audit_id: "gate-audit-1",
+                event_type: "decision_recorded",
+                actor: "console-browser-proof",
+                decided_at_ms: 1717171717,
+              }],
+            },
+          }));
+          return;
+        }
+        if (payload.method === "mobkit/gating/decide") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              pending_id: payload.params?.pending_id,
+              approver_id: payload.params?.approver_id,
+              decision: payload.params?.decision,
+              outcome: "accepted",
+            },
           }));
           return;
         }
@@ -2231,6 +2391,47 @@ async function runConsoleMountsWithoutCryptoRandomUuidProof() {
   }
 }
 
+async function runHeadlessControlSurfaceBrowserProof() {
+  const port = await reservePort();
+  const server = await startMockConsoleServer(port, {
+    includeLifecycleActions: true,
+  });
+  let browser;
+
+  try {
+    browser = await launchBrowser();
+    const page = await browser.newPage();
+    await gotoConsole(page, `${server.baseUrl}/console`);
+
+    await page.getByTestId("nav:routing").click();
+    await page.getByTestId("routing-panel").waitFor({ timeout: 10_000 });
+    await page.getByTestId("routing-route:route-control-1").waitFor({ timeout: 10_000 });
+    await page.getByTestId("routing-delivery:delivery-control-1").waitFor({ timeout: 10_000 });
+    await waitForRpcMethod(server, "mobkit/routing/routes/list");
+    await waitForRpcMethod(server, "mobkit/delivery/history");
+
+    await page.getByTestId("nav:gating").click();
+    await page.getByTestId("gating-panel").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-pending:gate-control-1").waitFor({ timeout: 10_000 });
+    await waitForRpcMethod(server, "mobkit/gating/pending");
+    await waitForRpcMethod(server, "mobkit/gating/audit");
+    await page.getByTestId("gating-action:gate-control-1:approve").click();
+    await waitForRpcMethod(server, "mobkit/gating/decide");
+
+    await openSidebarAgentChat(page, "Identity Luka");
+    await page.getByTestId("conv-action:retire").waitFor({ timeout: 10_000 });
+    await page.getByTestId("conv-action:retire").click();
+    await waitForRpcMethod(server, "mobkit/retire");
+
+    process.stdout.write("browser headless control surface ok\n");
+  } finally {
+    if (browser) {
+      await browser.close();
+    }
+    await server.close();
+  }
+}
+
 async function main() {
   const repoCargo = path.join(repoRoot, "scripts", "repo-cargo");
   if (fs.existsSync(repoCargo)) {
@@ -2257,6 +2458,7 @@ async function main() {
   await runUserInputEchoClearsOptimisticPromptProof();
   await runLiveSystemNoticeAppearsInOpenChatProof();
   await runConsoleMountsWithoutCryptoRandomUuidProof();
+  await runHeadlessControlSurfaceBrowserProof();
 }
 
 main().catch((error) => {

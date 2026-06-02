@@ -1462,9 +1462,224 @@ function buildConsoleDockViewState(state, options = {}) {
   };
 }
 
+// ../packages/console-core/src/sidebar-preferences.ts
+var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
+var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
+var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
+var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
+var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
+var SIDEBAR_STORAGE_PREFIXES = [
+  SIDEBAR_PINS_STORAGE_PREFIX,
+  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
+  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
+  SECTION_COLLAPSE_STORAGE_PREFIX,
+  SUBGROUP_COLLAPSE_STORAGE_PREFIX
+];
+function sidebarStorageKey(prefix, namespace) {
+  return `${prefix}:${namespace?.trim() || "default"}`;
+}
+function readSidebarStringSet(storage, key) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
+    return new Set(parsed.filter((value) => typeof value === "string" && value.trim().length > 0));
+  } catch {
+    return null;
+  }
+}
+function writeSidebarStringSet(storage, key, value) {
+  if (!storage) return;
+  try {
+    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+  } catch {
+  }
+}
+function readSidebarStringList(storage, key) {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(key);
+    if (raw === null) return null;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const value of parsed) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+function writeSidebarStringList(storage, key, value) {
+  if (!storage) return;
+  try {
+    const seen = /* @__PURE__ */ new Set();
+    const normalized = value.map((item) => item.trim()).filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+    storage.setItem(key, JSON.stringify(normalized));
+  } catch {
+  }
+}
+function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
+  if (!storage) return;
+  try {
+    const scopePrefix = encodeURIComponent(scope.trim());
+    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
+    const stale = [];
+    for (let i = 0; i < storage.length; i += 1) {
+      const key = storage.key(i);
+      if (!key || activeKeys.has(key)) continue;
+      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
+        stale.push(key);
+      }
+    }
+    for (const key of stale) storage.removeItem(key);
+  } catch {
+  }
+}
+function applyConsoleSidebarOrder(items, storedOrder) {
+  const available = new Set(items);
+  const seen = /* @__PURE__ */ new Set();
+  const ordered = [];
+  for (const item of storedOrder || []) {
+    if (!available.has(item) || seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
+  for (const item of items) {
+    if (seen.has(item)) continue;
+    ordered.push(item);
+    seen.add(item);
+  }
+  return ordered;
+}
+function reorderConsoleSidebarOrder(items, dragged, target, where) {
+  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
+  const withoutDragged = items.filter((item) => item !== dragged);
+  const targetIndex = withoutDragged.indexOf(target);
+  if (targetIndex < 0) return items;
+  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
+  const next = [...withoutDragged];
+  next.splice(insertAt, 0, dragged);
+  return next;
+}
+
 // ../packages/console-core/src/format.ts
 function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
+}
+
+// ../packages/console-core/src/targets.ts
+var LEGACY_CONTROL_TARGETS = {
+  topology: "mobkit/topology",
+  health: "mobkit/activity",
+  timeline: "mobkit/activity",
+  roster: "mobkit/roster",
+  routing: "mobkit/routing",
+  gating: "mobkit/gating",
+  gates: "mobkit/gating",
+  logs: "mobkit/logs"
+};
+function migrateConsoleWorkbenchTarget(input) {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const id = stringValue(input.id);
+  const kind = stringValue(input.kind);
+  const title = stringValue(input.title);
+  if (!id || !kind || !title) {
+    return null;
+  }
+  if (kind === "agent-chat") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId) || id;
+    return {
+      ...baseTarget(input, id, "mobkit/identity-chat", title),
+      identity,
+      memberId: stringValue(input.memberId),
+      addressingMode: "identity"
+    };
+  }
+  if (kind === "identity-inspect") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId) || id.replace(/^inspect:/, "");
+    return {
+      ...baseTarget(input, id, "mobkit/identity-inspect", title),
+      identity,
+      memberId: stringValue(input.memberId)
+    };
+  }
+  const controlKind = LEGACY_CONTROL_TARGETS[kind];
+  if (controlKind) {
+    return baseTarget(input, id, controlKind, title);
+  }
+  if (kind.startsWith("mobkit/")) {
+    return normalizeMobKitWorkbenchTarget(input, id, kind, title);
+  }
+  if (isNamespacedKind(kind) && kind !== "mobkit/unknown") {
+    const payloadVersion = typeof input.payloadVersion === "number" && Number.isSafeInteger(input.payloadVersion) ? input.payloadVersion : 1;
+    return {
+      ...baseTarget(input, id, kind, title),
+      payloadVersion,
+      payload: input.payload,
+      provenance: "host"
+    };
+  }
+  return null;
+}
+function normalizeMobKitWorkbenchTarget(input, id, kind, title) {
+  if (kind === "mobkit/identity-chat") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId);
+    if (!identity) return null;
+    return {
+      ...baseTarget(input, id, kind, title),
+      identity,
+      memberId: stringValue(input.memberId),
+      addressingMode: "identity"
+    };
+  }
+  if (kind === "mobkit/identity-inspect") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId);
+    if (!identity) return null;
+    return {
+      ...baseTarget(input, id, kind, title),
+      identity,
+      memberId: stringValue(input.memberId)
+    };
+  }
+  if (Object.values(LEGACY_CONTROL_TARGETS).includes(kind)) {
+    return baseTarget(input, id, kind, title);
+  }
+  return null;
+}
+function baseTarget(input, id, kind, title) {
+  return {
+    id,
+    kind,
+    title,
+    subtitle: stringValue(input.subtitle),
+    iconName: stringValue(input.iconName),
+    badgeLabel: stringValue(input.badgeLabel)
+  };
+}
+function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : void 0;
+}
+function isNamespacedKind(kind) {
+  const [namespace, name, ...rest] = kind.split("/");
+  return Boolean(namespace && name && rest.length === 0);
 }
 
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
@@ -4613,6 +4828,39 @@ function errorMessage(error) {
   return String(error);
 }
 
+// src/lib/contract.ts
+var CONSOLE_REST_PATHS = {
+  experience: "/console/experience",
+  modules: "/console/modules",
+  identities: "/console/identities",
+  timeline: "/console/timeline",
+  timelineStream: "/console/timeline/stream",
+  identityTimelineStreamTemplate: "/console/identity/{identity}/stream",
+  legacySend: "/console/send"
+};
+var CONSOLE_RPC_PATHS = {
+  jsonRpc: "/console/rpc",
+  multipartJsonRpc: "/console/rpc/multipart"
+};
+var CONSOLE_RPC_METHODS = {
+  capabilities: "mobkit/capabilities",
+  send: "mobkit/console/send",
+  listIdentities: "mobkit/console/list_identities",
+  inspectIdentity: "mobkit/console/inspect_identity",
+  queryTimeline: "mobkit/console/query_timeline",
+  blobUpload: "mobkit/blob/upload",
+  retireIdentity: "mobkit/retire",
+  respawnIdentity: "mobkit/respawn",
+  resetIdentity: "mobkit/reset",
+  routingRoutesList: "mobkit/routing/routes/list",
+  deliveryHistory: "mobkit/delivery/history",
+  gatingPending: "mobkit/gating/pending",
+  gatingAudit: "mobkit/gating/audit",
+  gatingDecide: "mobkit/gating/decide"
+};
+var CONSOLE_BLOB_PATH_PREFIX = "/blobs/";
+var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013;
+
 // src/lib/network.ts
 function unwrapConsoleEnvelope(eventName, data) {
   if (!data || typeof data !== "object") {
@@ -4772,7 +5020,7 @@ async function fetchJson(baseUrl, path, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOU
   }
 }
 async function rpc(baseUrl, method, params) {
-  const response = await fetch(`${baseUrl}/console/rpc`, {
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -4795,7 +5043,7 @@ async function rpc(baseUrl, method, params) {
       throw error;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
-    if (replayError || result.error.code === -32013) {
+    if (replayError || result.error.code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
       const error = new Error(
         `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`
       );
@@ -4810,11 +5058,8 @@ async function rpc(baseUrl, method, params) {
   }
   return result.result;
 }
-async function sendConsoleMultipart(baseUrl, identity, message, attachments, origin, idempotencyKey, handlingMode = "queue") {
-  const content = [];
-  if (message.trim()) {
-    content.push({ type: "text", text: message });
-  }
+async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments, origin, idempotencyKey, handlingMode = "queue") {
+  const content = typeof contentInput === "string" ? contentInput.trim() ? [{ type: "text", text: contentInput }] : [] : [...contentInput];
   const form = new FormData();
   attachments.forEach((file, index) => {
     const uploadId = `upload-${Date.now().toString(36)}-${index}`;
@@ -4828,8 +5073,8 @@ async function sendConsoleMultipart(baseUrl, identity, message, attachments, ori
   });
   form.append("payload", JSON.stringify({
     jsonrpc: "2.0",
-    id: `mobkit/console/send:${Date.now()}`,
-    method: "mobkit/console/send",
+    id: `${CONSOLE_RPC_METHODS.send}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.send,
     params: {
       identity,
       content,
@@ -4838,19 +5083,64 @@ async function sendConsoleMultipart(baseUrl, identity, message, attachments, ori
       handling_mode: handlingMode
     }
   }));
-  const response = await fetch(`${baseUrl}/console/rpc/multipart`, {
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
     method: "POST",
     body: form
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`mobkit/console/send multipart failed ${response.status}: ${text}`);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}: ${text}`);
   }
   const result = await response.json();
   if (result.error) {
-    throw new Error(`mobkit/console/send RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return normalizeConsoleTimelineAccepted(result.result, identity);
+}
+async function uploadConsoleBlobMultipart(baseUrl, input) {
+  const file = input.file;
+  if (!file) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} requires a file`);
+  }
+  const mediaType = input.mediaType || file.type || "application/octet-stream";
+  const uploadId = input.blobId?.trim() || `upload-${Date.now().toString(36)}-0`;
+  const uploadFile = file.type === mediaType ? file : new File([file], file.name || "upload", { type: mediaType });
+  const form = new FormData();
+  form.append(`file:${uploadId}`, uploadFile, uploadFile.name || file.name || "upload");
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `${CONSOLE_RPC_METHODS.blobUpload}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.blobUpload,
+    params: {
+      upload: {
+        type: "image_upload",
+        upload_id: uploadId,
+        media_type: mediaType,
+        alt: file.name || "upload"
+      }
+    }
+  }));
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  const record = result.result && typeof result.result === "object" ? result.result : {};
+  const blobId = typeof record.blob_id === "string" ? record.blob_id : "";
+  if (!blobId) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} returned an invalid blob payload`);
+  }
+  return {
+    blob_id: blobId,
+    url: typeof record.url === "string" ? record.url : void 0
+  };
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
@@ -5025,7 +5315,7 @@ function flushTrailingSseBlock(buffer, onFrame) {
   }
 }
 async function queryTimeline(baseUrl, target, limit = 400) {
-  const result = await rpc(baseUrl, "mobkit/console/query_timeline", {
+  const result = await rpc(baseUrl, CONSOLE_RPC_METHODS.queryTimeline, {
     limit,
     ...target.identity?.trim() ? { identity: target.identity.trim() } : {},
     ...target.conversationId?.trim() ? { conversation_id: target.conversationId.trim() } : {},
@@ -5047,7 +5337,7 @@ async function queryTimeline(baseUrl, target, limit = 400) {
   };
 }
 async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue") {
-  const accepted = await rpc(baseUrl, "mobkit/console/send", {
+  const accepted = await rpc(baseUrl, CONSOLE_RPC_METHODS.send, {
     identity,
     content,
     origin,
@@ -5055,7 +5345,7 @@ async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, h
     handling_mode: handlingMode
   });
   if (!accepted || typeof accepted !== "object") {
-    throw new Error("mobkit/console/send returned an invalid acceptance payload");
+    throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
   }
   const record = accepted;
   return normalizeConsoleTimelineAccepted(record, identity);
@@ -5079,7 +5369,7 @@ function timelineStreamPath(target) {
   const params = new URLSearchParams();
   if (target.identity?.trim()) params.set("identity", target.identity.trim());
   if (target.conversationId?.trim()) params.set("conversation_id", target.conversationId.trim());
-  return `/console/timeline/stream${params.size > 0 ? `?${params.toString()}` : ""}`;
+  return `${CONSOLE_REST_PATHS.timelineStream}${params.size > 0 ? `?${params.toString()}` : ""}`;
 }
 function cursorFromTimelineFrame(frame) {
   const cursor = frame.cursor?.trim();
@@ -5155,6 +5445,296 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
     stopped = true;
     controller?.abort();
   };
+}
+
+// src/lib/headless.ts
+var CONSOLE_COMMAND_NAMES = {
+  inspectIdentity: "inspectIdentity",
+  retireIdentity: "retireIdentity",
+  respawnIdentity: "respawnIdentity",
+  resetIdentity: "resetIdentity",
+  listRoutingRoutes: "listRoutingRoutes",
+  listDeliveryHistory: "listDeliveryHistory",
+  listGatingPending: "listGatingPending",
+  listGatingAudit: "listGatingAudit",
+  decideGating: "decideGating"
+};
+var LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
+var CONSOLE_COMMAND_SPECS = {
+  [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
+    method: CONSOLE_RPC_METHODS.inspectIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.retireIdentity]: {
+    method: CONSOLE_RPC_METHODS.retireIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.respawnIdentity]: {
+    method: CONSOLE_RPC_METHODS.respawnIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.resetIdentity]: {
+    method: CONSOLE_RPC_METHODS.resetIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.listRoutingRoutes]: {
+    method: CONSOLE_RPC_METHODS.routingRoutesList,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/routing"])
+  },
+  [CONSOLE_COMMAND_NAMES.listDeliveryHistory]: {
+    method: CONSOLE_RPC_METHODS.deliveryHistory,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/routing"])
+  },
+  [CONSOLE_COMMAND_NAMES.listGatingPending]: {
+    method: CONSOLE_RPC_METHODS.gatingPending,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES.listGatingAudit]: {
+    method: CONSOLE_RPC_METHODS.gatingAudit,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES.decideGating]: {
+    method: CONSOLE_RPC_METHODS.gatingDecide,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  }
+};
+function createHttpConsoleTransport({
+  baseUrl,
+  fetchTimeoutMs
+}) {
+  const timeout = () => typeof fetchTimeoutMs === "function" ? fetchTimeoutMs() : fetchTimeoutMs;
+  return {
+    loadExperience: () => fetchJson(baseUrl, CONSOLE_REST_PATHS.experience, timeout()),
+    loadModules: () => fetchJson(baseUrl, CONSOLE_REST_PATHS.modules, timeout()),
+    capabilities: async () => normalizeCapabilities(
+      await callConsoleRpc(baseUrl, CONSOLE_RPC_METHODS.capabilities)
+    ),
+    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit),
+    subscribeTimeline: (input, onFrame) => subscribeTimelineEvents(baseUrl, input, onFrame),
+    send: (input) => {
+      const handlingMode = input.handlingMode ?? "queue";
+      if (input.attachments?.length) {
+        return sendConsoleMultipart(
+          baseUrl,
+          input.identity,
+          input.content,
+          input.attachments,
+          input.origin,
+          input.idempotencyKey,
+          handlingMode
+        );
+      }
+      return sendConsole(
+        baseUrl,
+        input.identity,
+        input.content,
+        input.origin,
+        input.idempotencyKey,
+        handlingMode
+      );
+    },
+    executeCommand: async (input) => {
+      const spec = commandSpec(input.command);
+      const params = { ...input.params || {} };
+      if (identityCommandMethods.has(spec.method)) {
+        const identity = stringValue2(params.identity) || identityForCommandTarget(input.target);
+        if (!identity) {
+          throw new Error(`${input.command} requires an identity-addressed target`);
+        }
+        params.identity = identity;
+      }
+      let result;
+      try {
+        result = await callConsoleRpc(baseUrl, spec.method, params);
+      } catch (error) {
+        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity) {
+          throw error;
+        }
+        result = await callConsoleRpc(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
+      }
+      return {
+        command: input.command,
+        accepted: true,
+        result
+      };
+    },
+    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input),
+    blobUrl: (blobId) => `${baseUrl}${CONSOLE_BLOB_PATH_PREFIX}${encodeURIComponent(blobId)}`
+  };
+}
+function createMobKitConsoleController({
+  transport
+}) {
+  const facts = createFactFactory();
+  return {
+    transport,
+    facts,
+    timeline: createTimelineController(transport, facts),
+    commands: createConsoleCommandSurface(transport, facts)
+  };
+}
+function createConsoleCommandSurface(transport, facts) {
+  let cachedCapabilities = null;
+  const capabilities = async () => {
+    if (!cachedCapabilities) {
+      cachedCapabilities = await transport.capabilities();
+    }
+    return cachedCapabilities;
+  };
+  return {
+    async sendMessage(target, input) {
+      const identity = identityForSendTarget(target);
+      if (!identity) {
+        throw new Error(`target ${target.kind} cannot send MobKit console messages`);
+      }
+      const currentCapabilities = await capabilities();
+      requireCapability(currentCapabilities, CONSOLE_RPC_METHODS.send);
+      const optimistic = facts.optimistic({
+        idempotencyKey: input.idempotencyKey,
+        targetId: target.id
+      }, input.idempotencyKey);
+      const accepted = await transport.send({
+        ...input,
+        identity
+      });
+      return {
+        optimistic,
+        accepted: facts.mobkit(accepted, {
+          routeOrMethod: CONSOLE_RPC_METHODS.send,
+          capabilityVersion: currentCapabilities.version,
+          correlationId: input.idempotencyKey,
+          cursor: accepted.cursor
+        })
+      };
+    },
+    async execute(input) {
+      if (!isMobKitTarget(input.target)) {
+        throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
+      }
+      const spec = commandSpec(input.command);
+      if (!spec.targetKinds.has(input.target.kind)) {
+        throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
+      }
+      const currentCapabilities = await capabilities();
+      requireCapability(currentCapabilities, spec.method);
+      if (!transport.executeCommand) {
+        throw new Error(`transport does not implement command ${input.command}`);
+      }
+      return transport.executeCommand(input);
+    }
+  };
+}
+function createTimelineController(transport, facts) {
+  return {
+    async query(input) {
+      const page = await transport.queryTimeline(input);
+      return facts.mobkit(page, {
+        routeOrMethod: CONSOLE_RPC_METHODS.queryTimeline,
+        cursor: page.latestCursor || page.nextCursor
+      });
+    },
+    async subscribeWithBackfill(input, onFrame) {
+      const delivered = /* @__PURE__ */ new Set();
+      const deliver = (frame) => {
+        const key = frame.id || `${frame.event}:${frame.cursor || frame.timestampMs || delivered.size}`;
+        if (delivered.has(key)) return;
+        delivered.add(key);
+        onFrame(facts.mobkit(frame, {
+          routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
+          cursor: frame.cursor
+        }));
+      };
+      const seed = await transport.queryTimeline({
+        ...input,
+        mode: "recent"
+      });
+      seed.frames.forEach(deliver);
+      const after = seed.latestCursor || seed.nextCursor || input.after;
+      const unsubscribe = transport.subscribeTimeline({ ...input, after }, (frame) => {
+        if (frame.event === "replay_unavailable") {
+          void transport.queryTimeline({ ...input, mode: "recent" }).then((page) => {
+            page.frames.forEach(deliver);
+          });
+          return;
+        }
+        deliver(frame);
+      });
+      return unsubscribe;
+    }
+  };
+}
+function createFactFactory() {
+  const wrap = (source, value, meta = {}) => ({
+    value,
+    provenance: {
+      source,
+      timestampMs: Date.now(),
+      ...meta
+    }
+  });
+  return {
+    mobkit: (value, meta) => wrap("mobkit-protocol", value, meta),
+    derived: (value, meta) => wrap("controller-derived", value, meta),
+    optimistic: (value, correlationId) => wrap("optimistic", value, { correlationId }),
+    host: (value) => wrap("host-adapter", value)
+  };
+}
+function normalizeCapabilities(value) {
+  const record = value && typeof value === "object" ? value : {};
+  const methods = Array.isArray(record.methods) ? Array.from(new Set(record.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
+  return {
+    methods,
+    version: typeof record.version === "string" ? record.version : void 0,
+    runtime_capabilities: record.runtime_capabilities,
+    method_capabilities: record.method_capabilities
+  };
+}
+function requireCapability(capabilities, method) {
+  if (!capabilities.methods.includes(method)) {
+    throw new Error(`MobKit capability missing for ${method}`);
+  }
+}
+function commandSpec(command) {
+  if (!isConsoleCommandName(command)) {
+    throw new Error(`unknown MobKit console command ${String(command)}`);
+  }
+  return CONSOLE_COMMAND_SPECS[command];
+}
+function isConsoleCommandName(command) {
+  return typeof command === "string" && command in CONSOLE_COMMAND_SPECS;
+}
+function identityForSendTarget(target) {
+  return target.kind === "mobkit/identity-chat" ? target.identity : null;
+}
+var identityCommandMethods = /* @__PURE__ */ new Set([
+  CONSOLE_RPC_METHODS.inspectIdentity,
+  CONSOLE_RPC_METHODS.retireIdentity,
+  CONSOLE_RPC_METHODS.respawnIdentity,
+  CONSOLE_RPC_METHODS.resetIdentity
+]);
+function identityForCommandTarget(target) {
+  if (target.kind === "mobkit/identity-chat" || target.kind === "mobkit/identity-inspect") {
+    return target.identity;
+  }
+  return null;
+}
+function stringValue2(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+function isMobKitTarget(target) {
+  return target.kind.startsWith("mobkit/");
 }
 
 // src/lib/id.ts
@@ -7375,7 +7955,7 @@ var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
   "tool_results",
   "tool_use"
 ]);
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function historyBlockType(record) {
@@ -7386,7 +7966,7 @@ function sanitizeLogValue(value) {
   if (Array.isArray(value)) {
     return value.map(sanitizeLogValue).filter((item) => item !== void 0);
   }
-  if (!isRecord(value)) return value;
+  if (!isRecord2(value)) return value;
   const blockType = historyBlockType(value);
   if (blockType && HIDDEN_HISTORY_BLOCK_TYPES.has(blockType)) {
     return void 0;
@@ -7406,7 +7986,7 @@ function textFromContentBlock(value) {
     const text = value.trim();
     return text ? text : null;
   }
-  if (!isRecord(value)) return null;
+  if (!isRecord2(value)) return null;
   for (const key of ["text", "body", "content", "result", "summary"]) {
     const child = value[key];
     if (typeof child === "string" && child.trim()) {
@@ -7414,7 +7994,7 @@ function textFromContentBlock(value) {
     }
   }
   const data = value.data;
-  if (isRecord(data)) {
+  if (isRecord2(data)) {
     return textFromContentBlock(data);
   }
   return null;
@@ -7442,7 +8022,7 @@ function preferredLogSummary(frame, data) {
 }
 function summarizeLogFrame(frame) {
   const sanitized = sanitizeLogFrameData(frame.data);
-  const d = isRecord(sanitized) ? sanitized : {};
+  const d = isRecord2(sanitized) ? sanitized : {};
   const preferred = preferredLogSummary(frame, d);
   if (preferred) return preferred;
   const bits = [];
@@ -7739,98 +8319,13 @@ var SIDEBAR_ROW_HEIGHT = {
   agent: 72
 };
 var SIDEBAR_OVERSCAN_PX = 360;
-var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
-var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
-var SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-subgroup-order";
-var SECTION_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-sections";
-var SUBGROUP_COLLAPSE_STORAGE_PREFIX = "mobkit-console-sidebar-subgroups";
 var PINNED_SECTION_NAME = "Pinned";
-var SIDEBAR_STORAGE_PREFIXES = [
-  SIDEBAR_PINS_STORAGE_PREFIX,
-  SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
-  SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
-  SECTION_COLLAPSE_STORAGE_PREFIX,
-  SUBGROUP_COLLAPSE_STORAGE_PREFIX
-];
-function sidebarStorageKey(prefix, namespace) {
-  return `${prefix}:${namespace?.trim() || "default"}`;
-}
-function readSidebarStringSet(storage, key) {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return /* @__PURE__ */ new Set();
-    return new Set(parsed.filter((value) => typeof value === "string" && value.trim().length > 0));
-  } catch {
-    return null;
-  }
-}
-function writeSidebarStringSet(storage, key, value) {
-  if (!storage) return;
-  try {
-    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
-  } catch {
-  }
-}
-function readSidebarStringList(storage, key) {
-  if (!storage) return null;
-  try {
-    const raw = storage.getItem(key);
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const seen = /* @__PURE__ */ new Set();
-    const out = [];
-    for (const value of parsed) {
-      if (typeof value !== "string") continue;
-      const trimmed = value.trim();
-      if (!trimmed || seen.has(trimmed)) continue;
-      seen.add(trimmed);
-      out.push(trimmed);
-    }
-    return out;
-  } catch {
-    return null;
-  }
-}
-function writeSidebarStringList(storage, key, value) {
-  if (!storage) return;
-  try {
-    const seen = /* @__PURE__ */ new Set();
-    const normalized = value.map((item) => item.trim()).filter((item) => {
-      if (!item || seen.has(item)) return false;
-      seen.add(item);
-      return true;
-    });
-    storage.setItem(key, JSON.stringify(normalized));
-  } catch {
-  }
-}
 function localSidebarStorage() {
   if (typeof window === "undefined") return null;
   try {
     return window.localStorage;
   } catch {
     return null;
-  }
-}
-function pruneStaleSidebarStorage(storage, scope, activeNamespace) {
-  if (!storage) return;
-  try {
-    const scopePrefix = encodeURIComponent(scope.trim());
-    const activeKeys = new Set(SIDEBAR_STORAGE_PREFIXES.map((prefix) => `${prefix}:${activeNamespace}`));
-    const stale = [];
-    for (let i = 0; i < storage.length; i += 1) {
-      const key = storage.key(i);
-      if (!key || activeKeys.has(key)) continue;
-      if (SIDEBAR_STORAGE_PREFIXES.some((prefix) => key.startsWith(`${prefix}:${scopePrefix}:`))) {
-        stale.push(key);
-      }
-    }
-    for (const key of stale) storage.removeItem(key);
-  } catch {
   }
 }
 function isWorkerish(a) {
@@ -8178,32 +8673,6 @@ function collapsedSubgroupsForStorage(storageKey, storage = localSidebarStorage(
 function sidebarSubgroupStorageId(bucket, subgroup) {
   return JSON.stringify([bucket, subgroup]);
 }
-function applySidebarOrder(items, storedOrder) {
-  const available = new Set(items);
-  const seen = /* @__PURE__ */ new Set();
-  const ordered = [];
-  for (const item of storedOrder || []) {
-    if (!available.has(item) || seen.has(item)) continue;
-    ordered.push(item);
-    seen.add(item);
-  }
-  for (const item of items) {
-    if (seen.has(item)) continue;
-    ordered.push(item);
-    seen.add(item);
-  }
-  return ordered;
-}
-function reorderSidebarOrder(items, dragged, target, where) {
-  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
-  const withoutDragged = items.filter((item) => item !== dragged);
-  const targetIndex = withoutDragged.indexOf(target);
-  if (targetIndex < 0) return items;
-  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
-  const next = [...withoutDragged];
-  next.splice(insertAt, 0, dragged);
-  return next;
-}
 function collectPinnedRows(rows, pinnedAgentIds) {
   const pinned = /* @__PURE__ */ new Set();
   if (!pinnedAgentIds || pinnedAgentIds.size === 0) return pinned;
@@ -8241,7 +8710,7 @@ function orderRowsBySubgroupOrder(rows, bucket, subgroupOrder) {
   if (rows.length <= 1) return rows;
   const orderIndex = new Map(rows.map((row, index) => [row.agent.member_id, index]));
   const defaultSubgroups = rows.map((row) => row.subgroup).filter((value) => Boolean(value));
-  const subgroupIds = applySidebarOrder(
+  const subgroupIds = applyConsoleSidebarOrder(
     Array.from(new Set(defaultSubgroups)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup)),
     subgroupOrder
   );
@@ -8301,7 +8770,7 @@ function sidebarFamilyPinIdsByMemberId(grouped) {
 }
 function buildSidebarVirtualRows(args) {
   const rows = [];
-  const orderedSections = applySidebarOrder(args.sectionNames, args.sectionOrder);
+  const orderedSections = applyConsoleSidebarOrder(args.sectionNames, args.sectionOrder);
   const baseRows = orderedSections.flatMap((bucket) => args.grouped.get(bucket) || []);
   const baseOrderIndex = new Map(baseRows.map((row, index) => [row.agent.member_id, index]));
   const pinnedRowIds = collectPinnedRows(baseRows, args.pinnedAgentIds);
@@ -8490,6 +8959,23 @@ function lowerBound(values, needle) {
   }
   return lo;
 }
+function sidebarVirtualOffsets(rows) {
+  const offsets = [];
+  let total = 0;
+  for (const row of rows) {
+    offsets.push(total);
+    total += virtualRowHeight(row);
+  }
+  return { offsets, total };
+}
+function sidebarVisibleRange(args) {
+  if (args.rowCount === 0) return { start: 0, end: 0 };
+  const startNeedle = Math.max(0, args.scrollTop - SIDEBAR_OVERSCAN_PX);
+  const endNeedle = Math.min(args.total, args.scrollTop + Math.max(1, args.listHeight) + SIDEBAR_OVERSCAN_PX);
+  const start = Math.max(0, lowerBound(args.offsets, startNeedle) - 1);
+  const end = Math.min(args.rowCount, lowerBound(args.offsets, endNeedle) + 1);
+  return { start, end };
+}
 function useMeasuredHeight() {
   const ref = import_react17.default.useRef(null);
   const [height, setHeight] = import_react17.default.useState(0);
@@ -8677,8 +9163,8 @@ function Sidebar({
   const completeSectionDrop = import_react17.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id) => {
     if (!draggedId || draggedId === target) return;
     setSectionOrder((current) => {
-      const baseOrder = applySidebarOrder(sectionNames, current);
-      const next = reorderSidebarOrder(baseOrder, draggedId, target, where);
+      const baseOrder = applyConsoleSidebarOrder(sectionNames, current);
+      const next = reorderConsoleSidebarOrder(baseOrder, draggedId, target, where);
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
@@ -8691,8 +9177,8 @@ function Sidebar({
   const completeSubgroupDrop = import_react17.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
     setSubgroupOrder((current) => {
-      const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
-      const nextBucketOrder = reorderSidebarOrder(bucketOrder, draggedId, target, where);
+      const bucketOrder = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), current);
+      const nextBucketOrder = reorderConsoleSidebarOrder(bucketOrder, draggedId, target, where);
       const nextBucketSet = new Set(nextBucketOrder);
       const next = [
         ...current.filter((id) => !nextBucketSet.has(id)),
@@ -8792,29 +9278,20 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
-  const virtualOffsets = import_react17.default.useMemo(() => {
-    const offsets = [];
-    let total = 0;
-    for (const row of virtualRows) {
-      offsets.push(total);
-      total += virtualRowHeight(row);
-    }
-    return { offsets, total };
-  }, [virtualRows]);
+  const virtualOffsets = import_react17.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
   const [scrollTop, setScrollTop] = import_react17.default.useState(0);
   import_react17.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
   }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
-  const visibleRange = import_react17.default.useMemo(() => {
-    if (virtualRows.length === 0) return { start: 0, end: 0 };
-    const startNeedle = Math.max(0, scrollTop - SIDEBAR_OVERSCAN_PX);
-    const endNeedle = Math.min(virtualOffsets.total, scrollTop + Math.max(1, listHeight) + SIDEBAR_OVERSCAN_PX);
-    const start = Math.max(0, lowerBound(virtualOffsets.offsets, startNeedle) - 1);
-    const end = Math.min(virtualRows.length, lowerBound(virtualOffsets.offsets, endNeedle) + 1);
-    return { start, end };
-  }, [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
+  const visibleRange = import_react17.default.useMemo(() => sidebarVisibleRange({
+    rowCount: virtualRows.length,
+    offsets: virtualOffsets.offsets,
+    total: virtualOffsets.total,
+    scrollTop,
+    listHeight
+  }), [listHeight, scrollTop, virtualOffsets, virtualRows.length]);
   const visibleRows = import_react17.default.useMemo(
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
@@ -11135,6 +11612,18 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed"
 ]);
 function ConsoleApp({ baseUrl }) {
+  const consoleFetchTimeoutMsRef = import_react22.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
+  const consoleTransport = import_react22.default.useMemo(
+    () => createHttpConsoleTransport({
+      baseUrl,
+      fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
+    }),
+    [baseUrl]
+  );
+  const consoleController = import_react22.default.useMemo(
+    () => createMobKitConsoleController({ transport: consoleTransport }),
+    [consoleTransport]
+  );
   const [experience, setExperience] = import_react22.default.useState(
     null
   );
@@ -11278,6 +11767,37 @@ function ConsoleApp({ baseUrl }) {
       else delete updated[identity];
       return updated;
     });
+  }
+  async function inspectIdentityViaHeadless(identity) {
+    return executeHeadlessCommand(
+      CONSOLE_COMMAND_NAMES.inspectIdentity,
+      identityWorkbenchTarget(identity, "inspect")
+    );
+  }
+  function requireWorkbenchTarget(input) {
+    const target = migrateConsoleWorkbenchTarget(input);
+    if (!target) {
+      throw new Error("invalid MobKit console target");
+    }
+    return target;
+  }
+  function identityWorkbenchTarget(identity, mode) {
+    return requireWorkbenchTarget({
+      id: mode === "inspect" ? `inspect:${identity}` : `chat:${identity}`,
+      kind: mode === "inspect" ? "identity-inspect" : "agent-chat",
+      title: identity,
+      identity
+    });
+  }
+  function controlWorkbenchTarget(kind) {
+    return requireWorkbenchTarget(buildControlTarget(kind));
+  }
+  async function executeHeadlessCommand(command, target, params) {
+    return (await consoleController.commands.execute({
+      command,
+      target,
+      params
+    })).result;
   }
   const identityLogRef = import_react22.default.useRef({});
   const timelineFetchInFlightRef = import_react22.default.useRef(
@@ -11513,16 +12033,16 @@ function ConsoleApp({ baseUrl }) {
     return changed;
   }
   async function queryIdentityTimelinePage(identity, target) {
-    const page = await queryTimeline(
-      baseUrl,
+    const pageFact = await consoleController.timeline.query(
       {
         identity,
         mode: target.mode,
         after: target.after,
-        before: target.before
-      },
-      target.limit ?? 200
+        before: target.before,
+        limit: target.limit ?? 200
+      }
     );
+    const page = pageFact.value;
     const metadataChanged = noteIdentityTimelinePage(identity, page, target);
     return { page, metadataChanged };
   }
@@ -11686,7 +12206,6 @@ function ConsoleApp({ baseUrl }) {
   const experienceLoadInFlightRef = import_react22.default.useRef(
     null
   );
-  const consoleFetchTimeoutMsRef = import_react22.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
   const agentsRef = import_react22.default.useRef([]);
   import_react22.default.useEffect(() => {
     agentsRef.current = agents;
@@ -11877,10 +12396,9 @@ function ConsoleApp({ baseUrl }) {
     }
     let request;
     request = (async () => {
-      const timeoutMs = consoleFetchTimeoutMsRef.current;
       const [experienceJson, modulesJson] = await Promise.all([
-        fetchJson(baseUrl, "/console/experience", timeoutMs),
-        fetchJson(baseUrl, "/console/modules", timeoutMs)
+        consoleTransport.loadExperience(),
+        consoleTransport.loadModules?.() ?? Promise.resolve({ modules: [] })
       ]);
       const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
       if (typeof configuredTimeoutMs === "number" && Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0) {
@@ -11901,7 +12419,7 @@ function ConsoleApp({ baseUrl }) {
     });
     experienceLoadInFlightRef.current = request;
     return request;
-  }, [baseUrl]);
+  }, [consoleTransport]);
   import_react22.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
@@ -12047,24 +12565,17 @@ function ConsoleApp({ baseUrl }) {
     if (inspects.length) {
       const entries = await Promise.all(
         inspects.map(async (t) => {
-          const r2 = await callConsoleRpc(
-            baseUrl,
-            "mobkit/console/inspect_identity",
-            { identity: t.identity }
-          ).catch(
-            () => callConsoleRpc(baseUrl, "mobkit/inspect_identity", {
-              identity: t.identity
-            })
-          );
+          const r2 = await inspectIdentityViaHeadless(t.identity);
           return [t.identity, normalizeConsoleInspectResult(r2)];
         })
       );
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
+      const routingTarget = controlWorkbenchTarget("routing");
       const [routes, history] = await Promise.all([
-        callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
-        callConsoleRpc(baseUrl, "mobkit/delivery/history", {})
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget)
       ]);
       setRoutingData(
         buildRoutingSectionView({
@@ -12074,21 +12585,16 @@ function ConsoleApp({ baseUrl }) {
       );
     }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating" || t.kind === "gates")) {
+      const gatingTarget = controlWorkbenchTarget("gating");
       const [p, a] = await Promise.all([
-        callConsoleRpc(
-          baseUrl,
-          "mobkit/gating/pending",
-          {}
-        ),
-        callConsoleRpc(
-          baseUrl,
-          "mobkit/gating/audit",
-          { limit: 50 }
-        )
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 })
       ]);
+      const pending = p && typeof p === "object" ? p : {};
+      const audit = a && typeof a === "object" ? a : {};
       setGatingData({
-        pending: Array.isArray(p.pending) ? p.pending : [],
-        audit: Array.isArray(a.entries) ? a.entries : []
+        pending: Array.isArray(pending.pending) ? pending.pending : [],
+        audit: Array.isArray(audit.entries) ? audit.entries : []
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
@@ -12219,32 +12725,22 @@ function ConsoleApp({ baseUrl }) {
     };
     let stopped = false;
     let unsubscribe = null;
-    void queryTimeline(baseUrl, { mode: "recent" }, 200).then(({ frames, nextCursor, latestCursor }) => {
-      if (stopped) return;
-      const seen = /* @__PURE__ */ new Set();
-      const filtered = [];
-      for (const frame of frames) {
-        if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
-        const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        filtered.push(frame);
+    void consoleController.timeline.subscribeWithBackfill({ limit: 200 }, (frame) => {
+      if (!stopped) handleLiveFrame(frame.value);
+    }).then((nextUnsubscribe) => {
+      if (stopped) {
+        nextUnsubscribe();
+      } else {
+        unsubscribe = nextUnsubscribe;
       }
-      activityRef.current = filtered.slice(-200).reverse();
-      commitLiveFrames(
-        frames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)).slice(-300).reverse()
-      );
-      forceRender();
-      const after = latestCursor || nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
-      unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
     }).catch(() => {
-      if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
+      if (!stopped) unsubscribe = consoleTransport.subscribeTimeline({}, handleLiveFrame);
     });
     return () => {
       stopped = true;
       unsubscribe?.();
     };
-  }, [baseUrl]);
+  }, [consoleController, consoleTransport]);
   import_react22.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
@@ -12314,54 +12810,32 @@ function ConsoleApp({ baseUrl }) {
     }, ...liveFramesRef.current].slice(0, 300));
     forceRender();
     try {
-      const id = target.identity?.trim();
-      if (attachments.length > 0 && id) {
-        const result = await sendConsoleMultipart(
-          baseUrl,
-          id,
-          text,
-          attachments,
-          `console:${panelId}`,
-          createIdempotencyKey(),
-          handlingMode
-        );
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id;
-          const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
-          );
-          if (matched) {
-            optimisticUser.objectUrls?.forEach(
-              (url) => URL.revokeObjectURL(url)
-            );
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
-      } else if (id) {
-        const result = await sendConsole(
-          baseUrl,
-          id,
-          text,
-          `console:${panelId}`,
-          createIdempotencyKey(),
-          handlingMode
-        );
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id;
-          const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
-          );
-          if (matched) {
-            optimisticUser.objectUrls?.forEach(
-              (url) => URL.revokeObjectURL(url)
-            );
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
-      } else {
+      const workbenchTarget = migrateConsoleWorkbenchTarget(target);
+      if (!workbenchTarget) {
         throw new Error("console send requires an identity-addressed target");
+      }
+      const result = (await consoleController.commands.sendMessage(
+        workbenchTarget,
+        {
+          content: text,
+          origin: `console:${panelId}`,
+          idempotencyKey: createIdempotencyKey(),
+          handlingMode,
+          attachments
+        }
+      )).accepted.value;
+      const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+      if (optimisticUser) {
+        optimisticUser.interactionId = result.interaction_id;
+        const matched = log.events.some(
+          (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
+        );
+        if (matched) {
+          optimisticUser.objectUrls?.forEach(
+            (url) => URL.revokeObjectURL(url)
+          );
+          delete optimisticUserByPanelKeyRef.current[panelKey];
+        }
       }
       return true;
     } catch (submitError) {
@@ -12591,7 +13065,8 @@ function ConsoleApp({ baseUrl }) {
     }, animMs(420));
   }
   async function onLifecycleAction(identity, method) {
-    await callConsoleRpc(baseUrl, method, { identity });
+    const command = method === "mobkit/retire" ? CONSOLE_COMMAND_NAMES.retireIdentity : method === "mobkit/respawn" ? CONSOLE_COMMAND_NAMES.respawnIdentity : CONSOLE_COMMAND_NAMES.resetIdentity;
+    await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), { identity });
     const nextAgents = await loadExperience();
     if (method !== "mobkit/retire") return;
     if (nextAgents.some(
@@ -12608,25 +13083,22 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   async function onGatingDecision(pendingId, decision) {
-    await callConsoleRpc(baseUrl, "mobkit/gating/decide", {
+    const gatingTarget = controlWorkbenchTarget("gating");
+    await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.decideGating, gatingTarget, {
       pending_id: pendingId,
       approver_id: DEFAULT_APPROVER_ID,
       decision,
       reason: `console_${decision}`
     });
     const [p, a] = await Promise.all([
-      callConsoleRpc(
-        baseUrl,
-        "mobkit/gating/pending",
-        {}
-      ),
-      callConsoleRpc(baseUrl, "mobkit/gating/audit", {
-        limit: 50
-      })
+      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
+      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 })
     ]);
+    const pending = p && typeof p === "object" ? p : {};
+    const audit = a && typeof a === "object" ? a : {};
     setGatingData({
-      pending: Array.isArray(p.pending) ? p.pending : [],
-      audit: Array.isArray(a.entries) ? a.entries : []
+      pending: Array.isArray(pending.pending) ? pending.pending : [],
+      audit: Array.isArray(audit.entries) ? audit.entries : []
     });
   }
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
@@ -12910,13 +13382,7 @@ function ConsoleApp({ baseUrl }) {
     ] }, r2.identity)) }) });
   }
   async function refreshInspectIdentity(identity) {
-    const r2 = await callConsoleRpc(
-      baseUrl,
-      "mobkit/console/inspect_identity",
-      { identity }
-    ).catch(
-      () => callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity })
-    );
+    const r2 = await inspectIdentityViaHeadless(identity);
     setInspectByIdentity((current) => ({
       ...current,
       [identity]: normalizeConsoleInspectResult(r2)
