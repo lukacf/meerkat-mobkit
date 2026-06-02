@@ -20,8 +20,8 @@ use tokio::sync::{Semaphore, broadcast};
 use crate::blob_store::BinaryBlobStore;
 use crate::console_contracts::SYSTEM_EVENT_IDENTITY;
 use crate::mob_handle_runtime::{
-    MobRuntime, MobRuntimeError, assert_member_accepts_images,
-    is_recoverable_lifecycle_cleanup_error, send_message_on_mob_with_mode,
+    MobDeliveryOutcome, MobRuntime, MobRuntimeError, assert_member_accepts_images,
+    is_recoverable_lifecycle_cleanup_error, send_message_on_mob_with_mode_observed,
 };
 use crate::runtime::ConsoleMember;
 use crate::unified_runtime::{ConsoleEventStore, UnifiedRuntime};
@@ -2012,6 +2012,17 @@ fn stale_durable_record_error(
     {
         return None;
     }
+    let generated_runtime_prefix = format!("rt:{}:", durable.identity);
+    if durable
+        .runtime_member_id
+        .starts_with(&generated_runtime_prefix)
+        && matching_live.len() == 1
+        && matching_live
+            .first()
+            .is_some_and(|record| record.runtime_member_id == durable.identity)
+    {
+        return None;
+    }
     let live_candidates = matching_live
         .iter()
         .map(|record| record.runtime_member_id.as_str())
@@ -2370,9 +2381,9 @@ async fn dispatch_message_to_resolved_member(
     resolved: &ResolvedConsoleMember,
     content: ContentInput,
     handling_mode: meerkat_core::types::HandlingMode,
-) -> Result<String, String> {
+) -> Result<MobDeliveryOutcome, String> {
     let mid = MeerkatId::from(resolved.runtime_identity.as_str());
-    match send_message_on_mob_with_mode(
+    match send_message_on_mob_with_mode_observed(
         &resolved.handle,
         &resolved.runtime_identity,
         content.clone(),
@@ -2380,7 +2391,7 @@ async fn dispatch_message_to_resolved_member(
     )
     .await
     {
-        Ok(session_id) => Ok(session_id),
+        Ok(outcome) => Ok(outcome),
         Err(err) if is_not_externally_addressable(&err) => {
             let member = resolved
                 .handle
@@ -2395,7 +2406,10 @@ async fn dispatch_message_to_resolved_member(
                 .handle
                 .resolve_bridge_session_id_observation(&mid)
                 .await
-                .map(|sid| sid.to_string())
+                .map(|sid| MobDeliveryOutcome {
+                    session_id: sid.to_string(),
+                    completion: None,
+                })
                 .ok_or_else(|| "member has no bridge session after internal turn".to_string())
         }
         Err(err) => Err(err.to_string()),
@@ -2420,7 +2434,7 @@ fn spawn_console_send_dispatch(
 ) {
     tokio::spawn(async move {
         match dispatch_message_to_resolved_member(&resolved, content, handling_mode).await {
-            Ok(_) => {
+            Ok(outcome) => {
                 let _ = dispatching.apply(SendTransition::MarkDelivered);
                 if let Err(err) = update_frame_status_and_emit(
                     &inner,
@@ -2444,6 +2458,23 @@ fn spawn_console_send_dispatch(
                         interaction_id = %interaction_id,
                         error = %err,
                         "failed to append console steer terminal frame"
+                    );
+                }
+                if let Some(completion) = outcome.completion
+                    && let Err(err) = append_delivery_completion_terminal(
+                        &inner,
+                        &user_frame,
+                        &interaction_id,
+                        &outcome.session_id,
+                        completion,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        frame_id = %user_frame.id,
+                        interaction_id = %interaction_id,
+                        error = %err,
+                        "failed to append console delivery completion frame"
                     );
                 }
             }
@@ -2493,6 +2524,52 @@ fn spawn_console_send_dispatch(
             }
         }
     });
+}
+
+async fn append_delivery_completion_terminal(
+    inner: &AggregatorInner,
+    user_frame: &ConsoleFrame,
+    interaction_id: &str,
+    delivered_session_id: &str,
+    completion: meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion,
+) -> ConsoleLogResult<AppendOutcome> {
+    let session_id = if delivered_session_id.trim().is_empty() {
+        Some(completion.session_id.clone())
+    } else {
+        Some(delivered_session_id.to_string())
+    };
+    let text_hash = hash_short(&completion.text);
+    append_and_emit(
+        inner,
+        NewConsoleFrame {
+            id: None,
+            dedupe_key: format!("delivery-completion:{}:{text_hash}", user_frame.id),
+            timestamp_ms: current_time_ms(),
+            runtime_key: user_frame.runtime_key.clone(),
+            identity: user_frame.identity.clone(),
+            conversation_id: user_frame.conversation_id.clone(),
+            session_id,
+            kind: "interaction_complete".to_string(),
+            status: ConsoleFrameStatus::Completed,
+            payload: json!({
+                "text": completion.text,
+                "turns": completion.turns,
+                "tool_calls": completion.tool_calls,
+                "source_event_type": "delivery_completion",
+            }),
+            source: ConsoleFrameSource {
+                kind: ConsoleFrameSourceKind::Synthetic,
+                source_cursor: None,
+            },
+            source_event_id: None,
+            interaction_id: Some(interaction_id.to_string()),
+            turn_id: None,
+            run_id: None,
+            parent_frame_id: Some(user_frame.id.clone()),
+            caused_by_frame_id: Some(user_frame.id.clone()),
+        },
+    )
+    .await
 }
 
 async fn append_steer_delivery_terminal(
@@ -4199,7 +4276,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::mob_handle_runtime::MobBootstrapSpec;
+    use crate::mob_handle_runtime::{MobBootstrapSpec, send_message_on_mob_with_mode};
 
     #[derive(Debug)]
     struct HideHiddenNoiseFrames;

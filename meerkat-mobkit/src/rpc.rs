@@ -1081,6 +1081,7 @@ async fn handle_unified_rpc_json_inner(
                 "mobkit/retire_member",
                 "mobkit/respawn_member",
                 "mobkit/reconcile_edges",
+                "mobkit/wire_member",
                 "mobkit/rediscover",
                 "mobkit/mob_events/query",
                 "mobkit/mob_events/subscribe",
@@ -1900,6 +1901,9 @@ async fn handle_unified_rpc_json_inner(
             mob_methods::handle_respawn_member(runtime, response_id, &request.params).await
         }
         "mobkit/reconcile_edges" => mob_methods::handle_reconcile_edges(runtime, response_id).await,
+        "mobkit/wire_member" => {
+            mob_methods::handle_wire_member(runtime, response_id, &request.params).await
+        }
         "mobkit/rediscover" => mob_methods::handle_rediscover(runtime, response_id).await,
         "mobkit/mob_events/query" => {
             mob_methods::handle_mob_events_query(runtime, response_id, request.params).await

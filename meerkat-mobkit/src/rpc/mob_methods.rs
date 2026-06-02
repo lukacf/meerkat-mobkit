@@ -1996,6 +1996,61 @@ pub(super) async fn handle_cross_mob_unwire_local(
     }
 }
 
+pub(super) async fn handle_wire_member(
+    runtime: &UnifiedRuntime,
+    response_id: Value,
+    params: &Value,
+) -> JsonRpcResponse {
+    let local_member_id = params
+        .get("local_member_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let peer_member_id = params
+        .get("peer_member_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+
+    let (Some(local), Some(peer)) = (local_member_id, peer_member_id) else {
+        return JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32602,
+                message: "Invalid params: local_member_id and peer_member_id required".to_string(),
+                data: None,
+            }),
+        };
+    };
+
+    match runtime
+        .mob_handle()
+        .wire(MeerkatId::from(local), MeerkatId::from(peer))
+        .await
+    {
+        Ok(()) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: Some(serde_json::json!({
+                "accepted": true,
+                "local_member_id": local,
+                "peer_member_id": peer,
+            })),
+            error: None,
+        },
+        Err(err) => JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id: response_id,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32000,
+                message: format!("wire_member failed: {err}"),
+                data: None,
+            }),
+        },
+    }
+}
+
 /// Wire a local member to an external peer using a provided spec.
 /// Only wires the local side — the remote side must do its own call.
 pub(super) async fn handle_cross_mob_wire_local(

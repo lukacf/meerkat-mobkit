@@ -2969,6 +2969,22 @@ pub async fn send_message_on_mob_with_mode(
     content: impl Into<meerkat_core::ContentInput>,
     handling_mode: meerkat_core::types::HandlingMode,
 ) -> Result<String, MobRuntimeError> {
+    send_message_on_mob_with_mode_observed(handle, member_id, content, handling_mode)
+        .await
+        .map(|outcome| outcome.session_id)
+}
+
+pub struct MobDeliveryOutcome {
+    pub session_id: String,
+    pub completion: Option<meerkat_contracts::wire::supervisor_bridge::BridgeDeliveryCompletion>,
+}
+
+pub async fn send_message_on_mob_with_mode_observed(
+    handle: &MobHandle,
+    member_id: &str,
+    content: impl Into<meerkat_core::ContentInput>,
+    handling_mode: meerkat_core::types::HandlingMode,
+) -> Result<MobDeliveryOutcome, MobRuntimeError> {
     if member_id.trim().is_empty() {
         return Err(MobRuntimeError::InvalidInput("member_id must not be empty"));
     }
@@ -2981,18 +2997,24 @@ pub async fn send_message_on_mob_with_mode(
         return Err(MobRuntimeError::InvalidInput("content must not be empty"));
     }
     let mid = meerkat_mob::ids::MeerkatId::from(member_id);
-    let _receipt = handle
+    let receipt = handle
         .member(&mid)
         .await?
         .send(content, handling_mode)
         .await?;
     if let Some(session_id) = handle.resolve_bridge_session_id(&mid).await {
-        return Ok(session_id.to_string());
+        return Ok(MobDeliveryOutcome {
+            session_id: session_id.to_string(),
+            completion: receipt.completion,
+        });
     }
 
     let status = handle.member_status(&mid).await?;
     if status.external_member.is_some() {
-        return Ok(String::new());
+        return Ok(MobDeliveryOutcome {
+            session_id: String::new(),
+            completion: receipt.completion,
+        });
     }
 
     Err(MobRuntimeError::Mob(MobError::Internal(

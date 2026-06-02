@@ -7,6 +7,8 @@ repo_root="$(cd "${examples_dir}/.." && pwd)"
 
 target_listen="${MDM_REAL_TARGET_SMOKE_LISTEN:-127.0.0.1:5807}"
 supervisor_bind="${MDM_REAL_TARGET_SMOKE_SUPERVISOR_BIND:-127.0.0.1:5808}"
+agent_comms="${MDM_REAL_TARGET_SMOKE_AGENT_COMMS:-127.0.0.1:5809}"
+hive_smoke="${MDM_REAL_TARGET_SMOKE_HIVE:-0}"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/mdm-real-target-smoke.XXXXXX")"
 target_pid=""
 
@@ -15,7 +17,11 @@ cleanup() {
     kill "$target_pid" 2>/dev/null || true
     wait "$target_pid" 2>/dev/null || true
   fi
-  rm -rf "$tmp_dir"
+  if [[ "${MDM_REAL_TARGET_SMOKE_KEEP_TMP:-0}" == "1" || "${MDM_REAL_TARGET_SMOKE_KEEP_TMP:-0}" == "true" ]]; then
+    echo "[mdm-real-target-smoke] kept temp dir: $tmp_dir" >&2
+  else
+    rm -rf "$tmp_dir"
+  fi
 }
 trap cleanup EXIT
 
@@ -26,6 +32,7 @@ cd "$repo_root"
 ./scripts/repo-cargo build -p meerkat-mobkit --example mdm_mob_target
 target_bin="$(./scripts/repo-cargo --print-env | awk -F= '$1 == "CARGO_TARGET_DIR" { print $2 }')/debug/examples/mdm_mob_target"
 
+MDM_SUPERVISOR_ADVERTISED_ADDRESS="tcp://${supervisor_bind}" \
 "$target_bin" \
   --id target-smoke \
   --name target-smoke \
@@ -49,34 +56,47 @@ if [[ ! -s "$binding_file" ]]; then
 fi
 
 cd "$examples_dir"
+console_args=(
+  004-mdm-console-pack/run.ts
+  --targets "$binding_file"
+  --state-dir "${tmp_dir}/console-state"
+  --real-target-smoke
+  --smoke
+)
+if [[ "$hive_smoke" == "1" || "$hive_smoke" == "true" ]]; then
+  if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+    echo "[mdm-real-target-smoke] hive smoke requires OPENAI_API_KEY" >&2
+    exit 1
+  fi
+  console_args+=(--hive-target-smoke)
+else
+  console_args+=(--demo-llm)
+fi
+
 set +e
 MDM_SUPERVISOR_BIND_ADDRESS="$supervisor_bind" \
 MDM_SUPERVISOR_ADVERTISED_ADDRESS="tcp://${supervisor_bind}" \
-npx tsx 004-mdm-console-pack/run.ts \
-  --targets "$binding_file" \
-  --state-dir "${tmp_dir}/console-state" \
-  --real-target-smoke \
-  --smoke \
-  --demo-llm
+MDM_AGENT_COMMS_ADDRESS="$agent_comms" \
+npx tsx "${console_args[@]}"
 status=$?
 set -e
 
 if [[ "$status" -ne 0 ]]; then
-  echo "[mdm-real-target-smoke] console bind failed; target log follows" >&2
+  echo "[mdm-real-target-smoke] console smoke failed; target log follows" >&2
   tail -100 "${tmp_dir}/target.log" >&2 || true
 else
-  peer_seen=""
-  for _ in {1..60}; do
-    if grep -q "\\[mdm-target\\] peer turn accepted:" "${tmp_dir}/target.log"; then
-      peer_seen="yes"
-      break
-    fi
-    sleep 0.5
-  done
-  if [[ -z "$peer_seen" ]]; then
-    echo "[mdm-real-target-smoke] target never observed a peer turn; target log follows" >&2
+  if ! grep -q "\\[mdm-target\\] peer turn accepted" "${tmp_dir}/target.log"; then
+    echo "[mdm-real-target-smoke] target did not observe a peer-delivered turn; target log follows" >&2
     tail -100 "${tmp_dir}/target.log" >&2 || true
     exit 1
+  fi
+  if [[ "$hive_smoke" == "1" || "$hive_smoke" == "true" ]]; then
+    peer_turn_count="$(grep -c "\\[mdm-target\\] peer turn accepted" "${tmp_dir}/target.log" || true)"
+    if [[ "$peer_turn_count" -lt 2 ]]; then
+      echo "[mdm-real-target-smoke] hive smoke did not produce an additional peer-delivered target turn; target log follows" >&2
+      tail -160 "${tmp_dir}/target.log" >&2 || true
+      exit 1
+    fi
   fi
 fi
 

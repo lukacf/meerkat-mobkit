@@ -44,6 +44,7 @@ use meerkat::{
     FactoryAgentBuilder, SessionAgentBuilder, SessionError,
 };
 use meerkat_core::AgentToolDispatcher;
+use meerkat_core::CommsRuntimeMode;
 use meerkat_core::ContentBlock;
 use meerkat_core::error::{AgentError, ToolError};
 use meerkat_core::ops::ToolDispatchOutcome;
@@ -70,6 +71,7 @@ struct GatewayRuntimeOptions {
     console_require_app_auth: Option<bool>,
     console_fetch_timeout_ms: Option<u64>,
     demo_llm: bool,
+    agent_config: Config,
 }
 
 impl Default for GatewayRuntimeOptions {
@@ -86,6 +88,7 @@ impl Default for GatewayRuntimeOptions {
             console_require_app_auth: None,
             console_fetch_timeout_ms: None,
             demo_llm: false,
+            agent_config: Config::default(),
         }
     }
 }
@@ -514,6 +517,7 @@ fn parse_gateway_runtime_options(
         "console_require_app_auth",
         "console_fetch_timeout_ms",
         "demo_llm",
+        "agent_comms",
         "max_sessions",
         "event_log",
         "implicit_delegate_idle_retire_secs",
@@ -588,6 +592,9 @@ fn parse_gateway_runtime_options(
             .as_bool()
             .ok_or_else(|| "runtime_options.demo_llm must be a boolean".to_string())?;
     }
+    if let Some(value) = runtime_options.get("agent_comms") {
+        parsed.agent_config = parse_gateway_agent_comms_config(value)?;
+    }
     if let Some(value) = runtime_options.get("max_sessions") {
         let max_sessions = value
             .as_u64()
@@ -643,6 +650,58 @@ fn parse_gateway_runtime_options(
         decisions.console.ui = parsed.console_ui.clone();
     }
     Ok(parsed)
+}
+
+fn parse_gateway_agent_comms_config(value: &Value) -> Result<Config, String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| "runtime_options.agent_comms must be a JSON object".to_string())?;
+    let supported = ["mode", "address"];
+    let unsupported = object
+        .keys()
+        .filter(|key| !supported.contains(&key.as_str()))
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if !unsupported.is_empty() {
+        return Err(format!(
+            "unsupported runtime_options.agent_comms fields: {}",
+            unsupported.join(", ")
+        ));
+    }
+    let mut config = Config::default();
+    if let Some(mode) = object.get("mode") {
+        let mode = mode
+            .as_str()
+            .ok_or_else(|| "runtime_options.agent_comms.mode must be a string".to_string())?;
+        config.comms.mode = match mode {
+            "inproc" => CommsRuntimeMode::Inproc,
+            "tcp" => CommsRuntimeMode::Tcp,
+            "uds" => CommsRuntimeMode::Uds,
+            other => {
+                return Err(format!(
+                    "runtime_options.agent_comms.mode must be one of inproc, tcp, uds; got {other}"
+                ));
+            }
+        };
+    }
+    if let Some(address) = object.get("address") {
+        config.comms.address = Some(
+            address
+                .as_str()
+                .ok_or_else(|| "runtime_options.agent_comms.address must be a string".to_string())?
+                .to_string(),
+        );
+    }
+    if matches!(
+        config.comms.mode,
+        CommsRuntimeMode::Tcp | CommsRuntimeMode::Uds
+    ) && config.comms.address.is_none()
+    {
+        return Err(
+            "runtime_options.agent_comms.address is required when mode is tcp or uds".to_string(),
+        );
+    }
+    Ok(config)
 }
 
 fn read_gateway_config_file(path: &str, option_name: &str) -> Result<Value, String> {
@@ -1716,7 +1775,18 @@ external_addressable = true
                     ),
                 }
             };
-        let mob_storage = MobStorage::in_memory();
+        let mob_storage_path = state_path.join("mob.sqlite");
+        let mob_storage = match MobStorage::persistent(&mob_storage_path) {
+            Ok(storage) => storage,
+            Err(e) => fail_init(
+                &request_id,
+                -32603,
+                format!(
+                    "failed to open persistent mob storage at {}: {e}",
+                    mob_storage_path.display()
+                ),
+            ),
+        };
         let binary_blob_store: Arc<dyn BinaryBlobStore> =
             match ObjectStoreBlobStore::local(state_path.join("blobs")) {
                 Ok(store) => Arc::new(store),
@@ -1757,7 +1827,8 @@ external_addressable = true
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        let mut inner_builder =
+            FactoryAgentBuilder::new(factory, gateway_options.agent_config.clone());
         inner_builder.default_session_store = Some(Arc::new(meerkat_store::StoreAdapter::new(
             session_store.clone(),
         )));
@@ -1823,7 +1894,8 @@ external_addressable = true
         if image_generation {
             factory = factory.with_image_generation_machine(adapter.clone());
         }
-        let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+        let mut inner_builder =
+            FactoryAgentBuilder::new(factory, gateway_options.agent_config.clone());
         inner_builder.default_blob_store = Some(blob_store.clone());
         let callback_builder = StdioCallbackAgentBuilder {
             inner: inner_builder,
@@ -1841,7 +1913,8 @@ external_addressable = true
                 if image_generation {
                     factory = factory.with_image_generation_machine(adapter.clone());
                 }
-                let mut inner_builder = FactoryAgentBuilder::new(factory, Config::default());
+                let mut inner_builder =
+                    FactoryAgentBuilder::new(factory, gateway_options.agent_config.clone());
                 inner_builder.default_session_store = Some(Arc::new(
                     meerkat_store::StoreAdapter::new(session_store.clone()),
                 ));

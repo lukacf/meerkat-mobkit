@@ -11,6 +11,8 @@
     "mdm:smoke": "tsx 004-mdm-console-pack/ts_smoke.ts",
     "mdm:browser-smoke": "node 004-mdm-console-pack/browser_smoke.cjs",
     "mdm:real-target-smoke": "004-mdm-console-pack/scripts/real-target-smoke.sh",
+    "mdm:hive-target-smoke": "MDM_REAL_TARGET_SMOKE_HIVE=1 004-mdm-console-pack/scripts/real-target-smoke.sh",
+    "mdm:resume-smoke": "004-mdm-console-pack/scripts/resume-smoke.sh",
     "mdm:upgrade-meerkat": "004-mdm-console-pack/scripts/use-meerkat-version.sh",
     "mdm:local-target": "004-mdm-console-pack/scripts/local-target.sh start",
     "mdm:console": "004-mdm-console-pack/scripts/start-console.sh",

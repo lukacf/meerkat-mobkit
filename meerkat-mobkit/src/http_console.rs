@@ -678,6 +678,12 @@ async fn console_send_with_identity_first_fallback(
     request: ConsoleSendRequest,
 ) -> Result<crate::console_aggregator::ConsoleInteractionAccepted, ConsoleSendError> {
     let member_send_request = request.clone();
+    match Box::pin(aggregator.send(member_send_request)).await {
+        Ok(accepted) => return Ok(accepted),
+        Err(ConsoleSendError::UnknownIdentity(_)) => {}
+        Err(err) => return Err(err),
+    }
+    let member_retry_request = request.clone();
     match Box::pin(console_send_identity_first(
         aggregator,
         identity_runtime,
@@ -687,7 +693,7 @@ async fn console_send_with_identity_first_fallback(
     .await
     {
         Err(ConsoleSendError::UnknownIdentity(_)) => {
-            Box::pin(aggregator.send(member_send_request)).await
+            Box::pin(aggregator.send(member_retry_request)).await
         }
         result => result,
     }
@@ -3262,6 +3268,7 @@ async fn handle_console_runtime_rpc_with_visibility(
                     "mobkit/fork_helper",
                     "mobkit/attach_existing_session",
                     "mobkit/reconcile_edges",
+                    "mobkit/wire_member",
                     "mobkit/cross_mob/wire_local",
                     "mobkit/cross_mob/unwire_local",
                 ]);
@@ -4799,6 +4806,40 @@ async fn handle_console_runtime_rpc_with_visibility(
             })),
             None,
         ),
+        "mobkit/wire_member" => {
+            let Some(local_id) = request
+                .params
+                .get("local_member_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            else {
+                return invalid_params(response_id, "local_member_id required");
+            };
+            let Some(peer_id) = request
+                .params
+                .get("peer_member_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            else {
+                return invalid_params(response_id, "peer_member_id required");
+            };
+            match runtime
+                .handle()
+                .wire(MeerkatId::from(local_id), MeerkatId::from(peer_id))
+                .await
+            {
+                Ok(()) => response_value(
+                    response_id,
+                    Some(serde_json::json!({
+                        "accepted": true,
+                        "local_member_id": local_id,
+                        "peer_member_id": peer_id,
+                    })),
+                    None,
+                ),
+                Err(err) => internal_error(response_id, format!("wire_member failed: {err}")),
+            }
+        }
         "mobkit/mob_events/query" | "mobkit/mob_events/subscribe" => {
             let query: EventQuery = if request.params.is_null() {
                 EventQuery::default()

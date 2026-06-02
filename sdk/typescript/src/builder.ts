@@ -58,6 +58,7 @@ export interface MobKitBuilderConfig {
   rosterProvider: RosterProvider | null;
   agentCustomizer: AgentCustomizer | null;
   topologyProvider: TopologyProvider | null;
+  agentComms: { mode: "inproc" | "tcp" | "uds"; address?: string } | null;
 }
 
 function defaultConfig(): MobKitBuilderConfig {
@@ -90,6 +91,7 @@ function defaultConfig(): MobKitBuilderConfig {
     rosterProvider: null,
     agentCustomizer: null,
     topologyProvider: null,
+    agentComms: null,
   };
 }
 
@@ -118,6 +120,14 @@ export class MobKitBuilder {
   sessionService(builder: SessionAgentBuilder, store?: unknown): this {
     this._config.sessionBuilder = builder;
     this._config.sessionStore = store ?? null;
+    return this;
+  }
+
+  agentComms(config: {
+    mode: "inproc" | "tcp" | "uds";
+    address?: string;
+  }): this {
+    this._config.agentComms = { ...config };
     return this;
   }
 
@@ -239,9 +249,9 @@ export class MobKitBuilder {
   /**
    * Enable persistent state at the given path.
    *
-   * When set, the gateway creates SQLite-backed session/runtime state,
+   * When set, the gateway creates SQLite-backed mob/session/runtime state,
    * MobKit metadata, console logs, and binary blob storage under this
-   * directory. Mob storage remains in-memory.
+   * directory.
    */
   persistentState(path: string): this {
     this._config.persistentState = path;

@@ -29,6 +29,8 @@ id="target-a"
 name="$(hostname -s 2>/dev/null || hostname)"
 listen="127.0.0.1:5791"
 advertise=""
+control_listen=""
+control_advertise=""
 site="local"
 platform="$(uname -s | tr '[:upper:]' '[:lower:]')-local"
 model="${MDM_TARGET_MODEL:-gpt-5.5}"
@@ -40,6 +42,8 @@ while [[ $# -gt 0 ]]; do
     --name) name="$2"; shift 2 ;;
     --listen) listen="$2"; shift 2 ;;
     --advertise) advertise="$2"; shift 2 ;;
+    --control-listen) control_listen="$2"; shift 2 ;;
+    --control-advertise) control_advertise="$2"; shift 2 ;;
     --site) site="$2"; shift 2 ;;
     --platform) platform="$2"; shift 2 ;;
     --model) model="$2"; shift 2 ;;
@@ -48,6 +52,25 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
+
+if [[ -z "$control_listen" ]]; then
+  host="${listen%:*}"
+  port="${listen##*:}"
+  control_listen="${host}:$((port + 1000))"
+fi
+if [[ -z "$control_advertise" ]]; then
+  if [[ -n "$advertise" && "$advertise" == tcp://* ]]; then
+    authority="${advertise#tcp://}"
+    authority="${authority%%/*}"
+    host="${authority%:*}"
+    port="${authority##*:}"
+    control_advertise="http://${host}:$((port + 1000))"
+  else
+    host="${listen%:*}"
+    port="${listen##*:}"
+    control_advertise="http://${host}:$((port + 1000))"
+  fi
+fi
 
 mkdir -p "$bindings_dir" "${state_dir}/targets/${id}"
 pid_file="${state_dir}/targets/${id}.pid"
@@ -58,6 +81,8 @@ target_bin_args=(
   --id "$id"
   --name "$name"
   --listen "$listen"
+  --control-listen "$control_listen"
+  --control-advertise "$control_advertise"
   --site "$site"
   --platform "$platform"
   --data-dir "${state_dir}/targets/${id}"
@@ -91,6 +116,13 @@ case "$command" in
     done
     if [[ ! -s "$binding_file" ]]; then
       echo "[mdm-local-target] target did not write binding; log: $log_file" >&2
+      exit 1
+    fi
+    sleep 1
+    if ! kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+      echo "[mdm-local-target] target exited after writing binding; log: $log_file" >&2
+      tail -100 "$log_file" >&2 || true
+      rm -f "$pid_file"
       exit 1
     fi
     node "${pack_dir}/scripts/merge-bindings.mjs" "$targets_file" "$binding_file" >/dev/null

@@ -18,7 +18,7 @@ fi
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  gcp-target.sh start --id target-b [--name gcp-target-b]
+  gcp-target.sh start --id target-b [--name gcp-target-b] [--listen HOST:PORT] [--advertise tcp://HOST:PORT]
   gcp-target.sh fetch --id target-b
   gcp-target.sh stop --id target-b
 
@@ -90,6 +90,41 @@ shell_quote() {
   printf "'"
 }
 
+listen_from_tcp_address() {
+  local address="$1"
+  if [[ "$address" != tcp://* ]]; then
+    echo "only tcp:// advertise addresses can infer --listen: $address" >&2
+    return 1
+  fi
+  local authority="${address#tcp://}"
+  authority="${authority%%/*}"
+  if [[ -z "$authority" || "$authority" != *:* ]]; then
+    echo "cannot infer --listen from advertise address: $address" >&2
+    return 1
+  fi
+  printf "%s" "$authority"
+}
+
+control_listen_from_listen() {
+  local address="$1"
+  local host="${address%:*}"
+  local port="${address##*:}"
+  printf "%s:%s" "$host" "$((port + 1000))"
+}
+
+control_url_from_advertise() {
+  local address="$1"
+  if [[ "$address" != tcp://* ]]; then
+    echo "only tcp:// advertise addresses can infer control URL: $address" >&2
+    return 1
+  fi
+  local authority="${address#tcp://}"
+  authority="${authority%%/*}"
+  local host="${authority%:*}"
+  local port="${authority##*:}"
+  printf "http://%s:%s" "$host" "$((port + 1000))"
+}
+
 ensure_instance() {
   if "${gcloud_base[@]}" instances describe "$instance" --zone "$GCP_ZONE" >/dev/null 2>&1; then
     return
@@ -110,6 +145,7 @@ internal_ip() {
 
 sync_repo() {
   tar -C "$repo_root" \
+    --exclude ./.git \
     --exclude ./target \
     --exclude ./node_modules \
     --exclude ./examples/node_modules \
@@ -128,7 +164,7 @@ sync_remote_env() {
   local env_tmp
   env_tmp="$(mktemp)"
   chmod 600 "$env_tmp"
-  local names="${MDM_GCP_FORWARD_ENV:-OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GEMINI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID}"
+  local names="${MDM_GCP_FORWARD_ENV:-OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GEMINI_API_KEY OPENAI_BASE_URL OPENAI_ORG_ID MDM_SUPERVISOR_ADVERTISED_ADDRESS}"
   for env_name in $names; do
     if [[ -n "${!env_name:-}" ]]; then
       printf "%s=" "$env_name" >>"$env_tmp"
@@ -144,32 +180,38 @@ sync_remote_env() {
 remote_start() {
   local target_listen="$1"
   local target_advertise="$2"
+  local target_control_listen
+  local target_control_advertise
+  target_control_listen="$(control_listen_from_listen "$target_listen")"
+  target_control_advertise="$(control_url_from_advertise "$target_advertise")"
   "${ssh_base[@]}" --command "
     set -euo pipefail
     set -a
     . ~/.cache/mdm-mob-target/${id}.env
     set +a
+    . "\$HOME/.cargo/env" 2>/dev/null || true
     if ! command -v cargo >/dev/null 2>&1; then
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
       . \"\$HOME/.cargo/env\"
-    else
-      . \"\$HOME/.cargo/env\" 2>/dev/null || true
     fi
-    if ! dpkg -s build-essential pkg-config libssl-dev >/dev/null 2>&1; then
+    if ! dpkg -s build-essential pkg-config libssl-dev git >/dev/null 2>&1; then
       sudo apt-get update
-      sudo apt-get install -y build-essential pkg-config libssl-dev
+      sudo apt-get install -y build-essential pkg-config libssl-dev git
     fi
     cd ~/meerkat-mobkit
+    git init -q
     mkdir -p ~/.cache/mdm-mob-target /tmp/mdm-mob-target
     if [[ -f /tmp/mdm-${id}.pid ]]; then kill \"\$(cat /tmp/mdm-${id}.pid)\" 2>/dev/null || true; fi
     rm -f /tmp/mdm-mob-target/${id}.json
-    ./scripts/repo-cargo build -p meerkat-mobkit --example mdm_mob_target
+    CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 ./scripts/repo-cargo build -p meerkat-mobkit --example mdm_mob_target
     target_bin=\"\$(./scripts/repo-cargo --print-env | awk -F= '\$1 == \"CARGO_TARGET_DIR\" { print \$2 }')/debug/examples/mdm_mob_target\"
     nohup \"\$target_bin\" \
       --id '${id}' \
       --name '${name}' \
       --listen '${target_listen}' \
       --advertise '${target_advertise}' \
+      --control-listen '${target_control_listen}' \
+      --control-advertise '${target_control_advertise}' \
       --site '${site}' \
       --platform '${platform}' \
       --data-dir ~/.cache/mdm-mob-target/${id} \
@@ -201,10 +243,15 @@ case "$command" in
     ensure_instance
     sync_repo
     sync_remote_env
-    if [[ -n "$listen" && -z "$advertise" ]]; then
+    if [[ -z "$listen" && -z "$advertise" ]]; then
+      listen="0.0.0.0:5791"
+      advertise="tcp://$(internal_ip):5791"
+    elif [[ -n "$listen" && -z "$advertise" ]]; then
       advertise="tcp://${listen}"
+    elif [[ -z "$listen" && -n "$advertise" ]]; then
+      listen="$(listen_from_tcp_address "$advertise")"
     fi
-    remote_start "${listen:-0.0.0.0:5791}" "${advertise:-tcp://$(internal_ip):5791}"
+    remote_start "$listen" "$advertise"
     fetch_binding
     ;;
   fetch)

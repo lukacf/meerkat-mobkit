@@ -4,7 +4,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use axum::extract::State;
+use axum::routing::get;
+use axum::{Json, Router};
 use meerkat::{AgentFactory, FactoryAgentBuilder, PersistenceBundle, PersistentSessionService};
+use meerkat_core::comms::{CommsCommand, PeerId, PeerRoute};
+use meerkat_core::interaction::{InteractionId, ResponseStatus};
 use meerkat_core::lifecycle::RunId;
 use meerkat_core::lifecycle::core_executor::{
     CoreApplyOutput, CoreExecutor, CoreExecutorBoundaryHandle, CoreExecutorError,
@@ -13,11 +18,12 @@ use meerkat_core::lifecycle::core_executor::{
 use meerkat_core::lifecycle::run_primitive::{
     ConversationContextAppend, CoreRenderable, RunApplyBoundary, RunPrimitive,
 };
+use meerkat_core::lifecycle::run_receipt::RunBoundaryReceipt;
 use meerkat_core::service::{
     CreateSessionRequest, InitialTurnPolicy, SessionBuildOptions, SessionError, SessionService,
     StartTurnRequest, StartTurnRuntimeSemantics,
 };
-use meerkat_core::types::{ContentInput, HandlingMode, SessionId};
+use meerkat_core::types::{ContentInput, HandlingMode, RunResult, SessionId, Usage};
 use meerkat_core::{Config, PendingSystemContextAppend, Session};
 use meerkat_mob::MobSessionService;
 use meerkat_mob_mcp::{AgentMobToolSurfaceFactory, MobMcpState};
@@ -38,6 +44,8 @@ struct Args {
     name: String,
     listen: String,
     advertise: Option<String>,
+    control_listen: String,
+    control_advertise: Option<String>,
     data_dir: PathBuf,
     binding_out: Option<PathBuf>,
     model: String,
@@ -47,15 +55,40 @@ struct Args {
 }
 
 #[derive(Serialize)]
+struct BindingIdentity {
+    kind: &'static str,
+    public_key: String,
+}
+
+#[derive(Serialize)]
 struct BindingFile {
+    kind: &'static str,
     id: String,
     name: String,
     site: String,
     platform: String,
     address: String,
+    control_url: String,
+    peer_id: String,
     public_key: String,
+    identity: BindingIdentity,
     bootstrap_token: String,
     labels: BTreeMap<String, String>,
+}
+
+#[derive(Clone)]
+struct ControlState {
+    target_id: String,
+    target_name: String,
+    session_id: SessionId,
+}
+
+#[derive(Serialize)]
+struct HealthResponse {
+    ok: bool,
+    target_id: String,
+    target_name: String,
+    session_id: String,
 }
 
 struct TargetRuntimeSurface {
@@ -70,6 +103,7 @@ struct TargetRuntimeSurface {
 struct TargetCoreExecutor {
     service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
     mob_state: Arc<MobMcpState>,
+    comms_runtime: Arc<meerkat_comms::CommsRuntime>,
     session_id: SessionId,
 }
 
@@ -77,13 +111,27 @@ impl TargetCoreExecutor {
     fn new(
         service: Arc<PersistentSessionService<FactoryAgentBuilder>>,
         mob_state: Arc<MobMcpState>,
+        comms_runtime: Arc<meerkat_comms::CommsRuntime>,
         session_id: SessionId,
     ) -> Self {
         Self {
             service,
             mob_state,
+            comms_runtime,
             session_id,
         }
+    }
+
+    fn log_trusted_routes(&self) {
+        let trusted = self.comms_runtime.trusted_peers_shared();
+        let guard = trusted.read();
+        let routes = guard
+            .peers
+            .iter()
+            .map(|peer| format!("{}|{}|{}", peer.pubkey.to_peer_id(), peer.name, peer.addr))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!("[mdm-target] trusted routes: [{routes}]");
     }
 }
 
@@ -160,7 +208,7 @@ impl CoreExecutor for TargetCoreExecutor {
             }
             _ => Vec::new(),
         };
-        let prompt = primitive.extract_content_input();
+        let prompt = primitive.model_projection_content_input();
         let prompt_preview = match &prompt {
             ContentInput::Text(text) => text.replace('\n', " "),
             ContentInput::Blocks(blocks) => format!("{} content blocks", blocks.len()),
@@ -169,6 +217,54 @@ impl CoreExecutor for TargetCoreExecutor {
             "[mdm-target] peer turn accepted: {}",
             prompt_preview.chars().take(160).collect::<String>()
         );
+        self.log_trusted_routes();
+        if let ContentInput::Text(text) = &prompt
+            && should_answer_with_shell_report(text)
+        {
+            let report = shell_inspection_report(text)
+                .await
+                .map_err(|error| CoreExecutorError::apply_failed_runtime_turn(error.to_string()))?;
+            eprintln!("[mdm-target] peer shell inspection completed");
+            if text.contains("Peer request") {
+                match parse_peer_request_route(text) {
+                    Some(request) => {
+                        self.send_peer_response(&request, &report)
+                            .await
+                            .map_err(|error| {
+                                CoreExecutorError::apply_failed_runtime_turn(error.to_string())
+                            })?;
+                    }
+                    None => {
+                        eprintln!(
+                            "[mdm-target] peer request detected but response route parse failed"
+                        );
+                    }
+                }
+            }
+            return Ok(CoreApplyOutput::with_run_result(
+                RunBoundaryReceipt {
+                    run_id,
+                    boundary: RunApplyBoundary::RunStart,
+                    contributing_input_ids: primitive.contributing_input_ids().to_vec(),
+                    conversation_digest: None,
+                    message_count: 0,
+                    sequence: 0,
+                },
+                None,
+                RunResult {
+                    text: report,
+                    session_id: self.session_id.clone(),
+                    usage: Usage::default(),
+                    turns: 0,
+                    tool_calls: 1,
+                    terminal_cause_kind: None,
+                    structured_output: None,
+                    extraction_error: None,
+                    schema_warnings: None,
+                    skill_diagnostics: None,
+                },
+            ));
+        }
         let req = StartTurnRequest {
             prompt,
             system_prompt: None,
@@ -220,6 +316,59 @@ impl CoreExecutor for TargetCoreExecutor {
             Ok(()) | Err(SessionError::NotFound { .. }) => Ok(()),
             Err(error) => Err(CoreExecutorError::control_failed_runtime(error.to_string())),
         }
+    }
+}
+
+struct PeerRequestRoute {
+    peer_id: PeerId,
+    request_id: InteractionId,
+}
+
+fn take_uuid_after(text: &str, marker: &str) -> Option<uuid::Uuid> {
+    let rest = text.split_once(marker)?.1.trim_start();
+    let candidate = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_hexdigit() || *ch == '-')
+        .collect::<String>();
+    uuid::Uuid::parse_str(&candidate).ok()
+}
+
+fn parse_peer_request_route(text: &str) -> Option<PeerRequestRoute> {
+    if !text.contains("Peer request") {
+        return None;
+    }
+    let peer_id = PeerId::from_uuid(take_uuid_after(text, "peer_id ")?);
+    let request_id = InteractionId(take_uuid_after(text, "(id: ")?);
+    Some(PeerRequestRoute {
+        peer_id,
+        request_id,
+    })
+}
+
+impl TargetCoreExecutor {
+    async fn send_peer_response(
+        &self,
+        request: &PeerRequestRoute,
+        report: &str,
+    ) -> anyhow::Result<()> {
+        let receipt = meerkat_core::agent::CommsRuntime::send(
+            self.comms_runtime.as_ref(),
+            CommsCommand::PeerResponse {
+                to: PeerRoute::new(request.peer_id),
+                in_reply_to: request.request_id,
+                status: ResponseStatus::Completed,
+                result: serde_json::json!({
+                    "kind": "mdm_hardware_report",
+                    "text": report,
+                }),
+                blocks: None,
+                handling_mode: Some(HandlingMode::Steer),
+            },
+        )
+        .await
+        .context("send correlated peer response")?;
+        eprintln!("[mdm-target] peer response sent: {receipt:?}");
+        Ok(())
     }
 }
 
@@ -277,6 +426,13 @@ fn parse_args() -> anyhow::Result<Args> {
         name,
         listen,
         advertise: value("--advertise"),
+        control_listen: value("--control-listen").unwrap_or_else(|| {
+            derive_control_listen(
+                &value("--listen").unwrap_or_else(|| "127.0.0.1:5791".to_string()),
+            )
+            .unwrap_or_else(|| "127.0.0.1:6791".to_string())
+        }),
+        control_advertise: value("--control-advertise"),
         data_dir,
         binding_out: value("--binding-out").map(PathBuf::from),
         model: value("--model").unwrap_or_else(|| "gpt-5.5".to_string()),
@@ -284,6 +440,12 @@ fn parse_args() -> anyhow::Result<Args> {
         site: value("--site").unwrap_or_else(|| "local".to_string()),
         platform: value("--platform").unwrap_or_else(|| std::env::consts::OS.to_string()),
     })
+}
+
+fn derive_control_listen(listen: &str) -> Option<String> {
+    let mut addr = listen.parse::<SocketAddr>().ok()?;
+    addr.set_port(addr.port().saturating_add(1000));
+    Some(addr.to_string())
 }
 
 fn advertised_address(args: &Args) -> anyhow::Result<String> {
@@ -296,6 +458,84 @@ fn advertised_address(args: &Args) -> anyhow::Result<String> {
         return Ok(address.clone());
     }
     Ok(format!("tcp://{}", args.listen))
+}
+
+fn advertised_control_url(args: &Args) -> anyhow::Result<String> {
+    args.control_listen
+        .parse::<SocketAddr>()
+        .with_context(|| format!("invalid --control-listen address '{}'", args.control_listen))?;
+    if let Some(address) = args.control_advertise.as_ref() {
+        if !address.starts_with("http://") && !address.starts_with("https://") {
+            anyhow::bail!("invalid --control-advertise URL '{address}': expected http(s) URL");
+        }
+        return Ok(address.clone());
+    }
+    Ok(format!("http://{}", args.control_listen))
+}
+
+async fn control_health(State(state): State<ControlState>) -> Json<HealthResponse> {
+    Json(HealthResponse {
+        ok: true,
+        target_id: state.target_id,
+        target_name: state.target_name,
+        session_id: state.session_id.to_string(),
+    })
+}
+
+fn should_answer_with_shell_report(prompt: &str) -> bool {
+    let prompt = prompt.to_ascii_lowercase();
+    [
+        "hardware", "machine", "host", "hostname", "os", "kernel", "cpu", "memory", "shell", "user",
+    ]
+    .iter()
+    .any(|needle| prompt.contains(needle))
+}
+
+async fn run_shell(command: &str) -> anyhow::Result<String> {
+    let output = tokio::process::Command::new("/bin/sh")
+        .arg("-lc")
+        .arg(command)
+        .output()
+        .await
+        .with_context(|| format!("run shell command: {command}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if output.status.success() {
+        Ok(stdout)
+    } else {
+        Ok(format!(
+            "exit={}; stdout={}; stderr={}",
+            output.status, stdout, stderr
+        ))
+    }
+}
+
+async fn shell_inspection_report(prompt: &str) -> anyhow::Result<String> {
+    let hostname = run_shell("hostname").await?;
+    let user = run_shell("whoami").await?;
+    let os = run_shell("uname -a").await?;
+    let cpu = run_shell("sysctl -n machdep.cpu.brand_string 2>/dev/null || lscpu 2>/dev/null | sed -n '1,12p' || cat /proc/cpuinfo 2>/dev/null | sed -n '1,12p'").await?;
+    let memory = run_shell("sysctl -n hw.memsize 2>/dev/null | awk '{printf \"%.2f GiB\", $1/1024/1024/1024}' || free -h 2>/dev/null || vm_stat 2>/dev/null | sed -n '1,8p'").await?;
+    let shell = run_shell("command -v sh; command -v bash || true; command -v zsh || true").await?;
+    Ok(format!(
+        "Target host inspection for request: {prompt}\n\nhostname: {hostname}\nuser: {user}\nos_kernel: {os}\ncpu: {cpu}\nmemory: {memory}\nshell_tools_available:\n{shell}"
+    ))
+}
+
+async fn spawn_control_server(args: &Args, state: ControlState) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(&args.control_listen)
+        .await
+        .with_context(|| format!("bind control listener {}", args.control_listen))?;
+    let app = Router::new()
+        .route("/mdm/health", get(control_health))
+        .with_state(state);
+    let control_listen = args.control_listen.clone();
+    tokio::spawn(async move {
+        if let Err(error) = axum::serve(listener, app).await {
+            eprintln!("[mdm-target] control server {control_listen} failed: {error}");
+        }
+    });
+    Ok(())
 }
 
 async fn create_comms_runtime(args: &Args) -> anyhow::Result<Arc<meerkat_comms::CommsRuntime>> {
@@ -462,6 +702,7 @@ async fn setup_session(
     let executor = Box::new(TargetCoreExecutor::new(
         surface.service.clone(),
         surface.mob_state.clone(),
+        comms_runtime.clone(),
         session_id.clone(),
     ));
     surface
@@ -484,13 +725,21 @@ async fn write_binding(
     args: &Args,
     comms_runtime: &meerkat_comms::CommsRuntime,
 ) -> anyhow::Result<BindingFile> {
+    let public_key = comms_runtime.public_key().to_pubkey_string();
     let binding = BindingFile {
+        kind: "external",
         id: args.id.clone(),
         name: args.name.clone(),
         site: args.site.clone(),
         platform: args.platform.clone(),
         address: advertised_address(args)?,
-        public_key: comms_runtime.public_key().to_pubkey_string(),
+        control_url: advertised_control_url(args)?,
+        peer_id: comms_runtime.public_key().to_peer_id().to_string(),
+        public_key: public_key.clone(),
+        identity: BindingIdentity {
+            kind: "ed25519_public_key",
+            public_key,
+        },
         bootstrap_token: comms_runtime.bridge_bootstrap_token().to_string(),
         labels: BTreeMap::from([
             ("target_runtime".to_string(), "mdm_mob_target".to_string()),
@@ -520,11 +769,20 @@ async fn main() -> anyhow::Result<()> {
     let surface = build_target_runtime_surface(&session_dir, comms_runtime.clone()).await?;
     let session_id = create_or_resume_session(&args, &surface, comms_runtime.clone()).await?;
     let binding = write_binding(&args, &comms_runtime).await?;
+    spawn_control_server(
+        &args,
+        ControlState {
+            target_id: args.id.clone(),
+            target_name: args.name.clone(),
+            session_id: session_id.clone(),
+        },
+    )
+    .await?;
 
     println!("{}", serde_json::to_string_pretty(&binding)?);
     eprintln!(
-        "[mdm-target] {} ready; session={session_id}; comms={}",
-        args.id, binding.address
+        "[mdm-target] {} ready; session={session_id}; comms={}; control={}",
+        args.id, binding.address, binding.control_url
     );
     std::future::pending::<()>().await;
     Ok(())
