@@ -326,6 +326,60 @@ export async function sendConsoleMultipart(
   return normalizeConsoleTimelineAccepted(result.result, identity);
 }
 
+export async function uploadConsoleBlobMultipart(
+  baseUrl: string,
+  input: { blobId?: string; file?: File; mediaType?: string },
+): Promise<{ blob_id: string; url?: string }> {
+  const file = input.file;
+  if (!file) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} requires a file`);
+  }
+  const mediaType = input.mediaType || file.type || "application/octet-stream";
+  const uploadId = input.blobId?.trim() || `upload-${Date.now().toString(36)}-0`;
+  const uploadFile = file.type === mediaType
+    ? file
+    : new File([file], file.name || "upload", { type: mediaType });
+  const form = new FormData();
+  form.append(`file:${uploadId}`, uploadFile, uploadFile.name || file.name || "upload");
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `${CONSOLE_RPC_METHODS.blobUpload}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.blobUpload,
+    params: {
+      upload: {
+        type: "image_upload",
+        upload_id: uploadId,
+        media_type: mediaType,
+        alt: file.name || "upload",
+      },
+    },
+  }));
+
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
+    method: "POST",
+    body: form,
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  const record = result.result && typeof result.result === "object"
+    ? result.result as Record<string, unknown>
+    : {};
+  const blobId = typeof record.blob_id === "string" ? record.blob_id : "";
+  if (!blobId) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} returned an invalid blob payload`);
+  }
+  return {
+    blob_id: blobId,
+    url: typeof record.url === "string" ? record.url : undefined,
+  };
+}
+
 const TERMINAL_SSE_EVENTS = new Set([
   "interaction_complete",
   "run_completed",

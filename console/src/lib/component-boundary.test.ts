@@ -9,6 +9,7 @@ const root = path.basename(process.cwd()) === "console"
 const componentsSrc = path.join(root, "packages", "console-components", "src");
 const coreActivitySource = path.join(root, "packages", "console-core", "src", "activity.ts");
 const componentIndex = path.join(componentsSrc, "index.ts");
+const stockConsoleAppSource = path.join(root, "console", "src", "ConsoleApp.tsx");
 
 const forbiddenImportPatterns = [
   /from\s+["'][^"']*console\/src\//,
@@ -68,4 +69,25 @@ test("activity rail roster actions are declared in the shared core model", () =>
   const rosterPanel = source.match(/export interface ConsoleActivityRosterPanel \{(?<body>[\s\S]*?)\n\}/)?.groups?.body || "";
 
   assert.match(rosterPanel, /\bactions\?:\s*ConsoleActivityAction\[\]/);
+});
+
+test("stock console runtime path is backed by the headless controller", () => {
+  const source = fs.readFileSync(stockConsoleAppSource, "utf8");
+
+  assert.match(source, /\bcreateHttpConsoleTransport\b/);
+  assert.match(source, /\bcreateMobKitConsoleController\b/);
+  assert.match(source, /\bconsoleController\.timeline\.query\b/);
+  assert.match(source, /\bconsoleController\.timeline\.subscribeWithBackfill\b/);
+  assert.match(source, /\bconsoleController\.commands\.sendMessage\b/);
+  assert.match(source, /\bconsoleController\.commands\.execute\b/);
+  for (const rawHelper of [
+    "fetchJson",
+    "queryTimeline",
+    "sendConsole",
+    "sendConsoleMultipart",
+    "subscribeTimelineEvents",
+    "callConsoleRpc",
+  ]) {
+    assert.doesNotMatch(source, new RegExp(`\\b${rawHelper}\\b`));
+  }
 });

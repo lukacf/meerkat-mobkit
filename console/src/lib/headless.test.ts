@@ -35,6 +35,16 @@ function hostTarget(): ConsoleWorkbenchTarget {
   return target;
 }
 
+function controlTarget(kind: "routing" | "gating"): ConsoleWorkbenchTarget {
+  const target = migrateConsoleWorkbenchTarget({
+    id: kind,
+    kind,
+    title: kind,
+  });
+  assert.ok(target);
+  return target;
+}
+
 function createFakeTransport(options: {
   capabilities?: ConsoleCapabilities;
   queryPages?: ConsoleTimelinePage[];
@@ -225,6 +235,66 @@ test("headless command execution only accepts modeled commands for allowed targe
   );
 });
 
+test("headless command execution models lifecycle, routing, and gating commands with target constraints", async () => {
+  const methods = [
+    CONSOLE_RPC_METHODS.send,
+    CONSOLE_RPC_METHODS.inspectIdentity,
+    CONSOLE_RPC_METHODS.retireIdentity,
+    CONSOLE_RPC_METHODS.respawnIdentity,
+    CONSOLE_RPC_METHODS.resetIdentity,
+    CONSOLE_RPC_METHODS.routingRoutesList,
+    CONSOLE_RPC_METHODS.deliveryHistory,
+    CONSOLE_RPC_METHODS.gatingPending,
+    CONSOLE_RPC_METHODS.gatingAudit,
+    CONSOLE_RPC_METHODS.gatingDecide,
+  ];
+  const transport = createFakeTransport({ capabilities: { methods, version: "cap-all" } });
+  const controller = createMobKitConsoleController({ transport });
+
+  for (const command of [
+    CONSOLE_COMMAND_NAMES.retireIdentity,
+    CONSOLE_COMMAND_NAMES.respawnIdentity,
+    CONSOLE_COMMAND_NAMES.resetIdentity,
+  ]) {
+    assert.equal((await controller.commands.execute({
+      command,
+      target: identityTarget(),
+    })).accepted, true);
+  }
+
+  for (const command of [
+    CONSOLE_COMMAND_NAMES.listRoutingRoutes,
+    CONSOLE_COMMAND_NAMES.listDeliveryHistory,
+  ]) {
+    assert.equal((await controller.commands.execute({
+      command,
+      target: controlTarget("routing"),
+    })).accepted, true);
+    await assert.rejects(
+      () => controller.commands.execute({ command, target: controlTarget("gating") }),
+      /cannot execute command/i,
+    );
+  }
+
+  for (const command of [
+    CONSOLE_COMMAND_NAMES.listGatingPending,
+    CONSOLE_COMMAND_NAMES.listGatingAudit,
+    CONSOLE_COMMAND_NAMES.decideGating,
+  ]) {
+    assert.equal((await controller.commands.execute({
+      command,
+      target: controlTarget("gating"),
+      params: command === CONSOLE_COMMAND_NAMES.decideGating
+        ? { pending_id: "pending-1", approver_id: "operator", decision: "approve" }
+        : {},
+    })).accepted, true);
+    await assert.rejects(
+      () => controller.commands.execute({ command, target: controlTarget("routing") }),
+      /cannot execute command/i,
+    );
+  }
+});
+
 test("headless transport keeps uploads and blob URLs typed optional hooks", async () => {
   const transport = createFakeTransport();
   const upload = await transport.upload?.({ file: {} as File, mediaType: "image/png" });
@@ -244,9 +314,16 @@ test("headless facts carry all required provenance classes", () => {
 
 test("createHttpConsoleTransport uses stock console routes and typed RPC methods", async () => {
   const calls: Array<{ url: string; method: string; body?: string }> = [];
+  let multipartPayload: Record<string, unknown> | null = null;
+  let multipartHasFile = false;
   const previousFetch = globalThis.fetch;
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const requestUrl = String(url);
+    if (init?.body instanceof FormData) {
+      const form = init.body;
+      multipartPayload = JSON.parse(String(form.get("payload") || "{}")) as Record<string, unknown>;
+      multipartHasFile = Boolean(form.get("file:upload-http-0"));
+    }
     calls.push({
       url: requestUrl,
       method: init?.method || "GET",
@@ -255,13 +332,27 @@ test("createHttpConsoleTransport uses stock console routes and typed RPC methods
     if (requestUrl.endsWith(CONSOLE_REST_PATHS.experience)) {
       return new Response(JSON.stringify({ contract_version: "0.5.0" }), { status: 200 });
     }
+    if (requestUrl.endsWith(CONSOLE_REST_PATHS.modules)) {
+      return new Response(JSON.stringify({ modules: ["mob"] }), { status: 200 });
+    }
+    if (requestUrl.endsWith(CONSOLE_RPC_PATHS.multipartJsonRpc)) {
+      const body = multipartPayload || {};
+      return new Response(JSON.stringify({
+        jsonrpc: "2.0",
+        id: body.id,
+        result: { blob_id: "blob-http" },
+      }), { status: 200 });
+    }
     if (requestUrl.endsWith(CONSOLE_RPC_PATHS.jsonRpc)) {
       const body = JSON.parse(String(init?.body || "{}"));
       if (body.method === CONSOLE_RPC_METHODS.capabilities) {
         return new Response(JSON.stringify({
           jsonrpc: "2.0",
           id: body.id,
-          result: { methods: [CONSOLE_RPC_METHODS.send], version: "cap-v1" },
+          result: {
+            methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
+            version: "cap-v1",
+          },
         }), { status: 200 });
       }
       if (body.method === CONSOLE_RPC_METHODS.send) {
@@ -271,15 +362,25 @@ test("createHttpConsoleTransport uses stock console routes and typed RPC methods
           result: { interaction_id: "turn-http", identity: body.params.identity },
         }), { status: 200 });
       }
+      if (body.method === CONSOLE_RPC_METHODS.inspectIdentity) {
+        return new Response(JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: { identity: body.params.identity, status: "ready" },
+        }), { status: 200 });
+      }
     }
     return new Response("not found", { status: 404 });
   }) as typeof fetch;
 
+  const originalNow = Date.now;
   try {
+    Date.now = () => Number.parseInt("http", 36);
     const transport = createHttpConsoleTransport({ baseUrl: "http://console.test" });
     assert.equal((await transport.loadExperience()).contract_version, "0.5.0");
+    assert.deepEqual(await transport.loadModules?.(), { modules: ["mob"] });
     assert.deepEqual(await transport.capabilities(), {
-      methods: [CONSOLE_RPC_METHODS.send],
+      methods: [CONSOLE_RPC_METHODS.send, CONSOLE_RPC_METHODS.inspectIdentity],
       version: "cap-v1",
       runtime_capabilities: undefined,
       method_capabilities: undefined,
@@ -290,12 +391,30 @@ test("createHttpConsoleTransport uses stock console routes and typed RPC methods
       origin: "test",
       idempotencyKey: "idem-http",
     })).interaction_id, "turn-http");
+    assert.deepEqual(await transport.executeCommand?.({
+      command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+      target: identityTarget(),
+    }), {
+      command: CONSOLE_COMMAND_NAMES.inspectIdentity,
+      accepted: true,
+      result: { identity: "identity:lead", status: "ready" },
+    });
+    assert.deepEqual(await transport.upload?.({
+      blobId: "upload-http-0",
+      file: new File(["png"], "badge.png", { type: "image/png" }),
+    }), { blob_id: "blob-http", url: undefined });
+    assert.equal(multipartHasFile, true);
+    assert.equal(multipartPayload?.method, CONSOLE_RPC_METHODS.blobUpload);
     assert.deepEqual(calls.map((call) => [call.method, new URL(call.url).pathname]), [
       ["GET", CONSOLE_REST_PATHS.experience],
+      ["GET", CONSOLE_REST_PATHS.modules],
       ["POST", CONSOLE_RPC_PATHS.jsonRpc],
       ["POST", CONSOLE_RPC_PATHS.jsonRpc],
+      ["POST", CONSOLE_RPC_PATHS.jsonRpc],
+      ["POST", CONSOLE_RPC_PATHS.multipartJsonRpc],
     ]);
   } finally {
+    Date.now = originalNow;
     globalThis.fetch = previousFetch;
   }
 });

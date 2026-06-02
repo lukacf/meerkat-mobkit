@@ -447,6 +447,32 @@ function startMockConsoleServer(port, options = {}) {
       if (method === "POST" && url === "/console/rpc") {
         const payload = JSON.parse(body || "{}");
         const rpcId = payload.id || "rpc";
+        if (payload.method === "mobkit/capabilities") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpcId,
+            result: {
+              version: "browser-e2e",
+              methods: [
+                "mobkit/capabilities",
+                "mobkit/console/send",
+                "mobkit/console/inspect_identity",
+                "mobkit/console/query_timeline",
+                "mobkit/blob/upload",
+                "mobkit/retire",
+                "mobkit/respawn",
+                "mobkit/reset",
+                "mobkit/routing/routes/list",
+                "mobkit/delivery/history",
+                "mobkit/gating/pending",
+                "mobkit/gating/audit",
+                "mobkit/gating/decide",
+              ],
+            },
+          }));
+          return;
+        }
         if (payload.method === "mobkit/console/query_timeline") {
           const identity = payload.params?.identity;
           let framesForIdentity = null;

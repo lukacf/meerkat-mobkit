@@ -1580,6 +1580,108 @@ function formatCount(value) {
   return new Intl.NumberFormat("en-US").format(Number(value) || 0);
 }
 
+// ../packages/console-core/src/targets.ts
+var LEGACY_CONTROL_TARGETS = {
+  topology: "mobkit/topology",
+  health: "mobkit/activity",
+  timeline: "mobkit/activity",
+  roster: "mobkit/roster",
+  routing: "mobkit/routing",
+  gating: "mobkit/gating",
+  gates: "mobkit/gating",
+  logs: "mobkit/logs"
+};
+function migrateConsoleWorkbenchTarget(input) {
+  if (!isRecord(input)) {
+    return null;
+  }
+  const id = stringValue(input.id);
+  const kind = stringValue(input.kind);
+  const title = stringValue(input.title);
+  if (!id || !kind || !title) {
+    return null;
+  }
+  if (kind === "agent-chat") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId) || id;
+    return {
+      ...baseTarget(input, id, "mobkit/identity-chat", title),
+      identity,
+      memberId: stringValue(input.memberId),
+      addressingMode: "identity"
+    };
+  }
+  if (kind === "identity-inspect") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId) || id.replace(/^inspect:/, "");
+    return {
+      ...baseTarget(input, id, "mobkit/identity-inspect", title),
+      identity,
+      memberId: stringValue(input.memberId)
+    };
+  }
+  const controlKind = LEGACY_CONTROL_TARGETS[kind];
+  if (controlKind) {
+    return baseTarget(input, id, controlKind, title);
+  }
+  if (kind.startsWith("mobkit/")) {
+    return normalizeMobKitWorkbenchTarget(input, id, kind, title);
+  }
+  if (isNamespacedKind(kind) && kind !== "mobkit/unknown") {
+    const payloadVersion = typeof input.payloadVersion === "number" && Number.isSafeInteger(input.payloadVersion) ? input.payloadVersion : 1;
+    return {
+      ...baseTarget(input, id, kind, title),
+      payloadVersion,
+      payload: input.payload,
+      provenance: "host"
+    };
+  }
+  return null;
+}
+function normalizeMobKitWorkbenchTarget(input, id, kind, title) {
+  if (kind === "mobkit/identity-chat") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId);
+    if (!identity) return null;
+    return {
+      ...baseTarget(input, id, kind, title),
+      identity,
+      memberId: stringValue(input.memberId),
+      addressingMode: "identity"
+    };
+  }
+  if (kind === "mobkit/identity-inspect") {
+    const identity = stringValue(input.identity) || stringValue(input.memberId);
+    if (!identity) return null;
+    return {
+      ...baseTarget(input, id, kind, title),
+      identity,
+      memberId: stringValue(input.memberId)
+    };
+  }
+  if (Object.values(LEGACY_CONTROL_TARGETS).includes(kind)) {
+    return baseTarget(input, id, kind, title);
+  }
+  return null;
+}
+function baseTarget(input, id, kind, title) {
+  return {
+    id,
+    kind,
+    title,
+    subtitle: stringValue(input.subtitle),
+    iconName: stringValue(input.iconName),
+    badgeLabel: stringValue(input.badgeLabel)
+  };
+}
+function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : void 0;
+}
+function isNamespacedKind(kind) {
+  const [namespace, name, ...rest] = kind.split("/");
+  return Boolean(namespace && name && rest.length === 0);
+}
+
 // ../packages/console-components/src/conversation/conversation-message-view.tsx
 var import_react3 = require("react");
 
@@ -4746,8 +4848,17 @@ var CONSOLE_RPC_METHODS = {
   listIdentities: "mobkit/console/list_identities",
   inspectIdentity: "mobkit/console/inspect_identity",
   queryTimeline: "mobkit/console/query_timeline",
-  blobUpload: "mobkit/blob/upload"
+  blobUpload: "mobkit/blob/upload",
+  retireIdentity: "mobkit/retire",
+  respawnIdentity: "mobkit/respawn",
+  resetIdentity: "mobkit/reset",
+  routingRoutesList: "mobkit/routing/routes/list",
+  deliveryHistory: "mobkit/delivery/history",
+  gatingPending: "mobkit/gating/pending",
+  gatingAudit: "mobkit/gating/audit",
+  gatingDecide: "mobkit/gating/decide"
 };
+var CONSOLE_BLOB_PATH_PREFIX = "/blobs/";
 var CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE = -32013;
 
 // src/lib/network.ts
@@ -4985,6 +5096,51 @@ async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments
     throw new Error(`${CONSOLE_RPC_METHODS.send} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
   }
   return normalizeConsoleTimelineAccepted(result.result, identity);
+}
+async function uploadConsoleBlobMultipart(baseUrl, input) {
+  const file = input.file;
+  if (!file) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} requires a file`);
+  }
+  const mediaType = input.mediaType || file.type || "application/octet-stream";
+  const uploadId = input.blobId?.trim() || `upload-${Date.now().toString(36)}-0`;
+  const uploadFile = file.type === mediaType ? file : new File([file], file.name || "upload", { type: mediaType });
+  const form = new FormData();
+  form.append(`file:${uploadId}`, uploadFile, uploadFile.name || file.name || "upload");
+  form.append("payload", JSON.stringify({
+    jsonrpc: "2.0",
+    id: `${CONSOLE_RPC_METHODS.blobUpload}:${Date.now()}`,
+    method: CONSOLE_RPC_METHODS.blobUpload,
+    params: {
+      upload: {
+        type: "image_upload",
+        upload_id: uploadId,
+        media_type: mediaType,
+        alt: file.name || "upload"
+      }
+    }
+  }));
+  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}: ${text}`);
+  }
+  const result = await response.json();
+  if (result.error) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+  }
+  const record = result.result && typeof result.result === "object" ? result.result : {};
+  const blobId = typeof record.blob_id === "string" ? record.blob_id : "";
+  if (!blobId) {
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} returned an invalid blob payload`);
+  }
+  return {
+    blob_id: blobId,
+    url: typeof record.url === "string" ? record.url : void 0
+  };
 }
 var TERMINAL_SSE_EVENTS = /* @__PURE__ */ new Set([
   "interaction_complete",
@@ -5289,6 +5445,287 @@ function subscribeTimelineEvents(baseUrl, target, onFrame) {
     stopped = true;
     controller?.abort();
   };
+}
+
+// src/lib/headless.ts
+var CONSOLE_COMMAND_NAMES = {
+  inspectIdentity: "inspectIdentity",
+  retireIdentity: "retireIdentity",
+  respawnIdentity: "respawnIdentity",
+  resetIdentity: "resetIdentity",
+  listRoutingRoutes: "listRoutingRoutes",
+  listDeliveryHistory: "listDeliveryHistory",
+  listGatingPending: "listGatingPending",
+  listGatingAudit: "listGatingAudit",
+  decideGating: "decideGating"
+};
+var CONSOLE_COMMAND_SPECS = {
+  [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
+    method: CONSOLE_RPC_METHODS.inspectIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.retireIdentity]: {
+    method: CONSOLE_RPC_METHODS.retireIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.respawnIdentity]: {
+    method: CONSOLE_RPC_METHODS.respawnIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.resetIdentity]: {
+    method: CONSOLE_RPC_METHODS.resetIdentity,
+    targetKinds: /* @__PURE__ */ new Set([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect"
+    ])
+  },
+  [CONSOLE_COMMAND_NAMES.listRoutingRoutes]: {
+    method: CONSOLE_RPC_METHODS.routingRoutesList,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/routing"])
+  },
+  [CONSOLE_COMMAND_NAMES.listDeliveryHistory]: {
+    method: CONSOLE_RPC_METHODS.deliveryHistory,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/routing"])
+  },
+  [CONSOLE_COMMAND_NAMES.listGatingPending]: {
+    method: CONSOLE_RPC_METHODS.gatingPending,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES.listGatingAudit]: {
+    method: CONSOLE_RPC_METHODS.gatingAudit,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  },
+  [CONSOLE_COMMAND_NAMES.decideGating]: {
+    method: CONSOLE_RPC_METHODS.gatingDecide,
+    targetKinds: /* @__PURE__ */ new Set(["mobkit/gating"])
+  }
+};
+function createHttpConsoleTransport({
+  baseUrl,
+  fetchTimeoutMs
+}) {
+  const timeout = () => typeof fetchTimeoutMs === "function" ? fetchTimeoutMs() : fetchTimeoutMs;
+  return {
+    loadExperience: () => fetchJson(baseUrl, CONSOLE_REST_PATHS.experience, timeout()),
+    loadModules: () => fetchJson(baseUrl, CONSOLE_REST_PATHS.modules, timeout()),
+    capabilities: async () => normalizeCapabilities(
+      await callConsoleRpc(baseUrl, CONSOLE_RPC_METHODS.capabilities)
+    ),
+    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit),
+    subscribeTimeline: (input, onFrame) => subscribeTimelineEvents(baseUrl, input, onFrame),
+    send: (input) => {
+      const handlingMode = input.handlingMode ?? "queue";
+      if (input.attachments?.length) {
+        return sendConsoleMultipart(
+          baseUrl,
+          input.identity,
+          input.content,
+          input.attachments,
+          input.origin,
+          input.idempotencyKey,
+          handlingMode
+        );
+      }
+      return sendConsole(
+        baseUrl,
+        input.identity,
+        input.content,
+        input.origin,
+        input.idempotencyKey,
+        handlingMode
+      );
+    },
+    executeCommand: async (input) => {
+      const spec = commandSpec(input.command);
+      const params = { ...input.params || {} };
+      if (identityCommandMethods.has(spec.method)) {
+        const identity = stringValue2(params.identity) || identityForCommandTarget(input.target);
+        if (!identity) {
+          throw new Error(`${input.command} requires an identity-addressed target`);
+        }
+        params.identity = identity;
+      }
+      const result = await callConsoleRpc(baseUrl, spec.method, params);
+      return {
+        command: input.command,
+        accepted: true,
+        result
+      };
+    },
+    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input),
+    blobUrl: (blobId) => `${baseUrl}${CONSOLE_BLOB_PATH_PREFIX}${encodeURIComponent(blobId)}`
+  };
+}
+function createMobKitConsoleController({
+  transport
+}) {
+  const facts = createFactFactory();
+  return {
+    transport,
+    facts,
+    timeline: createTimelineController(transport, facts),
+    commands: createConsoleCommandSurface(transport, facts)
+  };
+}
+function createConsoleCommandSurface(transport, facts) {
+  let cachedCapabilities = null;
+  const capabilities = async () => {
+    if (!cachedCapabilities) {
+      cachedCapabilities = await transport.capabilities();
+    }
+    return cachedCapabilities;
+  };
+  return {
+    async sendMessage(target, input) {
+      const identity = identityForSendTarget(target);
+      if (!identity) {
+        throw new Error(`target ${target.kind} cannot send MobKit console messages`);
+      }
+      const currentCapabilities = await capabilities();
+      requireCapability(currentCapabilities, CONSOLE_RPC_METHODS.send);
+      const optimistic = facts.optimistic({
+        idempotencyKey: input.idempotencyKey,
+        targetId: target.id
+      }, input.idempotencyKey);
+      const accepted = await transport.send({
+        ...input,
+        identity
+      });
+      return {
+        optimistic,
+        accepted: facts.mobkit(accepted, {
+          routeOrMethod: CONSOLE_RPC_METHODS.send,
+          capabilityVersion: currentCapabilities.version,
+          correlationId: input.idempotencyKey,
+          cursor: accepted.cursor
+        })
+      };
+    },
+    async execute(input) {
+      if (!isMobKitTarget(input.target)) {
+        throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
+      }
+      const spec = commandSpec(input.command);
+      if (!spec.targetKinds.has(input.target.kind)) {
+        throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
+      }
+      const currentCapabilities = await capabilities();
+      requireCapability(currentCapabilities, spec.method);
+      if (!transport.executeCommand) {
+        throw new Error(`transport does not implement command ${input.command}`);
+      }
+      return transport.executeCommand(input);
+    }
+  };
+}
+function createTimelineController(transport, facts) {
+  return {
+    async query(input) {
+      const page = await transport.queryTimeline(input);
+      return facts.mobkit(page, {
+        routeOrMethod: CONSOLE_RPC_METHODS.queryTimeline,
+        cursor: page.latestCursor || page.nextCursor
+      });
+    },
+    async subscribeWithBackfill(input, onFrame) {
+      const delivered = /* @__PURE__ */ new Set();
+      const deliver = (frame) => {
+        const key = frame.id || `${frame.event}:${frame.cursor || frame.timestampMs || delivered.size}`;
+        if (delivered.has(key)) return;
+        delivered.add(key);
+        onFrame(facts.mobkit(frame, {
+          routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
+          cursor: frame.cursor
+        }));
+      };
+      const seed = await transport.queryTimeline({
+        ...input,
+        mode: "recent"
+      });
+      seed.frames.forEach(deliver);
+      const after = seed.latestCursor || seed.nextCursor || input.after;
+      const unsubscribe = transport.subscribeTimeline({ ...input, after }, (frame) => {
+        if (frame.event === "replay_unavailable") {
+          void transport.queryTimeline({ ...input, mode: "recent" }).then((page) => {
+            page.frames.forEach(deliver);
+          });
+          return;
+        }
+        deliver(frame);
+      });
+      return unsubscribe;
+    }
+  };
+}
+function createFactFactory() {
+  const wrap = (source, value, meta = {}) => ({
+    value,
+    provenance: {
+      source,
+      timestampMs: Date.now(),
+      ...meta
+    }
+  });
+  return {
+    mobkit: (value, meta) => wrap("mobkit-protocol", value, meta),
+    derived: (value, meta) => wrap("controller-derived", value, meta),
+    optimistic: (value, correlationId) => wrap("optimistic", value, { correlationId }),
+    host: (value) => wrap("host-adapter", value)
+  };
+}
+function normalizeCapabilities(value) {
+  const record = value && typeof value === "object" ? value : {};
+  const methods = Array.isArray(record.methods) ? Array.from(new Set(record.methods.filter((method) => typeof method === "string" && method.trim().length > 0))) : [];
+  return {
+    methods,
+    version: typeof record.version === "string" ? record.version : void 0,
+    runtime_capabilities: record.runtime_capabilities,
+    method_capabilities: record.method_capabilities
+  };
+}
+function requireCapability(capabilities, method) {
+  if (!capabilities.methods.includes(method)) {
+    throw new Error(`MobKit capability missing for ${method}`);
+  }
+}
+function commandSpec(command) {
+  if (!isConsoleCommandName(command)) {
+    throw new Error(`unknown MobKit console command ${String(command)}`);
+  }
+  return CONSOLE_COMMAND_SPECS[command];
+}
+function isConsoleCommandName(command) {
+  return typeof command === "string" && command in CONSOLE_COMMAND_SPECS;
+}
+function identityForSendTarget(target) {
+  return target.kind === "mobkit/identity-chat" ? target.identity : null;
+}
+var identityCommandMethods = /* @__PURE__ */ new Set([
+  CONSOLE_RPC_METHODS.inspectIdentity,
+  CONSOLE_RPC_METHODS.retireIdentity,
+  CONSOLE_RPC_METHODS.respawnIdentity,
+  CONSOLE_RPC_METHODS.resetIdentity
+]);
+function identityForCommandTarget(target) {
+  if (target.kind === "mobkit/identity-chat" || target.kind === "mobkit/identity-inspect") {
+    return target.identity;
+  }
+  return null;
+}
+function stringValue2(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+function isMobKitTarget(target) {
+  return target.kind.startsWith("mobkit/");
 }
 
 // src/lib/id.ts
@@ -7509,7 +7946,7 @@ var HIDDEN_HISTORY_BLOCK_TYPES = /* @__PURE__ */ new Set([
   "tool_results",
   "tool_use"
 ]);
-function isRecord(value) {
+function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function historyBlockType(record) {
@@ -7520,7 +7957,7 @@ function sanitizeLogValue(value) {
   if (Array.isArray(value)) {
     return value.map(sanitizeLogValue).filter((item) => item !== void 0);
   }
-  if (!isRecord(value)) return value;
+  if (!isRecord2(value)) return value;
   const blockType = historyBlockType(value);
   if (blockType && HIDDEN_HISTORY_BLOCK_TYPES.has(blockType)) {
     return void 0;
@@ -7540,7 +7977,7 @@ function textFromContentBlock(value) {
     const text = value.trim();
     return text ? text : null;
   }
-  if (!isRecord(value)) return null;
+  if (!isRecord2(value)) return null;
   for (const key of ["text", "body", "content", "result", "summary"]) {
     const child = value[key];
     if (typeof child === "string" && child.trim()) {
@@ -7548,7 +7985,7 @@ function textFromContentBlock(value) {
     }
   }
   const data = value.data;
-  if (isRecord(data)) {
+  if (isRecord2(data)) {
     return textFromContentBlock(data);
   }
   return null;
@@ -7576,7 +8013,7 @@ function preferredLogSummary(frame, data) {
 }
 function summarizeLogFrame(frame) {
   const sanitized = sanitizeLogFrameData(frame.data);
-  const d = isRecord(sanitized) ? sanitized : {};
+  const d = isRecord2(sanitized) ? sanitized : {};
   const preferred = preferredLogSummary(frame, d);
   if (preferred) return preferred;
   const bits = [];
@@ -11166,6 +11603,18 @@ var ACTIVITY_SKIP_EVENTS = /* @__PURE__ */ new Set([
   "tool_execution_completed"
 ]);
 function ConsoleApp({ baseUrl }) {
+  const consoleFetchTimeoutMsRef = import_react22.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
+  const consoleTransport = import_react22.default.useMemo(
+    () => createHttpConsoleTransport({
+      baseUrl,
+      fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current
+    }),
+    [baseUrl]
+  );
+  const consoleController = import_react22.default.useMemo(
+    () => createMobKitConsoleController({ transport: consoleTransport }),
+    [consoleTransport]
+  );
   const [experience, setExperience] = import_react22.default.useState(
     null
   );
@@ -11309,6 +11758,37 @@ function ConsoleApp({ baseUrl }) {
       else delete updated[identity];
       return updated;
     });
+  }
+  async function inspectIdentityViaHeadless(identity) {
+    return executeHeadlessCommand(
+      CONSOLE_COMMAND_NAMES.inspectIdentity,
+      identityWorkbenchTarget(identity, "inspect")
+    );
+  }
+  function requireWorkbenchTarget(input) {
+    const target = migrateConsoleWorkbenchTarget(input);
+    if (!target) {
+      throw new Error("invalid MobKit console target");
+    }
+    return target;
+  }
+  function identityWorkbenchTarget(identity, mode) {
+    return requireWorkbenchTarget({
+      id: mode === "inspect" ? `inspect:${identity}` : `chat:${identity}`,
+      kind: mode === "inspect" ? "identity-inspect" : "agent-chat",
+      title: identity,
+      identity
+    });
+  }
+  function controlWorkbenchTarget(kind) {
+    return requireWorkbenchTarget(buildControlTarget(kind));
+  }
+  async function executeHeadlessCommand(command, target, params) {
+    return (await consoleController.commands.execute({
+      command,
+      target,
+      params
+    })).result;
   }
   const identityLogRef = import_react22.default.useRef({});
   const timelineFetchInFlightRef = import_react22.default.useRef(
@@ -11544,16 +12024,16 @@ function ConsoleApp({ baseUrl }) {
     return changed;
   }
   async function queryIdentityTimelinePage(identity, target) {
-    const page = await queryTimeline(
-      baseUrl,
+    const pageFact = await consoleController.timeline.query(
       {
         identity,
         mode: target.mode,
         after: target.after,
-        before: target.before
-      },
-      target.limit ?? 200
+        before: target.before,
+        limit: target.limit ?? 200
+      }
     );
+    const page = pageFact.value;
     const metadataChanged = noteIdentityTimelinePage(identity, page, target);
     return { page, metadataChanged };
   }
@@ -11717,7 +12197,6 @@ function ConsoleApp({ baseUrl }) {
   const experienceLoadInFlightRef = import_react22.default.useRef(
     null
   );
-  const consoleFetchTimeoutMsRef = import_react22.default.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
   const agentsRef = import_react22.default.useRef([]);
   import_react22.default.useEffect(() => {
     agentsRef.current = agents;
@@ -11908,10 +12387,9 @@ function ConsoleApp({ baseUrl }) {
     }
     let request;
     request = (async () => {
-      const timeoutMs = consoleFetchTimeoutMsRef.current;
       const [experienceJson, modulesJson] = await Promise.all([
-        fetchJson(baseUrl, "/console/experience", timeoutMs),
-        fetchJson(baseUrl, "/console/modules", timeoutMs)
+        consoleTransport.loadExperience(),
+        consoleTransport.loadModules?.() ?? Promise.resolve({ modules: [] })
       ]);
       const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
       if (typeof configuredTimeoutMs === "number" && Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0) {
@@ -11932,7 +12410,7 @@ function ConsoleApp({ baseUrl }) {
     });
     experienceLoadInFlightRef.current = request;
     return request;
-  }, [baseUrl]);
+  }, [consoleTransport]);
   import_react22.default.useEffect(() => {
     let mounted = true;
     setLoading(true);
@@ -12078,24 +12556,17 @@ function ConsoleApp({ baseUrl }) {
     if (inspects.length) {
       const entries = await Promise.all(
         inspects.map(async (t) => {
-          const r2 = await callConsoleRpc(
-            baseUrl,
-            "mobkit/console/inspect_identity",
-            { identity: t.identity }
-          ).catch(
-            () => callConsoleRpc(baseUrl, "mobkit/inspect_identity", {
-              identity: t.identity
-            })
-          );
+          const r2 = await inspectIdentityViaHeadless(t.identity);
           return [t.identity, normalizeConsoleInspectResult(r2)];
         })
       );
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
+      const routingTarget = controlWorkbenchTarget("routing");
       const [routes, history] = await Promise.all([
-        callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
-        callConsoleRpc(baseUrl, "mobkit/delivery/history", {})
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget)
       ]);
       setRoutingData(
         buildRoutingSectionView({
@@ -12105,21 +12576,16 @@ function ConsoleApp({ baseUrl }) {
       );
     }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "gating" || t.kind === "gates")) {
+      const gatingTarget = controlWorkbenchTarget("gating");
       const [p, a] = await Promise.all([
-        callConsoleRpc(
-          baseUrl,
-          "mobkit/gating/pending",
-          {}
-        ),
-        callConsoleRpc(
-          baseUrl,
-          "mobkit/gating/audit",
-          { limit: 50 }
-        )
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 })
       ]);
+      const pending = p && typeof p === "object" ? p : {};
+      const audit = a && typeof a === "object" ? a : {};
       setGatingData({
-        pending: Array.isArray(p.pending) ? p.pending : [],
-        audit: Array.isArray(a.entries) ? a.entries : []
+        pending: Array.isArray(pending.pending) ? pending.pending : [],
+        audit: Array.isArray(audit.entries) ? audit.entries : []
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
@@ -12250,32 +12716,22 @@ function ConsoleApp({ baseUrl }) {
     };
     let stopped = false;
     let unsubscribe = null;
-    void queryTimeline(baseUrl, { mode: "recent" }, 200).then(({ frames, nextCursor, latestCursor }) => {
-      if (stopped) return;
-      const seen = /* @__PURE__ */ new Set();
-      const filtered = [];
-      for (const frame of frames) {
-        if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
-        const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        filtered.push(frame);
+    void consoleController.timeline.subscribeWithBackfill({ limit: 200 }, (frame) => {
+      if (!stopped) handleLiveFrame(frame.value);
+    }).then((nextUnsubscribe) => {
+      if (stopped) {
+        nextUnsubscribe();
+      } else {
+        unsubscribe = nextUnsubscribe;
       }
-      activityRef.current = filtered.slice(-200).reverse();
-      commitLiveFrames(
-        frames.filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event)).slice(-300).reverse()
-      );
-      forceRender();
-      const after = latestCursor || nextCursor || [...frames].reverse().find((frame) => frame.cursor)?.cursor;
-      unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
     }).catch(() => {
-      if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
+      if (!stopped) unsubscribe = consoleTransport.subscribeTimeline({}, handleLiveFrame);
     });
     return () => {
       stopped = true;
       unsubscribe?.();
     };
-  }, [baseUrl]);
+  }, [consoleController, consoleTransport]);
   import_react22.default.useEffect(() => {
     return () => {
       for (const timer of Object.values(phaseTimerByKey.current))
@@ -12345,54 +12801,32 @@ function ConsoleApp({ baseUrl }) {
     }, ...liveFramesRef.current].slice(0, 300));
     forceRender();
     try {
-      const id = target.identity?.trim();
-      if (attachments.length > 0 && id) {
-        const result = await sendConsoleMultipart(
-          baseUrl,
-          id,
-          text,
-          attachments,
-          `console:${panelId}`,
-          createIdempotencyKey(),
-          handlingMode
-        );
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id;
-          const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
-          );
-          if (matched) {
-            optimisticUser.objectUrls?.forEach(
-              (url) => URL.revokeObjectURL(url)
-            );
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
-      } else if (id) {
-        const result = await sendConsole(
-          baseUrl,
-          id,
-          text,
-          `console:${panelId}`,
-          createIdempotencyKey(),
-          handlingMode
-        );
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id;
-          const matched = log.events.some(
-            (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
-          );
-          if (matched) {
-            optimisticUser.objectUrls?.forEach(
-              (url) => URL.revokeObjectURL(url)
-            );
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
-      } else {
+      const workbenchTarget = migrateConsoleWorkbenchTarget(target);
+      if (!workbenchTarget) {
         throw new Error("console send requires an identity-addressed target");
+      }
+      const result = (await consoleController.commands.sendMessage(
+        workbenchTarget,
+        {
+          content: text,
+          origin: `console:${panelId}`,
+          idempotencyKey: createIdempotencyKey(),
+          handlingMode,
+          attachments
+        }
+      )).accepted.value;
+      const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+      if (optimisticUser) {
+        optimisticUser.interactionId = result.interaction_id;
+        const matched = log.events.some(
+          (f) => (f.event === "interaction_started" || f.event === "user_input" || f.event === "run_started") && f.interactionId === result.interaction_id
+        );
+        if (matched) {
+          optimisticUser.objectUrls?.forEach(
+            (url) => URL.revokeObjectURL(url)
+          );
+          delete optimisticUserByPanelKeyRef.current[panelKey];
+        }
       }
       return true;
     } catch (submitError) {
@@ -12622,7 +13056,8 @@ function ConsoleApp({ baseUrl }) {
     }, animMs(420));
   }
   async function onLifecycleAction(identity, method) {
-    await callConsoleRpc(baseUrl, method, { identity });
+    const command = method === "mobkit/retire" ? CONSOLE_COMMAND_NAMES.retireIdentity : method === "mobkit/respawn" ? CONSOLE_COMMAND_NAMES.respawnIdentity : CONSOLE_COMMAND_NAMES.resetIdentity;
+    await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), { identity });
     const nextAgents = await loadExperience();
     if (method !== "mobkit/retire") return;
     if (nextAgents.some(
@@ -12639,25 +13074,22 @@ function ConsoleApp({ baseUrl }) {
     }
   }
   async function onGatingDecision(pendingId, decision) {
-    await callConsoleRpc(baseUrl, "mobkit/gating/decide", {
+    const gatingTarget = controlWorkbenchTarget("gating");
+    await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.decideGating, gatingTarget, {
       pending_id: pendingId,
       approver_id: DEFAULT_APPROVER_ID,
       decision,
       reason: `console_${decision}`
     });
     const [p, a] = await Promise.all([
-      callConsoleRpc(
-        baseUrl,
-        "mobkit/gating/pending",
-        {}
-      ),
-      callConsoleRpc(baseUrl, "mobkit/gating/audit", {
-        limit: 50
-      })
+      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
+      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 })
     ]);
+    const pending = p && typeof p === "object" ? p : {};
+    const audit = a && typeof a === "object" ? a : {};
     setGatingData({
-      pending: Array.isArray(p.pending) ? p.pending : [],
-      audit: Array.isArray(a.entries) ? a.entries : []
+      pending: Array.isArray(pending.pending) ? pending.pending : [],
+      audit: Array.isArray(audit.entries) ? audit.entries : []
     });
   }
   const SIDEBAR_MIN = 180, SIDEBAR_MAX = 420;
@@ -12941,13 +13373,7 @@ function ConsoleApp({ baseUrl }) {
     ] }, r2.identity)) }) });
   }
   async function refreshInspectIdentity(identity) {
-    const r2 = await callConsoleRpc(
-      baseUrl,
-      "mobkit/console/inspect_identity",
-      { identity }
-    ).catch(
-      () => callConsoleRpc(baseUrl, "mobkit/inspect_identity", { identity })
-    );
+    const r2 = await inspectIdentityViaHeadless(identity);
     setInspectByIdentity((current) => ({
       ...current,
       [identity]: normalizeConsoleInspectResult(r2)

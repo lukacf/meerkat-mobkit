@@ -22,6 +22,14 @@ export const CONSOLE_RPC_METHODS = {
   inspectIdentity: "mobkit/console/inspect_identity",
   queryTimeline: "mobkit/console/query_timeline",
   blobUpload: "mobkit/blob/upload",
+  retireIdentity: "mobkit/retire",
+  respawnIdentity: "mobkit/respawn",
+  resetIdentity: "mobkit/reset",
+  routingRoutesList: "mobkit/routing/routes/list",
+  deliveryHistory: "mobkit/delivery/history",
+  gatingPending: "mobkit/gating/pending",
+  gatingAudit: "mobkit/gating/audit",
+  gatingDecide: "mobkit/gating/decide",
 } as const;
 
 export const CONSOLE_BLOB_PATH_PREFIX = "/blobs/";

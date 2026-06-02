@@ -131,6 +131,7 @@ export type {
 } from "./navigation";
 export {
   canMoveConsoleNavigationNode,
+  applyConsoleNavigationReorderIntent,
   consoleNavigationFromSidebarViewState,
   consoleNavigationToSidebarViewState,
   moveConsoleNavigationNode,

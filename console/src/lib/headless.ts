@@ -14,6 +14,7 @@ import {
   sendConsole,
   sendConsoleMultipart,
   subscribeTimelineEvents,
+  uploadConsoleBlobMultipart,
 } from "./network";
 import type {
   ConsoleExperience,
@@ -62,6 +63,7 @@ export interface ConsoleTimelineSubscribeInput {
   identity?: string;
   conversationId?: string;
   after?: string;
+  limit?: number;
 }
 
 export interface ConsoleSendInput {
@@ -86,6 +88,14 @@ export interface ConsoleUploadResult {
 
 export const CONSOLE_COMMAND_NAMES = {
   inspectIdentity: "inspectIdentity",
+  retireIdentity: "retireIdentity",
+  respawnIdentity: "respawnIdentity",
+  resetIdentity: "resetIdentity",
+  listRoutingRoutes: "listRoutingRoutes",
+  listDeliveryHistory: "listDeliveryHistory",
+  listGatingPending: "listGatingPending",
+  listGatingAudit: "listGatingAudit",
+  decideGating: "decideGating",
 } as const;
 
 export type ConsoleCommandName = typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES];
@@ -102,6 +112,47 @@ const CONSOLE_COMMAND_SPECS: Record<ConsoleCommandName, ConsoleCommandSpec> = {
       "mobkit/identity-chat",
       "mobkit/identity-inspect",
     ]),
+  },
+  [CONSOLE_COMMAND_NAMES.retireIdentity]: {
+    method: CONSOLE_RPC_METHODS.retireIdentity,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect",
+    ]),
+  },
+  [CONSOLE_COMMAND_NAMES.respawnIdentity]: {
+    method: CONSOLE_RPC_METHODS.respawnIdentity,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect",
+    ]),
+  },
+  [CONSOLE_COMMAND_NAMES.resetIdentity]: {
+    method: CONSOLE_RPC_METHODS.resetIdentity,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>([
+      "mobkit/identity-chat",
+      "mobkit/identity-inspect",
+    ]),
+  },
+  [CONSOLE_COMMAND_NAMES.listRoutingRoutes]: {
+    method: CONSOLE_RPC_METHODS.routingRoutesList,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/routing"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listDeliveryHistory]: {
+    method: CONSOLE_RPC_METHODS.deliveryHistory,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/routing"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listGatingPending]: {
+    method: CONSOLE_RPC_METHODS.gatingPending,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/gating"]),
+  },
+  [CONSOLE_COMMAND_NAMES.listGatingAudit]: {
+    method: CONSOLE_RPC_METHODS.gatingAudit,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/gating"]),
+  },
+  [CONSOLE_COMMAND_NAMES.decideGating]: {
+    method: CONSOLE_RPC_METHODS.gatingDecide,
+    targetKinds: new Set<MobKitWorkbenchTarget["kind"]>(["mobkit/gating"]),
   },
 };
 
@@ -163,10 +214,17 @@ export interface ConsoleTimelineController {
   ): Promise<() => void>;
 }
 
-export function createHttpConsoleTransport({ baseUrl }: { baseUrl: string }): MobKitConsoleTransport {
+export function createHttpConsoleTransport({
+  baseUrl,
+  fetchTimeoutMs,
+}: {
+  baseUrl: string;
+  fetchTimeoutMs?: number | (() => number);
+}): MobKitConsoleTransport {
+  const timeout = () => typeof fetchTimeoutMs === "function" ? fetchTimeoutMs() : fetchTimeoutMs;
   return {
-    loadExperience: () => fetchJson<ConsoleExperience>(baseUrl, CONSOLE_REST_PATHS.experience),
-    loadModules: () => fetchJson<ConsoleModulesResponse>(baseUrl, CONSOLE_REST_PATHS.modules),
+    loadExperience: () => fetchJson<ConsoleExperience>(baseUrl, CONSOLE_REST_PATHS.experience, timeout()),
+    loadModules: () => fetchJson<ConsoleModulesResponse>(baseUrl, CONSOLE_REST_PATHS.modules, timeout()),
     capabilities: async () => normalizeCapabilities(
       await callConsoleRpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.capabilities),
     ),
@@ -194,6 +252,24 @@ export function createHttpConsoleTransport({ baseUrl }: { baseUrl: string }): Mo
         handlingMode,
       );
     },
+    executeCommand: async (input) => {
+      const spec = commandSpec(input.command);
+      const params = { ...(input.params || {}) };
+      if (identityCommandMethods.has(spec.method)) {
+        const identity = stringValue(params.identity) || identityForCommandTarget(input.target);
+        if (!identity) {
+          throw new Error(`${input.command} requires an identity-addressed target`);
+        }
+        params.identity = identity;
+      }
+      const result = await callConsoleRpc<unknown>(baseUrl, spec.method, params);
+      return {
+        command: input.command,
+        accepted: true,
+        result,
+      };
+    },
+    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input),
     blobUrl: (blobId) => `${baseUrl}${CONSOLE_BLOB_PATH_PREFIX}${encodeURIComponent(blobId)}`,
   };
 }
@@ -216,14 +292,21 @@ function createConsoleCommandSurface(
   transport: MobKitConsoleTransport,
   facts: MobKitConsoleController["facts"],
 ): ConsoleCommandSurface {
+  let cachedCapabilities: ConsoleCapabilities | null = null;
+  const capabilities = async () => {
+    if (!cachedCapabilities) {
+      cachedCapabilities = await transport.capabilities();
+    }
+    return cachedCapabilities;
+  };
   return {
     async sendMessage(target, input) {
       const identity = identityForSendTarget(target);
       if (!identity) {
         throw new Error(`target ${target.kind} cannot send MobKit console messages`);
       }
-      const capabilities = await transport.capabilities();
-      requireCapability(capabilities, CONSOLE_RPC_METHODS.send);
+      const currentCapabilities = await capabilities();
+      requireCapability(currentCapabilities, CONSOLE_RPC_METHODS.send);
       const optimistic = facts.optimistic({
         idempotencyKey: input.idempotencyKey,
         targetId: target.id,
@@ -236,7 +319,7 @@ function createConsoleCommandSurface(
         optimistic,
         accepted: facts.mobkit(accepted, {
           routeOrMethod: CONSOLE_RPC_METHODS.send,
-          capabilityVersion: capabilities.version,
+          capabilityVersion: currentCapabilities.version,
           correlationId: input.idempotencyKey,
           cursor: accepted.cursor,
         }),
@@ -250,8 +333,8 @@ function createConsoleCommandSurface(
       if (!spec.targetKinds.has(input.target.kind)) {
         throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
       }
-      const capabilities = await transport.capabilities();
-      requireCapability(capabilities, spec.method);
+      const currentCapabilities = await capabilities();
+      requireCapability(currentCapabilities, spec.method);
       if (!transport.executeCommand) {
         throw new Error(`transport does not implement command ${input.command}`);
       }
@@ -356,6 +439,24 @@ function isConsoleCommandName(command: unknown): command is ConsoleCommandName {
 
 function identityForSendTarget(target: ConsoleWorkbenchTarget): string | null {
   return target.kind === "mobkit/identity-chat" ? target.identity : null;
+}
+
+const identityCommandMethods = new Set<string>([
+  CONSOLE_RPC_METHODS.inspectIdentity,
+  CONSOLE_RPC_METHODS.retireIdentity,
+  CONSOLE_RPC_METHODS.respawnIdentity,
+  CONSOLE_RPC_METHODS.resetIdentity,
+]);
+
+function identityForCommandTarget(target: ConsoleWorkbenchTarget): string | null {
+  if (target.kind === "mobkit/identity-chat" || target.kind === "mobkit/identity-inspect") {
+    return target.identity;
+  }
+  return null;
+}
+
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function isMobKitTarget(target: ConsoleWorkbenchTarget): target is MobKitWorkbenchTarget {

@@ -12,11 +12,13 @@ import {
 } from "@console-components";
 import type {
   ConsoleDockState,
+  ConsoleWorkbenchTarget,
   ConversationTimelineEntry,
   IdentityInspectViewState,
   IdentityStatusRow,
 } from "@console-core";
 import {
+  migrateConsoleWorkbenchTarget,
   normalizeConsoleDockState,
   normalizeIdentityInspectViewState,
 } from "@console-core";
@@ -44,13 +46,12 @@ import {
 import { errorMessage } from "./lib/errors";
 import {
   DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
-  callConsoleRpc,
-  fetchJson,
-  queryTimeline,
-  sendConsole,
-  sendConsoleMultipart,
-  subscribeTimelineEvents,
 } from "./lib/network";
+import {
+  CONSOLE_COMMAND_NAMES,
+  createHttpConsoleTransport,
+  createMobKitConsoleController,
+} from "./lib/headless";
 import { createConsoleId } from "./lib/id";
 import { findPaneResizeRoot } from "./lib/pane-resize";
 import { Icon, SpriteSheet } from "./icon";
@@ -60,7 +61,6 @@ import type {
   ConsoleExperience,
   ConsoleFrame,
   ConsoleGatingActionPayload,
-  ConsoleModulesResponse,
   ConsoleReplayUnavailablePayload,
   ConsoleTimelinePage,
   ConsoleTopologyNode,
@@ -406,6 +406,20 @@ const ACTIVITY_SKIP_EVENTS = new Set([
 // ============================================================================
 
 export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
+  const consoleFetchTimeoutMsRef = React.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
+  const consoleTransport = React.useMemo(
+    () =>
+      createHttpConsoleTransport({
+        baseUrl,
+        fetchTimeoutMs: () => consoleFetchTimeoutMsRef.current,
+      }),
+    [baseUrl],
+  );
+  const consoleController = React.useMemo(
+    () => createMobKitConsoleController({ transport: consoleTransport }),
+    [consoleTransport],
+  );
+
   // --- Low-frequency React state (UI-driven) ---
   const [experience, setExperience] = React.useState<ConsoleExperience | null>(
     null,
@@ -575,6 +589,46 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       else delete updated[identity];
       return updated;
     });
+  }
+
+  async function inspectIdentityViaHeadless(identity: string): Promise<unknown> {
+    return executeHeadlessCommand(
+      CONSOLE_COMMAND_NAMES.inspectIdentity,
+      identityWorkbenchTarget(identity, "inspect"),
+    );
+  }
+
+  function requireWorkbenchTarget(input: unknown): ConsoleWorkbenchTarget {
+    const target = migrateConsoleWorkbenchTarget(input);
+    if (!target) {
+      throw new Error("invalid MobKit console target");
+    }
+    return target;
+  }
+
+  function identityWorkbenchTarget(identity: string, mode: "chat" | "inspect"): ConsoleWorkbenchTarget {
+    return requireWorkbenchTarget({
+      id: mode === "inspect" ? `inspect:${identity}` : `chat:${identity}`,
+      kind: mode === "inspect" ? "identity-inspect" : "agent-chat",
+      title: identity,
+      identity,
+    });
+  }
+
+  function controlWorkbenchTarget(kind: "routing" | "gating"): ConsoleWorkbenchTarget {
+    return requireWorkbenchTarget(buildControlTarget(kind));
+  }
+
+  async function executeHeadlessCommand(
+    command: typeof CONSOLE_COMMAND_NAMES[keyof typeof CONSOLE_COMMAND_NAMES],
+    target: ConsoleWorkbenchTarget,
+    params?: Record<string, unknown>,
+  ): Promise<unknown> {
+    return (await consoleController.commands.execute({
+      command,
+      target,
+      params,
+    })).result;
   }
 
   // =========================================================================
@@ -949,16 +1003,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     target: { mode: "recent" | "since"; after?: string; before?: string; limit?: number },
   ): Promise<{ page: ConsoleTimelinePage; metadataChanged: boolean }> {
-    const page = await queryTimeline(
-      baseUrl,
+    const pageFact = await consoleController.timeline.query(
       {
         identity,
         mode: target.mode,
         after: target.after,
         before: target.before,
+        limit: target.limit ?? 200,
       },
-      target.limit ?? 200,
     );
+    const page = pageFact.value;
     const metadataChanged = noteIdentityTimelinePage(identity, page, target);
     return { page, metadataChanged };
   }
@@ -1233,8 +1287,6 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   const experienceLoadInFlightRef = React.useRef<Promise<ConsoleAgent[]> | null>(
     null,
   );
-  const consoleFetchTimeoutMsRef = React.useRef(DEFAULT_CONSOLE_FETCH_TIMEOUT_MS);
-
   // Stable agent ref for async callbacks
   const agentsRef = React.useRef<ConsoleAgent[]>([]);
   React.useEffect(() => {
@@ -1396,7 +1448,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     }
   }
 
-  // The SSE handler runs from inside an effect with `[baseUrl]` deps so its
+  // The SSE handler runs from inside the stream effect, so its
   // closure captures `dock` from the first render — when panels[] was empty.
   // Route panel-iterating phase updates through a ref so they always see the
   // current panel set; otherwise interaction_started/text_delta/
@@ -1479,10 +1531,9 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     let request: Promise<ConsoleAgent[]>;
     request = (async () => {
-      const timeoutMs = consoleFetchTimeoutMsRef.current;
       const [experienceJson, modulesJson] = await Promise.all([
-        fetchJson<ConsoleExperience>(baseUrl, "/console/experience", timeoutMs),
-        fetchJson<ConsoleModulesResponse>(baseUrl, "/console/modules", timeoutMs),
+        consoleTransport.loadExperience(),
+        consoleTransport.loadModules?.() ?? Promise.resolve({ modules: [] }),
       ]);
       const configuredTimeoutMs = experienceJson.console_policy?.fetch_timeout_ms;
       if (
@@ -1514,7 +1565,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
 
     experienceLoadInFlightRef.current = request;
     return request;
-  }, [baseUrl]);
+  }, [consoleTransport]);
 
   React.useEffect(() => {
     let mounted = true;
@@ -1694,24 +1745,17 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     if (inspects.length) {
       const entries = await Promise.all(
         inspects.map(async (t) => {
-          const r = await callConsoleRpc<unknown>(
-            baseUrl,
-            "mobkit/console/inspect_identity",
-            { identity: t.identity },
-          ).catch(() =>
-            callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", {
-              identity: t.identity,
-            }),
-          );
+          const r = await inspectIdentityViaHeadless(t.identity);
           return [t.identity, normalizeConsoleInspectResult(r)] as const;
         }),
       );
       setInspectByIdentity((c) => ({ ...c, ...Object.fromEntries(entries) }));
     }
     if (hasMobControlSurface && openPanels.some((t) => t.kind === "routing")) {
+      const routingTarget = controlWorkbenchTarget("routing");
       const [routes, history] = await Promise.all([
-        callConsoleRpc(baseUrl, "mobkit/routing/routes/list", {}),
-        callConsoleRpc(baseUrl, "mobkit/delivery/history", {}),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listRoutingRoutes, routingTarget),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listDeliveryHistory, routingTarget),
       ]);
       setRoutingData(
         buildRoutingSectionView({
@@ -1724,21 +1768,16 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       hasMobControlSurface &&
       openPanels.some((t) => t.kind === "gating" || t.kind === "gates")
     ) {
+      const gatingTarget = controlWorkbenchTarget("gating");
       const [p, a] = await Promise.all([
-        callConsoleRpc<{ pending?: unknown[] }>(
-          baseUrl,
-          "mobkit/gating/pending",
-          {},
-        ),
-        callConsoleRpc<{ entries?: unknown[] }>(
-          baseUrl,
-          "mobkit/gating/audit",
-          { limit: 50 },
-        ),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
+        executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 }),
       ]);
+      const pending = p && typeof p === "object" ? p as { pending?: unknown[] } : {};
+      const audit = a && typeof a === "object" ? a as { entries?: unknown[] } : {};
       setGatingData({
-        pending: Array.isArray(p.pending) ? p.pending : [],
-        audit: Array.isArray(a.entries) ? a.entries : [],
+        pending: Array.isArray(pending.pending) ? pending.pending : [],
+        audit: Array.isArray(audit.entries) ? audit.entries : [],
       });
     }
   }, [baseUrl, dock.viewState.panels, hasMobControlSurface]);
@@ -1933,35 +1972,18 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     let stopped = false;
     let unsubscribe: (() => void) | null = null;
 
-    void queryTimeline(baseUrl, { mode: "recent" }, 200)
-      .then(({ frames, nextCursor, latestCursor }) => {
-        if (stopped) return;
-        const seen = new Set<string>();
-        const filtered: ConsoleFrame[] = [];
-        for (const frame of frames) {
-          if (ACTIVITY_SKIP_EVENTS.has(frame.event)) continue;
-          const key = frame.id || `${frame.event}:${frame.timestampMs || 0}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          filtered.push(frame);
+    void consoleController.timeline.subscribeWithBackfill({ limit: 200 }, (frame) => {
+      if (!stopped) handleLiveFrame(frame.value);
+    })
+      .then((nextUnsubscribe) => {
+        if (stopped) {
+          nextUnsubscribe();
+        } else {
+          unsubscribe = nextUnsubscribe;
         }
-        activityRef.current = filtered.slice(-200).reverse();
-        commitLiveFrames(
-          frames
-            .filter((frame) => PANEL_ROUTABLE_EVENTS.has(frame.event))
-            .slice(-300)
-            .reverse(),
-        );
-        forceRender();
-
-        const after =
-          latestCursor ||
-          nextCursor ||
-          [...frames].reverse().find((frame) => frame.cursor)?.cursor;
-        unsubscribe = subscribeTimelineEvents(baseUrl, { after }, handleLiveFrame);
       })
       .catch(() => {
-        if (!stopped) unsubscribe = subscribeTimelineEvents(baseUrl, {}, handleLiveFrame);
+        if (!stopped) unsubscribe = consoleTransport.subscribeTimeline({}, handleLiveFrame);
       });
 
     return () => {
@@ -1969,7 +1991,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
       unsubscribe?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseUrl]);
+  }, [consoleController, consoleTransport]);
 
   // Timer cleanup on unmount
   React.useEffect(() => {
@@ -2088,64 +2110,38 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     forceRender();
 
     try {
-      const id = target.identity?.trim();
-      if (attachments.length > 0 && id) {
-        const result = await sendConsoleMultipart(
-          baseUrl,
-          id,
-          text,
-          attachments,
-          `console:${panelId}`,
-          createIdempotencyKey(),
-          handlingMode,
-        );
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id;
-          const matched = log.events.some(
-            (f) =>
-              (f.event === "interaction_started" ||
-                f.event === "user_input" ||
-                f.event === "run_started") &&
-              f.interactionId === result.interaction_id,
-          );
-          if (matched) {
-            optimisticUser.objectUrls?.forEach((url) =>
-              URL.revokeObjectURL(url),
-            );
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
-      } else if (id) {
-        const result = await sendConsole(
-          baseUrl,
-          id,
-          text,
-          `console:${panelId}`,
-          createIdempotencyKey(),
-          handlingMode,
-        );
-        const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
-        if (optimisticUser) {
-          optimisticUser.interactionId = result.interaction_id;
-          // The interaction_started frame may have arrived between
-          // the send and the RPC response — reconcile retroactively.
-          const matched = log.events.some(
-            (f) =>
-              (f.event === "interaction_started" ||
-                f.event === "user_input" ||
-                f.event === "run_started") &&
-              f.interactionId === result.interaction_id,
-          );
-          if (matched) {
-            optimisticUser.objectUrls?.forEach((url) =>
-              URL.revokeObjectURL(url),
-            );
-            delete optimisticUserByPanelKeyRef.current[panelKey];
-          }
-        }
-      } else {
+      const workbenchTarget = migrateConsoleWorkbenchTarget(target);
+      if (!workbenchTarget) {
         throw new Error("console send requires an identity-addressed target");
+      }
+      const result = (await consoleController.commands.sendMessage(
+        workbenchTarget,
+        {
+          content: text,
+          origin: `console:${panelId}`,
+          idempotencyKey: createIdempotencyKey(),
+          handlingMode,
+          attachments,
+        },
+      )).accepted.value;
+      const optimisticUser = optimisticUserByPanelKeyRef.current[panelKey];
+      if (optimisticUser) {
+        optimisticUser.interactionId = result.interaction_id;
+        // The interaction_started frame may have arrived between
+        // the send and the RPC response — reconcile retroactively.
+        const matched = log.events.some(
+          (f) =>
+            (f.event === "interaction_started" ||
+              f.event === "user_input" ||
+              f.event === "run_started") &&
+            f.interactionId === result.interaction_id,
+        );
+        if (matched) {
+          optimisticUser.objectUrls?.forEach((url) =>
+            URL.revokeObjectURL(url),
+          );
+          delete optimisticUserByPanelKeyRef.current[panelKey];
+        }
       }
       return true;
     } catch (submitError) {
@@ -2440,7 +2436,13 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     identity: string,
     method: "mobkit/retire" | "mobkit/respawn" | "mobkit/reset",
   ) {
-    await callConsoleRpc(baseUrl, method, { identity });
+    const command =
+      method === "mobkit/retire"
+        ? CONSOLE_COMMAND_NAMES.retireIdentity
+        : method === "mobkit/respawn"
+          ? CONSOLE_COMMAND_NAMES.respawnIdentity
+          : CONSOLE_COMMAND_NAMES.resetIdentity;
+    await executeHeadlessCommand(command, identityWorkbenchTarget(identity, "chat"), { identity });
     const nextAgents = await loadExperience();
     if (method !== "mobkit/retire") return;
     if (
@@ -2464,25 +2466,22 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
     pendingId: string,
     decision: "approve" | "reject" | "escalate",
   ) {
-    await callConsoleRpc<unknown>(baseUrl, "mobkit/gating/decide", {
+    const gatingTarget = controlWorkbenchTarget("gating");
+    await executeHeadlessCommand(CONSOLE_COMMAND_NAMES.decideGating, gatingTarget, {
       pending_id: pendingId,
       approver_id: DEFAULT_APPROVER_ID,
       decision,
       reason: `console_${decision}`,
     } as ConsoleGatingActionPayload);
     const [p, a] = await Promise.all([
-      callConsoleRpc<{ pending?: unknown[] }>(
-        baseUrl,
-        "mobkit/gating/pending",
-        {},
-      ),
-      callConsoleRpc<{ entries?: unknown[] }>(baseUrl, "mobkit/gating/audit", {
-        limit: 50,
-      }),
+      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingPending, gatingTarget),
+      executeHeadlessCommand(CONSOLE_COMMAND_NAMES.listGatingAudit, gatingTarget, { limit: 50 }),
     ]);
+    const pending = p && typeof p === "object" ? p as { pending?: unknown[] } : {};
+    const audit = a && typeof a === "object" ? a as { entries?: unknown[] } : {};
     setGatingData({
-      pending: Array.isArray(p.pending) ? p.pending : [],
-      audit: Array.isArray(a.entries) ? a.entries : [],
+      pending: Array.isArray(pending.pending) ? pending.pending : [],
+      audit: Array.isArray(audit.entries) ? audit.entries : [],
     });
   }
 
@@ -2880,13 +2879,7 @@ export function ConsoleApp({ baseUrl }: ConsoleAppProps): React.JSX.Element {
   }
 
   async function refreshInspectIdentity(identity: string): Promise<void> {
-    const r = await callConsoleRpc<unknown>(
-      baseUrl,
-      "mobkit/console/inspect_identity",
-      { identity },
-    ).catch(() =>
-      callConsoleRpc<unknown>(baseUrl, "mobkit/inspect_identity", { identity }),
-    );
+    const r = await inspectIdentityViaHeadless(identity);
     setInspectByIdentity((current) => ({
       ...current,
       [identity]: normalizeConsoleInspectResult(r),
