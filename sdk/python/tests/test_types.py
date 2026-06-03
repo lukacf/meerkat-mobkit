@@ -576,6 +576,23 @@ class TestErrorEvent:
         assert "a1" in r.message
         assert "profile not found" in r.message
 
+    def test_identity_materialization_failure_from_dict(self):
+        r = ErrorEvent.from_dict(
+            {
+                "category": "identity_materialization_failure",
+                "identity": "initiative:broken",
+                "initiator": "review:singleton",
+                "operation": "materialize_reachable_peers",
+                "error": "bridge create_session: missing skill",
+            }
+        )
+        assert r.category == "identity_materialization_failure"
+        assert (
+            r.message
+            == "initiative:broken for review:singleton: materialize_reachable_peers: bridge create_session: missing skill"
+        )
+        assert r.context["identity"] == "initiative:broken"
+
 
 class TestEventQuery:
     def test_to_dict_all_fields(self):

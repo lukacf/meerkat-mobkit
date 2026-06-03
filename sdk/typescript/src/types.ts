@@ -1167,6 +1167,14 @@ export function parseErrorEvent(raw: unknown): ErrorEvent {
     case ErrorCategory.REDISCOVER_FAILURE:
       message = error;
       break;
+    case "identity_materialization_failure": {
+      const identity = String(context.identity ?? "");
+      const initiator = String(context.initiator ?? "");
+      const operation = String(context.operation ?? "");
+      const target = initiator ? `${identity} for ${initiator}` : identity;
+      message = [target, operation, error].filter(Boolean).join(": ");
+      break;
+    }
     default:
       message = JSON.stringify(d);
       break;

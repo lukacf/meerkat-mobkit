@@ -1058,6 +1058,12 @@ class ErrorEvent:
             message = f"{member_id}: {error}" if member_id else error
         elif category == ErrorCategory.REDISCOVER_FAILURE:
             message = error
+        elif category == "identity_materialization_failure":
+            identity = context.get("identity", "")
+            initiator = context.get("initiator", "")
+            operation = context.get("operation", "")
+            target = f"{identity} for {initiator}" if initiator else identity
+            message = ": ".join(str(part) for part in (target, operation, error) if part)
         else:
             message = str(data)
         return cls(category=category, message=message, context=context)

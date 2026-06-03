@@ -1976,17 +1976,18 @@ external_addressable = true
     }
 
     // 5b. Wire error hook — forwards ErrorEvents to Python as JSON-RPC notifications
-    {
+    let gateway_error_hook: meerkat_mobkit::ErrorHook = {
         let error_bridge = bridge.clone();
-        runtime.set_error_hook(Arc::new(move |event| {
+        Arc::new(move |event| {
             let b = error_bridge.clone();
             Box::pin(async move {
                 if let Ok(params) = serde_json::to_value(&event) {
                     b.notify("mobkit/on_error", params);
                 }
             })
-        }));
-    }
+        })
+    };
+    runtime.set_error_hook(gateway_error_hook.clone());
 
     // 5c. Build identity-first runtime if providers are configured
     let identity_ctx: Option<meerkat_mobkit::rpc::IdentityFirstContext> = if has_roster_provider {
@@ -2042,6 +2043,7 @@ external_addressable = true
             default_timeout: None,
         })
         .with_runtime_services(AgentRuntimeServices::new(mob_handle));
+        irt.set_error_hook(Some(gateway_error_hook.clone()));
 
         // Build provider bridges for callbacks to Python
         let roster: Arc<dyn meerkat_mobkit::identity_first::contracts::RosterProvider> =

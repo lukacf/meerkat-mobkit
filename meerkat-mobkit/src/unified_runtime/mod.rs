@@ -312,7 +312,10 @@ impl UnifiedRuntime {
     /// Register an error hook after construction. Useful when the runtime
     /// is built via `bootstrap()` rather than the builder.
     pub fn set_error_hook(&mut self, hook: ErrorHook) {
-        self.error_hook = Some(hook);
+        self.error_hook = Some(hook.clone());
+        if let Some(identity_runtime) = self.identity_runtime() {
+            identity_runtime.set_error_hook(Some(hook));
+        }
     }
 
     /// Start the event log ingestion engine. Must be called after
@@ -385,7 +388,7 @@ impl UnifiedRuntime {
         crate::identity_first::IdentityRuntimeError,
     > {
         match self.identity_runtime() {
-            Some(runtime) => runtime.materialize_all().await,
+            Some(runtime) => runtime.materialize_all_required().await,
             None => Ok(Vec::new()),
         }
     }
