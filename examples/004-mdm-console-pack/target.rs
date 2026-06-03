@@ -305,6 +305,7 @@ async fn create_comms_runtime(args: &Args) -> anyhow::Result<Arc<meerkat_comms::
         inproc_namespace: None,
         listen_tcp: Some(args.listen.parse::<SocketAddr>()?),
         listen_uds: None,
+        advertise_address: Some(advertised_address(args)?),
         event_listen_tcp: None,
         #[cfg(unix)]
         event_listen_uds: None,
@@ -314,6 +315,7 @@ async fn create_comms_runtime(args: &Args) -> anyhow::Result<Arc<meerkat_comms::
         auth: Default::default(),
         require_peer_auth: true,
         allow_external_unauthenticated: false,
+        pairing_password: None,
     };
     let mut runtime =
         meerkat_comms::CommsRuntime::new_with_silent_intents(config, Arc::new(HashSet::new()))
