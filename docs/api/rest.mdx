@@ -131,6 +131,10 @@ Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
 
 The token is validated against the configured auth policy. See [authentication](/guides/authentication) for details.
 
+MobKit's built-in console auth is bearer-token based and does not rely on
+cookies. Deployments that add cookie-backed console auth at a reverse proxy must
+also add CSRF/origin protection for mutating console routes.
+
 ## Error responses
 
 API errors return standard HTTP status codes with a JSON body:

@@ -116,6 +116,23 @@ async function clickSend(page) {
   await send.click();
 }
 
+async function clickLoadOlderHistory(pane) {
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const button = pane.getByRole("button", { name: "Load older history" });
+      await button.waitFor({ state: "visible", timeout: 30_000 });
+      await button.scrollIntoViewIfNeeded();
+      await button.evaluate((node) => node.click());
+      return;
+    } catch (error) {
+      lastError = error;
+      await sleep(100);
+    }
+  }
+  throw lastError;
+}
+
 async function openSidebarAgentChat(page, labelPattern) {
   const row = page
     .locator('.agent[role="button"], .cc-sidebar-row')
@@ -348,6 +365,11 @@ function startMockConsoleServer(port, options = {}) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
           contract_version: "0.4.0",
+          runtime_capabilities: {
+            can_send_messages: true,
+            can_retire_members: true,
+            can_spawn_members: true,
+          },
           agent_sidebar: {
             panel_id: "console.agent_sidebar",
             schema_version: "1",
@@ -1859,7 +1881,7 @@ async function runChatPaneOlderHistoryDemandPagingProof() {
     const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
     await pane.getByText("Older-demand worker line 250").waitFor({ timeout: 10_000 });
     await assertNoText(page, "Older-demand worker line 42");
-    await pane.getByRole("button", { name: "Load older history" }).click();
+    await clickLoadOlderHistory(pane);
     await pane.getByText("Older-demand worker line 42").waitFor({ timeout: 10_000 });
     const body = pane.locator(".conv__body");
     const scrollState = await body.evaluate((node) => ({
@@ -1929,7 +1951,7 @@ async function runChatPaneAsyncBackfillRestoresOlderHistoryProof() {
     const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
     await pane.getByText("Async-backfill worker line 250").waitFor({ timeout: 10_000 });
     await assertNoText(page, "Async-backfill worker line 42");
-    await pane.getByRole("button", { name: "Load older history" }).click();
+    await clickLoadOlderHistory(pane);
     await pane.getByText("Async-backfill worker line 42").waitFor({ timeout: 10_000 });
 
     const identityRequests = server.requests
@@ -1991,7 +2013,7 @@ async function runChatPaneNonEmptyAsyncBackfillRestoresOlderHistoryProof() {
     const pane = page.locator('[data-testid="chat-pane:person-worker-alpha"]');
     await pane.getByText("Non-empty async-backfill worker line 250").waitFor({ timeout: 10_000 });
     await assertNoText(page, "Non-empty async-backfill worker line 42");
-    await pane.getByRole("button", { name: "Load older history" }).click();
+    await clickLoadOlderHistory(pane);
     await pane.getByText("Non-empty async-backfill worker line 42").waitFor({ timeout: 10_000 });
 
     const identityRequests = server.requests
@@ -2416,12 +2438,25 @@ async function runHeadlessControlSurfaceBrowserProof() {
     await waitForRpcMethod(server, "mobkit/gating/pending");
     await waitForRpcMethod(server, "mobkit/gating/audit");
     await page.getByTestId("gating-action:gate-control-1:approve").click();
-    await waitForRpcMethod(server, "mobkit/gating/decide");
+    await waitForRpcMethod(server, "mobkit/gating/decide", 1);
+    await page.getByTestId("gating-action:gate-control-1:reject").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-action:gate-control-1:reject").click();
+    await waitForRpcMethod(server, "mobkit/gating/decide", 2);
+    await page.getByTestId("gating-action:gate-control-1:escalate").waitFor({ timeout: 10_000 });
+    await page.getByTestId("gating-action:gate-control-1:escalate").click();
+    await waitForRpcMethod(server, "mobkit/gating/decide", 3);
 
     await openSidebarAgentChat(page, "Identity Luka");
+    await page.getByTestId("conv-action:respawn").waitFor({ timeout: 10_000 });
+    await page.getByTestId("conv-action:respawn").click();
+    await waitForRpcMethod(server, "mobkit/respawn");
     await page.getByTestId("conv-action:retire").waitFor({ timeout: 10_000 });
     await page.getByTestId("conv-action:retire").click();
     await waitForRpcMethod(server, "mobkit/retire");
+    await page.getByTestId("conv-action:details").click();
+    await page.getByTestId("inspect-action:identity:luka:reset").waitFor({ timeout: 10_000 });
+    await page.getByTestId("inspect-action:identity:luka:reset").click();
+    await waitForRpcMethod(server, "mobkit/reset");
 
     process.stdout.write("browser headless control surface ok\n");
   } finally {

@@ -190,6 +190,7 @@ export function parseSseFrames(rawText: string): ConsoleFrame[] {
 }
 
 export const DEFAULT_CONSOLE_FETCH_TIMEOUT_MS = 60_000;
+const ERROR_BODY_PREVIEW_LIMIT = 500;
 
 function formatTimeoutReason(timeoutMs: number): string {
   if (timeoutMs % 1000 === 0) {
@@ -198,23 +199,20 @@ function formatTimeoutReason(timeoutMs: number): string {
   return `${timeoutMs} ms`;
 }
 
-export async function fetchJson<T>(
-  baseUrl: string,
-  path: string,
+async function fetchWithConsoleTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  label: string,
   timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
-): Promise<T> {
+): Promise<Response> {
   const controller = new AbortController();
-  const timeoutReason = `console fetch timeout after ${formatTimeoutReason(timeoutMs)}`;
+  const timeoutReason = `${label} timeout after ${formatTimeoutReason(timeoutMs)}`;
   const timer = globalThis.setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   try {
-    const response = await fetch(`${baseUrl}${path}`, {
+    return await fetch(input, {
+      ...init,
       signal: controller.signal,
     });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
-    }
-    return response.json() as Promise<T>;
   } catch (error) {
     if (controller.signal.aborted && typeof controller.signal.reason === "string") {
       throw new Error(controller.signal.reason);
@@ -225,25 +223,87 @@ export async function fetchJson<T>(
   }
 }
 
+async function responseErrorPreview(response: Response): Promise<string> {
+  const text = await response.text();
+  return responseTextErrorPreview(text);
+}
+
+function responseTextErrorPreview(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      const message = typeof record.message === "string" ? record.message : undefined;
+      const error = record.error && typeof record.error === "object"
+        ? record.error as Record<string, unknown>
+        : null;
+      const errorMessage = error && typeof error.message === "string" ? error.message : undefined;
+      const errorCode = error && (typeof error.code === "string" || typeof error.code === "number")
+        ? String(error.code)
+        : undefined;
+      const selected = [
+        errorCode ? `code=${errorCode}` : "",
+        errorMessage || message || "",
+      ].filter(Boolean).join(" ");
+      if (selected) {
+        return selected;
+      }
+    }
+  } catch {
+    // Fall through to a bounded text preview.
+  }
+  return trimmed.length > ERROR_BODY_PREVIEW_LIMIT
+    ? `${trimmed.slice(0, ERROR_BODY_PREVIEW_LIMIT)}...`
+    : trimmed;
+}
+
+export async function fetchJson<T>(
+  baseUrl: string,
+  path: string,
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
+): Promise<T> {
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${path}`,
+    {},
+    "console fetch",
+    timeoutMs,
+  );
+  if (!response.ok) {
+    const preview = await responseErrorPreview(response);
+    throw new Error(`Request failed ${response.status} for ${path}${preview ? `: ${preview}` : ""}`);
+  }
+  return response.json() as Promise<T>;
+}
+
 async function rpc<T>(
   baseUrl: string,
   method: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<T> {
-  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: `${method}:${Date.now()}`,
-      method,
-      params,
-    }),
-  });
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `${method}:${Date.now()}`,
+        method,
+        params,
+      }),
+    },
+    "console rpc",
+    timeoutMs,
+  );
 
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${method} request failed ${response.status}: ${text}`);
+    const preview = await responseErrorPreview(response);
+    throw new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
 
   const result = await response.json();
@@ -269,7 +329,9 @@ async function rpc<T>(
       annotated.timelineReplayUnavailable = true;
       throw error;
     }
-    throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error = new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    (error as Error & { rpcError?: { code?: unknown; message?: unknown; data?: unknown } }).rpcError = result.error;
+    throw error;
   }
 
   return result.result as T;
@@ -283,6 +345,7 @@ export async function sendConsoleMultipart(
   origin: string,
   idempotencyKey: string,
   handlingMode: "queue" | "steer" = "queue",
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<ConsoleTimelineAccepted> {
   const content: Array<Record<string, unknown>> = typeof contentInput === "string"
     ? (contentInput.trim() ? [{ type: "text", text: contentInput }] : [])
@@ -311,13 +374,18 @@ export async function sendConsoleMultipart(
     },
   }));
 
-  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
-    method: "POST",
-    body: form,
-  });
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`,
+    {
+      method: "POST",
+      body: form,
+    },
+    "console multipart",
+    timeoutMs,
+  );
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}: ${text}`);
+    const preview = await responseErrorPreview(response);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const result = await response.json();
   if (result.error) {
@@ -329,6 +397,7 @@ export async function sendConsoleMultipart(
 export async function uploadConsoleBlobMultipart(
   baseUrl: string,
   input: { blobId?: string; file?: File; mediaType?: string },
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<{ blob_id: string; url?: string }> {
   const file = input.file;
   if (!file) {
@@ -355,13 +424,18 @@ export async function uploadConsoleBlobMultipart(
     },
   }));
 
-  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
-    method: "POST",
-    body: form,
-  });
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`,
+    {
+      method: "POST",
+      body: form,
+    },
+    "console multipart",
+    timeoutMs,
+  );
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}: ${text}`);
+    const preview = await responseErrorPreview(response);
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const result = await response.json();
   if (result.error) {
@@ -499,7 +573,8 @@ async function streamFramesFromResponse(
       (error as Error & { replayError?: ConsoleReplayUnavailablePayload }).replayError = replayError;
       throw error;
     }
-    throw new Error(`interaction stream request failed ${response.status}: ${text}`);
+    const preview = responseTextErrorPreview(text);
+    throw new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
 
   const replayUnavailableError = (frame: ConsoleFrame): Error | null => {
@@ -633,6 +708,7 @@ export async function queryTimeline(
     mode?: "since" | "recent";
   },
   limit = 400,
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<ConsoleTimelinePage> {
   const result = await rpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.queryTimeline, {
     limit,
@@ -641,7 +717,7 @@ export async function queryTimeline(
     ...(target.after?.trim() ? { after: target.after.trim() } : {}),
     ...(target.before?.trim() ? { before: target.before.trim() } : {}),
     ...(target.mode ? { mode: target.mode } : {}),
-  });
+  }, timeoutMs);
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
   }
@@ -663,6 +739,7 @@ export async function sendConsole(
   origin: string,
   idempotencyKey: string,
   handlingMode: "queue" | "steer" = "queue",
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<ConsoleTimelineAccepted> {
   const accepted = await rpc<unknown>(baseUrl, CONSOLE_RPC_METHODS.send, {
     identity,
@@ -670,7 +747,7 @@ export async function sendConsole(
     origin,
     idempotency_key: idempotencyKey,
     handling_mode: handlingMode,
-  });
+  }, timeoutMs);
   if (!accepted || typeof accepted !== "object") {
     throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
   }
@@ -698,8 +775,9 @@ export async function callConsoleRpc<T>(
   baseUrl: string,
   method: string,
   params: Record<string, unknown> = {},
+  timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS,
 ): Promise<T> {
-  return rpc<T>(baseUrl, method, params);
+  return rpc<T>(baseUrl, method, params, timeoutMs);
 }
 
 function timelineStreamPath(target: { identity?: string; conversationId?: string }): string {

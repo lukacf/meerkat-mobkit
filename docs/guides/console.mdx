@@ -229,6 +229,13 @@ ConsolePolicy {
 
 When `require_app_auth` is `true`, every request is checked against the `AuthPolicy`. See [authentication](/guides/authentication) for details.
 
+Console mutation endpoints assume non-ambient credentials: pass bearer tokens
+explicitly in the `Authorization` header or `auth_token` query parameter for
+SSE/browser bootstrap cases. If a host proxy converts console auth into cookies
+or another browser-ambient credential, that host must add origin and CSRF
+protection before exposing mutation routes such as `/console/rpc`,
+`/console/rpc/multipart`, or `/console/send`.
+
 ## Build system
 
 The console has two build modes:

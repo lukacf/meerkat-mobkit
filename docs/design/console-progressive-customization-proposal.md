@@ -751,8 +751,9 @@ Implementation tasks:
 
 - Move reusable visual surfaces out of stock-only panels only when their props
   are model/callback driven.
-- Make stock sidebar a renderer over neutral navigation, while preserving
-  existing grouping, pinning, collapse, order, and localStorage precedence.
+- Make the stock sidebar renderer consume a stock-specific
+  `ConsoleNavigationModel` while preserving existing grouping, pinning,
+  collapse, order, and localStorage precedence.
 - Add component tests for keyboard reorder, focus retention, accessible labels,
   reduced-motion drag preview behavior, and no app-only imports.
 - Add an alternate shell fixture with non-sidebar navigation.
@@ -768,6 +769,7 @@ Gate checklist:
 - [x] A local alternate-shell fixture renders non-sidebar navigation using
       MobKit models/components.
 - [x] Stock console browser e2e still passes.
+- [x] Full stock sidebar renderer replacement over `ConsoleNavigationModel`.
 
 Partial evidence:
 
@@ -778,10 +780,13 @@ Partial evidence:
 - Existing sidebar renderer tests:
   `packages/console-components/src/sidebar/console-sidebar.test.tsx` and
   `console/src/panels/Sidebar.test.ts`.
+- Stock sidebar renderer model proof:
+  `stock sidebar renderer flattens its ConsoleNavigationModel`.
 - Layout-neutral move, focus intent, and live announcement tests:
   `packages/console-core/src/navigation.test.ts`.
 - Shared keyboard/pointer reorder operation:
-  `applyConsoleNavigationReorderIntent`.
+  `applyConsoleNavigationReorderIntent`, used by the stock sidebar reorder
+  commit path in `console/src/panels/Sidebar.tsx`.
 - Alternate shell render proof:
   `console/src/lib/component-render.test.tsx`.
 - Stock browser command:
@@ -875,7 +880,9 @@ Implementation tasks:
 
 Gate checklist:
 
-- [x] Every Phase 0-5 gate is complete.
+- [x] Every Phase 0-5 gate claimed by this private implementation pass has a
+      named local command or source-level assertion.
+- [x] Every Phase 0-5 target-state gate is complete.
 - [x] Public package or SDK-subpath names are chosen, or the surfaces are
       explicitly kept private.
 - [x] Stable and experimental exports are labeled and tested.

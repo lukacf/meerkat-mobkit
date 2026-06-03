@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 
@@ -27,6 +27,12 @@ type ContractError = {
 
 type ContractSchema = {
   contract_version: string;
+  spec_source?: {
+    checked_contract?: string;
+    previous_contract?: string;
+    rct_spec_markdown?: string;
+    rct_spec_yaml?: string;
+  };
   surfaces: {
     rest: Record<string, {
       method: string;
@@ -81,12 +87,36 @@ test("console contract constants stay synchronized with docs/rct contract v0.5.0
     );
   }
   assert.deepEqual(
+    Object.keys(schema.surfaces.rpc.methods).filter((method) => !Object.values(CONSOLE_RPC_METHODS).includes(method as typeof CONSOLE_RPC_METHODS[keyof typeof CONSOLE_RPC_METHODS])),
+    [],
+    "contract JSON must not grow RPC methods without adding typed frontend constants",
+  );
+  assert.deepEqual(
     [...CONSOLE_TIMELINE_QUERY_MODES],
     schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.queryTimeline]?.success?.mode_values,
   );
   assert.equal(
     schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.queryTimeline]?.errors
       ?.some((entry) => entry.codes?.includes(CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE)),
+    true,
+  );
+});
+
+test("console contract names a checked-in canonical source", () => {
+  const contractPath = "../docs/rct/console-rest-sse-contract-v0.5.0.json";
+  const schema = JSON.parse(
+    readFileSync(resolve(process.cwd(), contractPath), "utf8"),
+  ) as ContractSchema;
+  const source = schema.spec_source || {};
+
+  assert.equal(source.checked_contract, "docs/rct/console-rest-sse-contract-v0.5.0.json");
+  assert.equal(source.rct_spec_markdown, undefined);
+  assert.equal(source.rct_spec_yaml, undefined);
+  assert.equal(existsSync(resolve(process.cwd(), contractPath)), true);
+  assert.equal(
+    source.previous_contract
+      ? existsSync(resolve(process.cwd(), "..", source.previous_contract))
+      : false,
     true,
   );
 });
@@ -99,6 +129,11 @@ test("console contract documents live REST, SSE, and send RPC error shapes", () 
   const listIdentityCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.listIdentities]?.errors?.flatMap((entry) => entry.codes || []) || [];
   const inspectIdentityCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.inspectIdentity]?.errors?.flatMap((entry) => entry.codes || []) || [];
   const queryTimelineCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.queryTimeline]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const routingRouteCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.routingRoutesList]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const deliveryHistoryCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.deliveryHistory]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const gatingPendingCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.gatingPending]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const gatingAuditCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.gatingAudit]?.errors?.flatMap((entry) => entry.codes || []) || [];
+  const gatingDecideCodes = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.gatingDecide]?.errors?.flatMap((entry) => entry.codes || []) || [];
   const blobUploadErrors = schema.surfaces.rpc.methods[CONSOLE_RPC_METHODS.blobUpload]?.errors || [];
   const blobUploadCodes = blobUploadErrors.flatMap((entry) => entry.codes || []);
   const rpcEndpointErrors = schema.surfaces.rpc.console_rpc_endpoint.errors || [];
@@ -127,6 +162,11 @@ test("console contract documents live REST, SSE, and send RPC error shapes", () 
   assert.deepEqual([-32001, -32004, -32602, -32000].filter((code) => !inspectIdentityCodes.includes(code)), []);
   assert.equal(inspectIdentityCodes.includes(-32603), false);
   assert.deepEqual([-32004, -32013, -32602].filter((code) => !queryTimelineCodes.includes(code)), []);
+  assert.deepEqual([-32004, -32000, -32601].filter((code) => !routingRouteCodes.includes(code)), []);
+  assert.deepEqual([-32004, -32000, -32601].filter((code) => !deliveryHistoryCodes.includes(code)), []);
+  assert.deepEqual([-32004, -32000, -32601].filter((code) => !gatingPendingCodes.includes(code)), []);
+  assert.deepEqual([-32004, -32000, -32601].filter((code) => !gatingAuditCodes.includes(code)), []);
+  assert.deepEqual([-32004, -32602, -32000, -32601].filter((code) => !gatingDecideCodes.includes(code)), []);
   assert.equal(queryTimelineCodes.includes(-32003), false);
   assert.equal(queryTimelineCodes.includes(-32603), false);
   assert.deepEqual([-32600, -32602, -32000].filter((code) => !blobUploadCodes.includes(code)), []);
@@ -147,6 +187,7 @@ test("console contract route and method names stay synchronized with Rust http c
   ) as ContractSchema;
   const rustSource = readFileSync(resolve(process.cwd(), "../meerkat-mobkit/src/http_console.rs"), "utf8");
   const registeredRoutes = parseAxumRoutes(rustSource);
+  const dispatchedRpcMethods = parseJsonRpcDispatchMethods(rustSource);
   const contractedRoutes = contractRoutes(schema);
   const frontendRoutes = new Set([
     "GET /",
@@ -178,10 +219,10 @@ test("console contract route and method names stay synchronized with Rust http c
   }
 
   for (const method of Object.keys(schema.surfaces.rpc.methods)) {
-    assert.match(
-      rustSource,
-      new RegExp(JSON.stringify(method).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-      `expected http_console.rs to contain RPC method ${method}`,
+    assert.equal(
+      dispatchedRpcMethods.has(method),
+      true,
+      `expected http_console.rs to dispatch RPC method ${method}`,
     );
   }
 });
@@ -213,6 +254,15 @@ function parseAxumRoutes(source: string): Set<string> {
     routes.add(`${match[2]!.toUpperCase()} ${match[1]}`);
   }
   return routes;
+}
+
+function parseJsonRpcDispatchMethods(source: string): Set<string> {
+  const methods = new Set<string>();
+  const armPattern = /^\s*"([^"]+)"\s*=>/gm;
+  for (const match of source.matchAll(armPattern)) {
+    methods.add(match[1]!);
+  }
+  return methods;
 }
 
 function contractRoutes(schema: ContractSchema): Set<string> {

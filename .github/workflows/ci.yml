@@ -22,11 +22,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all -- --check
+      - run: scripts/repo-cargo fmt --all -- --check
       - run: scripts/verify-version-parity.sh
       - uses: taiki-e/install-action@cargo-machete
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo machete --with-metadata
+      - run: scripts/repo-cargo clippy --workspace --all-targets -- -D warnings
+      - run: scripts/repo-cargo machete --with-metadata
 
   test:
     name: test
@@ -36,7 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest run --workspace -E 'not test(governance_contracts)'
+      - run: scripts/repo-cargo nextest run --workspace -E 'not test(governance_contracts)'
 
   test-python:
     name: test-python
@@ -61,7 +61,7 @@ jobs:
           cache-dependency-path: console/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: npm --prefix console install --silent --no-fund --no-audit
+      - run: npm --prefix console ci --silent --no-fund --no-audit
       - run: npm --prefix console run phase0:types --silent
       - run: npm --prefix console run contracts:console --silent
       - run: npm --prefix console run phase1:targets --silent

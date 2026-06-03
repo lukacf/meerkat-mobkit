@@ -37,7 +37,6 @@ test("reference-wrapper fixture keeps host status separate from MobKit console p
   const wrapper = fixture("reference-wrapper");
   const consoleRoutes = wrapper.consoleRoutes as Record<string, string>;
   const hostRoutes = wrapper.hostRoutes as Record<string, Record<string, unknown>>;
-  const policy = wrapper.wrapperPolicy as Record<string, boolean>;
   const dispatch = createReferenceWrapperDispatch(wrapper);
 
   for (const route of [
@@ -51,23 +50,33 @@ test("reference-wrapper fixture keeps host status separate from MobKit console p
   }
   assert.equal(hostRoutes["/host/status"].provenance, "host-adapter");
   assert.equal(hostRoutes["/host/status"].consumedByMobKitHeadless, false);
-  for (const [key, value] of Object.entries(policy)) {
-    assert.equal(value, false, `${key} must stay forbidden`);
-  }
 
   assert.deepEqual(dispatch({ method: "GET", path: "/host/status" }), {
     source: "host-adapter",
     status: 200,
+    headers: {},
     body: hostRoutes["/host/status"],
   });
 
+  const jsResponse = dispatch({ method: "GET", path: "/console/assets/console-app.js" });
+  assert.equal(jsResponse.source, "mobkit-reference-console");
+  assert.equal(jsResponse.status, 200);
+  assert.equal(jsResponse.headers["access-control-allow-origin"], undefined);
+  assert.equal(
+    (jsResponse.body as Record<string, unknown>).javascript,
+    fs.readFileSync(path.join(root, "meerkat-mobkit", "console-dist", "console-app.js"), "utf8"),
+    "reference wrapper must serve the embedded console JS without rewriting it",
+  );
+
   const rpcResponse = dispatch({ method: "POST", path: CONSOLE_RPC_PATHS.jsonRpc });
   assert.equal(rpcResponse.source, "mobkit-reference-console");
+  assert.equal(rpcResponse.headers["access-control-allow-origin"], undefined);
   assert.equal((rpcResponse.body as Record<string, unknown>).route, CONSOLE_RPC_PATHS.jsonRpc);
   assert.equal((rpcResponse.body as Record<string, unknown>).hostStatus, undefined);
 
   const timelineResponse = dispatch({ method: "GET", path: CONSOLE_REST_PATHS.timeline });
   assert.equal(timelineResponse.source, "mobkit-reference-console");
+  assert.equal(timelineResponse.headers["access-control-allow-origin"], undefined);
   assert.deepEqual(timelineResponse.body, {
     route: CONSOLE_REST_PATHS.timeline,
     frames: [],
@@ -133,6 +142,7 @@ test("configured-host-shell fixture keeps host mutations out of console.toml but
   const sidebarButtons = configured.sidebarButtons as Record<string, unknown>;
   const persistedPreferences = configured.persistedPreferences as Record<string, unknown>;
   const routeProtection = configured.directRouteProtectionWhenMobKitAuthDisabled as Record<string, string>;
+  const proxy = createConfiguredHostProxy(routeProtection);
   const storage = new MemoryStorage();
   const namespace = String(persistedPreferences.namespace);
   const sectionKey = sidebarStorageKey(SIDEBAR_SECTION_ORDER_STORAGE_PREFIX, namespace);
@@ -175,12 +185,25 @@ test("configured-host-shell fixture keeps host mutations out of console.toml but
     "/blobs/{blob_id}",
   ]) {
     assert.equal(routeProtection[route], "host-proxy");
+    assert.deepEqual(proxy({ method: "GET", path: route }), {
+      source: "host-proxy",
+      status: 401,
+      body: { error: "host_auth_required" },
+      headers: { "x-mobkit-console-protected": "true" },
+    });
+    assert.deepEqual(proxy({ method: "GET", path: route, hostAuthorized: true }), {
+      source: "mobkit-reference-console",
+      status: 200,
+      body: { route },
+      headers: {},
+    });
   }
 });
 
 type WrapperResponse = {
   source: string;
   status: number;
+  headers: Record<string, string>;
   body: unknown;
 };
 
@@ -192,20 +215,47 @@ function createReferenceWrapperDispatch(wrapper: Record<string, unknown>) {
     "utf8",
   );
 
+  const consoleJs = fs.readFileSync(
+    path.join(root, "meerkat-mobkit", "console-dist", "console-app.js"),
+    "utf8",
+  );
+
   return ({ path: requestPath }: { method: "GET" | "POST"; path: string }): WrapperResponse => {
     if (hostRoutes[requestPath]) {
-      return { source: "host-adapter", status: 200, body: hostRoutes[requestPath] };
+      return { source: "host-adapter", status: 200, headers: {}, body: hostRoutes[requestPath] };
     }
     if (!consoleRoutes[requestPath]) {
-      return { source: "wrapper", status: 404, body: { error: "not_found" } };
+      return { source: "wrapper", status: 404, headers: {}, body: { error: "not_found" } };
     }
     if (requestPath === "/console") {
-      return { source: consoleRoutes[requestPath], status: 200, body: { html: consoleIndex } };
+      return { source: consoleRoutes[requestPath], status: 200, headers: {}, body: { html: consoleIndex } };
+    }
+    if (requestPath === "/console/assets/console-app.js") {
+      return { source: consoleRoutes[requestPath], status: 200, headers: {}, body: { javascript: consoleJs } };
     }
     if (requestPath === CONSOLE_REST_PATHS.timeline) {
-      return { source: consoleRoutes[requestPath], status: 200, body: { route: requestPath, frames: [] } };
+      return { source: consoleRoutes[requestPath], status: 200, headers: {}, body: { route: requestPath, frames: [] } };
     }
-    return { source: consoleRoutes[requestPath], status: 200, body: { route: requestPath } };
+    return { source: consoleRoutes[requestPath], status: 200, headers: {}, body: { route: requestPath } };
+  };
+}
+
+function createConfiguredHostProxy(routeProtection: Record<string, string>) {
+  return ({ path: requestPath, hostAuthorized }: { method: "GET" | "POST"; path: string; hostAuthorized?: boolean }): WrapperResponse => {
+    if (routeProtection[requestPath] === "host-proxy" && !hostAuthorized) {
+      return {
+        source: "host-proxy",
+        status: 401,
+        headers: { "x-mobkit-console-protected": "true" },
+        body: { error: "host_auth_required" },
+      };
+    }
+    return {
+      source: "mobkit-reference-console",
+      status: 200,
+      headers: {},
+      body: { route: requestPath },
+    };
   };
 }
 

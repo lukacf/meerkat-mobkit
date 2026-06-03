@@ -112,6 +112,10 @@ enforce_console_route_access(
 3. `TestProvider` is always rejected (even if it matches)
 4. The email must appear in `auth_policy.email_allowlist`
 
+Console HTTP routes are designed for explicit bearer-token authentication. If a
+deployment puts cookie-based auth in front of the console, the deployment must
+also enforce CSRF/origin checks for mutation routes.
+
 ### Service identity
 
 Service accounts use the `ServiceIdentity` provider with emails prefixed by `svc:`:

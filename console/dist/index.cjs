@@ -344,12 +344,26 @@ var TERMINAL_STATUS_RE = /^(Success|Running|Failed|Cancelled)$/i;
 function escapeHtml(value) {
   return String(value || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+function safeConsoleHref(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return null;
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("//")) return null;
+  if (lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:") || lower.startsWith("/") || lower.startsWith("./") || lower.startsWith("../") || lower.startsWith("#")) {
+    return trimmed;
+  }
+  return null;
+}
 function renderConversationInlineMarkdown(text) {
   const codeTokens = [];
   const escaped = escapeHtml(text || "").replace(/`([^`]+)`/g, (_match, code) => {
     const index = codeTokens.push(`<code class="cc-rich-inline-code">${code}</code>`) - 1;
     return `@@CODE_${index}@@`;
-  }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>").replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>').replace(/\n/g, "<br />");
+  }).replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>").replace(/(^|[^A-Za-z0-9_*])\*([^*\n]+)\*(?![A-Za-z0-9_*])/g, "$1<em>$2</em>").replace(/(^|[^A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1<em>$2</em>").replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
+    const safeHref = safeConsoleHref(href);
+    return safeHref ? `<a href="${safeHref}" rel="noreferrer">${label}</a>` : label;
+  }).replace(/\n/g, "<br />");
   return escaped.replace(/@@CODE_(\d+)@@/g, (_match, index) => codeTokens[Number(index)] || "");
 }
 function conversationRichBlockCopyText(block) {
@@ -1462,6 +1476,203 @@ function buildConsoleDockViewState(state, options = {}) {
   };
 }
 
+// ../packages/console-core/src/navigation.ts
+function normalizeMeta(meta) {
+  return (meta || []).filter((entry) => Boolean(entry?.label));
+}
+function normalizeActions(actions) {
+  return (actions || []).filter((action) => Boolean(action?.id && action?.label));
+}
+function collectNavigationNodeIds(nodes) {
+  const ids = [];
+  for (const node of nodes) {
+    ids.push(node.id);
+    if (node.type === "group") {
+      ids.push(...collectNavigationNodeIds(node.children));
+    }
+  }
+  return ids;
+}
+function normalizeNode2(node, seen) {
+  if (!node?.id || !node.label || seen.has(node.id)) {
+    return null;
+  }
+  seen.add(node.id);
+  const base = {
+    ...node,
+    meta: normalizeMeta(node.meta),
+    actions: normalizeActions(node.actions)
+  };
+  if (node.type === "group") {
+    return {
+      ...base,
+      type: "group",
+      expanded: node.expanded !== false,
+      children: (node.children || []).map((child) => normalizeNode2(child, seen)).filter(Boolean)
+    };
+  }
+  if (node.type === "item") {
+    return {
+      ...base,
+      type: "item",
+      pinned: Boolean(node.pinned),
+      unread: Boolean(node.unread)
+    };
+  }
+  return null;
+}
+function findNavigationNode(nodes, id, parentId = null, path = []) {
+  for (let index = 0; index < nodes.length; index += 1) {
+    const node = nodes[index];
+    const nodePath = [...path, index];
+    if (node.id === id) {
+      return { node, parentId, path: nodePath };
+    }
+    if (node.type === "group") {
+      const child = findNavigationNode(node.children, id, node.id, nodePath);
+      if (child) return child;
+    }
+  }
+  return null;
+}
+function isDescendantPath(path, possibleDescendant) {
+  return path.length < possibleDescendant.length && path.every((segment, index) => possibleDescendant[index] === segment);
+}
+function removeNodeAtPath(nodes, path) {
+  if (path.length === 0) {
+    return { nodes, removed: null };
+  }
+  const [head, ...tail] = path;
+  if (head === void 0 || head < 0 || head >= nodes.length) {
+    return { nodes, removed: null };
+  }
+  if (tail.length === 0) {
+    const next2 = [...nodes];
+    const [removed] = next2.splice(head, 1);
+    return { nodes: next2, removed: removed || null };
+  }
+  const node = nodes[head];
+  if (node.type !== "group") {
+    return { nodes, removed: null };
+  }
+  const childResult = removeNodeAtPath(node.children, tail);
+  const next = [...nodes];
+  next[head] = { ...node, children: childResult.nodes };
+  return { nodes: next, removed: childResult.removed };
+}
+function insertNode(nodes, targetId, position, nodeToInsert) {
+  const next = [...nodes];
+  for (let index = 0; index < next.length; index += 1) {
+    const node = next[index];
+    if (node.id === targetId) {
+      if (position === "inside" && node.type === "group") {
+        next[index] = { ...node, expanded: true, children: [...node.children, nodeToInsert] };
+        return { nodes: next, inserted: true };
+      }
+      const offset = position === "after" ? 1 : 0;
+      next.splice(index + offset, 0, nodeToInsert);
+      return { nodes: next, inserted: true };
+    }
+    if (node.type === "group") {
+      const childResult = insertNode(node.children, targetId, position, nodeToInsert);
+      if (childResult.inserted) {
+        next[index] = {
+          ...node,
+          children: childResult.nodes
+        };
+        return { nodes: next, inserted: true };
+      }
+    }
+  }
+  return { nodes, inserted: false };
+}
+function navigationMoveAnnouncement(moved, target, position) {
+  if (position === "inside") {
+    return `Moved ${moved.label} into ${target.label}.`;
+  }
+  return `Moved ${moved.label} ${position} ${target.label}.`;
+}
+function normalizeConsoleNavigationModel(model) {
+  const seen = /* @__PURE__ */ new Set();
+  const nodes = (model?.nodes || []).map((node) => normalizeNode2(node, seen)).filter(Boolean);
+  const ids = collectNavigationNodeIds(nodes);
+  const idSet = new Set(ids);
+  const activeNodeId = model?.activeNodeId && idSet.has(model.activeNodeId) ? model.activeNodeId : void 0;
+  const focusNodeId = model?.focusNodeId && idSet.has(model.focusNodeId) ? model.focusNodeId : activeNodeId;
+  const orderedNodeIds = (model?.order?.orderedNodeIds || []).filter((id) => idSet.has(id));
+  return {
+    orientation: model?.orientation,
+    activeNodeId,
+    focusNodeId,
+    nodes,
+    order: { orderedNodeIds: orderedNodeIds.length ? orderedNodeIds : ids }
+  };
+}
+function canMoveConsoleNavigationNode(model, input) {
+  const normalized = normalizeConsoleNavigationModel(model);
+  const moved = findNavigationNode(normalized.nodes, input.id);
+  const target = findNavigationNode(normalized.nodes, input.targetId);
+  if (!moved || !target || moved.node.disabled || target.node.disabled) {
+    return false;
+  }
+  if (moved.node.id === target.node.id) {
+    return false;
+  }
+  if (isDescendantPath(moved.path, target.path)) {
+    return false;
+  }
+  if (input.position === "inside" && target.node.type !== "group") {
+    return false;
+  }
+  if (input.scope === "siblings" && moved.parentId !== target.parentId) {
+    return false;
+  }
+  return true;
+}
+function moveConsoleNavigationNode(model, input) {
+  const normalized = normalizeConsoleNavigationModel(model);
+  const moved = findNavigationNode(normalized.nodes, input.id);
+  const target = findNavigationNode(normalized.nodes, input.targetId);
+  if (!moved || !target || !canMoveConsoleNavigationNode(normalized, input)) {
+    return {
+      model: normalized,
+      focusNodeId: normalized.focusNodeId || null,
+      announcement: "Move unavailable."
+    };
+  }
+  const removed = removeNodeAtPath(normalized.nodes, moved.path);
+  if (!removed.removed) {
+    return {
+      model: normalized,
+      focusNodeId: normalized.focusNodeId || null,
+      announcement: "Move unavailable."
+    };
+  }
+  const inserted = insertNode(removed.nodes, input.targetId, input.position, removed.removed);
+  if (!inserted.inserted) {
+    return {
+      model: normalized,
+      focusNodeId: normalized.focusNodeId || null,
+      announcement: "Move unavailable."
+    };
+  }
+  const nodes = inserted.nodes;
+  const next = normalizeConsoleNavigationModel({
+    ...normalized,
+    focusNodeId: removed.removed.id,
+    nodes,
+    order: { orderedNodeIds: collectNavigationNodeIds(nodes) }
+  });
+  return {
+    model: next,
+    focusNodeId: removed.removed.id,
+    announcement: navigationMoveAnnouncement(removed.removed, target.node, input.position)
+  };
+}
+function applyConsoleNavigationReorderIntent(model, intent) {
+  return moveConsoleNavigationNode(model, intent);
+}
+
 // ../packages/console-core/src/sidebar-preferences.ts
 var SIDEBAR_PINS_STORAGE_PREFIX = "mobkit-console-sidebar-pins";
 var SIDEBAR_SECTION_ORDER_STORAGE_PREFIX = "mobkit-console-sidebar-section-order";
@@ -1493,7 +1704,8 @@ function readSidebarStringSet(storage, key) {
 function writeSidebarStringSet(storage, key, value) {
   if (!storage) return;
   try {
-    storage.setItem(key, JSON.stringify(Array.from(value).sort()));
+    const normalized = Array.from(value).map((item) => item.trim()).filter(Boolean).sort();
+    storage.setItem(key, JSON.stringify(Array.from(new Set(normalized))));
   } catch {
   }
 }
@@ -1563,16 +1775,6 @@ function applyConsoleSidebarOrder(items, storedOrder) {
     seen.add(item);
   }
   return ordered;
-}
-function reorderConsoleSidebarOrder(items, dragged, target, where) {
-  if (dragged === target || !items.includes(dragged) || !items.includes(target)) return items;
-  const withoutDragged = items.filter((item) => item !== dragged);
-  const targetIndex = withoutDragged.indexOf(target);
-  if (targetIndex < 0) return items;
-  const insertAt = where === "after" ? targetIndex + 1 : targetIndex;
-  const next = [...withoutDragged];
-  next.splice(insertAt, 0, dragged);
-  return next;
 }
 
 // ../packages/console-core/src/format.ts
@@ -4991,25 +5193,22 @@ function parseSseFrames(rawText) {
   return frames;
 }
 var DEFAULT_CONSOLE_FETCH_TIMEOUT_MS = 6e4;
+var ERROR_BODY_PREVIEW_LIMIT = 500;
 function formatTimeoutReason(timeoutMs) {
   if (timeoutMs % 1e3 === 0) {
     return `${timeoutMs / 1e3} s`;
   }
   return `${timeoutMs} ms`;
 }
-async function fetchJson(baseUrl, path, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
+async function fetchWithConsoleTimeout(input, init, label, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
   const controller = new AbortController();
-  const timeoutReason = `console fetch timeout after ${formatTimeoutReason(timeoutMs)}`;
+  const timeoutReason = `${label} timeout after ${formatTimeoutReason(timeoutMs)}`;
   const timer = globalThis.setTimeout(() => controller.abort(timeoutReason), timeoutMs);
   try {
-    const response = await fetch(`${baseUrl}${path}`, {
+    return await fetch(input, {
+      ...init,
       signal: controller.signal
     });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Request failed ${response.status} for ${path}: ${text}`);
-    }
-    return response.json();
   } catch (error) {
     if (controller.signal.aborted && typeof controller.signal.reason === "string") {
       throw new Error(controller.signal.reason);
@@ -5019,46 +5218,95 @@ async function fetchJson(baseUrl, path, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOU
     globalThis.clearTimeout(timer);
   }
 }
-async function rpc(baseUrl, method, params) {
-  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: `${method}:${Date.now()}`,
-      method,
-      params
-    })
-  });
+async function responseErrorPreview(response) {
+  const text = await response.text();
+  return responseTextErrorPreview(text);
+}
+function responseTextErrorPreview(text) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "";
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed === "object") {
+      const record = parsed;
+      const message = typeof record.message === "string" ? record.message : void 0;
+      const error = record.error && typeof record.error === "object" ? record.error : null;
+      const errorMessage2 = error && typeof error.message === "string" ? error.message : void 0;
+      const errorCode = error && (typeof error.code === "string" || typeof error.code === "number") ? String(error.code) : void 0;
+      const selected = [
+        errorCode ? `code=${errorCode}` : "",
+        errorMessage2 || message || ""
+      ].filter(Boolean).join(" ");
+      if (selected) {
+        return selected;
+      }
+    }
+  } catch {
+  }
+  return trimmed.length > ERROR_BODY_PREVIEW_LIMIT ? `${trimmed.slice(0, ERROR_BODY_PREVIEW_LIMIT)}...` : trimmed;
+}
+async function fetchJson(baseUrl, path, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${path}`,
+    {},
+    "console fetch",
+    timeoutMs
+  );
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${method} request failed ${response.status}: ${text}`);
+    const preview = await responseErrorPreview(response);
+    throw new Error(`Request failed ${response.status} for ${path}${preview ? `: ${preview}` : ""}`);
+  }
+  return response.json();
+}
+async function rpc(baseUrl, method, params, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${CONSOLE_RPC_PATHS.jsonRpc}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: `${method}:${Date.now()}`,
+        method,
+        params
+      })
+    },
+    "console rpc",
+    timeoutMs
+  );
+  if (!response.ok) {
+    const preview = await responseErrorPreview(response);
+    throw new Error(`${method} request failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const result = await response.json();
   if (result.error) {
     const typedError = normalizeConsoleInteractionRejectedError(result.error);
     if (typedError) {
-      const error = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
-      error.rpcError = typedError;
-      throw error;
+      const error2 = new Error(`${method} RPC error ${typedError.code}: ${typedError.message}`);
+      error2.rpcError = typedError;
+      throw error2;
     }
     const replayError = normalizeReplayUnavailableError(result.error.data);
     if (replayError || result.error.code === CONSOLE_TIMELINE_REPLAY_UNAVAILABLE_CODE) {
-      const error = new Error(
+      const error2 = new Error(
         `${method} RPC replay unavailable: ${result.error.message || JSON.stringify(result.error)}`
       );
-      const annotated = error;
+      const annotated = error2;
       if (replayError) {
         annotated.replayError = replayError;
       }
       annotated.timelineReplayUnavailable = true;
-      throw error;
+      throw error2;
     }
-    throw new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    const error = new Error(`${method} RPC error: ${result.error.message || JSON.stringify(result.error)}`);
+    error.rpcError = result.error;
+    throw error;
   }
   return result.result;
 }
-async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments, origin, idempotencyKey, handlingMode = "queue") {
+async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments, origin, idempotencyKey, handlingMode = "queue", timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
   const content = typeof contentInput === "string" ? contentInput.trim() ? [{ type: "text", text: contentInput }] : [] : [...contentInput];
   const form = new FormData();
   attachments.forEach((file, index) => {
@@ -5083,13 +5331,18 @@ async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments
       handling_mode: handlingMode
     }
   }));
-  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
-    method: "POST",
-    body: form
-  });
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`,
+    {
+      method: "POST",
+      body: form
+    },
+    "console multipart",
+    timeoutMs
+  );
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}: ${text}`);
+    const preview = await responseErrorPreview(response);
+    throw new Error(`${CONSOLE_RPC_METHODS.send} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const result = await response.json();
   if (result.error) {
@@ -5097,7 +5350,7 @@ async function sendConsoleMultipart(baseUrl, identity, contentInput, attachments
   }
   return normalizeConsoleTimelineAccepted(result.result, identity);
 }
-async function uploadConsoleBlobMultipart(baseUrl, input) {
+async function uploadConsoleBlobMultipart(baseUrl, input, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
   const file = input.file;
   if (!file) {
     throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} requires a file`);
@@ -5120,13 +5373,18 @@ async function uploadConsoleBlobMultipart(baseUrl, input) {
       }
     }
   }));
-  const response = await fetch(`${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`, {
-    method: "POST",
-    body: form
-  });
+  const response = await fetchWithConsoleTimeout(
+    `${baseUrl}${CONSOLE_RPC_PATHS.multipartJsonRpc}`,
+    {
+      method: "POST",
+      body: form
+    },
+    "console multipart",
+    timeoutMs
+  );
   if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}: ${text}`);
+    const preview = await responseErrorPreview(response);
+    throw new Error(`${CONSOLE_RPC_METHODS.blobUpload} multipart failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const result = await response.json();
   if (result.error) {
@@ -5199,7 +5457,8 @@ async function streamFramesFromResponse(response, options = {}) {
       error.replayError = replayError;
       throw error;
     }
-    throw new Error(`interaction stream request failed ${response.status}: ${text}`);
+    const preview = responseTextErrorPreview(text);
+    throw new Error(`interaction stream request failed ${response.status}${preview ? `: ${preview}` : ""}`);
   }
   const replayUnavailableError = (frame) => {
     if (frame.event !== "replay_unavailable") {
@@ -5314,7 +5573,7 @@ function flushTrailingSseBlock(buffer, onFrame) {
     onFrame(frame);
   }
 }
-async function queryTimeline(baseUrl, target, limit = 400) {
+async function queryTimeline(baseUrl, target, limit = 400, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
   const result = await rpc(baseUrl, CONSOLE_RPC_METHODS.queryTimeline, {
     limit,
     ...target.identity?.trim() ? { identity: target.identity.trim() } : {},
@@ -5322,7 +5581,7 @@ async function queryTimeline(baseUrl, target, limit = 400) {
     ...target.after?.trim() ? { after: target.after.trim() } : {},
     ...target.before?.trim() ? { before: target.before.trim() } : {},
     ...target.mode ? { mode: target.mode } : {}
-  });
+  }, timeoutMs);
   if (!result || typeof result !== "object") {
     return { frames: [], available: false };
   }
@@ -5336,14 +5595,14 @@ async function queryTimeline(baseUrl, target, limit = 400) {
     available: record.available !== false
   };
 }
-async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue") {
+async function sendConsole(baseUrl, identity, content, origin, idempotencyKey, handlingMode = "queue", timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
   const accepted = await rpc(baseUrl, CONSOLE_RPC_METHODS.send, {
     identity,
     content,
     origin,
     idempotency_key: idempotencyKey,
     handling_mode: handlingMode
-  });
+  }, timeoutMs);
   if (!accepted || typeof accepted !== "object") {
     throw new Error(`${CONSOLE_RPC_METHODS.send} returned an invalid acceptance payload`);
   }
@@ -5362,8 +5621,8 @@ function normalizeConsoleTimelineAccepted(accepted, fallbackIdentity) {
     status: typeof record.status === "string" ? record.status : void 0
   };
 }
-async function callConsoleRpc(baseUrl, method, params = {}) {
-  return rpc(baseUrl, method, params);
+async function callConsoleRpc(baseUrl, method, params = {}, timeoutMs = DEFAULT_CONSOLE_FETCH_TIMEOUT_MS) {
+  return rpc(baseUrl, method, params, timeoutMs);
 }
 function timelineStreamPath(target) {
   const params = new URLSearchParams();
@@ -5460,6 +5719,7 @@ var CONSOLE_COMMAND_NAMES = {
   decideGating: "decideGating"
 };
 var LEGACY_INSPECT_IDENTITY_METHOD = "mobkit/inspect_identity";
+var MIN_TIMELINE_DEDUP_KEYS = 1e3;
 var CONSOLE_COMMAND_SPECS = {
   [CONSOLE_COMMAND_NAMES.inspectIdentity]: {
     method: CONSOLE_RPC_METHODS.inspectIdentity,
@@ -5519,9 +5779,9 @@ function createHttpConsoleTransport({
     loadExperience: () => fetchJson(baseUrl, CONSOLE_REST_PATHS.experience, timeout()),
     loadModules: () => fetchJson(baseUrl, CONSOLE_REST_PATHS.modules, timeout()),
     capabilities: async () => normalizeCapabilities(
-      await callConsoleRpc(baseUrl, CONSOLE_RPC_METHODS.capabilities)
+      await callConsoleRpc(baseUrl, CONSOLE_RPC_METHODS.capabilities, {}, timeout())
     ),
-    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit),
+    queryTimeline: (input) => queryTimeline(baseUrl, input, input.limit, timeout()),
     subscribeTimeline: (input, onFrame) => subscribeTimelineEvents(baseUrl, input, onFrame),
     send: (input) => {
       const handlingMode = input.handlingMode ?? "queue";
@@ -5533,7 +5793,8 @@ function createHttpConsoleTransport({
           input.attachments,
           input.origin,
           input.idempotencyKey,
-          handlingMode
+          handlingMode,
+          timeout()
         );
       }
       return sendConsole(
@@ -5542,7 +5803,8 @@ function createHttpConsoleTransport({
         input.content,
         input.origin,
         input.idempotencyKey,
-        handlingMode
+        handlingMode,
+        timeout()
       );
     },
     executeCommand: async (input) => {
@@ -5557,12 +5819,12 @@ function createHttpConsoleTransport({
       }
       let result;
       try {
-        result = await callConsoleRpc(baseUrl, spec.method, params);
+        result = await callConsoleRpc(baseUrl, spec.method, params, timeout());
       } catch (error) {
-        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity) {
+        if (spec.method !== CONSOLE_RPC_METHODS.inspectIdentity || !isJsonRpcMethodNotFoundError(error)) {
           throw error;
         }
-        result = await callConsoleRpc(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params);
+        result = await callConsoleRpc(baseUrl, LEGACY_INSPECT_IDENTITY_METHOD, params, timeout());
       }
       return {
         command: input.command,
@@ -5570,7 +5832,7 @@ function createHttpConsoleTransport({
         result
       };
     },
-    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input),
+    upload: (input) => uploadConsoleBlobMultipart(baseUrl, input, timeout()),
     blobUrl: (blobId) => `${baseUrl}${CONSOLE_BLOB_PATH_PREFIX}${encodeURIComponent(blobId)}`
   };
 }
@@ -5585,13 +5847,31 @@ function createMobKitConsoleController({
     commands: createConsoleCommandSurface(transport, facts)
   };
 }
+function isJsonRpcMethodNotFoundError(error) {
+  const rpcError = error?.rpcError;
+  return rpcError?.code === -32601;
+}
 function createConsoleCommandSurface(transport, facts) {
   let cachedCapabilities = null;
-  const capabilities = async () => {
-    if (!cachedCapabilities) {
-      cachedCapabilities = await transport.capabilities();
+  let capabilitiesRequest = null;
+  const capabilities = async (force = false) => {
+    if (force || !cachedCapabilities) {
+      if (!capabilitiesRequest) {
+        capabilitiesRequest = transport.capabilities().finally(() => {
+          capabilitiesRequest = null;
+        });
+      }
+      cachedCapabilities = await capabilitiesRequest;
     }
     return cachedCapabilities;
+  };
+  const requireFreshCapability = async (method) => {
+    let currentCapabilities = await capabilities(true);
+    if (!hasCapability(currentCapabilities, method)) {
+      currentCapabilities = await capabilities(true);
+    }
+    requireCapability(currentCapabilities, method);
+    return currentCapabilities;
   };
   return {
     async sendMessage(target, input) {
@@ -5599,8 +5879,7 @@ function createConsoleCommandSurface(transport, facts) {
       if (!identity) {
         throw new Error(`target ${target.kind} cannot send MobKit console messages`);
       }
-      const currentCapabilities = await capabilities();
-      requireCapability(currentCapabilities, CONSOLE_RPC_METHODS.send);
+      const currentCapabilities = await requireFreshCapability(CONSOLE_RPC_METHODS.send);
       const optimistic = facts.optimistic({
         idempotencyKey: input.idempotencyKey,
         targetId: target.id
@@ -5619,6 +5898,17 @@ function createConsoleCommandSurface(transport, facts) {
         })
       };
     },
+    async uploadBlob(input) {
+      const currentCapabilities = await requireFreshCapability(CONSOLE_RPC_METHODS.blobUpload);
+      if (!transport.upload) {
+        throw new Error(`transport does not implement ${CONSOLE_RPC_METHODS.blobUpload}`);
+      }
+      const uploaded = await transport.upload(input);
+      return facts.mobkit(uploaded, {
+        routeOrMethod: CONSOLE_RPC_METHODS.blobUpload,
+        capabilityVersion: currentCapabilities.version
+      });
+    },
     async execute(input) {
       if (!isMobKitTarget(input.target)) {
         throw new Error(`host target ${input.target.kind} cannot execute MobKit commands`);
@@ -5627,8 +5917,7 @@ function createConsoleCommandSurface(transport, facts) {
       if (!spec.targetKinds.has(input.target.kind)) {
         throw new Error(`target ${input.target.kind} cannot execute command ${input.command}`);
       }
-      const currentCapabilities = await capabilities();
-      requireCapability(currentCapabilities, spec.method);
+      await requireFreshCapability(spec.method);
       if (!transport.executeCommand) {
         throw new Error(`transport does not implement command ${input.command}`);
       }
@@ -5646,11 +5935,10 @@ function createTimelineController(transport, facts) {
       });
     },
     async subscribeWithBackfill(input, onFrame) {
-      const delivered = /* @__PURE__ */ new Set();
+      const delivered = createBoundedTimelineDedupSet(input.limit);
       const deliver = (frame) => {
-        const key = frame.id || `${frame.event}:${frame.cursor || frame.timestampMs || delivered.size}`;
-        if (delivered.has(key)) return;
-        delivered.add(key);
+        const key = timelineDedupKey(frame);
+        if (key && !delivered.add(key)) return;
         onFrame(facts.mobkit(frame, {
           routeOrMethod: CONSOLE_REST_PATHS.timelineStream,
           cursor: frame.cursor
@@ -5674,6 +5962,52 @@ function createTimelineController(transport, facts) {
       return unsubscribe;
     }
   };
+}
+function createBoundedTimelineDedupSet(limit) {
+  const max = Math.max(MIN_TIMELINE_DEDUP_KEYS, (limit || 400) * 4);
+  const keys = /* @__PURE__ */ new Set();
+  const order = [];
+  return {
+    add(key) {
+      if (keys.has(key)) {
+        return false;
+      }
+      keys.add(key);
+      order.push(key);
+      while (order.length > max) {
+        const oldest = order.shift();
+        if (oldest) {
+          keys.delete(oldest);
+        }
+      }
+      return true;
+    }
+  };
+}
+function timelineDedupKey(frame) {
+  const id = frame.id?.trim();
+  if (id) return `id:${id}`;
+  const cursor = frame.cursor?.trim();
+  if (cursor) return `cursor:${cursor}`;
+  const timestamp = frame.timestampMs;
+  if (typeof timestamp === "number") {
+    return `timestamp:${frame.event || ""}:${frame.identity || ""}:${timestamp}:${stableDedupText(frame.data)}`;
+  }
+  return null;
+}
+function stableDedupText(value) {
+  try {
+    return JSON.stringify(value, (_key, nested) => {
+      if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+        return nested;
+      }
+      return Object.fromEntries(
+        Object.entries(nested).sort(([left], [right]) => left.localeCompare(right))
+      );
+    });
+  } catch {
+    return String(value);
+  }
 }
 function createFactFactory() {
   const wrap = (source, value, meta = {}) => ({
@@ -5702,9 +6036,12 @@ function normalizeCapabilities(value) {
   };
 }
 function requireCapability(capabilities, method) {
-  if (!capabilities.methods.includes(method)) {
+  if (!hasCapability(capabilities, method)) {
     throw new Error(`MobKit capability missing for ${method}`);
   }
+}
+function hasCapability(capabilities, method) {
+  return capabilities.methods.includes(method);
 }
 function commandSpec(command) {
   if (!isConsoleCommandName(command)) {
@@ -8320,6 +8657,7 @@ var SIDEBAR_ROW_HEIGHT = {
 };
 var SIDEBAR_OVERSCAN_PX = 360;
 var PINNED_SECTION_NAME = "Pinned";
+var PINNED_SECTION_KEY = "section:__mobkit_pinned";
 function localSidebarStorage() {
   if (typeof window === "undefined") return null;
   try {
@@ -8673,6 +9011,35 @@ function collapsedSubgroupsForStorage(storageKey, storage = localSidebarStorage(
 function sidebarSubgroupStorageId(bucket, subgroup) {
   return JSON.stringify([bucket, subgroup]);
 }
+function sidebarSubgroupStorageLabel(storageKey) {
+  try {
+    const parsed = JSON.parse(storageKey);
+    if (Array.isArray(parsed) && typeof parsed[1] === "string" && parsed[1].trim()) {
+      return parsed[1];
+    }
+  } catch {
+  }
+  return storageKey;
+}
+function reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource) {
+  const allowed = new Set(baseOrder);
+  const result = applyConsoleNavigationReorderIntent({
+    orientation: "vertical",
+    nodes: baseOrder.map((id) => ({
+      type: "item",
+      id,
+      label: id
+    })),
+    order: { orderedNodeIds: baseOrder }
+  }, {
+    id: draggedId,
+    targetId: target,
+    position: where,
+    scope: "siblings",
+    inputSource
+  });
+  return result.model.order.orderedNodeIds.filter((id) => allowed.has(id));
+}
 function collectPinnedRows(rows, pinnedAgentIds) {
   const pinned = /* @__PURE__ */ new Set();
   if (!pinnedAgentIds || pinnedAgentIds.size === 0) return pinned;
@@ -8782,7 +9149,7 @@ function buildSidebarVirtualRows(args) {
     const collapsedPinned = args.searchActive ? false : args.collapsedSections.has(PINNED_SECTION_NAME);
     rows.push({
       kind: "section",
-      key: `section:${PINNED_SECTION_NAME}`,
+      key: PINNED_SECTION_KEY,
       bucket: PINNED_SECTION_NAME,
       count: pinnedRows.length,
       collapsed: collapsedPinned,
@@ -8862,6 +9229,86 @@ function buildSidebarVirtualRows(args) {
       });
     }
   }
+  return rows;
+}
+function sidebarNavigationLabel(row) {
+  switch (row.kind) {
+    case "section":
+      return row.bucket;
+    case "subgroup":
+      return row.label;
+    case "empty":
+      return row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents";
+    case "agent":
+      return row.row.agent.label;
+  }
+}
+function sidebarNavigationNodeForRow(row) {
+  const base = {
+    id: row.key,
+    label: sidebarNavigationLabel(row),
+    target: row
+  };
+  if (row.kind === "section" || row.kind === "subgroup") {
+    return {
+      ...base,
+      type: "group",
+      expanded: !row.collapsed,
+      children: []
+    };
+  }
+  return {
+    ...base,
+    type: "item"
+  };
+}
+function sidebarNavigationModelFromRows(rows) {
+  const nodes = [];
+  let currentSection = null;
+  let currentSubgroup = null;
+  for (const row of rows) {
+    const node = sidebarNavigationNodeForRow(row);
+    if (row.kind === "section") {
+      nodes.push(node);
+      currentSection = node;
+      currentSubgroup = null;
+      continue;
+    }
+    if (row.kind === "subgroup") {
+      if (currentSection?.type === "group") {
+        currentSection.children.push(node);
+      } else {
+        nodes.push(node);
+      }
+      currentSubgroup = node;
+      continue;
+    }
+    const belongsToCurrentSubgroup = row.kind === "agent" && Boolean(row.row.subgroup) && currentSubgroup?.type === "group" && currentSubgroup.target?.kind === "subgroup" && currentSubgroup.target.bucket === row.bucket && currentSubgroup.target.label === row.row.subgroup;
+    const parent = belongsToCurrentSubgroup ? currentSubgroup : currentSection?.type === "group" ? currentSection : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      nodes.push(node);
+    }
+  }
+  return normalizeConsoleNavigationModel({
+    orientation: "vertical",
+    nodes,
+    order: { orderedNodeIds: [] }
+  });
+}
+function buildStockSidebarNavigationModel(args) {
+  return sidebarNavigationModelFromRows(buildSidebarVirtualRows(args));
+}
+function sidebarNavigationRows(model) {
+  const normalized = normalizeConsoleNavigationModel(model);
+  const rows = [];
+  const visit = (node) => {
+    if (node.target) rows.push(node.target);
+    if (node.type !== "group" || !node.expanded) return;
+    for (const child of node.children) visit(child);
+  };
+  for (const node of normalized.nodes) visit(node);
   return rows;
 }
 function deriveStateAttr(agent) {
@@ -8976,6 +9423,18 @@ function sidebarVisibleRange(args) {
   const end = Math.min(args.rowCount, lowerBound(args.offsets, endNeedle) + 1);
   return { start, end };
 }
+function pendingOrderFocusMatchesRow(pending, row) {
+  if (pending.kind === "section") {
+    return row.kind === "section" && row.bucket === pending.id;
+  }
+  return row.kind === "subgroup" && row.storageKey === pending.id && row.bucket === pending.bucket;
+}
+function pendingOrderFocusMatchesElement(pending, element) {
+  if (element.dataset.sidebarOrderKind !== pending.kind) return false;
+  if (element.dataset.sidebarOrderId !== pending.id) return false;
+  if (pending.kind === "subgroup" && element.dataset.sidebarOrderBucket !== pending.bucket) return false;
+  return true;
+}
 function useMeasuredHeight() {
   const ref = import_react17.default.useRef(null);
   const [height, setHeight] = import_react17.default.useState(0);
@@ -9088,6 +9547,8 @@ function Sidebar({
   const [draggingOrder, setDraggingOrder] = import_react17.default.useState(null);
   const [dragOverOrder, setDragOverOrder] = import_react17.default.useState(null);
   const [dragPreview, setDragPreview] = import_react17.default.useState(null);
+  const [orderAnnouncement, setOrderAnnouncement] = import_react17.default.useState("");
+  const pendingOrderFocusRef = import_react17.default.useRef(null);
   const draggingOrderRef = import_react17.default.useRef(null);
   const pointerDragRef = import_react17.default.useRef(null);
   const suppressOrderClickRef = import_react17.default.useRef(false);
@@ -9160,25 +9621,32 @@ function Sidebar({
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons]
   );
-  const completeSectionDrop = import_react17.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id) => {
+  const completeSectionDrop = import_react17.default.useCallback((target, where, draggedId = draggingOrderRef.current?.id, inputSource = "pointer") => {
     if (!draggedId || draggedId === target) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "section", id: draggedId };
+    }
     setSectionOrder((current) => {
       const baseOrder = applyConsoleSidebarOrder(sectionNames, current);
-      const next = reorderConsoleSidebarOrder(baseOrder, draggedId, target, where);
+      const next = reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource);
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
   const subgroupIdsForBucket = import_react17.default.useCallback((bucket) => {
     const list = grouped.get(bucket) || [];
     const ids = list.map((row) => row.subgroup).filter((value) => Boolean(value)).map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
     return Array.from(new Set(ids));
   }, [grouped]);
-  const completeSubgroupDrop = import_react17.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
+  const completeSubgroupDrop = import_react17.default.useCallback((target, bucket, where, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket, inputSource = "pointer") => {
     if (!draggedId || draggedBucket !== bucket || draggedId === target) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
+    }
     setSubgroupOrder((current) => {
       const bucketOrder = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), current);
-      const nextBucketOrder = reorderConsoleSidebarOrder(bucketOrder, draggedId, target, where);
+      const nextBucketOrder = reorderSidebarOrderWithNavigationModel(bucketOrder, draggedId, target, where, inputSource);
       const nextBucketSet = new Set(nextBucketOrder);
       const next = [
         ...current.filter((id) => !nextBucketSet.has(id)),
@@ -9187,7 +9655,26 @@ function Sidebar({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
+  const handleSectionOrderKeyDown = import_react17.default.useCallback((event, bucket) => {
+    if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const ordered = applyConsoleSidebarOrder(sectionNames, sectionOrder);
+    const index = ordered.indexOf(bucket);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket, "keyboard");
+  }, [completeSectionDrop, sectionNames, sectionOrder]);
+  const handleSubgroupOrderKeyDown = import_react17.default.useCallback((event, storageKey, bucket) => {
+    if (!event.altKey || event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    const ordered = applyConsoleSidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
+    const index = ordered.indexOf(storageKey);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket, "keyboard");
+  }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
   const beginPointerOrderDrag = import_react17.default.useCallback((event, item) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -9238,9 +9725,9 @@ function Sidebar({
     pointerDragRef.current = null;
     if (drag.moved && drag.over) {
       if (drag.kind === "section") {
-        completeSectionDrop(drag.over.id, drag.over.where, drag.id);
+        completeSectionDrop(drag.over.id, drag.over.where, drag.id, "pointer");
       } else if (drag.over.bucket) {
-        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket);
+        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket, "pointer");
       }
       suppressOrderClickRef.current = true;
       window.setTimeout(() => {
@@ -9265,8 +9752,8 @@ function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const virtualRows = import_react17.default.useMemo(() => {
-    return buildSidebarVirtualRows({
+  const sidebarNavigationModel = import_react17.default.useMemo(() => {
+    return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
       grouping,
@@ -9278,13 +9765,17 @@ function Sidebar({
       searchActive: Boolean(q)
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
+  const virtualRows = import_react17.default.useMemo(
+    () => sidebarNavigationRows(sidebarNavigationModel),
+    [sidebarNavigationModel]
+  );
   const virtualOffsets = import_react17.default.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight();
   const [scrollTop, setScrollTop] = import_react17.default.useState(0);
   import_react17.default.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
+  }, [q, grouping, listRef]);
   const visibleRange = import_react17.default.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
@@ -9296,6 +9787,38 @@ function Sidebar({
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange]
   );
+  import_react17.default.useLayoutEffect(() => {
+    const pending = pendingOrderFocusRef.current;
+    const list = listRef.current;
+    if (!pending || !list) return;
+    const rowIndex = virtualRows.findIndex((row) => pendingOrderFocusMatchesRow(pending, row));
+    if (rowIndex < 0) {
+      pendingOrderFocusRef.current = null;
+      return;
+    }
+    const rowTop = virtualOffsets.offsets[rowIndex] || 0;
+    const rowBottom = rowTop + virtualRowHeight(virtualRows[rowIndex]);
+    const currentTop = list.scrollTop;
+    if (listHeight > 0) {
+      const currentBottom = currentTop + listHeight;
+      const nextTop = rowTop < currentTop ? rowTop : rowBottom > currentBottom ? Math.max(0, rowBottom - listHeight) : currentTop;
+      if (nextTop !== currentTop) {
+        list.scrollTop = nextTop;
+        setScrollTop(nextTop);
+        return;
+      }
+    }
+    const restoreFocus = () => {
+      const target = Array.from(list.querySelectorAll("[data-sidebar-order-kind]")).find((element) => pendingOrderFocusMatchesElement(pending, element));
+      target?.focus();
+      pendingOrderFocusRef.current = null;
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restoreFocus);
+    } else {
+      window.setTimeout(restoreFocus, 0);
+    }
+  }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
   const dragPreviewRows = import_react17.default.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder]
@@ -9312,6 +9835,25 @@ function Sidebar({
     );
   }
   return /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("aside", { className: "sidebar", "data-testid": "sidebar-root", children: [
+    /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
+      "div",
+      {
+        "aria-live": "polite",
+        "data-testid": "sidebar-reorder-live",
+        style: {
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0
+        },
+        children: orderAnnouncement
+      }
+    ),
     /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__mast", children: /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { children: [
       /* @__PURE__ */ (0, import_jsx_runtime26.jsx)("div", { className: "sidebar__mast-title", children: "Roster" }),
       /* @__PURE__ */ (0, import_jsx_runtime26.jsxs)("div", { className: "sidebar__mast-sub", children: [
@@ -9357,13 +9899,19 @@ function Sidebar({
             );
           }
           if (button.href) {
+            const safeHref = safeConsoleHref(button.href);
+            if (!safeHref) {
+              return null;
+            }
+            const target = button.target || void 0;
+            const rel = target === "_blank" ? "noopener noreferrer" : void 0;
             return /* @__PURE__ */ (0, import_jsx_runtime26.jsx)(
               "a",
               {
                 className: "sidebar__navitem",
-                href: button.href,
-                target: button.target || void 0,
-                rel: button.target === "_blank" ? "noreferrer" : void 0,
+                href: safeHref,
+                target,
+                rel,
                 "data-testid": `nav-custom:${button.id}`,
                 title: button.label,
                 children: button.label
@@ -9408,6 +9956,7 @@ function Sidebar({
                       "data-sidebar-order-id": row.reorderable ? row.bucket : void 0,
                       "data-reorderable": row.reorderable ? "true" : void 0,
                       onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "section", id: row.bucket }) : void 0,
+                      onKeyDown: row.reorderable ? (event) => handleSectionOrderKeyDown(event, row.bucket) : void 0,
                       onClick: () => {
                         if (suppressOrderClickRef.current) return;
                         setCollapsedSections((current) => {
@@ -9444,6 +9993,7 @@ function Sidebar({
                   "data-reorderable": row.reorderable ? "true" : void 0,
                   "data-testid": `sidebar-subgroup-toggle:${row.bucket}:${row.label}`,
                   onPointerDown: row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : void 0,
+                  onKeyDown: row.reorderable ? (event) => handleSubgroupOrderKeyDown(event, row.storageKey, row.bucket) : void 0,
                   onClick: () => {
                     if (suppressOrderClickRef.current) return;
                     setCollapsedSubgroups((current) => {

@@ -53,6 +53,7 @@ mod session_store;
 mod supervisor;
 
 pub use bootstrap::{start_mobkit_runtime, start_mobkit_runtime_with_options};
+pub(crate) use console_ingress::resolve_authorized_console_auth_from_token;
 pub use console_ingress::{
     ConsoleAgentLiveSnapshot, ConsoleLiveSnapshot, ConsoleMember, ConsoleModelCapabilities,
     ConsoleRestJsonRequest, ConsoleRestJsonResponse, extract_bearer_token_from_header,

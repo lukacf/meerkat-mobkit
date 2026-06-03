@@ -31,6 +31,13 @@ test("sidebar treats broad-profile worker wired to commander as a child, not the
   assert.equal(__sidebarTest.isSpawnedDelegateLike(worker, commander), true);
 });
 
+test("sidebar configured links reuse console href allowlist", () => {
+  assert.equal(__sidebarTest.safeConsoleHref("https://example.test/docs"), "https://example.test/docs");
+  assert.equal(__sidebarTest.safeConsoleHref("/console/docs"), "/console/docs");
+  assert.equal(__sidebarTest.safeConsoleHref("javascript:alert(1)"), null);
+  assert.equal(__sidebarTest.safeConsoleHref("data:text/plain,hello"), null);
+});
+
 test("sidebar resolves worker-spawned workers under their worker host", () => {
   const commander: ConsoleAgent = {
     agent_id: "incident-commander",
@@ -864,6 +871,117 @@ test("sidebar configured OB3-like grouping yields configured sections and scope 
       ["member:initiative-game-production", "game-production"],
       ["member:initiative-liveops", "liveops"],
     ],
+  );
+});
+
+test("stock sidebar renderer flattens its ConsoleNavigationModel", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    ob3Agent({ id: "initiative-liveops", label: "LiveOps Initiative", group: "initiatives", scope: "liveops", role: "initiative" }),
+    ob3Agent({ id: "worker-liveops", label: "LiveOps Worker", group: "workers", scope: "liveops", role: "worker" }),
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const input = {
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set<string>(),
+    collapsedSubgroups: new Set<string>(),
+    pinnedAgentIds: new Set(["initiative:cto"]),
+  };
+  const legacyRows = __sidebarTest.buildSidebarVirtualRows(input);
+  const model = __sidebarTest.buildStockSidebarNavigationModel(input);
+  const renderedRows = __sidebarTest.sidebarNavigationRows(model);
+
+  assert.equal(model.orientation, "vertical");
+  assert.deepEqual(
+    model.nodes.map((node) => [node.type, node.id, node.label]),
+    [
+      ["group", "section:__mobkit_pinned", "Pinned"],
+      ["group", "section:initiatives", "initiatives"],
+      ["group", "section:workers", "workers"],
+    ],
+  );
+  assert.deepEqual(
+    model.nodes[1]?.type === "group"
+      ? model.nodes[1].children.map((node) => [node.type, node.id, node.label])
+      : [],
+    [
+      ["group", "subgroup:initiatives:liveops", "liveops"],
+    ],
+  );
+  assert.deepEqual(
+    renderedRows.map((row) => row.key),
+    legacyRows.map((row) => row.key),
+  );
+});
+
+test("stock sidebar navigation model keeps ungrouped agents at section level", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative" }),
+    {
+      agent_id: "rt:initiative-unscoped",
+      member_id: "member:initiative-unscoped",
+      label: "Unscoped Initiative",
+      kind: "mob_agent",
+      role: "initiative",
+      labels: { group: "initiatives" },
+    } satisfies ConsoleAgent,
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const model = __sidebarTest.buildStockSidebarNavigationModel({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set<string>(),
+    collapsedSubgroups: new Set<string>(),
+  });
+  const initiatives = model.nodes.find((node) => node.id === "section:initiatives");
+  assert.equal(initiatives?.type, "group");
+  assert.deepEqual(
+    initiatives?.type === "group"
+      ? initiatives.children.map((node) => [node.type, node.id, node.label])
+      : [],
+    [
+      ["group", "subgroup:initiatives:cto", "cto"],
+      ["item", "agent:member:initiative-unscoped", "Unscoped Initiative"],
+    ],
+  );
+  const cto = initiatives?.type === "group"
+    ? initiatives.children.find((node) => node.id === "subgroup:initiatives:cto")
+    : null;
+  assert.deepEqual(
+    cto?.type === "group" ? cto.children.map((node) => node.id) : [],
+    ["agent:member:initiative-cto"],
+  );
+});
+
+test("stock sidebar navigation model does not collide with a configured Pinned group", () => {
+  const agents = [
+    ob3Agent({ id: "initiative-cto", label: "CTO Initiative", group: "initiatives", scope: "cto", role: "initiative", identity: "initiative:cto" }),
+    ob3Agent({ id: "literal-pinned", label: "Literal Pinned Group Agent", group: "Pinned", scope: "ops", role: "worker" }),
+  ];
+  const grouped = __sidebarTest.groupSidebarAgents(agents, ob3Grouping);
+  const model = __sidebarTest.buildStockSidebarNavigationModel({
+    sectionNames: __sidebarTest.orderedSectionNames(grouped, ob3Grouping),
+    grouped,
+    grouping: { ...ob3Grouping, collapse_single_subgroup: false },
+    collapsedSections: new Set<string>(),
+    collapsedSubgroups: new Set<string>(),
+    pinnedAgentIds: new Set(["initiative:cto"]),
+  });
+
+  assert.deepEqual(
+    model.nodes
+      .filter((node) => node.label === "Pinned")
+      .map((node) => node.id),
+    ["section:__mobkit_pinned", "section:Pinned"],
+  );
+  assert.deepEqual(
+    __sidebarTest.sidebarNavigationRows(model)
+      .filter((row) => row.kind === "agent")
+      .map((row) => row.row.agent.member_id),
+    ["member:initiative-cto", "member:literal-pinned"],
   );
 });
 

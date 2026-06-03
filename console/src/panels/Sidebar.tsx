@@ -5,14 +5,18 @@ import {
   SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
   SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
   SUBGROUP_COLLAPSE_STORAGE_PREFIX,
+  applyConsoleNavigationReorderIntent,
   applyConsoleSidebarOrder as applySidebarOrder,
+  normalizeConsoleNavigationModel,
   pruneStaleSidebarStorage,
   readSidebarStringList,
   readSidebarStringSet,
-  reorderConsoleSidebarOrder as reorderSidebarOrder,
+  safeConsoleHref,
   sidebarStorageKey,
   writeSidebarStringList,
   writeSidebarStringSet,
+  type ConsoleNavigationModel,
+  type ConsoleNavigationNode,
   type ConsoleSidebarDropPosition,
   type ConsoleSidebarStorageLike,
 } from "@console-core";
@@ -117,10 +121,19 @@ type SidebarVirtualRow =
   | { kind: "subgroup"; key: string; bucket: string; label: string; count: number; collapsed: boolean; storageKey: string; reorderable: boolean }
   | { kind: "agent"; key: string; bucket: string; row: AgentRow };
 
+type SidebarNavigationModel = ConsoleNavigationModel<SidebarVirtualRow>;
+type SidebarNavigationNode = ConsoleNavigationNode<SidebarVirtualRow>;
+
 interface SidebarDragPreview {
   x: number;
   y: number;
   width: number;
+}
+
+interface PendingOrderFocus {
+  kind: "section" | "subgroup";
+  id: string;
+  bucket?: string;
 }
 
 const SIDEBAR_ROW_HEIGHT = {
@@ -132,6 +145,7 @@ const SIDEBAR_ROW_HEIGHT = {
 
 const SIDEBAR_OVERSCAN_PX = 360;
 const PINNED_SECTION_NAME = "Pinned";
+const PINNED_SECTION_KEY = "section:__mobkit_pinned";
 
 function localSidebarStorage(): ConsoleSidebarStorageLike | null {
   if (typeof window === "undefined") return null;
@@ -266,14 +280,18 @@ export const __sidebarTest = {
   collapsedSubgroupsForStorage,
   sidebarSubgroupStorageId,
   buildSidebarVirtualRows,
+  buildStockSidebarNavigationModel,
+  sidebarNavigationRows,
+  sidebarNavigationModelFromRows,
   sidebarDragPreviewRows,
   sidebarVirtualOffsets,
   sidebarVisibleRange,
   applySidebarOrder,
-  reorderSidebarOrder,
+  reorderSidebarOrder: reorderSidebarOrderWithNavigationModel,
   isAgentPinned,
   sidebarPinnedFamilyPinIds,
   pruneStaleSidebarStorage,
+  safeConsoleHref,
   SIDEBAR_PINS_STORAGE_PREFIX,
   SIDEBAR_SECTION_ORDER_STORAGE_PREFIX,
   SIDEBAR_SUBGROUP_ORDER_STORAGE_PREFIX,
@@ -596,7 +614,45 @@ function sidebarSubgroupStorageId(bucket: string, subgroup: string): string {
   return JSON.stringify([bucket, subgroup]);
 }
 
+function sidebarSubgroupStorageLabel(storageKey: string): string {
+  try {
+    const parsed = JSON.parse(storageKey) as unknown;
+    if (Array.isArray(parsed) && typeof parsed[1] === "string" && parsed[1].trim()) {
+      return parsed[1];
+    }
+  } catch {
+    // Fall through to the raw key when reading legacy or externally-written preferences.
+  }
+  return storageKey;
+}
+
 export type SidebarDropPosition = ConsoleSidebarDropPosition;
+
+function reorderSidebarOrderWithNavigationModel(
+  baseOrder: string[],
+  draggedId: string,
+  target: string,
+  where: SidebarDropPosition,
+  inputSource: "keyboard" | "pointer",
+): string[] {
+  const allowed = new Set(baseOrder);
+  const result = applyConsoleNavigationReorderIntent({
+    orientation: "vertical",
+    nodes: baseOrder.map((id) => ({
+      type: "item" as const,
+      id,
+      label: id,
+    })),
+    order: { orderedNodeIds: baseOrder },
+  }, {
+    id: draggedId,
+    targetId: target,
+    position: where,
+    scope: "siblings",
+    inputSource,
+  });
+  return result.model.order.orderedNodeIds.filter((id) => allowed.has(id));
+}
 
 function collectPinnedRows(rows: AgentRow[], pinnedAgentIds: Set<string> | undefined): Set<string> {
   const pinned = new Set<string>();
@@ -726,7 +782,7 @@ function buildSidebarVirtualRows(args: {
     const collapsedPinned = args.searchActive ? false : args.collapsedSections.has(PINNED_SECTION_NAME);
     rows.push({
       kind: "section",
-      key: `section:${PINNED_SECTION_NAME}`,
+      key: PINNED_SECTION_KEY,
       bucket: PINNED_SECTION_NAME,
       count: pinnedRows.length,
       collapsed: collapsedPinned,
@@ -810,6 +866,100 @@ function buildSidebarVirtualRows(args: {
       });
     }
   }
+  return rows;
+}
+
+function sidebarNavigationLabel(row: SidebarVirtualRow): string {
+  switch (row.kind) {
+    case "section":
+      return row.bucket;
+    case "subgroup":
+      return row.label;
+    case "empty":
+      return row.sectionConfig?.empty_title || row.sectionConfig?.empty_text || "No agents";
+    case "agent":
+      return row.row.agent.label;
+  }
+}
+
+function sidebarNavigationNodeForRow(row: SidebarVirtualRow): SidebarNavigationNode {
+  const base = {
+    id: row.key,
+    label: sidebarNavigationLabel(row),
+    target: row,
+  };
+  if (row.kind === "section" || row.kind === "subgroup") {
+    return {
+      ...base,
+      type: "group",
+      expanded: !row.collapsed,
+      children: [],
+    };
+  }
+  return {
+    ...base,
+    type: "item",
+  };
+}
+
+function sidebarNavigationModelFromRows(rows: SidebarVirtualRow[]): SidebarNavigationModel {
+  const nodes: SidebarNavigationNode[] = [];
+  let currentSection: SidebarNavigationNode | null = null;
+  let currentSubgroup: SidebarNavigationNode | null = null;
+  for (const row of rows) {
+    const node = sidebarNavigationNodeForRow(row);
+    if (row.kind === "section") {
+      nodes.push(node);
+      currentSection = node;
+      currentSubgroup = null;
+      continue;
+    }
+    if (row.kind === "subgroup") {
+      if (currentSection?.type === "group") {
+        currentSection.children.push(node);
+      } else {
+        nodes.push(node);
+      }
+      currentSubgroup = node;
+      continue;
+    }
+    const belongsToCurrentSubgroup = row.kind === "agent"
+      && Boolean(row.row.subgroup)
+      && currentSubgroup?.type === "group"
+      && currentSubgroup.target?.kind === "subgroup"
+      && currentSubgroup.target.bucket === row.bucket
+      && currentSubgroup.target.label === row.row.subgroup;
+    const parent = belongsToCurrentSubgroup
+      ? currentSubgroup
+      : currentSection?.type === "group"
+        ? currentSection
+        : null;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      nodes.push(node);
+    }
+  }
+  return normalizeConsoleNavigationModel({
+    orientation: "vertical",
+    nodes,
+    order: { orderedNodeIds: [] },
+  });
+}
+
+function buildStockSidebarNavigationModel(args: Parameters<typeof buildSidebarVirtualRows>[0]): SidebarNavigationModel {
+  return sidebarNavigationModelFromRows(buildSidebarVirtualRows(args));
+}
+
+function sidebarNavigationRows(model: SidebarNavigationModel): SidebarVirtualRow[] {
+  const normalized = normalizeConsoleNavigationModel(model);
+  const rows: SidebarVirtualRow[] = [];
+  const visit = (node: SidebarNavigationNode): void => {
+    if (node.target) rows.push(node.target);
+    if (node.type !== "group" || !node.expanded) return;
+    for (const child of node.children) visit(child);
+  };
+  for (const node of normalized.nodes) visit(node);
   return rows;
 }
 
@@ -946,6 +1096,22 @@ function sidebarVisibleRange(args: {
   return { start, end };
 }
 
+function pendingOrderFocusMatchesRow(pending: PendingOrderFocus, row: SidebarVirtualRow): boolean {
+  if (pending.kind === "section") {
+    return row.kind === "section" && row.bucket === pending.id;
+  }
+  return row.kind === "subgroup"
+    && row.storageKey === pending.id
+    && row.bucket === pending.bucket;
+}
+
+function pendingOrderFocusMatchesElement(pending: PendingOrderFocus, element: HTMLElement): boolean {
+  if (element.dataset.sidebarOrderKind !== pending.kind) return false;
+  if (element.dataset.sidebarOrderId !== pending.id) return false;
+  if (pending.kind === "subgroup" && element.dataset.sidebarOrderBucket !== pending.bucket) return false;
+  return true;
+}
+
 function useMeasuredHeight<T extends HTMLElement>(): [React.RefObject<T>, number] {
   const ref = React.useRef<T>(null);
   const [height, setHeight] = React.useState(0);
@@ -1076,6 +1242,8 @@ export function Sidebar({
   const [draggingOrder, setDraggingOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const [dragOverOrder, setDragOverOrder] = React.useState<{ kind: "section" | "subgroup"; id: string; where: SidebarDropPosition } | null>(null);
   const [dragPreview, setDragPreview] = React.useState<SidebarDragPreview | null>(null);
+  const [orderAnnouncement, setOrderAnnouncement] = React.useState("");
+  const pendingOrderFocusRef = React.useRef<PendingOrderFocus | null>(null);
   const draggingOrderRef = React.useRef<{ kind: "section" | "subgroup"; id: string; bucket?: string } | null>(null);
   const pointerDragRef = React.useRef<{
     kind: "section" | "subgroup";
@@ -1163,14 +1331,23 @@ export function Sidebar({
     () => (customButtons || []).filter((button) => button.id && button.label && (button.control || button.href)),
     [customButtons],
   );
-  const completeSectionDrop = React.useCallback((target: string, where: SidebarDropPosition, draggedId = draggingOrderRef.current?.id) => {
+  const completeSectionDrop = React.useCallback((
+    target: string,
+    where: SidebarDropPosition,
+    draggedId = draggingOrderRef.current?.id,
+    inputSource: "keyboard" | "pointer" = "pointer",
+  ) => {
     if (!draggedId || draggedId === target) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "section", id: draggedId };
+    }
     setSectionOrder((current) => {
       const baseOrder = applySidebarOrder(sectionNames, current);
-      const next = reorderSidebarOrder(baseOrder, draggedId, target, where);
+      const next = reorderSidebarOrderWithNavigationModel(baseOrder, draggedId, target, where, inputSource);
       writeSidebarStringList(localSidebarStorage(), sectionOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved section ${draggedId} ${where} ${target}.`);
   }, [sectionNames, sectionOrderStorageKey]);
   const subgroupIdsForBucket = React.useCallback((bucket: string): string[] => {
     const list = grouped.get(bucket) || [];
@@ -1180,15 +1357,25 @@ export function Sidebar({
       .map((subgroup) => sidebarSubgroupStorageId(bucket, subgroup));
     return Array.from(new Set(ids));
   }, [grouped]);
-  const completeSubgroupDrop = React.useCallback((target: string, bucket: string, where: SidebarDropPosition, draggedId = draggingOrderRef.current?.id, draggedBucket = draggingOrderRef.current?.bucket) => {
+  const completeSubgroupDrop = React.useCallback((
+    target: string,
+    bucket: string,
+    where: SidebarDropPosition,
+    draggedId = draggingOrderRef.current?.id,
+    draggedBucket = draggingOrderRef.current?.bucket,
+    inputSource: "keyboard" | "pointer" = "pointer",
+  ) => {
     if (
       !draggedId ||
       draggedBucket !== bucket ||
       draggedId === target
     ) return;
+    if (inputSource === "keyboard") {
+      pendingOrderFocusRef.current = { kind: "subgroup", id: draggedId, bucket };
+    }
     setSubgroupOrder((current) => {
       const bucketOrder = applySidebarOrder(subgroupIdsForBucket(bucket), current);
-      const nextBucketOrder = reorderSidebarOrder(bucketOrder, draggedId, target, where);
+      const nextBucketOrder = reorderSidebarOrderWithNavigationModel(bucketOrder, draggedId, target, where, inputSource);
       const nextBucketSet = new Set(nextBucketOrder);
       const next = [
         ...current.filter((id) => !nextBucketSet.has(id)),
@@ -1197,7 +1384,26 @@ export function Sidebar({
       writeSidebarStringList(localSidebarStorage(), subgroupOrderStorageKey, next);
       return next;
     });
+    setOrderAnnouncement(`Moved subgroup ${sidebarSubgroupStorageLabel(draggedId)} ${where} ${sidebarSubgroupStorageLabel(target)}.`);
   }, [subgroupIdsForBucket, subgroupOrderStorageKey]);
+  const handleSectionOrderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>, bucket: string) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    const ordered = applySidebarOrder(sectionNames, sectionOrder);
+    const index = ordered.indexOf(bucket);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSectionDrop(target, event.key === "ArrowUp" ? "before" : "after", bucket, "keyboard");
+  }, [completeSectionDrop, sectionNames, sectionOrder]);
+  const handleSubgroupOrderKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLElement>, storageKey: string, bucket: string) => {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    const ordered = applySidebarOrder(subgroupIdsForBucket(bucket), subgroupOrder);
+    const index = ordered.indexOf(storageKey);
+    const target = event.key === "ArrowUp" ? ordered[index - 1] : ordered[index + 1];
+    if (!target) return;
+    event.preventDefault();
+    completeSubgroupDrop(target, bucket, event.key === "ArrowUp" ? "before" : "after", storageKey, bucket, "keyboard");
+  }, [completeSubgroupDrop, subgroupIdsForBucket, subgroupOrder]);
   const beginPointerOrderDrag = React.useCallback((
     event: React.PointerEvent<HTMLElement>,
     item: { kind: "section" | "subgroup"; id: string; bucket?: string },
@@ -1253,9 +1459,9 @@ export function Sidebar({
     pointerDragRef.current = null;
     if (drag.moved && drag.over) {
       if (drag.kind === "section") {
-        completeSectionDrop(drag.over.id, drag.over.where, drag.id);
+        completeSectionDrop(drag.over.id, drag.over.where, drag.id, "pointer");
       } else if (drag.over.bucket) {
-        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket);
+        completeSubgroupDrop(drag.over.id, drag.over.bucket, drag.over.where, drag.id, drag.bucket, "pointer");
       }
       suppressOrderClickRef.current = true;
       window.setTimeout(() => {
@@ -1280,8 +1486,8 @@ export function Sidebar({
       window.removeEventListener("pointercancel", onDone);
     };
   }, [draggingOrder, finishPointerOrderDrag, movePointerOrderDrag]);
-  const virtualRows = React.useMemo<SidebarVirtualRow[]>(() => {
-    return buildSidebarVirtualRows({
+  const sidebarNavigationModel = React.useMemo<SidebarNavigationModel>(() => {
+    return buildStockSidebarNavigationModel({
       sectionNames,
       grouped,
       grouping,
@@ -1293,13 +1499,17 @@ export function Sidebar({
       searchActive: Boolean(q),
     });
   }, [sectionNames, grouped, grouping, collapsedSections, collapsedSubgroups, pinnedAgentIds, sectionOrder, subgroupOrder, q]);
+  const virtualRows = React.useMemo<SidebarVirtualRow[]>(
+    () => sidebarNavigationRows(sidebarNavigationModel),
+    [sidebarNavigationModel],
+  );
   const virtualOffsets = React.useMemo(() => sidebarVirtualOffsets(virtualRows), [virtualRows]);
   const [listRef, listHeight] = useMeasuredHeight<HTMLDivElement>();
   const [scrollTop, setScrollTop] = React.useState(0);
   React.useEffect(() => {
     setScrollTop(0);
     if (listRef.current) listRef.current.scrollTop = 0;
-  }, [q, grouping, sectionOrder, subgroupOrder, listRef]);
+  }, [q, grouping, listRef]);
   const visibleRange = React.useMemo(() => sidebarVisibleRange({
     rowCount: virtualRows.length,
     offsets: virtualOffsets.offsets,
@@ -1311,6 +1521,43 @@ export function Sidebar({
     () => virtualRows.slice(visibleRange.start, visibleRange.end),
     [virtualRows, visibleRange],
   );
+  React.useLayoutEffect(() => {
+    const pending = pendingOrderFocusRef.current;
+    const list = listRef.current;
+    if (!pending || !list) return;
+    const rowIndex = virtualRows.findIndex((row) => pendingOrderFocusMatchesRow(pending, row));
+    if (rowIndex < 0) {
+      pendingOrderFocusRef.current = null;
+      return;
+    }
+    const rowTop = virtualOffsets.offsets[rowIndex] || 0;
+    const rowBottom = rowTop + virtualRowHeight(virtualRows[rowIndex]!);
+    const currentTop = list.scrollTop;
+    if (listHeight > 0) {
+      const currentBottom = currentTop + listHeight;
+      const nextTop = rowTop < currentTop
+        ? rowTop
+        : rowBottom > currentBottom
+          ? Math.max(0, rowBottom - listHeight)
+          : currentTop;
+      if (nextTop !== currentTop) {
+        list.scrollTop = nextTop;
+        setScrollTop(nextTop);
+        return;
+      }
+    }
+    const restoreFocus = () => {
+      const target = Array.from(list.querySelectorAll<HTMLElement>("[data-sidebar-order-kind]"))
+        .find((element) => pendingOrderFocusMatchesElement(pending, element));
+      target?.focus();
+      pendingOrderFocusRef.current = null;
+    };
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(restoreFocus);
+    } else {
+      window.setTimeout(restoreFocus, 0);
+    }
+  }, [listHeight, listRef, scrollTop, virtualOffsets, virtualRows]);
   const dragPreviewRows = React.useMemo(
     () => sidebarDragPreviewRows(virtualRows, draggingOrder),
     [virtualRows, draggingOrder],
@@ -1330,6 +1577,23 @@ export function Sidebar({
 
   return (
     <aside className="sidebar" data-testid="sidebar-root">
+      <div
+        aria-live="polite"
+        data-testid="sidebar-reorder-live"
+        style={{
+          position: "absolute",
+          width: 1,
+          height: 1,
+          padding: 0,
+          margin: -1,
+          overflow: "hidden",
+          clip: "rect(0 0 0 0)",
+          whiteSpace: "nowrap",
+          border: 0,
+        }}
+      >
+        {orderAnnouncement}
+      </div>
       <div className="sidebar__mast">
         <div>
           <div className="sidebar__mast-title">Roster</div>
@@ -1377,13 +1641,19 @@ export function Sidebar({
               );
             }
             if (button.href) {
+              const safeHref = safeConsoleHref(button.href);
+              if (!safeHref) {
+                return null;
+              }
+              const target = button.target || undefined;
+              const rel = target === "_blank" ? "noopener noreferrer" : undefined;
               return (
                 <a
                   key={button.id}
                   className="sidebar__navitem"
-                  href={button.href}
-                  target={button.target || undefined}
-                  rel={button.target === "_blank" ? "noreferrer" : undefined}
+                  href={safeHref}
+                  target={target}
+                  rel={rel}
                   data-testid={`nav-custom:${button.id}`}
                   title={button.label}
                 >
@@ -1429,6 +1699,7 @@ export function Sidebar({
                       data-sidebar-order-id={row.reorderable ? row.bucket : undefined}
                       data-reorderable={row.reorderable ? "true" : undefined}
                       onPointerDown={row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "section", id: row.bucket }) : undefined}
+                      onKeyDown={row.reorderable ? (event) => handleSectionOrderKeyDown(event, row.bucket) : undefined}
                       onClick={() => {
                         if (suppressOrderClickRef.current) return;
                         setCollapsedSections((current) => {
@@ -1464,6 +1735,7 @@ export function Sidebar({
                     data-reorderable={row.reorderable ? "true" : undefined}
                     data-testid={`sidebar-subgroup-toggle:${row.bucket}:${row.label}`}
                     onPointerDown={row.reorderable ? (event) => beginPointerOrderDrag(event, { kind: "subgroup", id: row.storageKey, bucket: row.bucket }) : undefined}
+                    onKeyDown={row.reorderable ? (event) => handleSubgroupOrderKeyDown(event, row.storageKey, row.bucket) : undefined}
                     onClick={() => {
                       if (suppressOrderClickRef.current) return;
                       setCollapsedSubgroups((current) => {
